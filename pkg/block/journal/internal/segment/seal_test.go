@@ -769,11 +769,14 @@ func TestSealAFailedSyncOrWriteEndsTheSegment(t *testing.T) {
 				t.Fatalf("the ledger after the failed %s: %v", tc.name, err)
 			}
 
-			// Every later append is refused and reserves nothing.
+			// Every later append is refused and reserves nothing: the
+			// roll signal carries the end, so the caller can tell a
+			// segment it must roll on from one whose successor names
+			// none.
 			payload := streamTestBody(64, 0x77)
 			h, body := streamWriteHeader(streamFileID(9), 512, payload, 7, core.Version{Counter: 99})
-			if _, err := e.s.Append(h, body); !errors.Is(err, segment.ErrSegmentFull) {
-				t.Fatalf("the append after the failed %s = %v, want ErrSegmentFull", tc.name, err)
+			if _, err := e.s.Append(h, body); !errors.Is(err, segment.ErrSegmentFull) || !errors.Is(err, segment.ErrSegmentEnded) {
+				t.Fatalf("the append after the failed %s = %v, want ErrSegmentFull carrying ErrSegmentEnded", tc.name, err)
 			}
 			// A second seal writes nothing and answers ErrSegmentEnded.
 			returned := sealResult{writes: e.seam.CallsFor(journaltest.OpWrite, seg), syncs: e.seam.CallsFor(journaltest.OpSync, seg), truncates: e.seam.CallsFor(journaltest.OpTruncate, seg)}
@@ -1245,7 +1248,10 @@ func TestSealWriteSealTakesEntriesAsData(t *testing.T) {
 	entries := sealEntriesOf(t, e, placed)
 
 	// The refusals: each hands the writer entries it cannot encode into a
-	// footer the reader accepts, on an Active segment of a second set.
+	// footer the reader accepts, on an Active segment of a second set. The
+	// writer is the one recovery calls too, so every refusal must hold with
+	// no seam call made and no ledger change (R32 at the writer, R11 at
+	// the writer, and the encoder's own contract).
 	refuse := []struct {
 		name    string
 		entries func() []format.CatalogEntry
@@ -1256,11 +1262,65 @@ func TestSealWriteSealTakesEntriesAsData(t *testing.T) {
 			out[0], out[len(out)-1] = out[len(out)-1], out[0]
 			return out
 		}, marker},
+		{"a duplicated entry", func() []format.CatalogEntry {
+			// The last entry twice: the copy's record still ends at
+			// the marker — so the end check passes — and its offset
+			// equals the one before it, which only the ascent rule's
+			// strict half refuses. A reader without it takes back a
+			// footer that names one record twice.
+			out := slices.Clone(entries)
+			out = append(out, out[len(out)-1])
+			return out
+		}, marker},
 		{"a last record not ending at the marker", func() []format.CatalogEntry {
 			out := slices.Clone(entries[:len(entries)-1])
 			return out
 		}, marker},
 		{"a marker off the grid", func() []format.CatalogEntry { return entries }, marker + 4},
+		{"a record offset off the grid", func() []format.CatalogEntry {
+			out := slices.Clone(entries)
+			out[0].RecordOffset += 4
+			return out
+		}, marker},
+		{"a record offset below the first slot", func() []format.CatalogEntry {
+			out := slices.Clone(entries)
+			out[0].RecordOffset -= 8
+			return out
+		}, marker},
+		{"an entry of an unknown kind", func() []format.CatalogEntry {
+			out := slices.Clone(entries)
+			out[1].Kind = format.Kind(0x63)
+			return out
+		}, marker},
+		{"an entry with a non-zero version epoch", func() []format.CatalogEntry {
+			out := slices.Clone(entries)
+			out[1].Version = core.Version{Epoch: 1, Counter: 2}
+			return out
+		}, marker},
+		{"an entry with a negative file offset", func() []format.CatalogEntry {
+			out := slices.Clone(entries)
+			out[1].Extent = core.Extent{Off: -1, Len: 64}
+			return out
+		}, marker},
+		{"no room before the cap", func() []format.CatalogEntry {
+			// A segment whose single record ends near the cap, with the
+			// marker sitting so close that the marker, its one footer
+			// entry and the trailer do not fit before it — a recovery
+			// caller's hand-off the writer must refuse rather than write
+			// over the trailer's slot. The record is a real one the
+			// header decoder accepts, so only the room check refuses it.
+			marker := streamCap - format.SealMarkerSize - format.TrailerSize
+			reclen := format.RecordHeader{Kind: format.KindWrite, Extent: core.Extent{Len: 64}}.Size()
+			return []format.CatalogEntry{{
+				File:         streamFileID(1),
+				Extent:       core.Extent{Off: 0, Len: 64},
+				RecordOffset: marker - reclen,
+				Seq:          1,
+				Version:      core.Version{Counter: 1},
+				Kind:         format.KindWrite,
+				Tag:          7,
+			}}
+		}, streamCap - format.SealMarkerSize - format.TrailerSize},
 	}
 	for _, tc := range refuse {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1292,11 +1352,85 @@ func TestSealWriteSealTakesEntriesAsData(t *testing.T) {
 			if _, err := ref.WriteAt(buf, 0); err != nil {
 				t.Fatalf("the refusal's header write: %v", err)
 			}
+
+			// The refusal is a whole answer: no seam call made and
+			// no ledger change, the counters a writer that had gone
+			// ahead would have moved.
+			calls := sealCountersOf(e, format.SegmentName(id))
+			counters := set.Counters()
 			if _, err := segment.WriteSeal(set, ref, streamIdentity, id, tc.marker, tc.entries(), false); !errors.Is(err, segment.ErrBadCatalog) {
 				t.Fatalf("the refused WriteSeal = %v, want ErrBadCatalog", err)
 			}
 			if state, err := set.State(id); err != nil || state != segment.Active {
 				t.Fatalf("the refused WriteSeal left the segment %v, %v, want Active", state, err)
+			}
+			if now := sealCountersOf(e, format.SegmentName(id)); now != calls {
+				t.Fatalf("the refused WriteSeal moved the seam: %+v, want %+v", now, calls)
+			}
+			if now := set.Counters(); now != counters {
+				t.Fatalf("the refused WriteSeal moved the ledger: %+v, want %+v", now, counters)
+			}
+		})
+	}
+
+	// The writer's own R32 guard: a segment the ledger holds Sealed, and
+	// one it holds Ended, take no seal — the footer is never appended
+	// twice and an ended segment is never sealed — with no seam call made
+	// and no ledger change either.
+	for _, tc := range []struct {
+		name  string
+		state segment.State
+	}{
+		{"a sealed segment", segment.Sealed},
+		{"an ended segment", segment.Ended},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set := segment.NewSet(streamCap, nil)
+			budget := core.NewDescriptorBudget(8)
+			cache := segment.NewDescriptors(e.seam.FS(), format.SegmentName, budget)
+			maker := segment.NewMaker(e.seam.FS(), set, streamMax, 0, nil)
+			t.Cleanup(func() {
+				if err := cache.Shutdown(); err != nil {
+					t.Errorf("the refusal's cache Shutdown: %v", err)
+				}
+			})
+			id, err := maker.Make()
+			if err != nil {
+				t.Fatalf("the refusal's Make: %v", err)
+			}
+			if err := set.Take(id); err != nil {
+				t.Fatalf("the refusal's Take: %v", err)
+			}
+			ref, err := cache.Acquire(id)
+			if err != nil {
+				t.Fatalf("the refusal's Acquire: %v", err)
+			}
+			defer ref.Release()
+			buf := format.AppendSegmentHeader(nil, format.SegmentHeader{Identity: streamIdentity, ID: id})
+			if _, err := ref.WriteAt(buf, 0); err != nil {
+				t.Fatalf("the refusal's header write: %v", err)
+			}
+			switch tc.state {
+			case segment.Sealed:
+				if err := set.Seal(id, true); err != nil {
+					t.Fatalf("sealing the segment for the refusal: %v", err)
+				}
+			case segment.Ended:
+				if err := set.End(id); err != nil {
+					t.Fatalf("ending the segment for the refusal: %v", err)
+				}
+			}
+
+			calls := sealCountersOf(e, format.SegmentName(id))
+			counters := set.Counters()
+			if _, err := segment.WriteSeal(set, ref, streamIdentity, id, marker, entries, false); !errors.Is(err, segment.ErrWrongState) {
+				t.Fatalf("the WriteSeal of a %s = %v, want the ledger's ErrWrongState", tc.name, err)
+			}
+			if now := sealCountersOf(e, format.SegmentName(id)); now != calls {
+				t.Fatalf("the refused WriteSeal moved the seam: %+v, want %+v", now, calls)
+			}
+			if now := set.Counters(); now != counters {
+				t.Fatalf("the refused WriteSeal moved the ledger: %+v, want %+v", now, counters)
 			}
 		})
 	}

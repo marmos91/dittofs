@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -160,22 +161,43 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 }
 
 // checkSeal validates the seal's facts against the ledger and the cap: the
-// segment is Active, the marker names a record slot, the entries ascend
-// strictly by RecordOffset, the last record ends exactly at the marker — as
-// the footer's reader computes it — and the marker, the footer and the
-// trailer fit before the cap. A violation answers ErrBadCatalog, or the
-// ledger's own refusal, and nothing else runs: no seam call, no ledger change.
+// segment is Active, every entry is one the encoder takes (a record slot on
+// the grid within the 32-bit column, a known kind, a zero epoch, a
+// non-negative extent), the entries ascend strictly by RecordOffset, the
+// last record ends exactly at the marker — as the footer's reader computes
+// it, which also puts the marker itself on a record slot, since with the
+// entries on the grid their end is too — and the marker, the footer and
+// the trailer fit before the cap. A violation answers ErrBadCatalog, or
+// the ledger's own refusal, and nothing else runs: no seam call, no ledger
+// change, and no encoder panic on entries the writer was handed as data.
 func checkSeal(set *Set, id core.SegmentID, marker int64, entries []format.CatalogEntry) error {
 	if err := sealableSegment(set, id); err != nil {
 		return err
 	}
-	if marker < format.SegmentHeaderSize || marker%8 != 0 {
-		return fmt.Errorf("%w: the marker %d is not a record slot", ErrBadCatalog, marker)
-	}
 	prev := int64(0)
-	for _, e := range entries {
+	for i, e := range entries {
+		if e.RecordOffset < format.SegmentHeaderSize {
+			return fmt.Errorf("%w: entry %d's record offset %d is below the first record slot %d", ErrBadCatalog, i, e.RecordOffset, format.SegmentHeaderSize)
+		}
+		if e.RecordOffset%8 != 0 {
+			return fmt.Errorf("%w: entry %d's record offset %d is not a multiple of 8", ErrBadCatalog, i, e.RecordOffset)
+		}
+		if e.RecordOffset > math.MaxUint32 {
+			return fmt.Errorf("%w: entry %d's record offset %d is above MaxUint32", ErrBadCatalog, i, e.RecordOffset)
+		}
+		// The kinds table's own range, read from the constants it
+		// defines: the encoder refuses anything outside it.
+		if e.Kind < format.KindWrite || e.Kind > format.KindForget {
+			return fmt.Errorf("%w: entry %d's kind %d is not one this format encodes", ErrBadCatalog, i, uint8(e.Kind))
+		}
+		if e.Version.Epoch != 0 {
+			return fmt.Errorf("%w: entry %d carries a version epoch %d, want 0", ErrBadCatalog, i, e.Version.Epoch)
+		}
+		if e.Extent.Off < 0 || e.Extent.Len < 0 || e.Extent.Off+e.Extent.Len < 0 {
+			return fmt.Errorf("%w: entry %d carries a negative extent %+v", ErrBadCatalog, i, e.Extent)
+		}
 		if e.RecordOffset <= prev {
-			return fmt.Errorf("%w: entries do not ascend strictly by record offset", ErrBadCatalog)
+			return fmt.Errorf("%w: entries do not ascend strictly by record offset: %d after %d", ErrBadCatalog, e.RecordOffset, prev)
 		}
 		prev = e.RecordOffset
 	}

@@ -555,18 +555,11 @@ func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, 
 		// drained segment holds every entry and every share-charge its
 		// appends made (R85). The one short lock section past the
 		// completion's costs nothing the completion did not already pay.
-		s.pending++
 		// Every exit from here on is this append's final one: the loop
 		// never re-enters once a reservation is made, so the deferred
-		// decrement runs exactly once per reservation.
-		defer func() {
-			s.appendMu.Lock()
-			s.pending--
-			if s.pending == 0 {
-				s.drained.Broadcast()
-			}
-			s.appendMu.Unlock()
-		}()
+		// leave runs exactly once per reservation.
+		s.enterDrain()
+		defer s.leaveDrain()
 		id, ref, off := s.id, s.ref, h.Offset
 		s.appendMu.Unlock()
 
@@ -621,6 +614,26 @@ func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, 
 	}
 }
 
+// enterDrain names the calling operation — an append between its
+// reservation and its final exit, a stream sync between its window's read
+// and its recording — to the seal's drain. The caller holds appendMu.
+func (s *Stream) enterDrain() {
+	s.pending++
+}
+
+// leaveDrain ends what enterDrain named: the drain count drops, and the
+// seal waiting on it is woken when it reaches zero. It runs under the
+// caller's deferred return, taking the lock itself because the exits it
+// leaves from run with none held.
+func (s *Stream) leaveDrain() {
+	s.appendMu.Lock()
+	s.pending--
+	if s.pending == 0 {
+		s.drained.Broadcast()
+	}
+	s.appendMu.Unlock()
+}
+
 // takeSettle settles the take whose gate the caller armed: the gate is
 // lifted and the parked appends woken. The caller holds appendMu; the
 // waiters hold no lock while they park, so the channel's close under it is
@@ -659,29 +672,19 @@ func (s *Stream) Sync() error {
 		s.appendMu.Unlock()
 		return nil // no segment is active: nothing to make durable
 	}
-	// A sealed segment's every record is durable by the seal's first step,
-	// so a Sync here needs no fsync of its own; an ended segment takes no
-	// sync that could claim its bytes durable. A sealing segment is waited
-	// out instead: the platform reports a writeback error once per file, so
+	// A sealing segment is parked on the drain's cond until the seal
+	// settles, for the platform reports a writeback error once per file and
 	// an fsync racing the seal's own could consume the error the seal's
-	// steps or their checks needed, and the records are durable by the
-	// seal's first step anyway — the Sync answers nil once it returns.
-	// sealOpen alone keeps the ordinary path.
+	// steps or their checks needed. A sealed segment's every record is
+	// durable by the seal's first step, so the Sync then answers nil
+	// without an fsync of its own; an ended segment takes no sync that
+	// could claim its bytes durable. sealOpen alone keeps the ordinary
+	// path, and a state past the wait is always one of the three the
+	// switch answers — the seal never returns the stream to sealOpen.
+	for s.sealState == sealSealing {
+		s.drained.Wait()
+	}
 	switch s.sealState {
-	case sealSealing:
-		// Parked on the drain's cond in the same wait group the seal
-		// wakes: it returns with the seal's own terminal state.
-		for s.sealState == sealSealing {
-			s.drained.Wait()
-		}
-		switch s.sealState {
-		case sealSealed:
-			s.appendMu.Unlock()
-			return nil
-		case sealEnded:
-			s.appendMu.Unlock()
-			return ErrSegmentEnded
-		}
 	case sealSealed:
 		s.appendMu.Unlock()
 		return nil
@@ -696,15 +699,8 @@ func (s *Stream) Sync() error {
 	// it writes (RFC 1 §5.3).
 	s.inflight.Add(1)
 	defer s.inflight.Done()
-	s.pending++
-	defer func() {
-		s.appendMu.Lock()
-		s.pending--
-		if s.pending == 0 {
-			s.drained.Broadcast()
-		}
-		s.appendMu.Unlock()
-	}()
+	s.enterDrain()
+	defer s.leaveDrain()
 
 	through := s.tracker.syncStart()
 	ref := s.ref
@@ -776,8 +772,13 @@ func (s *Stream) Seal(early bool) (SealResult, error) {
 
 	// A write or a sync of this segment already failed — its own, or one
 	// of the syncs the drain waited out: the segment is ended, not sealed,
-	// and the seal writes nothing.
+	// and the seal writes nothing. The reason names which failure ended
+	// it, the way WriteSeal's own ended paths do.
 	if s.tracker.freeze || s.tracker.syncFailed {
+		reason := "a sync of the segment failed"
+		if s.tracker.freeze {
+			reason = "a write of the segment failed"
+		}
 		s.sealState = sealEnded
 		id := s.id
 		s.appendMu.Unlock()
@@ -788,7 +789,7 @@ func (s *Stream) Seal(early bool) (SealResult, error) {
 			// ledger that cannot end it carries the failure here.
 			return SealResult{}, errors.Join(ErrSegmentEnded, err)
 		}
-		return SealResult{}, ErrSegmentEnded
+		return SealResult{}, fmt.Errorf("%w: %s", ErrSegmentEnded, reason)
 	}
 
 	// The marker sits at the stream's next free slot: every record below it
