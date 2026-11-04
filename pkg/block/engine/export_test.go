@@ -359,3 +359,27 @@ func (e *Engine) GuardHeld(f entity.FileID) bool {
 	fe := e.files.entryOf(f)
 	return fe != nil && fe.guarded.Load()
 }
+
+// RemovalStalled reports whether f has an item removal_stalled on a loop.
+func (e *Engine) RemovalStalled(f entity.FileID) bool {
+	e.gcMu.Lock()
+	defer e.gcMu.Unlock()
+	for _, g := range e.gcs {
+		if g.removals.stalledOn(f) {
+			return true
+		}
+	}
+	return false
+}
+
+// RemovalsPending is engine_removals_pending over every loop.
+func (e *Engine) RemovalsPending() int {
+	e.gcMu.Lock()
+	defer e.gcMu.Unlock()
+	n := 0
+	for _, g := range e.gcs {
+		k, _ := g.removals.pending()
+		n += k
+	}
+	return n
+}

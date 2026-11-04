@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -79,8 +80,8 @@ func (e *Engine) guardOf(f entity.FileID) <-chan struct{} {
 // release ends r's hold on its file: the in-flight mark is cleared, the guard
 // released and its waiters woken. Then, once its phase 1 committed, the
 // journal is settled through it, and the file, if it still holds operations,
-// is noted for the group commit, in that order. A removal whose phase 1 did
-// not commit leaves its marker for recovery.
+// is noted for the group commit, in that order. One whose phase 1 did not
+// commit settles only when unstage asks it to, for a terminal failure.
 func (e *Engine) release(r *removal, settle bool) {
 	fe := e.files.lockFor(r.f)
 	fe.removing = nil
@@ -248,27 +249,69 @@ func replaySize(committed int64, ops []pendingOp) int64 {
 // removal. Withdraw it if the store ever applies a removal below applied.
 func (e *Engine) phase1(ctx context.Context, r *removal, op kvstore.RemoveOp) error {
 	op.Version, op.Time = entity.JournalVersion(r.v.Bytes()), r.at
+	err := e.tryPhase1(ctx, r, op)
+	switch {
+	case err == nil:
+		return nil
+	case terminal(err):
+		e.unstage(r, err)
+		return e.storeErr(err)
+	}
+	// decision: once the journal has removed the extent, a phase 1 the call
+	// cannot commit is not failed: the journal's loop retries it, keeping the
+	// guard and the in-flight mark, and the call answers retry-later. A file
+	// found gone, or a removal the store refuses as invalid, ends it, its
+	// marker settled without the removal (RFC 8 §8.1).
+	e.retryLater(r, op, nil)
+	if errors.Is(err, kvstore.ErrConflict) {
+		return &vfserr.Delay{Cause: vfserr.DelayConflict}
+	}
+	return &vfserr.Delay{Cause: vfserr.DelayCommit}
+}
+
+// tryPhase1 runs r's phase 1 once: the claim, the sync, the store's Remove,
+// then, once it commits, the claimed operations and the removal's own out
+// of the entry, r finished and the Dones run. A failure releases the claim
+// and keeps the guard.
+func (e *Engine) tryPhase1(ctx context.Context, r *removal, op kvstore.RemoveOp) error {
 	e.claimBelow(r)
 	if err := e.sync(ctx, r.b, fileID(r.f)); err != nil {
 		e.unclaim(r)
-		e.release(r, false)
-		return e.journalErr(err)
+		return err
 	}
-	err := e.d.Existence.Remove(ctx, r.b.share.ID, r.f, 0, op, e.claimed(r))
-	if err != nil {
+	if err := e.d.Existence.Remove(ctx, r.b.share.ID, r.f, 0, op, e.claimed(r)); err != nil {
 		e.unclaim(r)
-		e.release(r, false)
-		if errors.Is(err, kvstore.ErrConflict) {
-			return &vfserr.Delay{Cause: vfserr.DelayConflict}
-		}
-		return e.storeErr(err)
+		return err
 	}
 	dones := e.committed(r)
-	e.release(r, true)
+	e.finish(r)
 	for _, d := range dones {
 		d()
 	}
 	return nil
+}
+
+// terminal reports a phase 1 failure that retrying cannot change: the file
+// gone, or the removal refused as invalid.
+func terminal(err error) bool {
+	return errors.Is(err, entity.ErrStale) || kvstore.Refused(err)
+}
+
+// unstage ends removal r whose phase 1 will not commit: its own pending
+// operation leaves the entry, so no Commit waits on it and the file's other
+// operations commit, and the guard is released. A phase 1 that ended on a
+// terminal failure, err, settles the journal's marker without the removal
+// (RFC 8 §8.1), so no later start re-applies it, and logs the loss when the
+// file still exists. One its loop's end cut short, err nil, leaves the marker
+// for the next start's recovery.
+func (e *Engine) unstage(r *removal, err error) {
+	fe := e.files.lockFor(r.f)
+	fe.ops = slices.DeleteFunc(fe.ops, func(op pendingOp) bool { return op.version == r.v })
+	e.files.unlock(r.f, fe)
+	if err != nil && !errors.Is(err, entity.ErrStale) {
+		e.d.Logger.Error("removal ended unapplied, its journal marker settled", "file", r.f, "kind", r.kind.String(), "err", err)
+	}
+	e.release(r, err != nil)
 }
 
 // claimBelow claims r's file's live operations below r's version, writes and

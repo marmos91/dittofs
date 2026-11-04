@@ -63,6 +63,13 @@ var ErrConflict = kv.ErrConflict
 // ErrClosed is a view's call on a store whose backend closed.
 var ErrClosed = kv.ErrClosed
 
+// Refused reports that the store refused a call as invalid: the same call
+// fails the same way, so retrying it changes nothing.
+func Refused(err error) bool {
+	var s *merrs.StoreError
+	return errors.As(err, &s) && s.Code == merrs.ErrInvalidArgument
+}
+
 // ErrNotContent is an existence commit for a file that holds no content.
 var ErrNotContent = errors.New("kvstore: file holds no content")
 

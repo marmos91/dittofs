@@ -53,6 +53,7 @@ type Engine struct {
 	gcsClosed       bool                                                                       // closeGroupCommits ran: none starts again
 	splits          atomic.Int64                                                               // engine_group_commit_splits_total
 	stabilityPoints atomic.Int64                                                               // engine_stability_points_total
+	removalBatches  removalSeries                                                              // engine_removal_batches_total
 	pendingApplied  atomic.Int64                                                               // engine_pending_existence_ops: operations committed
 	hooks           struct{ taken, captured, drained, written, staged atomic.Pointer[func()] } // a test's seams: after a batch's take, its capture, a drain's read of the ring, a write's WriteAt, and a removal's journal step
 	afterRegister   func()                                                                     // a test's hook: run once a clone's registrations are installed
