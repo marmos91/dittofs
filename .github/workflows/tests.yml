@@ -22,6 +22,10 @@ name: Tests
 on:
   pull_request:
     branches: [develop, main, feat/storage-v2]
+  # The merge queue runs the pull-request tier on the merged result, so a
+  # queued pull request is held to the checks it passed on its own.
+  merge_group:
+    types: [checks_requested]
   # A push to any of them runs the merge tier; only develop's results alert
   # or post.
   push:
@@ -54,10 +58,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # The tier of the run, and the retry: a test that fails is run once more after
-# a merge and on the schedule, and never on a pull request, so a pull request
-# can't merge a flaky test it introduced.
+# a merge and on the schedule, and never on a pull request or in the merge
+# queue, so a pull request can't merge a flaky test it introduced.
 env:
-  TIER: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'push' && 'merge' || github.event_name == 'schedule' && 'nightly' || inputs.tier }}
+  TIER: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'pr' || github.event_name == 'push' && 'merge' || github.event_name == 'schedule' && 'nightly' || inputs.tier }}
   RETRY: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && '1' || '0' }}
 
 # Every run step in bash, whatever shell its runner would pick.
@@ -76,7 +80,8 @@ jobs:
       fixed: ${{ steps.plan.outputs.fixed }}
     steps:
       # Full history: on a pull request, dt plan --base compares the branch
-      # with where it left its base, so a docs-only change plans no cell.
+      # with where it left its base, and in the merge queue with the queue's
+      # base commit, so a docs-only change plans no cell.
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -104,7 +109,7 @@ jobs:
       - name: Plan the cells
         id: plan
         env:
-          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event_name == 'merge_group' && github.event.merge_group.base_sha || '' }}
           SUITE: ${{ inputs.suite }}
         run: |
           set -o pipefail
