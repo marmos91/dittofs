@@ -240,7 +240,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | --- | --- | --- | --- | --- |
 | R13 | `New` opens nothing; `Start` runs its steps in order, each complete before the next; a failing step closes in reverse what earlier steps opened and returns its error, so the engine is serving or as built | invariant | §2.5 | T6.3 |
 | R14 | The engine opens each journal itself through `Deps.Open`, with the floor and the identity read from the store; start never creates a journal | invariant | §2.5 step 1 | T6.3 |
-| R15 | The floor a journal opens with is at least every share's version floor and version limit (D5) | invariant | §2.5 step 1, §2.7; RFC 1 §4.3 and RFC 28 §3.1 word it otherwise (#3634) | T6.3, T6.7 |
+| R15 | The floor a journal opens with is at least every share's version floor and version limit (D5) | invariant | §2.5 step 1, §2.7; RFC 28 §3.1; RFC 1 §3, §4.3 | T6.3, T6.7 |
 | R16 | A journal missing or foreign where one is recorded (an `Open` with a recorded `expect` answering `ErrNoJournal`, an `IdentityError` or `ErrUnidentified`): every share on that device (D10) is refused, each named in `Stats` with its device, and `Start` does not fail for it | MUST | §2.5 step 1, RFC 28 §3.4 | T6.3 |
 | R17 | The directory of a missing or foreign journal is never opened as a new journal until an operator acknowledges the loss | MUST NOT | §2.5 step 1, RFC 28 §3.4 | T6.3 |
 | R18 | An `Open` with no identity recorded for its directory (zero `expect`), which always fails, fails `Start`: the metadata store lost when the directory holds a journal, uninitialised when it holds none, and the node serves nothing until an operator says what happened | invariant | §2.5 step 1, RFC 28 §3.4 | T6.3 |

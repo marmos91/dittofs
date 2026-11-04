@@ -1079,10 +1079,10 @@ broken down into subtasks and estimated only once that interface is agreed with 
     (`S‖id‖vl`);
   - `VersionFloor`, **derived** from the version index, never stored: a stored floor could
     lag a file's `Version` and let a version be issued twice.
-- **Version floor and version limit** (RFC 1 §4.3, RFC 8 §2.5):
-  - each journal opens, and each `Share` is attached, with the **larger** of the share's
-    `VersionFloor` and its `VersionLimit`, so the counter restarts above every version a
-    crash may have lost;
+- **Version floor and version limit** (RFC 1 §4.3, RFC 8 §2.5 and §2.7):
+  - each journal opens with one floor, the **largest** of every served share's
+    `VersionFloor` and `VersionLimit`, and each `Share` is attached with the **larger** of
+    that share's two, so the counter restarts above every version a crash may have lost;
   - before any version is issued, every served share's limit is written at the journal's
     `NextVersion` plus one block (proposal: 2²⁴), as a tracked max-write through
     `RaiseVersionLimit`. Only after every share's write commits is `SetVersionLimit`
