@@ -21,6 +21,7 @@ type hookedHandle struct {
 	engine.Handle
 	e        *engine.Engine
 	truncate func() // run inside Truncate, after the journal's removal
+	writes   atomic.Int32
 	mu       sync.Mutex
 	settles  []settled
 }
@@ -37,6 +38,11 @@ func (h *hookedHandle) Truncate(ctx context.Context, id journal.FileID, size int
 		h.truncate()
 	}
 	return v, err
+}
+
+func (h *hookedHandle) WriteAt(ctx context.Context, id journal.FileID, off int64, p []byte, mtime int64) (journal.Version, error) {
+	h.writes.Add(1)
+	return h.Handle.WriteAt(ctx, id, off, p, mtime)
 }
 
 func (h *hookedHandle) Settle(id journal.FileID, v journal.Version) {
@@ -327,5 +333,36 @@ func TestACommitWaitsOutATruncateInFlight(t *testing.T) {
 	}
 	if n := takes.Load(); n > 2 {
 		t.Errorf("%d batches took the guarded file while its Commit waited, want at most 2", n)
+	}
+}
+
+// A deallocate's phase 1 records the extent as one hole at once, stages no
+// zeros through the journal's write, and a write into the extent after it
+// reads back.
+func TestADeallocateRecordsItsHoleAtOnce(t *testing.T) {
+	u, h := newHookedUnit(t)
+	f := u.create(t, "a")
+	u.write(t, f, 0, fill(16, 'a'))
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	h.writes.Store(0)
+	if err := u.e.Deallocate(t.Context(), u.share.ID, f, 4, 8); err != nil {
+		t.Fatal(err)
+	}
+	if n := h.writes.Load(); n != 0 {
+		t.Errorf("a deallocate made %d journal writes", n)
+	}
+	run, hole, err := u.fs.Store.Existence().Allocation(t.Context(), u.share.ID, f, 4)
+	if err != nil || !hole || run != (entity.Extent{Offset: 4, Length: 8}) {
+		t.Errorf("at 4 after phase 1: %+v hole %v, %v; want the hole [4, 12)", run, hole, err)
+	}
+	u.write(t, f, 6, []byte("bb"))
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, 4)
+	if _, err := u.e.Read(t.Context(), u.share.ID, f, 4, got); err != nil || string(got) != "\x00\x00bb" {
+		t.Errorf("read [4, 8): %q, %v; want two zeros then the write", got, err)
 	}
 }

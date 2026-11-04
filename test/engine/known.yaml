@@ -2,6 +2,13 @@
 # naming the epic expected to turn it green. A test that starts to pass fails the run: remove
 # its entry in the change that turned it green, a journal change included. Each entry's
 # message is the failure it is known by: a test failing for any other reason is unexpected.
+- test: TestRFC8A_Deallocate
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 5: a deallocate larger than the journal''s free capacity reads as zeros; also the start (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt, ReadAt and Deallocate.'
+  issue: '#3588'
 - test: TestRFC8A_FailedWindow
   message: 'fixture: journal init: journal: not implemented'
   status: fail

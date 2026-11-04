@@ -15,11 +15,6 @@ import (
 // from the removal mark. None is built yet: each answers errUnbuilt, and moves
 // to its own file as it is built.
 
-// Deallocate makes [off, off+n) a hole.
-func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.FileID, off, n int64) error {
-	return errUnbuilt
-}
-
 // Delete is the file's release; never the journal's eviction. retry is
 // non-nil only when the release is pending, and yields its outcome once
 // (RFC 8 §8.1). The send on it never blocks: it has capacity 1, as its
