@@ -13,12 +13,12 @@ semantics only; [the plan](rfc-1-journal-plan.md) §1.5 and §5.
 ## Ground rules
 
 - **Sources are the RFCs and the planning doc only.** No existing code is read, reused or
-  depended on: not v1 (`pkg/block/journal`), and not what is already in
-  `pkg/block/journalv2`. Everything below is derived from RFC 1 and RFC 28.
+  depended on: not v1's journal (deleted by #3645), and not what is already in
+  `pkg/block/journal`. Everything below is derived from RFC 1 and RFC 28.
 - **TDD.** Each ticket starts with failing tests for the requirements it lists (R-numbers
   below). Every requirement has at least one test, and the test must be able to fail
   (plan rule 10).
-- Package: `pkg/block/journalv2/internal/index`. It is pure in-memory and does no I/O.
+- Package: `pkg/block/journal/internal/index`. It is pure in-memory and does no I/O.
 
 ## Requirements and invariants
 
@@ -217,5 +217,5 @@ index API. After E4-11, the builder goes to E7.
 | 8 Real storage | n/a | pure logic, so in-memory is allowed |
 | 9 Comment markers | E4-2, 3, 7, 10, 11 | `decision:` (no copy-on-write tree, floor buckets, retained extents and the bucket entry, rebuild feeding) and `ponytail:` (eight drop ranges, one entry per record piece) at the code site |
 | 10 Tests can fail | all | each test names the bug it catches |
-| 11 Exports | all | the public `journalv2` package gains no symbols. The index API lives in `internal/index` |
+| 11 Exports | all | the public `journal` package gains no symbols. The index API lives in `internal/index` |
 | 12 Created with consumer | all | `internal/index` lands with E4-1, and each API lands with its test. Until E8, tests are the only consumer: the package is pure logic tested on its own (rule 1), not a placeholder |

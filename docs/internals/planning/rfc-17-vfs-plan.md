@@ -309,7 +309,7 @@ The signatures are RFC 8 §12.1's: `Write(ctx, f, off, p []byte, o WriteOpts{Sus
 (Verifier, error)`, where `Done` releases the quota reservation, and `Commit(ctx, f, off, n)
 (Verifier, lossSeq uint64, error)`, whose loss sequence `Opens.Flushed` reads.
 
-Stage 2 writes the fake, since neither today's `engine.Store` nor `journalv2test/model` can stand
+Stage 2 writes the fake, since neither today's `engine.Store` nor `journaltest/model` can stand
 in for it.
 
 A check that any `Content` passes (verified bytes back, a version above the last drawn, nothing
