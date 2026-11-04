@@ -84,12 +84,12 @@ type PoolCounters struct {
 // ready to be taken by a roll that costs no I/O, and the worker that keeps
 // each class at its target by making spares off the write path.
 //
-// decision: ready, held, pending, started, stopped and deviceFull sit under
-// the capacity domain of RFC 1 §8.2 — store-wide counters, no I/O under p.mu,
-// no lock acquired while it is held, and never held across a Maker or a Set
-// call: those take locks of this same domain, and no two locks of one domain
-// are held at once. Withdrawn the day a recorder of the domain's order finds
-// p.mu held across one of those calls.
+// decision: ready, held, pending, incoming, started, stopped and deviceFull
+// sit under the capacity domain of RFC 1 §8.2 — store-wide counters, no I/O
+// under p.mu, no lock acquired while it is held, and never held across a Maker
+// or a Set call: those take locks of this same domain, and no two locks of one
+// domain are held at once. Withdrawn the day a recorder of the domain's order
+// finds p.mu held across one of those calls.
 type Pool struct {
 	m   *Maker
 	t   Targets
@@ -99,6 +99,7 @@ type Pool struct {
 	ready      [Reserve + 1][]core.SegmentID // the ready spares per class, FIFO; guarded by mu
 	held       int                           // spares owed to open holds; guarded by mu
 	pending    int                           // the largest shortfall a refused Hold still asks, a level not a sum; guarded by mu
+	incoming   [Reserve + 1]int              // recycles in flight, reserved per class; guarded by mu
 	started    bool                          // guarded by mu
 	stopped    bool                          // guarded by mu
 	deviceFull bool                          // guarded by mu
@@ -407,6 +408,72 @@ func (h *Hold) Close() {
 	h.p.mu.Unlock()
 }
 
+// wantRecycle reserves a slot for a recycled spare in the first class short of
+// its target, in the refill's own order — headroom, then reserve, then
+// content, whose target the holds and the refused asks ride above — counting
+// the ready spares and the reservations in flight together. It answers false
+// when no class is short or the pool is stopped, and the reservation it takes
+// when it answers true is what recycled spends and recycleFailed gives back.
+//
+// It is allowed before Start: open's emptying retires segments before the
+// pool starts, and a recycle syncs its own rename's directory entry, so the
+// spare a recycle lands is durable whatever the pool's own start sync was
+// for — the re-adopted spare's case Adopt stands on.
+//
+// decision: any class short of its target wants the recycle, not the content
+// class alone. "The pool is below its target" is one rule for the three
+// classes a spare serves, and RFC 28 §2.2 names only `journal.spare_target`
+// without saying which class it sizes; a recycle that could not fill a short
+// headroom or reserve would leave the journal one spare less able to free
+// space, for a whole segment's worth of no new allocation. Withdrawn if the
+// RFC's author restricts recycling to the content class, which these two
+// methods then answer for Content alone.
+func (p *Pool) wantRecycle() (Class, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stopped {
+		return 0, false
+	}
+	switch {
+	case len(p.ready[Headroom])+p.incoming[Headroom] < p.t.Headroom:
+		p.incoming[Headroom]++
+		return Headroom, true
+	case len(p.ready[Reserve])+p.incoming[Reserve] < p.t.Reserve:
+		p.incoming[Reserve]++
+		return Reserve, true
+	case len(p.ready[Content])+p.incoming[Content] < p.t.Content+p.held+p.pending:
+		// Content counts what holds demand and what a refused Hold asked
+		// above the target, exactly as the refill does: a recycle filling a
+		// slot is worth what a made spare in it is.
+		p.incoming[Content]++
+		return Content, true
+	}
+	return 0, false
+}
+
+// recycled puts a recycled spare — already in the ledger as a spare under its
+// fresh id — into class c, spending the reservation wantRecycle took. After
+// Stop it is still appended, accounted and on disk, as refill's own made
+// spare is: the next open re-adopts it.
+func (p *Pool) recycled(id core.SegmentID, c Class) {
+	p.mu.Lock()
+	p.incoming[c]--
+	p.ready[c] = append(p.ready[c], id)
+	p.mu.Unlock()
+}
+
+// recycleFailed gives a recycle's reservation back: the class the recycle
+// could not fill is short again, and the kick lets the worker make a spare
+// for it instead.
+func (p *Pool) recycleFailed(c Class) {
+	p.mu.Lock()
+	p.incoming[c]--
+	p.mu.Unlock()
+
+	p.Kick()
+}
+
 // Kick wakes the refill worker, coalescing: one kick that arrives while a
 // pass runs holds the next. The worker checks done between its makes, so a
 // kick after Stop is a drop.
@@ -502,14 +569,15 @@ func (p *Pool) refill() bool {
 		// refusals show content rolls refused while a reserve was filling.
 		var c Class
 		switch {
-		case len(p.ready[Headroom]) < p.t.Headroom:
+		case len(p.ready[Headroom])+p.incoming[Headroom] < p.t.Headroom:
 			c = Headroom
-		case len(p.ready[Reserve]) < p.t.Reserve:
+		case len(p.ready[Reserve])+p.incoming[Reserve] < p.t.Reserve:
 			c = Reserve
-		case len(p.ready[Content]) < p.t.Content+p.held+p.pending:
+		case len(p.ready[Content])+p.incoming[Content] < p.t.Content+p.held+p.pending:
 			// Content fills above its target by what holds demand and what a
 			// refused Hold asked: held spares are beside the target, not
-			// inside it.
+			// inside it. The recycles in flight count too: the worker makes
+			// no spare for a slot a recycle is filling.
 			c = Content
 		default:
 			p.mu.Unlock()
