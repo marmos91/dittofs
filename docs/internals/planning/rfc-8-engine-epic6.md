@@ -603,17 +603,21 @@ test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's is
   with an `IdentityError`: `Start` fails naming the store lost and closes what it opened
   (catches the error mapped before `expect` is read, R18); with a recorded `expect`, an
   `Open` answering `ErrUnidentified`: the device's shares refused by name and `Start`
-  succeeds (R16); an `Open` that returns an I/O error from its platform check: `Start` fails
-  and closes in reverse (catches a check's error taken for a refusal, R21). Over the fixture:
+  succeeds (R16); one device recorded as B, with share Y's shard naming B and share X's
+  naming A, as after a re-initialisation whose rewrite was missed: X is refused by name with
+  no `Share` call on any journal, Y serves, and `Start` succeeds (catches a share given its
+  device's journal without its shard's identity matched, D10); an `Open` that returns an
+  I/O error from its platform check: `Start` fails and closes in reverse (catches a check's
+  error taken for a refusal, R21). Over the fixture:
   §15.1's "journal gone", adapted: two shares written without offload, the directory
   deleted, `Start` refuses both by name and creates nothing (catches a journal re-created,
   R17); §15.1's
   "attach after a device loss", adapted: the device destroyed and re-initialised, and
-  before `RecordJournal` the share is refused by name (catches a stale `Shard.Primary`
-  matched, D10); then `RecordJournal` as the operator's step would, rewriting the primary
-  journal identity of the device's shards in its transaction (D10), the share attached to
-  it: its first version is above its old limit, and a share whose removal reads offloaded
-  is not attached.
+  before `RecordJournal` the share is refused by name (catches a re-initialised journal
+  opened before the operator's step, R16, R17); then `RecordJournal` as the operator's step
+  would, rewriting the primary journal identity of the device's shards in its transaction
+  (D10), the share attached to it: its first version is above its old limit, and a share
+  whose removal reads offloaded is not attached.
 
 ### T6.4 Start step 2: the start transaction
 
@@ -991,7 +995,13 @@ A suggestion only: one pull request per subtask works as well. PR 2 can be open 
     node's start transaction", and RFC 14 §4.4 has the service read the `GraceInstance` the
     node's start transaction raised. T6.4's raise is that transaction, so the integration
     epic drops the stand-in; a shard bound after `Start` is raised by `Bind`, in the form D4
-    picks.
+    picks. The binding carries the incarnation alone (D4), while RFC 0's glossary derives
+    the write verifier from "the node, its node epoch, the process instance, the shard's
+    incarnation and the journal's loss generation". That holds while nothing writes
+    `PrimaryEpoch` and each start is a new process instance. When the node record lands,
+    the start transaction raises the node epoch too (`kvstore`'s `ponytail:` at
+    `RaiseIncarnations`), and the binding then carries the node and its epoch beside the
+    incarnation.
 13. **A failed open at `Start` stops the node** (R21, RFC 8 §2.5's `decision:`). #3585
     proposes leaving such a journal closed and retrying it, as T6.10 does for an unsuitable
     one. If RFC 8 takes it, R21 and the `decision:` change, and T6.10's retry covers the
