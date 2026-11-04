@@ -7,7 +7,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // Sparse-file FSCTL handlers — issue #359.
@@ -206,11 +205,11 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 	var ranges []allocatedRange
 	if allocStart < allocEnd {
 		if file.Mode&modeDOSSparse != 0 {
-			ranges, err = h.scanAllocatedRanges(authCtx, openFile, &file.FileAttr, allocStart, allocEnd)
-			if err != nil {
-				logger.Warn("IOCTL FSCTL_QUERY_ALLOCATED_RANGES: scan failed",
-					"path", path, "error", err)
-				return NewErrorResult(types.StatusForErr(err)), nil
+			// A sparse file's allocated runs are found by probing its
+			// content, and no content store is wired. A payloadless file
+			// has none.
+			if file.PayloadID != "" {
+				return NewErrorResult(types.StatusForErr(common.ErrNoContentStore)), nil
 			}
 		} else {
 			ranges = []allocatedRange{{Offset: allocStart, Length: allocEnd - allocStart}}
@@ -255,22 +254,6 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 type allocatedRange struct {
 	Offset uint64
 	Length uint64
-}
-
-// scanAllocatedRanges walks the file payload over [start, end) at
-// sparseClusterSize granularity and returns the contiguous allocated
-// (any-non-zero) cluster runs, with the first/last range clamped to the
-// request window per Samba `fsctl_qar` and smb2.ioctl.sparse_qar_ob1.
-//
-// Used only when modeDOSSparse is set — plain files report a single range
-// without touching content. A file with content answers
-// common.ErrNoContentStore: no content store is wired to probe.
-func (h *Handler) scanAllocatedRanges(authCtx *metadata.AuthContext, openFile *OpenFile, file *metadata.FileAttr, start, end uint64) ([]allocatedRange, error) {
-	if file.PayloadID == "" || file.Size == 0 {
-		return nil, nil
-	}
-	// Probing a cluster reads content, and no content store is wired.
-	return nil, common.ErrNoContentStore
 }
 
 // fileZeroDataBufSize is the on-wire size of a FILE_ZERO_DATA_INFORMATION

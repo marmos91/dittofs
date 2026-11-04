@@ -252,8 +252,8 @@ func (h *Handler) handleSrvCopyChunk(ctx *SMBHandlerContext, body []byte) (*Hand
 		return copyChunkSuccessResponse(ctlCode, dstFileID, 0, 0), nil
 	}
 
-	// Execute the copy
-	return h.executeCopyChunks(ctx, ctlCode, dstFileID, srcOpen, dstOpen, chunks)
+	// A chunk copy moves content, and no content store is wired.
+	return NewErrorResult(types.StatusForErr(common.ErrNoContentStore)), nil
 }
 
 // validateCopyChunkAccess checks access permissions per [MS-SMB2] 3.3.5.15.6.
@@ -361,20 +361,6 @@ func copyChunkSuccessResponse(ctlCode uint32, fileID [16]byte, chunksWritten uin
 
 	resp := buildIoctlResponse(ctlCode, fileID, w.Bytes())
 	return NewResult(types.StatusSuccess, resp)
-}
-
-// executeCopyChunks performs the actual data copy chunk by chunk.
-// It reads from the source block store and writes to the destination block store,
-// supporting cross-share copies (different block stores for source and dest).
-func (h *Handler) executeCopyChunks(
-	ctx *SMBHandlerContext,
-	ctlCode uint32,
-	dstFileID [16]byte,
-	srcOpen, dstOpen *OpenFile,
-	chunks []copyChunk,
-) (*HandlerResult, error) {
-	// A chunk copy moves content, and no content store is wired.
-	return NewErrorResult(types.StatusForErr(common.ErrNoContentStore)), nil
 }
 
 // readCtlCode extracts the CtlCode from an IOCTL request body.

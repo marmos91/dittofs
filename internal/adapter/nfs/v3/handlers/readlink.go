@@ -59,7 +59,7 @@ type ReadLinkResponse struct {
 
 // ReadLink handles NFS READLINK (RFC 1813 Section 3.3.5).
 // Reads the target pathname stored in a symbolic link for client-side path resolution.
-// Delegates to MetadataService.ReadSymlink; falls back to MFsymlink detection for SMB-created symlinks.
+// Delegates to MetadataService.ReadSymlink.
 // No side effects; read-only metadata operation returning target path and post-op attributes.
 // Errors: NFS3ErrNoEnt (not found), NFS3ErrInval (not a symlink), NFS3ErrAcces, NFS3ErrIO.
 func (h *Handler) ReadLink(
@@ -123,23 +123,6 @@ func (h *Handler) ReadLink(
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			logger.DebugCtx(ctx.Context, "READLINK: store operation cancelled", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
 			return nil, err
-		}
-
-		// ReadSymlink failed - check if this is an unconverted MFsymlink
-		// (SMB-created symlink not yet converted on CLOSE)
-		mfsResult := h.checkMFsymlinkByHandle(ctx, fileHandle)
-		if mfsResult.IsMFsymlink {
-			logger.DebugCtx(ctx.Context, "READLINK successful (MFsymlink)",
-				"handle", fmt.Sprintf("%x", req.Handle),
-				"target", mfsResult.Target,
-				"client", clientIP)
-
-			nfsAttr := h.convertFileAttrToNFS(fileHandle, mfsResult.ModifiedAttr)
-			return &ReadLinkResponse{
-				NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
-				Attr:            nfsAttr,
-				Target:          mfsResult.Target,
-			}, nil
 		}
 
 		logger.WarnCtx(ctx.Context, "READLINK failed", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", err)

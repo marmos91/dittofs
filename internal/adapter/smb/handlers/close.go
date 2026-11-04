@@ -7,13 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/mfsymlink"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -218,7 +216,6 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	metaHandle := openFile.GetMetadataHandle()
 
 	var flushFailStatus types.Status
-	payloadID := openFile.GetPayloadID()
 
 	// ========================================================================
 	// Step 4: Flush pending metadata writes (deferred commit optimization)
@@ -289,24 +286,6 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// write of the teardown, and a republish landing before it would leave
 			// the frozen timestamps restored on a file this open never held.
 			h.restoreFrozenTimestampsOn(authCtx, openFile, metaHandle, preOpCtime)
-		}
-	}
-
-	// ========================================================================
-	// Step 5: Check for MFsymlink conversion
-	// ========================================================================
-	//
-	// macOS/Windows SMB clients create symlinks by writing MFsymlink content
-	// (1067-byte files with XSym\n header). On CLOSE, we convert these to
-	// real symlinks in the metadata store for NFS interoperability.
-
-	if !openFile.IsDirectory && payloadID != "" && !openFile.IsDeletePending() && !openFile.InitialDeleteOnClose {
-		// MFsymlink conversion promotes client-controlled file content to a real
-		// symlink, so it is opt-in per share (default disabled).
-		if tree, treeOK := h.GetTree(ctx.TreeID); treeOK && tree.AllowMFsymlink {
-			if converted, _ := h.checkAndConvertMFsymlink(ctx, openFile, metaHandle); converted {
-				logger.Debug("CLOSE: converted MFsymlink to symlink", "path", closePath)
-			}
 		}
 	}
 
@@ -758,130 +737,6 @@ func (h *Handler) releaseHandleLeaseRecordOn(ctx context.Context, openFile *Open
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-// checkAndConvertMFsymlink checks if a file is an MFsymlink and converts it to a real symlink.
-//
-// MFsymlinks are 1067-byte files with XSym\n header used by macOS/Windows SMB clients
-// for symlink creation. Steps:
-//  1. Checks file size is exactly 1067 bytes
-//  2. Reads content and verifies MFsymlink format
-//  3. Parses the symlink target
-//  4. Removes the regular file
-//  5. Creates a real symlink with the same name
-//
-// Returns (true, nil) if conversion succeeded, (false, nil) if not an MFsymlink,
-// or (false, error) if conversion failed.
-func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *OpenFile, metaHandle metadata.FileHandle) (bool, error) {
-	// Get metadata store
-	metaSvc := h.Registry.GetMetadataService()
-
-	// Get file metadata to check size
-	file, err := metaSvc.GetFile(ctx.Context, metaHandle)
-	if err != nil {
-		return false, err
-	}
-
-	// Quick check: must be exactly 1067 bytes
-	if file.Size != mfsymlink.Size {
-		return false, nil
-	}
-
-	// Must be a regular file (not already a symlink)
-	if file.Type != metadata.FileTypeRegular {
-		return false, nil
-	}
-
-	// Read content to verify MFsymlink format
-	content, err := h.readMFsymlinkContent(ctx, openFile, metaHandle)
-	if err != nil {
-		logger.Debug("CLOSE: failed to read MFsymlink content", "path", openFile.Name().Path, "error", err)
-		return false, nil // Not fatal, just don't convert
-	}
-
-	// Verify it's actually an MFsymlink
-	if !mfsymlink.IsMFsymlink(content) {
-		return false, nil
-	}
-
-	// Parse the symlink target
-	target, err := mfsymlink.Decode(content)
-	if err != nil {
-		logger.Debug("CLOSE: invalid MFsymlink format", "path", openFile.Name().Path, "error", err)
-		return false, nil // Don't convert invalid MFsymlinks
-	}
-
-	// Convert to real symlink
-	err = h.convertToRealSymlink(ctx, openFile, metaHandle, target)
-	if err != nil {
-		logger.Warn("CLOSE: failed to convert MFsymlink to symlink",
-			"path", openFile.Name().Path,
-			"target", target,
-			"error", err)
-		return false, err
-	}
-
-	return true, nil
-}
-
-// readMFsymlinkContent reads the content of a potential MFsymlink file. Content
-// lives in the content store, and none is wired.
-func (h *Handler) readMFsymlinkContent(_ *SMBHandlerContext, _ *OpenFile, _ metadata.FileHandle) ([]byte, error) {
-	return nil, common.ErrNoContentStore
-}
-
-// convertToRealSymlink removes the regular file and creates a symlink in its place.
-func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFile, metaHandle metadata.FileHandle, target string) error {
-	// Validate required fields
-	name := openFile.Name()
-	if len(name.ParentHandle) == 0 || name.FileName == "" {
-		return fmt.Errorf("missing parent handle or filename for MFsymlink conversion")
-	}
-
-	// Close, the only path in, primed ctx from this handle's session and so
-	// already refused a handle the requester does not own. ctx.User is set,
-	// so BuildAuthContext will not take the ctx.User==nil arm and synthesise
-	// UID-0 (root) over the RemoveFile + CreateSymlink below (#619, same class
-	// as #603).
-	authCtx, err := BuildAuthContext(ctx)
-	if err != nil {
-		return err
-	}
-
-	// Reject targets that escape the share root (absolute or `..`-traversal).
-	// MFsymlink content is fully client-controlled, so an unsanitized target
-	// could otherwise point an NFS client outside the share.
-	if err := metadata.ValidateMFsymlinkTarget(target); err != nil {
-		return fmt.Errorf("MFsymlink target rejected: %w", err)
-	}
-
-	// Get the parent handle and filename for removal and creation
-	parentHandle := name.ParentHandle
-	fileName := name.FileName
-
-	// Remove the regular file
-	metaSvc := h.Registry.GetMetadataService()
-	removed, _, err := metaSvc.RemoveFile(authCtx, parentHandle, fileName)
-	if err != nil {
-		return fmt.Errorf("failed to remove MFsymlink file: %w", err)
-	}
-
-	// Create the real symlink, carrying the MFsymlink file's owner across.
-	// authCtx is the caller's, so an empty FileAttr would re-home the symlink to
-	// whoever opened it — the conversion replaces the same object, it does not
-	// create a new one. Mode is the symlink default; carriedAttr's ExactAttrs
-	// suppresses the automatic default, so it has to be named here.
-	symlinkAttr := carriedAttr(removed, &metadata.FileAttr{Mode: 0o777})
-	_, _, err = metaSvc.CreateSymlink(authCtx, parentHandle, fileName, target, symlinkAttr)
-	if err != nil {
-		return fmt.Errorf("failed to create symlink: %w", err)
-	}
-
-	logger.Debug("CLOSE: converted MFsymlink",
-		"path", name.Path,
-		"target", target)
-
-	return nil
-}
 
 // cascadeDeleteADSStreams removes all alternate data streams belonging to a
 // base file that was just deleted. ADS streams are stored as sibling entries

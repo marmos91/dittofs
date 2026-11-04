@@ -38,9 +38,4 @@ type TreeConnection struct {
 	// granted as a persistent durable handle (#739, smbtorture
 	// smb2.durable-v2-open.persistent-open-{oplock,lease}).
 	ContinuousAvailability bool
-	// AllowMFsymlink mirrors the share-level toggle. When false (default),
-	// 1067-byte XSym files written by macOS/Windows clients are stored as
-	// regular files. When true, they are converted to real symlinks on CLOSE.
-	// The conversion target is client-controlled, so promotion is opt-in.
-	AllowMFsymlink bool
 }

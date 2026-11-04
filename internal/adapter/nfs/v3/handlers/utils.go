@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/mfsymlink"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -60,99 +58,4 @@ func logWarn(ctx context.Context, err error, msg string, args ...any) {
 		args = append(args, "error", err)
 	}
 	logger.WarnCtx(ctx, msg, args...)
-}
-
-// MFsymlink Detection for NFS/SMB Interoperability
-//
-// MFsymlinks are 1067-byte files with "XSym\n" header used by macOS/Windows
-// SMB clients for symlink creation. When accessed via NFS, these files should
-// appear as symlinks for cross-protocol compatibility.
-//
-// Detection is performed when:
-// - File is regular type (not already a symlink)
-// - File size is exactly 1067 bytes (mfsymlink.Size)
-// - File content starts with "XSym\n" magic marker
-
-// MFsymlinkResult contains the result of MFsymlink detection.
-type MFsymlinkResult struct {
-	// IsMFsymlink indicates if the file is a valid MFsymlink
-	IsMFsymlink bool
-
-	// Target is the symlink target (only valid if IsMFsymlink is true)
-	Target string
-
-	// ModifiedAttr contains modified attributes to present the file as a symlink
-	// (only valid if IsMFsymlink is true)
-	ModifiedAttr *metadata.FileAttr
-}
-
-// checkMFsymlink checks if a file is an unconverted MFsymlink and returns
-// the symlink target if so. This enables NFS clients to see SMB-created
-// symlinks before they are converted on CLOSE.
-func checkMFsymlink(
-	ctx context.Context,
-	reg nfsRuntime,
-	handle metadata.FileHandle,
-	file *metadata.File,
-) MFsymlinkResult {
-	// Quick checks first (no I/O)
-	if file.Type != metadata.FileTypeRegular {
-		return MFsymlinkResult{}
-	}
-
-	if file.Size != uint64(mfsymlink.Size) {
-		return MFsymlinkResult{}
-	}
-
-	// File has correct size - need to check content
-	content, err := readMFsymlinkContentForNFS(ctx, reg, handle, file.PayloadID)
-	if err != nil {
-		logger.Debug("checkMFsymlink: failed to read content",
-			"payloadID", file.PayloadID,
-			"error", err)
-		return MFsymlinkResult{}
-	}
-
-	if !mfsymlink.IsMFsymlink(content) {
-		return MFsymlinkResult{}
-	}
-
-	target, err := mfsymlink.Decode(content)
-	if err != nil {
-		logger.Debug("checkMFsymlink: invalid MFsymlink format",
-			"payloadID", file.PayloadID,
-			"error", err)
-		return MFsymlinkResult{}
-	}
-
-	// Create modified attributes to present as symlink
-	modifiedAttr := file.FileAttr // Copy
-	modifiedAttr.Type = metadata.FileTypeSymlink
-	modifiedAttr.Size = uint64(len(target))
-	// Mode: symlinks typically have 0777 permissions
-	modifiedAttr.Mode = modifiedAttr.Mode&^uint32(0777) | 0777
-
-	logger.Debug("checkMFsymlink: detected MFsymlink",
-		"payloadID", file.PayloadID,
-		"target", target)
-
-	return MFsymlinkResult{
-		IsMFsymlink:  true,
-		Target:       target,
-		ModifiedAttr: &modifiedAttr,
-	}
-}
-
-// readMFsymlinkContentForNFS reads an MFsymlink candidate's content. Content
-// lives in the content store, and none is wired.
-func readMFsymlinkContentForNFS(
-	_ context.Context,
-	_ nfsRuntime,
-	_ metadata.FileHandle,
-	payloadID metadata.PayloadID,
-) ([]byte, error) {
-	if payloadID == "" {
-		return nil, nil
-	}
-	return nil, common.ErrNoContentStore
 }
