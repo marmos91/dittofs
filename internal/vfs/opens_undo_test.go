@@ -461,3 +461,50 @@ func TestADeleteOnCloseEndsAtItsCallsDeadline(t *testing.T) {
 		t.Errorf("another client's create in the directory after the close: %v, want granted", err)
 	}
 }
+
+// A file marked delete pending while a failed open was recorded is unlinked
+// once that open is undone, when it was the last open, as after its Close
+// (RFC 17 §5.3).
+
+// A file marked delete pending while a failed open was recorded is unlinked
+// once that open is undone, when it was the last open, as after its Close
+// (RFC 17 §5.3).
+func TestAnUndoneOpensDeferredUnlinkRuns(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	// The unlink runs as the marker, an SMB caller without backup intent,
+	// so the directory lets anyone remove a name.
+	d, _ := n.fs.Create(t, n.fs.Admin, n.fs.Root, "d", kvstore.Dir(0o777))
+	h, _ := n.fs.Create(t, n.fs.Admin, d, "f", kvstore.Regular(0o666))
+	m := n.smbClient(t, "marker", n.fs.Admin.Principal)
+	marker := n.open(t, m, d, h, "f", entity.ReadData|entity.Delete)
+	who := openstate.Caller{Client: m.Client, Principal: n.fs.Admin.Principal, Protocol: m.Protocol}
+	// Between the failed open's record and its answer, the marker sets the
+	// file delete pending and closes: the failed open is the file's last.
+	// Only that open's read of the file fails.
+	var hookErr error
+	var once sync.Once
+	n.engine.overlaying = func(entity.FileID) {
+		n.engine.overlayErr = nil
+		once.Do(func() {
+			n.engine.overlayErr = errors.New("journal read failed")
+			yes := true
+			if hookErr = n.tab.Opens().Update(ctx, who, marker.ID, openstate.OpenUpdate{Delete: &yes}); hookErr != nil {
+				return
+			}
+			var cr openstate.CloseResult
+			cr, hookErr = n.tab.Opens().Close(ctx, who, openstate.OpenRef{Kind: openstate.RefOpened, Open: marker.ID}, openstate.Seqs{})
+			if hookErr == nil && cr.Unlink != nil {
+				hookErr = errors.New("the marker's close was the file's last")
+			}
+		})
+	}
+	if _, err := n.Open(ctx, n.smbClient(t, "pc", n.fs.Admin.Principal), vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData}); err == nil {
+		t.Fatal("an open whose file cannot be read was answered")
+	}
+	n.engine.overlayErr, n.engine.overlaying = nil, nil
+	n.must(t, hookErr)
+	if _, _, err := n.Lookup(ctx, n.admin, d, []byte("f")); !errors.Is(err, vfs.ErrNotFound) {
+		t.Errorf("the name of a delete-pending file after its last open was undone: %v, want ErrNotFound", err)
+	}
+}

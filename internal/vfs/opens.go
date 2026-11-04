@@ -109,6 +109,8 @@ func (fs *Filesystem) openLocked(ctx context.Context, a *admitted, c vfs.Call, r
 	if err != nil {
 		return vfs.OpenResult{}, false, errContended
 	}
+	var undone func()
+	defer func() { runAfter(undone) }() // deferred first, so it runs after unlock
 	defer unlock()
 	f, err := fs.entryIf(ctx, a, req.Dir, req.Name)
 	if err != nil || (f == nil) != (seen == nil) || f != nil && f.ID != seen.ID {
@@ -118,7 +120,8 @@ func (fs *Filesystem) openLocked(ctx context.Context, a *admitted, c vfs.Call, r
 		if req.Disposition == vfs.CreateNew {
 			return vfs.OpenResult{}, false, vfs.ErrExist
 		}
-		r, err := fs.grant(ctx, a, c, req, entity.NewHandle(a.share.ID, f.ID), *f, false)
+		r, after, err := fs.grant(ctx, a, c, req, entity.NewHandle(a.share.ID, f.ID), *f, false)
+		undone = after
 		return r, false, err
 	}
 	if !creates(req.Disposition) {
@@ -128,7 +131,8 @@ func (fs *Filesystem) openLocked(ctx context.Context, a *admitted, c vfs.Call, r
 	if err != nil {
 		return vfs.OpenResult{}, false, err
 	}
-	r, err := fs.grant(ctx, a, c, req, cr.Handle, cr.File, true)
+	r, after, err := fs.grant(ctx, a, c, req, cr.Handle, cr.File, true)
+	undone = after
 	if err == nil {
 		r.Created, r.Dir = true, &cr.Dir
 	}
@@ -147,6 +151,8 @@ func (fs *Filesystem) openHandle(ctx context.Context, a *admitted, c vfs.Call, r
 	if err != nil {
 		return vfs.OpenResult{}, errContended
 	}
+	var undone func()
+	defer func() { runAfter(undone) }() // deferred first, so it runs after unlock
 	defer unlock()
 	f, err := fs.meta.Files().Get(ctx, a.caller.Identity, req.H)
 	switch {
@@ -155,7 +161,16 @@ func (fs *Filesystem) openHandle(ctx context.Context, a *admitted, c vfs.Call, r
 	case req.Disposition == vfs.CreateNew:
 		return vfs.OpenResult{}, vfs.ErrExist
 	}
-	return fs.grant(ctx, a, c, req, req.H, f, false)
+	r, undone, err := fs.grant(ctx, a, c, req, req.H, f, false)
+	return r, err
+}
+
+// runAfter runs what an undone open left to run once its locks are released,
+// if anything.
+func runAfter(f func()) {
+	if f != nil {
+		f()
+	}
 }
 
 // grant decides and records the open of f, which h names, holding f's
@@ -168,7 +183,9 @@ func (fs *Filesystem) openHandle(ctx context.Context, a *admitted, c vfs.Call, r
 // caller's privilege only on a backup or restore intent, and the maximal
 // access it answers never with it. An open whose answer fails once open
 // state recorded it is undone: an open the owner held goes back to what it
-// held, and a new open is closed.
+// held, and a new open is closed. What the undo leaves, a deferred unlink or
+// a release, runs as after a Close (RFC 17 §5.3): through the func grant
+// returns, which its caller runs once it has released its locks.
 //
 // decision: an open that created its file is granted what it asks without
 // deciding it on the new file, as the add right on its directory was
@@ -176,10 +193,10 @@ func (fs *Filesystem) openHandle(ctx context.Context, a *admitted, c vfs.Call, r
 // archiver sends, is granted, as POSIX's open with O_CREAT is. Its maximal
 // access is still the file's own. Overturned by an inherited ACL found to
 // deny its creator a right the create needs.
-func (fs *Filesystem) grant(ctx context.Context, a *admitted, c vfs.Call, req vfs.OpenRequest, h vfs.Handle, f vfs.File, created bool) (vfs.OpenResult, error) {
+func (fs *Filesystem) grant(ctx context.Context, a *admitted, c vfs.Call, req vfs.OpenRequest, h vfs.Handle, f vfs.File, created bool) (vfs.OpenResult, func(), error) {
 	overwrite := overwrites(req.Disposition) && !created
 	if overwrite && f.IsDir() {
-		return vfs.OpenResult{}, vfs.ErrIsDir
+		return vfs.OpenResult{}, nil, vfs.ErrIsDir
 	}
 	var via vfs.Handle
 	if len(req.Name) > 0 {
@@ -192,23 +209,23 @@ func (fs *Filesystem) grant(ctx context.Context, a *admitted, c vfs.Call, req vf
 	cp := a.caller
 	max, err := fs.authz.Rights(ctx, cp, h, via, entity.EntryRights)
 	if err != nil {
-		return vfs.OpenResult{}, storeErr(err)
+		return vfs.OpenResult{}, nil, storeErr(err)
 	}
 	maximal := max
 	if cp.Privileged && c.Protocol == entity.ProtocolSMB {
 		if maximal, err = fs.authz.Rights(ctx, forOpen(cp, c.Protocol, false), h, via, entity.EntryRights); err != nil {
-			return vfs.OpenResult{}, storeErr(err)
+			return vfs.OpenResult{}, nil, storeErr(err)
 		}
 	}
 	if req.Access&vfs.MaximumAllowed != 0 {
 		if max == 0 {
-			return vfs.OpenResult{}, vfs.ErrAccess
+			return vfs.OpenResult{}, nil, vfs.ErrAccess
 		}
 		access |= max
 	}
 	if !created {
 		if err := fs.authz.Decide(ctx, cp, vfs.OpOpen, h, via, req.Name, access); err != nil {
-			return vfs.OpenResult{}, storeErr(err)
+			return vfs.OpenResult{}, nil, storeErr(err)
 		}
 	}
 	who := a.who()
@@ -228,32 +245,31 @@ func (fs *Filesystem) grant(ctx context.Context, a *admitted, c vfs.Call, req vf
 		Session: c.Session, Replay: req.Replay, MaxRead: max&entity.ReadData != 0, Channel: c.Channel.Seq,
 	})
 	if err != nil {
-		return vfs.OpenResult{}, openErr(err)
+		return vfs.OpenResult{}, nil, openErr(err)
 	}
 	ref := vfs.OpenRef{Kind: openstate.RefOpened, State: o.Open.Ref, Open: o.Open.ID, Handle: h}
 	file, err := fs.openedFile(ctx, a, h, f, overwrite)
 	if err != nil {
 		// No client holds the open's reference to undo it, so it is undone
 		// here, on a context the call's end does not cancel, though Drain's
-		// deadline does. An unlinked f a new open alone held is released here,
-		// under the admission lock already held, as a close releases it.
-		ctx, cancel := fs.detached(ctx)
-		defer cancel()
-		// The open is undone, not closed: it quotes no owner number, as the
-		// open took the request's, and an open the owner held goes back to
-		// what it held, a new open ending with its delete on close dropped.
-		cr, cerr := fs.opens.Abandon(ctx, who, ref, o.Prior)
-		switch {
-		case cerr != nil:
+		// deadline does. The open is undone, not closed: it quotes no owner
+		// number, as the open took the request's, and an open the owner held
+		// goes back to what it held, a new open ending with its delete on
+		// close dropped.
+		actx, cancel := fs.detached(ctx)
+		cr, cerr := fs.opens.Abandon(actx, who, ref, o.Prior)
+		cancel()
+		if cerr != nil {
 			fs.log.Warn("vfs: a failed open not closed", "file", f.ID, "err", cerr)
-		case cr.Orphan:
-			if rerr := fs.release(ctx, keyOf(f)); rerr != nil {
-				fs.log.Warn("vfs: a release after a failed open failed", "file", f.ID, "err", rerr)
-			}
+			return vfs.OpenResult{}, nil, err
 		}
-		return vfs.OpenResult{}, err
+		// A deferred unlink the undo left, a file marked delete pending while
+		// the open was recorded, and the release of an f it alone held run as
+		// after a Close, once the caller's locks are released: both take
+		// them.
+		return vfs.OpenResult{}, func() { fs.closed(ctx, f.Share, f.ID, cr) }, err
 	}
-	return vfs.OpenResult{Ref: ref, File: file, MaximalAccess: maximal, Grant: o.Grant, Confirm: o.Confirm}, nil
+	return vfs.OpenResult{Ref: ref, File: file, MaximalAccess: maximal, Grant: o.Grant, Confirm: o.Confirm}, nil, nil
 }
 
 // openedFile is the file an open of f, which h names, answers: truncated first
