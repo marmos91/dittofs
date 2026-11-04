@@ -242,7 +242,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 | R10 | A failure to sync is reported to the caller. It is never recorded as success and never retried silently | MUST NOT | RFC 1 §5.2 | T6.1, T6.3 |
 | R11 | Mixed durability: on one stream, the bytes a writer that syncs every 4 KiB waits for stay at or below what another writer appended within one sync's interval, and never grow with that writer's file size | MUST | RFC 1 §9.7, §5.2 | T6.8 |
 | R12 | A completed sync advances the stream's synced-through value and publishes which records are durable, so that epics 5, 7 and 9 can apply the rules that a release record, a segment's records and a removal's retention are durable before an unlink or a drop. This epic applies none of those rules | invariant | RFC 1 §5.1 | T6.1 |
-| R87 | A record whose resolution touches what its publish put in the index (the content a write, fill or repack copy superseded, or the location the index keeps for a removal marker or a release) is resolved (its superseded content lifted on sync, its window failed or re-appended) only under its file's append domain, which each of those paths holds from its `Append` to its publish (RFC 1 §8.2), so resolution never sees such a record between the two: a sync that completes in that gap lifts the content once the publish has made it retained, and a window that fails in it never has a failed record brought back by the publish. Every other record (a loss, offloaded, unmark, hold, unhold, stamp or forget record) supersedes no content, keeps no location in the index and is never failed outside a read-only journal (R22), so the gap cannot change what its resolution does; the worker resolves it with no file domain. Resolution runs on the stream's own worker, or for a corrupt record on the reader under the same file append domain (T6.7), never under an appender's locks | invariant | RFC 1 §3.8, §5.3, §8.2, §8.3 | T6.1, T6.4, T6.7 |
+| R87 | A record whose resolution touches what its publish put in the index (the content a write, fill or repack copy superseded, which a sync lifts and a failed window holds again; or the marker a removal published and the extent a release dropped, which the read-only undo reverses, R33) is resolved (its superseded content lifted on sync, its window failed or re-appended) only under its file's append domain, which each of those paths holds from its `Append` to its publish (RFC 1 §8.2), so resolution never sees such a record between the two: a sync that completes in that gap lifts the content once the publish has made it retained, and a window that fails in it never has a failed record brought back by the publish. Every other record (a loss, offloaded, unmark, hold, unhold, stamp or forget record) supersedes no content, publishes nothing into a file's index that its resolution changes, and is never failed outside a read-only journal (R22), so the gap cannot change what its resolution does; the worker resolves it with no file domain. Resolution runs on the stream's own worker, or for a corrupt record on the reader under the same file append domain (T6.7), never under an appender's locks | invariant | RFC 1 §3.8, §5.3, §8.2, §8.3 | T6.1, T6.4, T6.7 |
 | R88 | A removal, which must be durable on return and has appended its header-only record, waits for that record's sync with no context, consulting and clearing no file's mark, and with its file's append domain released. When the record's window fails, the wait follows the record to its re-appended location; it returns `ErrJournalReadOnly` when the journal turns read-only before the record is durable, and `ErrClosed` when the journal closes. It never returns `SyncError` or the context's error | invariant | RFC 1 §3.6, §3, §5.3, §5.4, §8.7 | T6.1, T6.5, T6.6 |
 | R85 | A sync epic 5 issues to seal or roll a segment is a completed sync like this epic's own: it advances which records are durable, drops the ledger entries it covered, lifts the retained extents its records superseded and releases the `Sync` calls waiting on them. A failed seal sync ends the segment, and its window reaches the failed-window resolution like a failed append's | invariant | RFC 1 §5.2, §5.3, RFC 28 §2.2 | T6.1, T6.3 |
 
@@ -254,7 +254,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 | R14 | A sync that failed never satisfies, by a later success, a `Sync` for writes made before the failure | MUST NOT | RFC 1 §5.1, §5.3 | T6.3 |
 | R15 | A failed append ends its segment the same way. The records written to it since its last successful sync are resolved as a failed window | MUST | RFC 28 §2.2, RFC 1 §5.3 | T6.3 |
 | R16 | For a failed window the journal does one of two things: re-appends its records and syncs them, or fails them. A read-only journal fails the window whole | MUST | RFC 1 §5.3, §5.4 | T6.4, T6.5, T6.6 |
-| R17 | A failed window is reported once to each file that had a write in it. The next `Sync` naming the file, whether it was waiting when the sync failed or arrives later, returns the error and clears the file's mark; the `Sync` after it reports only what happened since. A file with no write in the window is not told. The marks live in memory | invariant | RFC 1 §5.3 | T6.4 |
+| R17 | A failed window is reported once to each file that had a write in it. The next `Sync` naming the file, whether it was waiting when the sync failed or arrives later, returns the error and clears the file's mark; the `Sync` after it reports only what happened since. A file with no write in the window is not told, and a file whose only write in it a read found corrupt first is told all the same. The marks live in memory | invariant | RFC 1 §5.3 | T6.4, T6.7 |
 | R18 | A failed window ends and does not wedge the file: once its records are dropped or re-appended, a later `Sync` of the file waits only for writes made after the failure and succeeds when they are synced in the new segment | invariant | RFC 1 §5.3 | T6.4 |
 | R19 | A failed segment is a repack candidate only once its window is resolved. Until then its window's records are still held from it. This epic signals that a window is resolved; epic 9 selects | invariant | RFC 1 §5.3 | T6.4, T6.5 |
 | R20 | A re-appended record keeps the original's sequence number and content version: it is the same record in a new place. The `Sync` calls of its writes wait for the new sync | invariant | RFC 1 §5.3, §4.3 | T6.5 |
@@ -291,7 +291,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 | R41 | A loss is a record. The journal appends a loss record for each record piece a loss event drops, before it publishes the event, naming the file, extent, version and reason, and carrying in its payload the sequence number of the record it drops and whether that record was synced when it was dropped | invariant | RFC 1 §3.8 | T6.2 |
 | R42 | An unsynced loss record (a record of a failed window, or one found corrupt before its sync) reaches nothing else: it names the exact record, never "at or below this version inside the extent" | invariant | RFC 1 §3.8 | T6.2 |
 | R43 | A synced loss record (a record found corrupt or stale after its sync) also outranks every record of the extent below its version, as a release record does. This epic sets the flag; epic 7's rebuild applies it | invariant | RFC 1 §3.8 | T6.2 |
-| R44 | Each loss event and each failed-window report names the file of every record it drops | MUST | RFC 1 §3.8 | T6.2, T6.4 |
+| R44 | Each loss event and each failed-window report names the file of every record it drops | MUST | RFC 1 §3.8 | T6.2, T6.4, T6.7 |
 | R45 | The journal calls out to nothing to report. `Stats` is the one channel. Checked in review, not by a test: an import or a callback no test could assert on fails nothing without the diff showing it (rule 10) | invariant | RFC 1 §3.8 | T6.2 |
 | R46 | A loss record found on disk at open is placed in the ring, marked as found at open, so a restart does not hide a loss nobody read. This epic gives the ring a place for them; epic 7 supplies them | invariant | RFC 1 §3.8 | T6.2 |
 | R47 | A loss record is appended once for a record: a record a loss record already names is not named again, so the next open does not report the same loss twice | invariant | RFC 1 §3.8 | T6.2 |
@@ -394,7 +394,8 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
     verify (T6.7), whose outcome is `Dropped` or `UseCopy` with the location of a verified copy
     to serve. At read time `Corrupt` decides whether the record was synced itself, under the
     stream's leaf mutex, in the same step that takes its ledger entry out; at open the caller
-    passes what recovery proved (D9);
+    passes what recovery proved (D9). Every caller holds no segment reference when it calls, and
+    one that holds the record's file append domain sets `Corruption.DomainHeld`;
   - `Generation() uint64` and `Stats() Part`, the fields of R62 for E8's `Stats` aggregation;
   - the account function of D16, which `Durability` takes when it is built;
   - `Stop()`, which wakes every `WaitDurable` with `ErrClosed`, lets each per-stream worker run
@@ -527,11 +528,13 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
   E5 may call them with the file append domain or the segment append domain held, and the
   retained-extent drop, the window's resolution and the re-append take the file append domain
   and the file index, which would be a self-deadlock or a reversed order there (RFC 1 §8.3). The
-  worker takes the file append domain one file at a time, which is also what keeps it out of the
-  gap between a record's `Append` and its publish (R87). A caller that waits on the worker, a
+  worker takes the file append domain one record at a time, for that record's index change
+  only, and never holds it across an append, a roll or a sync, so a read of the file waits at most
+  for one record's index change (RFC 1 §8.4, epic 8's R40); holding it for the change is also what
+  keeps the worker out of the gap between a record's `Append` and its publish (R87). A caller that waits on the worker, a
   removal in `WaitDurable`, releases its file's append domain first, or the two would deadlock. A
-  re-append, run by that worker, takes each file's
-  append domain in turn, as a repack copy does, and never two at once; the index changes it
+  re-append, run by that worker, appends the copy and syncs the new segment with no file domain
+  held, then takes the record's file append domain only to repoint it, and never two at once; the index changes it
   makes go through E4's file index domain. The loss ring, the generation registry (D7) and the
   read-only state sit under their own leaf mutexes. The sync itself runs with no lock held. A
   `decision:` marker at each type names its guard. Open point in §9.
@@ -813,13 +816,16 @@ pkg/block/journalv2/
   (`RaiseWindow`), then calls `Lose` once per record, with the unsynced flag, in the new segment,
   all before any `Sync` it fails returns (R48, R51); lets the waiters of the window's `Sync`
   calls return `SyncError`; and announces the window resolved (R19). The resolution runs on the
-  stream's worker under each file's append domain in turn, so the publish of a record of the
-  window has happened before it is failed, and never brings it back afterwards (R87, D13). A
+  stream's worker, which takes a record's file append domain for that record's drop and re-hold
+  only, so the publish of the record has happened before it is failed and never brings it back
+  afterwards (R87), and releases it before calling `Lose`, whose append may roll, seal and sync:
+  a loss record is resolved with no file domain (R87), and a read of the file never waits on it
+  (D13). A
   header-only record is not failed here outside a read-only journal: T6.5 re-appends it, and
   until T6.5 lands no removal waits on one (epic 8's T8.8 depends on T6.5). Every drop and re-hold, here and in `retain.go`, is passed
   to the account function with E4's change (D16, R86). In `internal/durability/marks.go`: a
   per-file mark of an unreported failure (R17), kept in memory, set when a window's record of
-  that file fails, naming the file (R44), consulted by `Sync` before it waits, returned as
+  that file fails or when T6.7 takes one out of a pending window, naming the file (R44), consulted by `Sync` before it waits, returned as
   `SyncError` and cleared, and never cleared by a `Sync` that returns the context's error (R6).
 - **Acceptance criteria:**
   - Overwriting a synced extent leaves the old content retained until the overwrite's sync
@@ -842,6 +848,8 @@ pkg/block/journalv2/
   - A window failed with no `Sync` waiting still fails the next `Sync` of each file with a
     failed record, once, and a file with no record in it is not told.
   - Every report names the files of the records it drops (R44).
+  - A read of a file of a window being failed waits on no `Lose` append, roll or sync: the
+    worker holds no file append domain across one.
   - Each drop and re-hold reaches the account function with the change E4 made.
 - **Why over 5 man-days:** a failed window is reported to a file exactly when one of its records
   is failed, so the marks and the failing are one topic on one dependency chain; split off,
@@ -864,7 +872,9 @@ pkg/block/journalv2/
   by a cancelled call, R6, R82); the changes the account function receives across a failed window
   and a sync that lifts a retained extent (catches a drop epic 8's counters never see, R86); a
   window that held a record a later write covered (E4's
-  part-handover, asserted through the index). Conformance rows that stay red until `Open`: loss
+  part-handover, asserted through the index); a window of many records of one file whose `Lose`
+  is held at its append, with a read of that file completing meanwhile (catches a domain held
+  across a loss record's append, epic 8's R40). Conformance rows that stay red until `Open`: loss
   by exact record, a failed window is reported once, a failed window does not wedge, a loss raises
   the loss generation.
 
@@ -887,7 +897,11 @@ pkg/block/journalv2/
   re-appends a record whose verified copy a read is serving from the failed segment, repoints the
   index to the new location, and announces the failed segment resolved only after it (D10). A re-append whose sync fails is a failed window of the
   new segment, which T6.3 ends and, when it is the second refusal in a row, hands to the
-  read-only entry (D12). Each file's append domain is taken in turn (D13). A `decision:` marker at the re-read
+  read-only entry (D12). The copy is appended and the new segment synced with no file domain
+  held; the worker then takes the record's file append domain only to check that the index still
+  names the original and repoint it, so a read of the file never waits on the append, a roll or
+  the sync (D13). A record a later write superseded meanwhile is not repointed: its copy is a dead
+  record, and the later write's own resolution covers the file. A `decision:` marker at the re-read
   (D4).
 - **Acceptance criteria:**
   - A re-appended record carries the original's sequence number and version, in a new location.
@@ -902,7 +916,10 @@ pkg/block/journalv2/
     failed, and after every copy a read used from it is re-appended.
   - A removal's `WaitDurable` on a record of a failed window returns nil once the re-appended
     copy is synced, never `SyncError`.
-  - Two files are never locked at once.
+  - Two files are never locked at once, and no file append domain is held across an append or
+    a sync.
+  - A record overwritten between its copy's append and its repoint keeps the overwrite in the
+    index.
 - **Tests:** the RFC's re-append row with the seam returning stale bytes for the failed segment
   (catches a re-append that trusts the page cache, R21, R67); a truncate over a re-appended record,
   then a crash and reopen at the index level (catches a record that took a new sequence number,
@@ -913,7 +930,9 @@ pkg/block/journalv2/
   and the index naming that (catches an original left out of the copy table, and a failed segment
   left backing a used copy, RFC 1 §5.3); a truncate in a failed window with a `WaitDurable`
   waiting on it (catches a wait that returns `SyncError` for a header-only record, R88);
-  the lock recorder's order across a window of many files. Conformance
+  the lock recorder's order across a window of many files, with no file domain held across an
+  append or a sync; a write over a record of the window between its copy's append and its repoint
+  (catches a repoint that brings the overwritten record back). Conformance
   rows that stay red until `Open`: re-append trusts no page cache, a re-append keeps its numbers,
   header-only records are re-appended outside a read-only journal.
 
@@ -997,7 +1016,7 @@ pkg/block/journalv2/
 - **Track:** A. **Depends on:** T6.1 (`Durable`, the ledger), T6.2; E3's record codec; E4's index
   and its failed-window operation (E4-6). The read-only check is the function `Durability` holds
   (D10), so T6.6 is not a dependency.
-- **Covers:** R54–R62, R69, R70, R76, R80, R81, R86, R87, R90, R91.
+- **Covers:** R17, R44, R54–R62, R69, R70, R76, R80, R81, R86, R87, R90, R91.
 - **Deliverables:** `internal/durability/corrupt.go`: `Corrupt(ctx, Corruption) (CorruptOutcome,
   error)` (D9), and the copy table of D10 with `RegisterCopy(seq, location, checksum)`, which
   T6.5 fills. Given the record a reader found not to verify (checksum, or header against its
@@ -1009,8 +1028,11 @@ pkg/block/journalv2/
   no loss record and returns `UseCopy` with the copy's location, so the read serves it at once,
   appending nothing and waiting on no sync (RFC 1 §8.1). Outside a read-only journal it also hands
   the record to the stream's worker, whose re-append to a healthy segment is T6.5's (D10).
-  Otherwise, called with the caller's segment reference already released (the file append
-  domain ranks above the storage guard, RFC 1 §8.3), it takes the file's append domain (a wait
+  Every caller calls `Corrupt` holding no segment reference (the file append domain ranks above
+  the storage guard, RFC 1 §8.3). A caller that already holds the record's file append domain, as
+  epic 9's repack copy does (RFC 1 §7.2), says so in `Corruption.DomainHeld`, and `Corrupt` then
+  takes no domain and leaves it held, so the domain is never taken twice. Otherwise, it takes the
+  file's append domain (a wait
   of at most one record write of the same file, as the read's `asOf` already is, never another
   file's, RFC 1 §8.1), checks that the index still names that record, and removes exactly the
   extents it backs (E4), passing the change to the account function (D16); the index change,
@@ -1019,7 +1041,10 @@ pkg/block/journalv2/
   the stream's leaf mutex, in the same step that takes the record out of the ledger or out of a
   pending failed window (T6.3), so neither a sync nor a failed window resolved on the worker
   meanwhile can make the answer stale: a record still in a pending window is unsynced, and taking
-  it out of the window means the worker neither re-appends nor fails it; a record the worker has
+  it out of the window means the worker neither re-appends nor fails it, so in that same step
+  `Corrupt` sets the file's mark of an unreported failure, naming the file, as T6.4 does for a
+  record it fails (R17, R44), and the file's next `Sync` reports the window even when that record
+  was its only write in it; a record the worker has
   already failed is no longer in the index, and the read reports it missing with nothing to do.
   At open it takes the caller's flag (D9). For an unsynced record it removes the extents through
   E4's failed-window operation, so the content the record superseded is held again (R91). It
@@ -1060,8 +1085,11 @@ pkg/block/journalv2/
     event follow on the worker.
   - A loss handed to the worker just before `Stop` has its record on disk when `Stop` returns.
   - A record of a failed window found corrupt before the worker resolves the window gets an
-    unsynced loss record, and the worker neither re-appends nor fails it; found corrupt after, it
-    is already gone from the index.
+    unsynced loss record, the worker neither re-appends nor fails it, and the file's next `Sync`
+    returns `SyncError` once, even when that record was the file's only write in the window;
+    found corrupt after, it is already gone from the index.
+  - A caller holding the file append domain passes `DomainHeld`, and `Corrupt` neither takes it
+    again nor releases it.
   - A copy whose bytes match the checksum read back with them but not the one kept at write time
     is not used.
   - The segment is counted damaged while it backs an extent it cannot produce, and a repack-ready
@@ -1206,6 +1234,14 @@ suggestion only: one pull request per subtask works as well.
   name the check a probe found failing, and §3.7's `ReadOnly` row carries no such field. #3666
   adds it; T6.6 adds the field once it merges. Also open in #3666: whether the row carries the
   refusal that keeps a reopened journal closed, or the caller already holds it as `Open`'s error.
+- **Which records entering read-only fails (#3676).** #3676 (open) proposes that entering
+  read-only fails every unsynced record on every stream, not only the window that was open,
+  because an in-place reopen could otherwise lose another stream's unsynced write silently. R32
+  and T6.6 follow the current text; if #3676 merges, T6.6 fails each stream's unsynced records
+  the same way, and its estimate is revisited.
+- **`Corrupt` for epic 9's callers (D9).** An offer and a repack copy call `Corrupt` too. Each
+  must release its segment reference before the call, and a repack copy, which holds the file's
+  append domain, passes `DomainHeld`. Confirm with epic 9's owner that both can.
 - **A copy used at read time (D10).** RFC 28 §3.3 spares a record whose other copy verifies,
   and RFC 1 §5.3 says a resolved failed segment backs only records synced before the failure.
   `Corrupt` serves the copy in place, and outside a read-only journal the worker re-appends it to
@@ -1226,7 +1262,9 @@ suggestion only: one pull request per subtask works as well.
   RFC's answer is that an `EIO` read drops the extent, T6.7 gains a branch.
 - **A header that does not verify.** #3449 asks whether a loss is named when a record's header
   fails to verify in a scanned segment. At read time the index already names the record, so
-  T6.7 names it; the scanned case is E7's, and the two should agree.
+  T6.7 names it; the scanned case is E7's, and the two should agree. #3518 (open, closes #3449)
+  adds a fourth loss reason, `superseded`, for the reconcile's drops; T6.2's `Loss` names three,
+  and gains the fourth if it merges (the reconcile is E7's).
 - **Another copy of a record at read time (D10).** Only a re-append's original is registered.
   A copy a repack carried is not. Confirm with E9's owner whether it will register the source of
   a carry, or whether the RFC's "unless another copy verifies" is meant for recovery alone.
