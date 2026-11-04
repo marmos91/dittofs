@@ -134,7 +134,33 @@ func (e *Engine) FileStateWaiting() int64 { return e.files.waits.waiting.Load() 
 type PendingOpType = pendingOp
 
 // SetSample replaces how a write samples its verifier.
-func (e *Engine) SetSample(f func() vfserr.Verifier) { e.sample = f }
+func (e *Engine) SetSample(f func() vfserr.Verifier) {
+	e.sample = func(*binding) vfserr.Verifier { return f() }
+}
+
+// SetPrimary sets share s's verifier inputs from its shard's primary, as
+// Bind will from the start transaction, copying the share table as a
+// binding's change does.
+func (e *Engine) SetPrimary(s entity.ShareID, node entity.NodeID, nodeEpoch, incarnation uint64) {
+	t := bindings{}
+	for k, v := range *e.shares.Load() {
+		t[k] = v
+	}
+	old := t[s]
+	b := &binding{
+		share:       old.share,
+		j:           old.j,
+		h:           old.h,
+		incarnation: incarnation,
+		primary:     primary{node, nodeEpoch},
+	}
+	b.state.Store(old.state.Load())
+	t[s] = b
+	e.shares.Store(&t)
+}
+
+// NewInstance draws the process instance again, as a new process would.
+func (e *Engine) NewInstance() { e.instance = instanceID() }
 
 // PendingView is one pending operation as a test reads it.
 type PendingView struct {

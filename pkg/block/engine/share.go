@@ -30,6 +30,7 @@ type binding struct {
 	h           Handle
 	state       atomic.Uint32 // a ShareState: a state change stores it and swaps nothing
 	incarnation uint64        // the shard's incarnation the attach raise wrote, for the write verifier
+	primary     primary       // the verifier's other inputs from the shard's primary
 	removed     bool
 }
 
