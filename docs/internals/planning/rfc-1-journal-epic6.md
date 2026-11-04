@@ -1176,7 +1176,7 @@ suggestion only: one pull request per subtask works as well.
   (epic 5's R88), so no appending path can leave a record out of the ledger; both may be called
   under E5's locks, which is why this epic's sinks only hand the event to the stream's worker
   (D13). Epic 5's T5.10 then hands over only the end event, and its refill worker, idle seal and
-  retirement consult `Admit` (epic 5's R89). Their sub-issues need the same revision.
+  retirement consult `Admit` (epic 5's R89).
 - **A header-only record's payload: 32 or 56 bytes.** RFC 1 §5.3 says a header-only record is
   "a header and at most a 32-byte payload"; RFC 28 §2.3 and RFC 1 §6 give a clone target's spec
   56 bytes. D4 keeps 56, which covers both. Raise the inconsistency with the RFC's author.

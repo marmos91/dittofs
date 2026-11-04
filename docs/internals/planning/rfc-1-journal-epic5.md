@@ -890,8 +890,6 @@ A suggestion only: one pull request per subtask works as well.
 - **S3 needs more than the stream.** Epic 6's subtasks before S3 need the seal (T5.7), the
   headroom (T5.6) and the end event (T5.10), so S3 waits for this epic's T5.5, T5.6, T5.7 and
   T5.10 too.
-- The sub-issues of T5.4b, T5.5, T5.7, T5.8, T5.9 and T5.10 need syncing once this revision
-  merges.
 
 - **The pool target has no value in any RFC.** RFC 28 §2.2 says a retired segment becomes a
   spare "while the pool is below its target" and names no number. D3 takes `SpareTarget` for
