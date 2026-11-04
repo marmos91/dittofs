@@ -3,6 +3,8 @@ package segment_test
 import (
 	"errors"
 	"io/fs"
+	"log/slog"
+	"runtime"
 	"slices"
 	"sync"
 	"syscall"
@@ -32,39 +34,95 @@ type retireEnv struct {
 	r    *segment.Retirer
 }
 
-// retirer builds a retirer over a fresh seam. targets is the pool's; no pool
+// noPool is the targets a retirer with no pool is built on: the negative
+// content target says "no pool at all", so every retirement unlinks. Targets
+// of zeroes would still build a pool — one that recycles nothing but kicks
+// on every unlink.
+var noPool = segment.Targets{Content: -1}
+
+// retirer builds a retirer over a fresh seam. targets is the pool's; noPool
 // means every retirement unlinks. readOnly is the R89 check, nil meaning
 // writable. durable collects the durable-unlink signal's calls, when the
 // test needs it.
-func retirer(t *testing.T, targets segment.Targets, readOnly func() error) (*retireEnv, *[]segment.Retirement) {
+func retirer(t *testing.T, targets segment.Targets, readOnly func() error) (*retireEnv, *durableCollector) {
 	t.Helper()
-	return retirerSeeded(t, targets, readOnly, 0)
+	return retirerBuilt(t, targets, readOnly, 0, nil)
+}
+
+// retirerLogged is retirer with a logger the test reads back.
+func retirerLogged(t *testing.T, targets segment.Targets, readOnly func() error, h slog.Handler) (*retireEnv, *durableCollector) {
+	t.Helper()
+	return retirerBuilt(t, targets, readOnly, 0, slog.New(h))
 }
 
 // retirerSeeded is retirer with the Maker seeded at last, the way open seeds
 // it from the largest id the directory names.
-func retirerSeeded(t *testing.T, targets segment.Targets, readOnly func() error, last core.SegmentID) (*retireEnv, *[]segment.Retirement) {
+func retirerSeeded(t *testing.T, targets segment.Targets, readOnly func() error, last core.SegmentID) (*retireEnv, *durableCollector) {
+	t.Helper()
+	return retirerBuilt(t, targets, readOnly, last, nil)
+}
+
+// retirerBuilt is retirer with every knob a test needs: the read-only check,
+// the Maker's seed and a logger for the retirer and its ledger. The durable
+// signal's slice is handed out guarded: the worker goroutine is the one that
+// appends to it, so a test must read it through the collector's own lock.
+func retirerBuilt(t *testing.T, targets segment.Targets, readOnly func() error, last core.SegmentID, log *slog.Logger) (*retireEnv, *durableCollector) {
 	t.Helper()
 
 	seam := newSeam(t)
-	set := segment.NewSet(segCap, nil)
+	set := segment.NewSet(segCap, log)
 	m := segment.NewMaker(seam.FS(), set, noMax, last, nil)
 	c := segment.NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(64))
 	var p *segment.Pool
 	if targets.Content >= 0 {
 		p = segment.NewPool(m, targets, nil)
 	}
-	var durable []segment.Retirement
+	dc := &durableCollector{}
 	r := segment.NewRetirer(segment.RetirerConfig{
 		Set:      set,
-		Cache:     c,
-		Pool:      p,
-		Maker:     m,
-		FS:        seam.FS(),
-		ReadOnly:  readOnly,
-		Durable:   func(d segment.Retirement) { durable = append(durable, d) },
+		Cache:    c,
+		Pool:     p,
+		Maker:    m,
+		FS:       seam.FS(),
+		ReadOnly: readOnly,
+		Durable:  dc.add,
+		Log:      log,
 	})
-	return &retireEnv{t: t, seam: seam, set: set, m: m, c: c, p: p, r: r}, &durable
+	return &retireEnv{t: t, seam: seam, set: set, m: m, c: c, p: p, r: r}, dc
+}
+
+// durableCollector keeps the durable signal's calls under a mutex: the
+// worker goroutine is the one that makes them.
+type durableCollector struct {
+	mu   sync.Mutex
+	recs []segment.Retirement
+}
+
+func (d *durableCollector) add(r segment.Retirement) {
+	d.mu.Lock()
+	d.recs = append(d.recs, r)
+	d.mu.Unlock()
+}
+
+// len is how many signals have arrived so far.
+func (d *durableCollector) len() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.recs)
+}
+
+// all is a copy of the arrivals, for a test's assertions.
+func (d *durableCollector) all() []segment.Retirement {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]segment.Retirement(nil), d.recs...)
+}
+
+// at is the arrival at i.
+func (d *durableCollector) at(i int) segment.Retirement {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.recs[i]
 }
 
 // segment makes one spare, takes it into the set and seals it with the full
@@ -284,8 +342,8 @@ func TestRetireRecycleCallLogAndFootprint(t *testing.T) {
 	if !res.Durable {
 		t.Fatal("the recycle's retirement is not durable, want the rename's directory sync back")
 	}
-	if len(*durable) != 1 || (*durable)[0].ID != old {
-		t.Fatalf("the durable signal was called for %+v, want once for %d", *durable, old)
+	if durable.len() != 1 || durable.at(0).ID != old {
+		t.Fatalf("the durable signal was called for %+v, want once for %d", durable.all(), old)
 	}
 
 	// The fresh spare sits ready in the pool's content class, and a started
@@ -936,7 +994,7 @@ func TestRetireCrashAtEachDurableStateOfAnUnlink(t *testing.T) {
 		{"crash after the directory sync", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e, _ := retirer(t, segment.Targets{Content: 1}, nil)
+			e, _ := retirer(t, noPool, nil)
 			id := e.segment(true)
 			name := format.SegmentName(id)
 
@@ -978,5 +1036,447 @@ func TestRetireCrashAtEachDurableStateOfAnUnlink(t *testing.T) {
 				_ = err
 			}
 		})
+	}
+}
+
+// TestRetireTwoPathsRetireOneSegmentOnce: two retirers retreating one segment
+// at once serialise on the ledger's claim — exactly one retires, the other
+// meets the claim's refusal — and a third, sequential call meets the ledger's
+// double retire, counted and logged at Warn. The footprint falls by the size
+// exactly once and never below zero (R74).
+func TestRetireTwoPathsRetireOneSegmentOnce(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// The ledger logs its double retire through the retirer's own logger, so
+	// the Warn the third retire owes is captured here.
+	h := &logRecorder{}
+	e, _ := retirerLogged(t, noPool, nil, h)
+	id := e.segment(true)
+	before := e.set.Counters()
+
+	var wg sync.WaitGroup
+	results := make(chan error, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := e.r.Retire(id, segment.NotHeld)
+			results <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	won := 0
+	for err := range results {
+		switch {
+		case err == nil:
+			won++
+		case errors.Is(err, segment.ErrClaimed):
+		case errors.Is(err, segment.ErrNotInSet):
+		default:
+			t.Fatalf("a concurrent retire returned %v, want a success or the claim's refusal", err)
+		}
+	}
+	if won != 1 {
+		t.Fatalf("%d of the two concurrent retires succeeded, want exactly one", won)
+	}
+
+	// The footprint fell by the size exactly once, and never below zero.
+	if c := e.set.Counters(); c.UsedBytes != before.UsedBytes-segCap {
+		t.Fatalf("after the two retires the footprint is %d, want exactly one size %d lower", c.UsedBytes, before.UsedBytes-segCap)
+	}
+	if c := e.r.Counters(); c.FreedBytes != uint64(segCap) {
+		t.Fatalf("freed_bytes is %d after the two retires, want the one size %d", c.FreedBytes, segCap)
+	}
+
+	// A third, sequential retire subtracts nothing, counts and logs at Warn.
+	// The race's own double retires — a losing claim that arrived after the
+	// winner's whole retirement — are behind the baseline; the third retire
+	// adds exactly one of its own, whatever the race left.
+	raced := e.set.Counters()
+	if _, err := e.r.Retire(id, segment.NotHeld); !errors.Is(err, segment.ErrNotInSet) {
+		t.Fatalf("the third retire: %v, want %v", err, segment.ErrNotInSet)
+	}
+	if c := e.set.Counters(); c.DoubleRetires != raced.DoubleRetires+1 {
+		t.Fatalf("the third retire counted %d double retires, want exactly one over %d", c.DoubleRetires, raced.DoubleRetires)
+	}
+	if c := e.set.Counters(); c.UsedBytes != 0 {
+		t.Fatalf("after the third retire the footprint is %d, want 0: it never went below zero", c.UsedBytes)
+	}
+	if got := h.countAt(slog.LevelWarn, "retire found the segment out of the set"); got != int(raced.DoubleRetires)+1 {
+		t.Fatalf("the third retire logged %d double-retire Warns, want one per double retire", got)
+	}
+	if c := e.r.Counters(); c.FreedBytes != uint64(segCap) {
+		t.Fatalf("freed_bytes moved on the third retire to %d, want still %d", c.FreedBytes, segCap)
+	}
+}
+
+// TestRetireWaitsForAReadInFlight: an unlink waits for the in-flight reads
+// of its segment — the retire's own remove is not reached while a reference
+// is held, and once the wait ends a new acquire finds the segment gone — and
+// a read done under the held reference returns the pattern written (R47,
+// R65, R76). It fails if Close(id) stops waiting.
+func TestRetireWaitsForAReadInFlight(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, _ := retirer(t, noPool, nil)
+	id := e.segment(true)
+	name := format.SegmentName(id)
+
+	// A reader holds a reference: the old life's pattern is what it reads.
+	ref, err := e.c.Acquire(id)
+	if err != nil {
+		t.Fatalf("the reader's acquire: %v", err)
+	}
+	buf := make([]byte, format.SegmentHeaderSize)
+	if _, err := ref.ReadAt(buf, 0); err != nil {
+		t.Fatalf("the read under the reference: %v", err)
+	}
+	for i, b := range buf {
+		if b != 0xAA {
+			t.Fatalf("the read served byte %d as %#x, want the old life's byte", i, b)
+		}
+	}
+
+	// The retire parks at its remove: it must not reach it while the
+	// reference is held.
+	h := e.seam.HoldFirst(t, journaltest.OpRemove, name)
+	resc := make(chan segment.Retirement, 1)
+	errc := make(chan error, 1)
+	go func() {
+		res, err := e.r.Retire(id, segment.NotHeld)
+		resc <- res
+		errc <- err
+	}()
+
+	select {
+	case <-h.Reached():
+		t.Fatal("the retire reached its remove while the reader still held the segment, want it waiting")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// The reference released, the drain ends and the retire reaches its
+	// remove: the hold is what proves it arrived only now, and its release
+	// is what lets the retire finish.
+	ref.Release()
+	awaitReached(t, journaltest.OpRemove, h, errc)
+	h.Release()
+	if res := <-resc; res.Recycled || res.Freed != segCap {
+		t.Fatalf("the retire after the drain recycled or freed wrong: %+v", res)
+	}
+	if err := <-errc; err != nil {
+		t.Fatalf("the retire after the drain: %v", err)
+	}
+
+	// A new acquire finds the segment gone, for good.
+	if _, err := e.c.Acquire(id); !errors.Is(err, segment.ErrSegmentGone) {
+		t.Fatalf("the acquire after the retire: %v, want %v", err, segment.ErrSegmentGone)
+	}
+	_ = name
+}
+
+// TestRetireFreedBytesAfterTheUnlink: freed_bytes rises by the accounted size
+// after an unlink and only after it — a retirement parked at its remove still
+// shows the old figure — and a recycle raises it by the cap once its own
+// steps complete (RFC 1 §3.9).
+func TestRetireFreedBytesAfterTheUnlink(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, _ := retirer(t, noPool, nil)
+	id := e.segment(true)
+	name := format.SegmentName(id)
+
+	h := e.seam.HoldFirst(t, journaltest.OpRemove, name)
+	resc := make(chan segment.Retirement, 1)
+	errc := make(chan error, 1)
+	go func() {
+		res, err := e.r.Retire(id, segment.NotHeld)
+		resc <- res
+		errc <- err
+	}()
+	awaitReached(t, journaltest.OpRemove, h, errc)
+
+	if c := e.r.Counters(); c.FreedBytes != 0 {
+		t.Fatalf("while the unlink is held freed_bytes is %d, want 0: it rises only after the remove", c.FreedBytes)
+	}
+	h.Release()
+	if err := <-errc; err != nil {
+		t.Fatalf("the unlink: %v", err)
+	}
+	<-resc
+	if c := e.r.Counters(); c.FreedBytes != uint64(segCap) {
+		t.Fatalf("after the unlink freed_bytes is %d, want the cap %d", c.FreedBytes, segCap)
+	}
+}
+
+// TestRetireNotDurable: a retirement whose directory sync fails reports not
+// durable, holds the signal back, and still lowers the footprint; the
+// worker's next pass, with the sync healthy, calls the signal once for it
+// (R45).
+func TestRetireNotDurable(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, durable := retirer(t, noPool, nil)
+	id := e.segment(true)
+
+	// The unlink's directory sync fails once.
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSyncDir, "*", 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	res, err := e.r.Retire(id, segment.NotHeld)
+	if err != nil {
+		t.Fatalf("the retire whose sync fails: %v", err)
+	}
+	if res.Durable {
+		t.Fatal("the retire whose directory sync failed reported itself durable, want not")
+	}
+	if res.Freed != segCap {
+		t.Fatalf("the retire freed %d, want the cap: the storage moved whatever the sync did", res.Freed)
+	}
+	if c := e.set.Counters(); c.UsedBytes != 0 {
+		t.Fatalf("after the retire the footprint is %d, want 0: the unlink happened", c.UsedBytes)
+	}
+	if durable.len() != 0 {
+		t.Fatalf("the durable signal was called %d times on a not-durable retire, want none", durable.len())
+	}
+
+	// The fault is spent; the worker's next pass syncs the directory and
+	// calls the signal once.
+	segment.RetryEveryForTest(e.r, time.Millisecond)
+	e.r.Start()
+	e.r.Enqueue(id, segment.NotHeld)
+	deadline := time.Now().Add(10 * time.Second)
+	for durable.len() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the worker never called the owed durable signal")
+		}
+		runtime.Gosched()
+	}
+	if got := durable.at(0); got.ID != id || got.Freed != segCap || !got.Durable {
+		t.Fatalf("the owed signal reported %+v, want the retire durable at the cap", got)
+	}
+	if durable.len() != 1 {
+		t.Fatalf("the owed signal was called %d times, want once", durable.len())
+	}
+	e.r.Stop()
+}
+
+// TestRetireWorkerRetriesAFailedUnlink: a remove that fails leaves the
+// segment in the set at its size, accounted, its claim released so a retry
+// can claim again; once the fault clears and the id is queued, the worker's
+// pass unlinks it, lowers the footprint once and calls the durable signal
+// once. A failed recycle whose fallback unlink fails too retries and removes
+// the fresh name with the old one.
+func TestRetireWorkerRetriesAFailedUnlink(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	t.Run("a failed unlink, retried", func(t *testing.T) {
+		e, durable := retirer(t, noPool, nil)
+		id := e.segment(true)
+		name := format.SegmentName(id)
+		before := e.set.Counters()
+
+		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpRemove, name, 1, syscall.EIO)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		if _, err := e.r.Retire(id, segment.NotHeld); err == nil {
+			t.Fatal("the retire whose remove fails: no error")
+		}
+		// The segment stays in the set, accounted at its size.
+		if c := e.set.Counters(); c != before {
+			t.Fatalf("after the failed unlink the ledger holds %+v, want the untouched %+v", c, before)
+		}
+		// The claim is released: a retry can take it.
+		if _, _, err := e.set.ClaimRetirement(id); err != nil {
+			t.Fatalf("the claim after the failed unlink: %v, want it free", err)
+		}
+		e.set.Release(id)
+
+		// Queued and the fault spent, the worker's pass retires it: the
+		// durable signal is what the pass ends on, so it is what the test
+		// waits for.
+		segment.RetryEveryForTest(e.r, time.Millisecond)
+		e.r.Start()
+		e.r.Enqueue(id, segment.NotHeld)
+		deadline := time.Now().Add(10 * time.Second)
+		for durable.len() == 0 {
+			if time.Now().After(deadline) {
+				t.Fatalf("the worker never retried the failed unlink: the ledger holds %+v and the signal %+v",
+					e.set.Counters(), durable.all())
+			}
+			runtime.Gosched()
+		}
+		if durable.len() != 1 || durable.at(0).ID != id || durable.at(0).Freed != segCap {
+			t.Fatalf("the retried retire's signal was called for %+v, want once for %d at the cap", durable.all(), id)
+		}
+		if c := e.r.Counters(); c.FreedBytes != uint64(segCap) {
+			t.Fatalf("freed_bytes is %d after the retry, want the cap once", c.FreedBytes)
+		}
+		e.r.Stop()
+	})
+
+	t.Run("a failed recycle whose fallback unlink fails too", func(t *testing.T) {
+		e, _ := retirer(t, segment.Targets{Content: 1}, nil)
+		id := e.segment(true)
+		oldName := format.SegmentName(id)
+
+		// The recycle's first zeroing write fails, so the fallback unlink
+		// owns both names — its own and the fresh one — and both removes
+		// fail now, so only the retry can take the segment out.
+		if err := e.seam.Schedule(
+			journaltest.Failing(journaltest.OpWrite, "*", 1, syscall.EIO),
+			journaltest.Failing(journaltest.OpRemove, "*", 2, syscall.EIO),
+		); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		res, err := e.r.Retire(id, segment.NotHeld)
+		if err == nil {
+			t.Fatalf("the retire whose recycle and fallback both fail: no error, %+v", res)
+		} else if !errors.Is(err, syscall.EIO) {
+			t.Fatalf("the failed recycle led with %v, want the EIO", err)
+		}
+		if got := e.seam.CallsFor(journaltest.OpRemove, oldName); got < 1 {
+			t.Fatalf("the fallback unlink never tried %s", oldName)
+		}
+		// The fresh name is recorded, so the retry's unlink removes it too.
+		names := listNames(t, e.seam)
+		segs, _ := classify(names)
+		if len(segs) != 1 {
+			t.Fatalf("after the failed recycle the directory holds the segments %v, want the one renamed file", segs)
+		}
+
+		// The retry removes both names and retires the segment at last.
+		segment.RetryEveryForTest(e.r, time.Millisecond)
+		e.r.Start()
+		e.r.Enqueue(id, segment.NotHeld)
+		deadline := time.Now().Add(10 * time.Second)
+		for e.set.Counters().UsedBytes != 0 {
+			if time.Now().After(deadline) {
+				t.Fatalf("the worker never retried: the ledger holds %+v", e.set.Counters())
+			}
+			runtime.Gosched()
+		}
+		segs, spares := classify(listNames(t, e.seam))
+		if len(segs) != 0 || len(spares) != 0 {
+			t.Fatalf("after the retried recycle-fallback the directory holds %v and %v, want both names gone", segs, spares)
+		}
+		if c := e.r.Counters(); c.FreedBytes != uint64(segCap) {
+			t.Fatalf("freed_bytes is %d after the retry, want the cap once", c.FreedBytes)
+		}
+		e.r.Stop()
+	})
+}
+
+// readOnlyErr is the error the R89 checks refuse with.
+var errReadOnly = errors.New("the journal is read-only")
+
+// TestRetireReadOnly: while the read-only check refuses, a retirement makes
+// no ledger call and no seam call, and the worker's pass retires nothing,
+// leaving the queue as it is; once the check clears, a kick drains the queue
+// (R89).
+func TestRetireReadOnly(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	ro := &readOnlyFlag{}
+	e, _ := retirer(t, noPool, ro.check)
+	id := e.segment(true)
+	before := e.set.Counters()
+
+	ro.set(true)
+	fault := &countingFault{}
+	e.seam.SetFault(fault)
+	if _, err := e.r.Retire(id, segment.NotHeld); err == nil {
+		t.Fatal("the read-only retire succeeded, want the check's own refusal")
+	} else if !errors.Is(err, errReadOnly) {
+		t.Fatalf("the read-only retire refused with %v, want the check's own error", err)
+	}
+	if fault.calls > 0 {
+		t.Fatalf("the read-only retire made %d seam calls, want none", fault.calls)
+	}
+
+	// A queued id over a read-only journal: the worker's passes change
+	// nothing, and the queue survives.
+	segment.RetryEveryForTest(e.r, time.Millisecond)
+	e.r.Start()
+	e.r.Enqueue(id, segment.NotHeld)
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if c := e.set.Counters(); c != before {
+		t.Fatalf("over the read-only interval the ledger moved to %+v, want %+v", c, before)
+	}
+
+	// The check clears: a kick drains the queue.
+	e.seam.SetFault(nil)
+	ro.set(false)
+	e.r.KickForTest()
+	deadline = time.Now().Add(10 * time.Second)
+	for e.set.Counters().UsedBytes != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the queue never drained once the journal was writable: the ledger holds %+v", e.set.Counters())
+		}
+		runtime.Gosched()
+	}
+	e.r.Stop()
+}
+
+// readOnlyFlag is a test's read-only check: a flag under its own mutex.
+type readOnlyFlag struct {
+	mu  sync.Mutex
+	off bool
+}
+
+func (f *readOnlyFlag) set(on bool) {
+	f.mu.Lock()
+	f.off = on
+	f.mu.Unlock()
+}
+
+func (f *readOnlyFlag) check() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.off {
+		return errReadOnly
+	}
+	return nil
+}
+
+// TestRetireWorkerLifecycle: Start launches one worker a Stop joins, leaving
+// no goroutine behind; a second Start is a no-op; a second Stop is a no-op;
+// and an Enqueue after Stop is a drop. The profiler at the top fails the
+// test on the leaked worker (R70 groundwork).
+func TestRetireWorkerLifecycle(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, durable := retirer(t, noPool, nil)
+	segment.RetryEveryForTest(e.r, time.Millisecond)
+
+	e.r.Start()
+	e.r.Start()
+	id := e.segment(true)
+	e.r.Enqueue(id, segment.NotHeld)
+	deadline := time.Now().Add(10 * time.Second)
+	for durable.len() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the worker never retired the queued segment: %+v", durable.all())
+		}
+		runtime.Gosched()
+	}
+
+	e.r.Stop()
+	e.r.Stop()
+
+	// After Stop, an Enqueue is a drop: no retirement happens, whatever the
+	// test yields.
+	id2 := e.segment(true)
+	before := e.set.Counters()
+	e.r.Enqueue(id2, segment.NotHeld)
+	for range 1 << 16 {
+		runtime.Gosched()
+	}
+	if c := e.set.Counters(); c != before {
+		t.Fatalf("an Enqueue after Stop retired something: %+v, want %+v", c, before)
 	}
 }
