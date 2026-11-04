@@ -304,8 +304,8 @@ func TestSealFullWritesTheTrailerAtTheCapInTwoSyncs(t *testing.T) {
 	if c.Sealed != 1 {
 		t.Fatalf("the ledger counts %d sealed segments, want 1", c.Sealed)
 	}
-	if c.UsedBytes != streamCap {
-		t.Fatalf("the footprint after the full seal is %d, want the cap %d", c.UsedBytes, streamCap)
+	if got := segmentsBytes(e, c); got != streamCap {
+		t.Fatalf("the segments account for %d after the full seal, want the cap %d", got, streamCap)
 	}
 	if err := e.set.Check(); err != nil {
 		t.Fatalf("the ledger after the seal: %v", err)
@@ -406,8 +406,8 @@ func TestSealEarlyReturnsTheTailInThreeSyncs(t *testing.T) {
 	// The ledger carries the segment at its new size (R53): the footprint
 	// fell by exactly the returned tail and the check still holds.
 	c := e.set.Counters()
-	if wantFoot := streamCap - (streamCap - size); c.UsedBytes != wantFoot {
-		t.Fatalf("the footprint after the early seal is %d, want the segment's new size %d", c.UsedBytes, size)
+	if got := segmentsBytes(e, c); got != size {
+		t.Fatalf("the segments account for %d after the early seal, want the segment's new size %d", got, size)
 	}
 	if state, err := e.set.State(1); err != nil || state != segment.Sealed {
 		t.Fatalf("the segment's state after the early seal is %v, %v, want Sealed", state, err)
@@ -864,23 +864,17 @@ func TestSealAFailedSyncOrWriteEndsTheSegment(t *testing.T) {
 			if c := e.set.Counters(); c.Sealed != 0 {
 				t.Fatalf("the ledger counts %d sealed segments after the failed %s, want none", c.Sealed, tc.name)
 			}
-			if c := e.set.Counters(); c.UsedBytes != streamCap {
-				t.Fatalf("the footprint after the failed %s is %d, want the cap %d", tc.name, c.UsedBytes, streamCap)
+			if c := e.set.Counters(); segmentsBytes(e, c) != streamCap {
+				t.Fatalf("the footprint after the failed %s is %d, want the cap %d", tc.name, segmentsBytes(e, c), streamCap)
 			}
 			if err := e.set.Check(); err != nil {
 				t.Fatalf("the ledger after the failed %s: %v", tc.name, err)
 			}
 
-			// Every later append is refused and reserves nothing: the
-			// roll signal carries the end, so the caller can tell a
-			// segment it must roll on from one whose successor names
-			// none.
-			payload := streamTestBody(64, 0x77)
-			h, body := streamWriteHeader(streamFileID(9), 512, payload, 7, core.Version{Counter: 99})
-			if _, err := e.s.Append(h, body); !errors.Is(err, segment.ErrSegmentFull) || !errors.Is(err, segment.ErrSegmentEnded) {
-				t.Fatalf("the append after the failed %s = %v, want ErrSegmentFull carrying ErrSegmentEnded", tc.name, err)
-			}
-			// A second seal writes nothing and answers ErrSegmentEnded.
+			// A second seal of the ended segment writes nothing and answers
+			// ErrSegmentEnded: the take that would move the stream on is
+			// the roll's, below, so the segment's own half is checked
+			// before any append could hand it over.
 			returned := sealResult{writes: e.seam.CallsFor(journaltest.OpWrite, seg), syncs: e.seam.CallsFor(journaltest.OpSync, seg), truncates: e.seam.CallsFor(journaltest.OpTruncate, seg)}
 			if _, err := e.s.Seal(true); !errors.Is(err, segment.ErrSegmentEnded) {
 				t.Fatalf("the second Seal after the failed %s = %v, want ErrSegmentEnded", tc.name, err)
@@ -889,9 +883,26 @@ func TestSealAFailedSyncOrWriteEndsTheSegment(t *testing.T) {
 			if now != returned {
 				t.Fatalf("the second Seal after the failed %s moved the seam: %+v, want %+v", tc.name, now, returned)
 			}
-			// A sync after the end is refused too.
+			// A sync of the ended segment is refused too.
 			if err := e.s.Sync(); !errors.Is(err, segment.ErrSegmentEnded) {
 				t.Fatalf("the Sync after the failed %s = %v, want ErrSegmentEnded", tc.name, err)
+			}
+
+			// The roll the next append makes names no predecessor: the
+			// segment its seal ended is left behind, its cap held to the
+			// retirement, and the record lands in a fresh segment whose
+			// header reaches no segment before it (R33).
+			payload := streamTestBody(64, 0x77)
+			h, body := streamWriteHeader(streamFileID(9), 512, payload, 7, core.Version{Counter: 99})
+			p2, err := e.s.Append(h, body)
+			if err != nil {
+				t.Fatalf("the append after the failed %s = %v", tc.name, err)
+			}
+			if p2.Loc.Segment == 1 {
+				t.Fatalf("the append after the failed %s stayed in the ended segment", tc.name)
+			}
+			if hdr := streamSegmentHeader(t, e, p2.Loc.Segment); hdr.Predecessor != 0 {
+				t.Fatalf("the segment after the ended one names predecessor %d, want none", hdr.Predecessor)
 			}
 		})
 	}
@@ -1155,11 +1166,11 @@ func TestSealWaitsForTheInFlightAppends(t *testing.T) {
 
 // TestSealAppendsRacingItLandBeforeItsMarkerOrAreRefused checks R1 and R85
 // under the race detector: sixteen goroutines append while one Seal runs.
-// Every success lands at or below the marker, every failure matches
-// ErrSegmentFull, after the seal returns every append fails, the footer
-// lists exactly the successes in offset order — entries kept in completion
-// order must have been sorted — and the share bytes sum to the placed
-// records' whole sizes, so no charge was refused its record.
+// Every success lands at or below the marker, the footer lists exactly the
+// successes in offset order — entries kept in completion order must have
+// been sorted — and the share bytes sum to the placed records' whole sizes,
+// so no charge was refused its record. An appender the seal parks rolls to
+// the next segment rather than failing, which is the roll's own contract.
 func TestSealAppendsRacingItLandBeforeItsMarkerOrAreRefused(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -1197,11 +1208,12 @@ func TestSealAppendsRacingItLandBeforeItsMarkerOrAreRefused(t *testing.T) {
 				h, body := streamWriteHeader(streamFileID(i), int64(j)*32, payload, 7, core.Version{Counter: uint64(i*perAppender + j + 1)})
 				p, err := e.s.Append(h, body)
 				if err != nil {
-					if !errors.Is(err, segment.ErrSegmentFull) {
-						t.Errorf("appender %d's append %d: %v, want ErrSegmentFull or nil", i, j, err)
-					}
+					t.Errorf("appender %d's append %d: %v", i, j, err)
 					continue
 				}
+				// A record that landed past the seal — the roll the parked
+				// appender made — belongs to the outcome the check below
+				// bounds by the marker, which it cannot pass.
 				outcomes <- outcome{p: p, len: p.Loc.Len}
 			}
 		}(i)
@@ -1214,27 +1226,44 @@ func TestSealAppendsRacingItLandBeforeItsMarkerOrAreRefused(t *testing.T) {
 		t.Fatalf("the raced Seal: %v", race.err)
 	}
 
+	// The successes split two ways: those that reserved before the seal
+	// took the segment, listed in its footer and bounded by its marker, and
+	// those the seal parked, which rolled to the successor and belong to no
+	// footer of the sealed segment. A record of the sealed segment past its
+	// marker would mean a reservation slipped under the running seal.
+	sealed1 := warmPlaced.Loc.Segment
 	var placed []segment.Placed
-	var sum int64
+	var charged int64 // every record that landed, whichever segment took it
 	placed = append(placed, warmPlaced)
-	sum += warmPlaced.Loc.Len
+	charged += warmPlaced.Loc.Len
 	for o := range outcomes {
-		if end := o.p.Loc.Off + o.p.Loc.Len; end > race.r.Marker {
-			t.Fatalf("a record ended at %d, past the seal's marker %d", end, race.r.Marker)
+		if o.p.Loc.Segment == sealed1 && o.p.Loc.Off+o.p.Loc.Len > race.r.Marker {
+			t.Fatalf("a record ended at %d, past the seal's marker %d", o.p.Loc.Off+o.p.Loc.Len, race.r.Marker)
 		}
-		placed = append(placed, o.p)
-		sum += o.len
+		charged += o.len
+		if o.p.Loc.Segment == sealed1 {
+			placed = append(placed, o.p)
+		}
 	}
 	if len(placed) == 0 {
 		t.Fatal("every racing append was refused, want at least one to land before the marker")
 	}
 
-	// After the seal, every append is refused.
+	// After the seal, every append rolls: it lands in a new segment naming
+	// the sealed one, never past the marker.
 	payload := streamTestBody(64, 0x77)
 	h, body := streamWriteHeader(streamFileID(99), 0, payload, 7, core.Version{Counter: 99})
-	if _, err := e.s.Append(h, body); !errors.Is(err, segment.ErrSegmentFull) {
-		t.Fatalf("the append after the seal = %v, want ErrSegmentFull", err)
+	p99, err := e.s.Append(h, body)
+	if err != nil {
+		t.Fatalf("the append after the seal = %v", err)
 	}
+	if p99.Loc.Segment == 1 {
+		t.Fatalf("the append after the seal landed in the sealed segment, want a rolled-to new one")
+	}
+	if p99.Loc.Off < format.SegmentHeaderSize {
+		t.Fatalf("the append after the seal landed at %d, want a record slot", p99.Loc.Off)
+	}
+	_ = p99
 
 	// The footer lists exactly the successes, ascending by offset.
 	size := sealFileSize(t, e, 1)
@@ -1257,8 +1286,8 @@ func TestSealAppendsRacingItLandBeforeItsMarkerOrAreRefused(t *testing.T) {
 			t.Fatalf("the footer's entry %d sits at %d, want the placed %d", i, footer.Entries[i].RecordOffset, want)
 		}
 	}
-	if got := e.set.ShareBytes(7); got != sum {
-		t.Fatalf("the share holds %d record bytes, want the %d placed", got, sum)
+	if got := e.set.ShareBytes(7); got != charged+p99.Loc.Len {
+		t.Fatalf("the share holds %d record bytes, want the %d every landed record charges", got, charged+p99.Loc.Len)
 	}
 	if err := e.set.Check(); err != nil {
 		t.Fatalf("the ledger after the race: %v", err)
@@ -1625,7 +1654,12 @@ func TestSealWriteSealTakesEntriesAsData(t *testing.T) {
 		set := segment.NewSet(streamCap, nil)
 		budget := core.NewDescriptorBudget(8)
 		cache := segment.NewDescriptors(e.seam.FS(), format.SegmentName, budget)
-		stream := segment.NewStream(1, streamIdentity, set, segment.NewMaker(e.seam.FS(), set, streamMax, 0, nil), cache)
+		pool := segment.NewPool(segment.NewMaker(e.seam.FS(), set, streamMax, 0, nil), segment.Targets{Content: 2}, nil)
+		pool.Start()
+		defer pool.Stop()
+		awaitCounters(t, "a content spare ready for the acceptance", pool,
+			func(c segment.PoolCounters) bool { return c.Spares >= 1 })
+		stream := segment.NewStream(1, streamIdentity, set, pool, cache)
 		defer func() { _ = stream.Close() }()
 		defer func() {
 			if err := cache.Shutdown(); err != nil {
@@ -1746,13 +1780,17 @@ func TestSealTheStreamEdges(t *testing.T) {
 		e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
 		defer func() { _ = e.s.Close() }()
 
+		// The worker's spare makes are counted from the build, so the
+		// refusal is judged on the delta: what the Seal alone moved.
+		syncs := e.seam.Calls(journaltest.OpSync)
+		writes := e.seam.Calls(journaltest.OpWrite)
 		if _, err := e.s.Seal(true); !errors.Is(err, segment.ErrNoSegment) {
 			t.Fatalf("the Seal of a segment-less stream = %v, want ErrNoSegment", err)
 		}
-		if got := e.seam.Calls(journaltest.OpSync); got != 0 {
+		if got := e.seam.Calls(journaltest.OpSync) - syncs; got != 0 {
 			t.Fatalf("the refusal made %d syncs, want none", got)
 		}
-		if got := e.seam.Calls(journaltest.OpWrite); got != 0 {
+		if got := e.seam.Calls(journaltest.OpWrite) - writes; got != 0 {
 			t.Fatalf("the refusal made %d writes, want none", got)
 		}
 	})
@@ -1925,15 +1963,17 @@ func TestSealCloseWaitsForAnInFlightSeal(t *testing.T) {
 	}
 }
 
-// TestSealRefusesAnAppendWhileItRuns checks the sealing half of R85's gate:
-// once a seal has taken the segment — while it waits the drain of the
-// appends reserved before it, and while its own steps run — the segment is
-// closed to new reservations, so an Append arriving now answers
-// ErrSegmentFull, reserves nothing and writes nothing. It catches a seal
-// whose marker an in-flight append can overwrite, or an acknowledged record
-// the footer never lists.
-func TestSealRefusesAnAppendWhileItRuns(t *testing.T) {
-	// While the seal park itself inside WriteSeal's first sync: the
+// TestSealAnAppendArrivingMidSealParksAndRolls checks the sealing half of
+// R85's gate under the roll: once a seal has taken the segment — while it
+// waits the drain of the appends reserved before it, and while its own steps
+// run — the segment takes no further reservation, so an Append arriving now
+// parks on the seal's cond and, once the seal settles, rolls: it lands in a
+// new segment naming the sealed one, never past its marker and never on the
+// segment the footer was written for. It catches a seal whose marker a
+// racing append can overwrite, and an acknowledged record the footer never
+// lists.
+func TestSealAnAppendArrivingMidSealParksAndRolls(t *testing.T) {
+	// While the seal parks itself inside WriteSeal's first sync: the
 	// marker is chosen and the writes are under way.
 	t.Run("inside its own first sync", func(t *testing.T) {
 		prof.Watch(t, prof.Options{})
@@ -1953,14 +1993,29 @@ func TestSealRefusesAnAppendWhileItRuns(t *testing.T) {
 		}()
 		sealReached(t, h, "seal's first sync")
 
+		// The append arriving while the seal runs parks on the seal's cond
+		// — the segment is closed to reservations — and never lands in it:
+		// its record write goes to the new segment the roll takes once the
+		// seal settles, and this segment's write count never moves.
 		payload := streamTestBody(64, 0x77)
 		hh, body := streamWriteHeader(streamFileID(9), 512, payload, 7, core.Version{Counter: 99})
 		writes := e.seam.CallsFor(journaltest.OpWrite, seg)
-		if _, err := e.s.Append(hh, body); !errors.Is(err, segment.ErrSegmentFull) {
-			t.Fatalf("the append while the seal ran in its own steps = %v, want ErrSegmentFull: the segment is closed to reservations", err)
+		appended := make(chan segment.Placed, 1)
+		appErr := make(chan error, 1)
+		go func() {
+			p, err := e.s.Append(hh, body)
+			appended <- p
+			appErr <- err
+		}()
+		select {
+		case <-appended:
+			t.Fatal("an append landed while the seal held the segment: it must park instead")
+		case err := <-appErr:
+			t.Fatalf("the append while the seal ran returned %v before the seal settled, want it parked", err)
+		case <-time.After(50 * time.Millisecond):
 		}
 		if got := e.seam.CallsFor(journaltest.OpWrite, seg); got != writes {
-			t.Fatalf("the refused append made %d writes, want none: nothing is written past a seal", got-writes)
+			t.Fatalf("the parked append made %d writes of the sealing segment, want none: nothing is written past a seal", got-writes)
 		}
 
 		h.Release()
@@ -1968,8 +2023,23 @@ func TestSealRefusesAnAppendWhileItRuns(t *testing.T) {
 		if race.err != nil {
 			t.Fatalf("the Seal: %v", race.err)
 		}
+		// The parked append now rolls: it lands in a new segment, never in
+		// the sealed one.
+		select {
+		case p2 := <-appended:
+			if p2.Loc.Segment == 1 {
+				t.Fatal("the parked append landed in the sealed segment, want the segment the roll took")
+			}
+			if hdr := streamSegmentHeader(t, e, p2.Loc.Segment); hdr.Predecessor != 1 {
+				t.Fatalf("the rolled-to segment names predecessor %d, want the sealed segment 1", hdr.Predecessor)
+			}
+		case err := <-appErr:
+			t.Fatalf("the parked append after the seal settled: %v", err)
+		case <-time.After(10 * time.Second):
+			t.Fatal("the parked append did not return after the seal settled")
+		}
 		if race.r.Marker != wantMarker {
-			t.Fatalf("the seal's marker is at %d, want the last pre-seal record's end %d: the refused append moved the position", race.r.Marker, wantMarker)
+			t.Fatalf("the seal's marker is at %d, want the last pre-seal record's end %d: the parked append moved the position", race.r.Marker, wantMarker)
 		}
 		size := sealFileSize(t, e, 1)
 		rd := sealReaderOf(t, e, 1)
@@ -2018,10 +2088,25 @@ func TestSealRefusesAnAppendWhileItRuns(t *testing.T) {
 		}()
 		time.Sleep(50 * time.Millisecond) // the seal has taken the segment and parked on the drain
 
+		// The append arriving while the seal waits the drain parks too —
+		// the segment is closed from the seal's take — and rolls once the
+		// seal settles: the marker below names the held record's end and
+		// the footer the warm and held records alone.
 		payload := streamTestBody(64, 0x77)
 		hh, body := streamWriteHeader(streamFileID(9), 128, payload, 7, core.Version{Counter: 99})
-		if _, err := e.s.Append(hh, body); !errors.Is(err, segment.ErrSegmentFull) {
-			t.Fatalf("the append while the seal waited the drain = %v, want ErrSegmentFull: the segment is closed from the seal's take", err)
+		parked := make(chan segment.Placed, 1)
+		parksErr := make(chan error, 1)
+		go func() {
+			p, err := e.s.Append(hh, body)
+			parked <- p
+			parksErr <- err
+		}()
+		select {
+		case <-parked:
+			t.Fatal("an append landed while the seal waited the drain: it must park instead")
+		case err := <-parksErr:
+			t.Fatalf("the append while the seal waited the drain returned %v, want it parked", err)
+		case <-time.After(50 * time.Millisecond):
 		}
 
 		// The seal then places its marker at the held record's end and
@@ -2032,6 +2117,18 @@ func TestSealRefusesAnAppendWhileItRuns(t *testing.T) {
 		race := sealWaitFor(t, sealed, "the seal's return after the drain")
 		if race.err != nil {
 			t.Fatalf("the Seal: %v", race.err)
+		}
+		// The parked append rolls now; its record lands in a new segment,
+		// never on the sealed one.
+		select {
+		case p2 := <-parked:
+			if p2.Loc.Segment == 1 {
+				t.Fatal("the parked append landed in the sealed segment, want the segment the roll took")
+			}
+		case err := <-parksErr:
+			t.Fatalf("the parked append after the seal settled: %v", err)
+		case <-time.After(10 * time.Second):
+			t.Fatal("the parked append never returned after the seal settled")
 		}
 		if want := held.Loc.Off + held.Loc.Len; race.r.Marker != want {
 			t.Fatalf("the seal's marker is at %d, want the held record's end %d", race.r.Marker, want)
@@ -2101,13 +2198,23 @@ func TestSealADrainedSyncFailureEndsTheSegment(t *testing.T) {
 	if c := e.set.Counters(); c.Sealed != 0 {
 		t.Fatalf("the ledger counts %d sealed segments, want none", c.Sealed)
 	}
+	// The roll the next append makes names no predecessor — the segment
+	// its seal ended is left behind — and the stream it lands on syncs
+	// well: the failed window belongs to the ended segment alone.
 	payload := streamTestBody(64, 0x77)
 	hh, body := streamWriteHeader(streamFileID(9), 512, payload, 7, core.Version{Counter: 99})
-	if _, err := e.s.Append(hh, body); !errors.Is(err, segment.ErrSegmentFull) {
-		t.Fatalf("the append after the ended segment = %v, want ErrSegmentFull", err)
+	p, err := e.s.Append(hh, body)
+	if err != nil {
+		t.Fatalf("the append after the ended segment = %v", err)
 	}
-	if err := e.s.Sync(); !errors.Is(err, segment.ErrSegmentEnded) {
-		t.Fatalf("the Sync after the ended segment = %v, want ErrSegmentEnded", err)
+	if p.Loc.Segment == 1 {
+		t.Fatalf("the append after the ended segment stayed in segment 1, want a rolled-to new one")
+	}
+	if hdr := streamSegmentHeader(t, e, p.Loc.Segment); hdr.Predecessor != 0 {
+		t.Fatalf("the segment after the ended one names predecessor %d, want none", hdr.Predecessor)
+	}
+	if err := e.s.Sync(); err != nil {
+		t.Fatalf("the Sync on the rolled-to segment = %v, want nil: the failed window belonged to the ended one alone", err)
 	}
 }
 
@@ -2240,27 +2347,47 @@ func TestSealAFullSealThatFillsTheSegmentWritesOnce(t *testing.T) {
 	}
 }
 
-// TestSealRefusesAnAppendResumedFromTheTakeGate checks the parked half of
-// R85's gate: an Append parked on the first segment's take gate resumes when
-// the gate settles, and a seal that took the segment while the take ran must
-// refuse it — the seal's drain emptied and its marker was read before the
-// resumed reservation ran, so the resumed record would land exactly at the
-// marker the seal's own write is driving at: unlisted by the footer, and
-// overwriting it or overwritten by it. The warmed racing test never reaches
-// this path, for its segment is taken long before the seal starts.
+// streamOverPool builds a stream over a fresh set, pool and cache sharing the
+// round's seam that streamOver built, each round's own so a race in one round
+// holds one roll's takes alone; the pool's Stop and the cache's Shutdown run
+// from roundCheck's defer.
+func streamOverPool(t *testing.T, e streamEnv) (set *segment.Set, pool *segment.Pool, cache *segment.Descriptors, stream *segment.Stream) {
+	t.Helper()
+
+	set = segment.NewSet(streamCap, nil)
+	budget := core.NewDescriptorBudget(8)
+	cache = segment.NewDescriptors(e.seam.FS(), format.SegmentName, budget)
+	pool = segment.NewPool(segment.NewMaker(e.seam.FS(), set, streamMax, 0, nil), segment.Targets{Content: 1}, nil)
+	pool.Start()
+	awaitCounters(t, "the round's content spare ready", pool,
+		func(c segment.PoolCounters) bool { return c.Spares >= 1 })
+	stream = segment.NewStream(1, streamIdentity, set, pool, cache)
+	return set, pool, cache, stream
+}
+
+// TestSealRefusesAnAppendResumedFromTheRollGate checks the parked half of
+// R85's gate under the roll: an Append parked on the first segment's roll
+// gate — the roll a full or empty stream arms before it takes its spare —
+// resumes when the gate settles, and a seal that took the segment while the
+// roll ran must be waited out by it: the resumed append re-reads the seal at
+// the loop's top, parks on the drain's cond while one runs and rolls to a
+// successor naming the sealed segment, never reserving at the marker the
+// seal's own write is driving at, unlisted by the footer and overwriting or
+// overwritten by it. The warmed racing test never reaches this path, for its
+// segment is taken long before the seal starts.
 //
-// The staging follows the probe that found it: the spare's making is slowed
-// on the seam so the appends racing the take park on its gate, appenders run
-// against one seal that retries past the take's ErrNoSegment, and the rounds
-// repeat until a resumed append slips past the marker or the fixed refusal
-// holds every one.
-func TestSealRefusesAnAppendResumedFromTheTakeGate(t *testing.T) {
+// The staging follows the probe that found the take's race: the spare's
+// making is slowed on the seam so the appends racing the first roll park on
+// its gate, appenders run against one seal that retries past the stream's
+// ErrNoSegment, and the rounds repeat until a resumed append slips past the
+// marker or the loop's seal wait holds every one.
+func TestSealRefusesAnAppendResumedFromTheRollGate(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	// The round's shape is built once: a slowed seam, and a fresh stream,
-	// set and cache per round so each race is one take and one seal. Only
-	// the spare's making is slowed — the take's own calls, under its
-	// temporary name — the way a busy device delays a new file's setup,
+	// set, pool and cache per round so each race is one roll and one seal.
+	// Only the spare's making is slowed — the roll's own calls, under its
+	// borrowed name — the way a busy device delays a new file's setup,
 	// while the records and the seal itself run at full speed.
 	spare := format.SpareName(core.SegmentID(1))
 	e := streamOver(t, streamCap, func(env streamEnv) {
@@ -2271,27 +2398,24 @@ func TestSealRefusesAnAppendResumedFromTheTakeGate(t *testing.T) {
 
 	// The spare's creation and allocation wait the beat a busy device
 	// takes, the two calls the probe that found the bug slowed; the rest
-	// of the take, and every record and seal, run at full speed. The bug
-	// is a scheduler-race, not a certainty: unfixed, it caught the bug in
-	// seven of the reviewer's three hundred rounds and missed a whole
-	// -race run, so it is the probabilistic backstop and
-	// TestAppendParkedAtTheLoopTopRefusesTheSeal, in this package's probe
-	// file, is the deterministic guard: its park hook stages the resumed
-	// append against a sealing stream every run. A few rounds keep the
-	// end-to-end path honest while the package's time stays its own.
+	// of the roll, and every record and seal, run at full speed. The bug
+	// is a scheduler-race, not a certainty, so the probabilistic backstop
+	// repeats its rounds; TestRollASealRunningUnderARollIsWaitedOut, in
+	// this package's roll tests, is the deterministic guard that stages
+	// the resumed append against a running seal every run. A few rounds
+	// keep the end-to-end path honest while the package's time stays its
+	// own.
 	const appenders = 16
 	rounds := 30
 	if testing.Short() {
 		rounds = 3
 	}
 	for round := range rounds {
-		set := segment.NewSet(streamCap, nil)
-		budget := core.NewDescriptorBudget(8)
-		cache := segment.NewDescriptors(e.seam.FS(), format.SegmentName, budget)
-		stream := segment.NewStream(1, streamIdentity, set, segment.NewMaker(e.seam.FS(), set, streamMax, 0, nil), cache)
+		_, pool, cache, stream := streamOverPool(t, e)
 		roundCheck := func() error {
 			defer func() {
 				_ = stream.Close()
+				pool.Stop()
 				if err := cache.Shutdown(); err != nil {
 					t.Errorf("round %d's cache Shutdown: %v", round, err)
 				}
@@ -2313,7 +2437,7 @@ func TestSealRefusesAnAppendResumedFromTheTakeGate(t *testing.T) {
 					outcomes <- outcome{p: p, err: err}
 				}(i)
 			}
-			// The sealer waits for the take to hand the stream its
+			// The sealer waits for the roll to hand the stream its
 			// segment, then seals once.
 			sealRes := make(chan segment.SealResult, 1)
 			sealErr := make(chan error, 1)
@@ -2322,7 +2446,7 @@ func TestSealRefusesAnAppendResumedFromTheTakeGate(t *testing.T) {
 					res, err := stream.Seal(true)
 					if errors.Is(err, segment.ErrNoSegment) {
 						// A caller has other work: give the
-						// take and its parked waiters a
+						// roll and its parked waiters a
 						// moment rather than spinning on
 						// the lock.
 						time.Sleep(time.Millisecond)
@@ -2351,12 +2475,12 @@ func TestSealRefusesAnAppendResumedFromTheTakeGate(t *testing.T) {
 					continue
 				}
 				if end := o.p.Loc.Off + o.p.Loc.Len; end > res.Marker {
-					return fmt.Errorf("a record ended at %d, past the seal's marker %d: an append resumed from the take gate was taken after the seal", end, res.Marker)
+					return fmt.Errorf("a record ended at %d, past the seal's marker %d: an append resumed from the roll gate was taken after the seal", end, res.Marker)
 				}
 				placed = append(placed, o.p)
 			}
 			if len(placed) == 0 {
-				return nil // the seal won the whole take race: nothing to check
+				return nil // the seal won the whole roll race: nothing to check
 			}
 
 			// The footer verifies and lists exactly the successes, in
@@ -2395,7 +2519,7 @@ func TestSealRefusesAnAppendResumedFromTheTakeGate(t *testing.T) {
 
 // sealDelayFault sleeps a beat before each seam call on the named files,
 // slowing a spare's making the way a busy device does, so the appends racing
-// the take park on its gate and resume as it settles.
+// the roll park on its gate and resume as it settles.
 type sealDelayFault struct {
 	names []string
 	ops   []string

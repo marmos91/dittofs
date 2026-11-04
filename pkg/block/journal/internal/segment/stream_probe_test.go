@@ -191,16 +191,20 @@ func TestStreamReservationAllocatesNothing(t *testing.T) {
 }
 
 // streamProbeStream builds a stream whose tracker alone is exercised: the
-// dependencies are real — a set, a maker and a cache over a real directory —
-// but nothing appends, because the checks below drive the tracker directly.
+// dependencies are real — a set, a pool over a maker and a cache over a real
+// directory — but nothing appends, because the checks below drive the
+// tracker directly.
 func streamProbeStream(t *testing.T) *Stream {
 	t.Helper()
 
 	dir := t.TempDir()
 	set := NewSet(64<<10, nil)
 	maker := NewMaker(probeFS(dir), set, 1<<62, 0, nil)
+	pool := NewPool(maker, Targets{Content: 1}, nil)
+	t.Cleanup(func() { pool.Stop() })
+	pool.Start()
 	cache := NewDescriptors(probeFS(dir), format.SegmentName, core.NewDescriptorBudget(64))
-	return NewStream(1, probeIdentity, set, maker, cache)
+	return NewStream(1, probeIdentity, set, pool, cache)
 }
 
 // probeIdentity is the identity the probe stream writes under.

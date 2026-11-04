@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -78,6 +79,9 @@ type PoolCounters struct {
 	RepackReserveBytes int64
 	// Held is the content spares owed to the pool's open holds.
 	Held int64
+	// SpareRefusals is how many rolls the pool refused naming `spare`: each
+	// counted once by the roll that drew the pool's final answer.
+	SpareRefusals int64
 }
 
 // Pool is the spare pool: the spares of the three classes the Maker made,
@@ -88,7 +92,9 @@ type PoolCounters struct {
 // sit under the capacity domain of RFC 1 §8.2 — store-wide counters, no I/O
 // under p.mu, no lock acquired while it is held, and never held across a Maker
 // or a Set call: those take locks of this same domain, and no two locks of one
-// domain are held at once. Withdrawn the day a recorder of the domain's order
+// domain are held at once. spareRefusals is a store-wide counter of the same
+// domain kept in an atomic without p.mu, for the roll counts it outside any
+// lock the pool might hold. Withdrawn the day a recorder of the domain's order
 // finds p.mu held across one of those calls.
 type Pool struct {
 	m   *Maker
@@ -103,6 +109,12 @@ type Pool struct {
 	started    bool                          // guarded by mu
 	stopped    bool                          // guarded by mu
 	deviceFull bool                          // guarded by mu
+
+	// spareRefusals counts each roll the pool refused naming `spare`. The
+	// pool never raises it itself: only the roll does, because only the
+	// roll knows the final answer — a header-only record's missed content
+	// take, served by the headroom, is no refusal.
+	spareRefusals atomic.Int64
 
 	kick chan struct{}
 	done chan struct{}
@@ -515,6 +527,13 @@ func (p *Pool) DeviceFull() bool {
 	return p.deviceFull
 }
 
+// countSpareRefusal raises the spare-refusal counter. The pool never calls
+// it: only a roll that drew its final answer `spare` does, for a missed
+// content take that a fallback served is no refusal.
+func (p *Pool) countSpareRefusal() {
+	p.spareRefusals.Add(1)
+}
+
 // Counters returns the pool's maintained counters: one lock and a copy, the
 // slice lengths read as maintained state, no walk of any class.
 func (p *Pool) Counters() PoolCounters {
@@ -525,6 +544,7 @@ func (p *Pool) Counters() PoolCounters {
 		HeadroomBytes:      int64(len(p.ready[Headroom])) * p.m.set.cap,
 		RepackReserveBytes: int64(len(p.ready[Reserve])) * p.m.set.cap,
 		Held:               int64(p.held),
+		SpareRefusals:      p.spareRefusals.Load(),
 	}
 }
 

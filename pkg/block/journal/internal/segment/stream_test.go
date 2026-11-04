@@ -33,15 +33,20 @@ const streamMax = math.MaxInt64
 // streamIdentity is one journal identity every stream test writes under.
 var streamIdentity = core.JournalID{0xd, 0xe, 0xc, 0xa, 0xd, 0}
 
-// streamEnv is one stream over the seam, its ledger and its cache: the
-// building set of every stream check.
+// streamEnv is one stream over the seam, its ledger, its spare pool and its
+// cache: the building set of every stream check.
 type streamEnv struct {
 	seam   *journaltest.Seam
 	set    *segment.Set
 	maker  *segment.Maker
+	pool   *segment.Pool
 	cache  *segment.Descriptors
 	budget *core.DescriptorBudget
 	s      *segment.Stream
+	// cap is the segment cap the env's set was built with, the figure the
+	// footprint checks below need to strip the pool's ready spares out of
+	// the ledger's footprint.
+	cap int64
 }
 
 // streamEnvBuilt registers the cache's Shutdown as the last cleanup, so a
@@ -73,18 +78,45 @@ func streamOver(t *testing.T, cap int64, setup func(e streamEnv)) streamEnv {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
 	set := segment.NewSet(cap, nil)
-	maker := segment.NewMaker(seam.FS(), set, streamMax, 0, nil)
+	// decision: the maker's maximum is pinned at two caps — exactly the
+	// two content spares the pool keeps — so once the worker has met its
+	// target the ledger holds nothing else: a stream's take drains the
+	// class and the refill it kicks is refused by the maximum before any
+	// storage is touched, which makes every count below stand on the
+	// appends alone, never on a race with the worker. Checks that need a
+	// stream to roll several times build their envs over rolls of their
+	// own targets.
+	maker := segment.NewMaker(seam.FS(), set, 2*cap, 0, nil)
 	budget := core.NewDescriptorBudget(64)
 	cache := segment.NewDescriptors(seam.FS(), format.SegmentName, budget)
+	pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil)
 
-	e := streamEnv{seam: seam, set: set, maker: maker, cache: cache, budget: budget}
+	e := streamEnv{seam: seam, set: set, maker: maker, pool: pool, cache: cache, budget: budget, cap: cap}
 	setup(e)
-	e.s = segment.NewStream(1, streamIdentity, set, maker, cache)
+	// The pool's Stop is registered before the stream's Close and the
+	// cache's Shutdown so it runs after them: the stream holds a ref the
+	// Shutdown would wait on, and the worker holds the maker over the seam.
+	t.Cleanup(func() { pool.Stop() })
+	pool.Start()
+	// The worker makes spares on its own goroutine, so a stream that appends
+	// the moment it is built races the first make: wait until both content
+	// spares are ready, which the pinned maximum holds there.
+	awaitCounters(t, "the two content spares ready", pool,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+	e.s = segment.NewStream(1, streamIdentity, set, pool, cache)
 	return e
 }
 
 // streamSegName returns the segment file name of id, as the cache names it.
 func streamSegName(id core.SegmentID) string { return format.SegmentName(id) }
+
+// segmentsBytes returns the accounted size of the set's segments alone, the
+// pool's ready spares apart: the figure every check that pins a segment's
+// own footprint wants, for the ledger counts a ready spare beside them and
+// a take moves nothing. Every spare is accounted at the env's cap.
+func segmentsBytes(e streamEnv, c segment.Counters) int64 {
+	return c.UsedBytes - c.Spares*e.cap
+}
 
 // streamWriteHeader returns the header and body of one write of len(payload)
 // bytes at file offset off, of the file fid, carrying tag and version.
@@ -378,9 +410,8 @@ func TestStreamSixteenConcurrentAppendsCoverTheSegment(t *testing.T) {
 // cap, a write whose payload straddles the remaining room — the returned
 // piece's decoded header names the write's file offset, the version and only
 // the bytes that fit; N is below the payload; and the reserve holds after the
-// piece. The following append of the rest answers ErrSegmentFull (no roll
-// yet) and makes no seam call. A header-only kind that does not fit is
-// refused the same way.
+// piece. The following append of the rest rolls into a new segment naming the
+// first; a header-only kind that does not fit rolls the same way.
 func TestStreamAStraddlingWriteIsSplitAtTheCap(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -442,22 +473,38 @@ func TestStreamAStraddlingWriteIsSplitAtTheCap(t *testing.T) {
 		t.Fatalf("after the piece the stream sits at %d, want it past the %d of remaining room", after, 4096-room)
 	}
 
-	// The rest does not fit, so with no roll the next append is refused
-	// with no write made.
-	writesBefore := e.seam.CallsFor(journaltest.OpWrite, streamSegName(1))
+	// The rest does not fit, so the next append rolls: it lands in a new
+	// segment whose header names the first, and the piece the stream returns
+	// has no empty bytes before it. The roll's contract replaces the refusal
+	// the no-roll skeleton answered.
 	rest := payload2[p2.N:]
 	h3, b3 := streamWriteHeader(streamFileID(2), 4096+p2.N, rest, 7, core.Version{Counter: 10})
-	if _, err := e.s.Append(h3, b3); !errors.Is(err, segment.ErrSegmentFull) {
-		t.Fatalf("the append of the rest = %v, want ErrSegmentFull", err)
+	p3, err := e.s.Append(h3, b3)
+	if err != nil {
+		t.Fatalf("the append of the rest: %v", err)
 	}
-	if got := e.seam.CallsFor(journaltest.OpWrite, streamSegName(1)); got != writesBefore {
-		t.Fatalf("the refusal made %d more writes, want none", got-writesBefore)
+	if p3.N != int64(len(rest)) {
+		t.Fatalf("the rest placed %d bytes, want the whole %d", p3.N, len(rest))
+	}
+	if p3.Loc.Segment == p2.Loc.Segment {
+		t.Fatalf("the rest landed in segment %d, want a rolled-to new one", p3.Loc.Segment)
+	}
+	if hdr := streamSegmentHeader(t, e, p3.Loc.Segment); hdr.Predecessor != p2.Loc.Segment {
+		t.Fatalf("the new segment names predecessor %d, want the full segment %d", hdr.Predecessor, p2.Loc.Segment)
 	}
 
-	// A header-only kind that does not fit is refused too.
+	// A header-only kind that does not fit rolls like any record: the stamp
+	// lands in the successor the rest rolled to, whose room takes it whole.
 	h4 := format.RecordHeader{Kind: format.KindStamp, File: streamFileID(3), Tag: 7}
-	if _, err := e.s.Append(h4, format.RecordBody{Cut: 4}); !errors.Is(err, segment.ErrSegmentFull) {
-		t.Fatalf("the stamp that does not fit = %v, want ErrSegmentFull", err)
+	p4, err := e.s.Append(h4, format.RecordBody{Cut: 4})
+	if err != nil {
+		t.Fatalf("the stamp that does not fit: %v", err)
+	}
+	if p4.Loc.Segment != p3.Loc.Segment {
+		t.Fatalf("the stamp landed in segment %d, want it in the successor %d the roll took", p4.Loc.Segment, p3.Loc.Segment)
+	}
+	if p4.Loc.Off != p3.Loc.Off+p3.Loc.Len {
+		t.Fatalf("the stamp landed at %d, want the slot past the rest's record %d", p4.Loc.Off, p3.Loc.Off+p3.Loc.Len)
 	}
 }
 
@@ -499,21 +546,29 @@ func TestStreamARecordThatExactlyFillsTheRoomIsOnePiece(t *testing.T) {
 		t.Fatal("the exactly-filling record does not read back byte for byte")
 	}
 
-	// Nothing more fits: the next append is refused without a write.
-	writes := e.seam.CallsFor(journaltest.OpWrite, streamSegName(1))
+	// Nothing more fits, so the next append rolls: it lands in a new
+	// segment naming the exactly-filled one, and the first segment is
+	// sealed with its two records' footer intact.
 	h2, body2 := streamWriteHeader(streamFileID(2), 0, make([]byte, 1), 7, core.Version{Counter: 2})
-	if _, err := e.s.Append(h2, body2); !errors.Is(err, segment.ErrSegmentFull) {
-		t.Fatalf("the append after the exact fill = %v, want ErrSegmentFull", err)
+	p2, err := e.s.Append(h2, body2)
+	if err != nil {
+		t.Fatalf("the append after the exact fill: %v", err)
 	}
-	if got := e.seam.CallsFor(journaltest.OpWrite, streamSegName(1)); got != writes {
-		t.Fatalf("the refusal after the exact fill made %d writes, want none", got-writes)
+	if p2.Loc.Segment == p.Loc.Segment {
+		t.Fatalf("the append after the exact fill landed in segment %d, want a rolled-to new one", p2.Loc.Segment)
+	}
+	if state, err := e.set.State(p.Loc.Segment); err != nil || state != segment.Sealed {
+		t.Fatalf("the exactly-filled segment's state after the roll is %v, %v, want Sealed", state, err)
 	}
 }
 
 // TestStreamTheSealReserveSurvivesTheAppends checks R11 for several record
 // sizes: after appends fill the segment, the space left past next still holds
-// the marker, a footer entry per record and the trailer. It catches a room
-// check that forgets the catalog entry of the record being placed.
+// the marker, a footer entry per record and the trailer. The loop stops at the
+// first roll — the record that did not fit landed in the next segment, which
+// is what fills this one — and the scan then reads the filled segment itself.
+// It catches a room check that forgets the catalog entry of the record being
+// placed.
 func TestStreamTheSealReserveSurvivesTheAppends(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -522,16 +577,22 @@ func TestStreamTheSealReserveSurvivesTheAppends(t *testing.T) {
 			e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
 			defer func() { _ = e.s.Close() }()
 
+			var first core.SegmentID // the segment the records filled, 0 until the first lands
 			var count int64
 			for i := 0; ; i++ {
 				payload := make([]byte, payloadLen)
 				h, body := streamWriteHeader(streamFileID(1), int64(i)*payloadLen, payload, 7, core.Version{Counter: uint64(i + 1)})
-				_, err := e.s.Append(h, body)
-				if errors.Is(err, segment.ErrSegmentFull) {
-					break
-				}
+				p, err := e.s.Append(h, body)
 				if err != nil {
 					t.Fatalf("append %d: %v", i, err)
+				}
+				if first == 0 {
+					first = p.Loc.Segment
+					count++
+					continue
+				}
+				if p.Loc.Segment != first {
+					break // the record rolled: the filled segment's room is measured below
 				}
 				count++
 			}
@@ -539,7 +600,22 @@ func TestStreamTheSealReserveSurvivesTheAppends(t *testing.T) {
 				t.Fatal("no record fit at all")
 			}
 
-			next := streamScanNext(t, e)
+			// The filled segment: read back its records to where they end
+			// and check the room left past the last.
+			var next int64
+			off := int64(format.SegmentHeaderSize)
+			for {
+				raw := make([]byte, format.RecordHeaderSize)
+				if _, err := e.s.ReadAt(first, raw, off); err != nil {
+					t.Fatalf("reading the record header at %d: %v", off, err)
+				}
+				h, err := format.DecodeRecordHeader(raw, streamIdentity, first, off)
+				if err != nil {
+					break
+				}
+				next = off + h.Size()
+				off = next
+			}
 			room := streamCap - next
 			want := format.SealMarkerSize + count*format.CatalogEntrySize + format.TrailerSize
 			if room < want {
@@ -577,9 +653,10 @@ func TestStreamEachRangeWrittenOnceAndAccounted(t *testing.T) {
 	}
 
 	// The take accounted the segment at its cap, and no append moved the
-	// footprint (the bytes are inside storage the segment already accounts).
-	if c := e.set.Counters(); c.UsedBytes != streamCap {
-		t.Fatalf("the footprint is %d after the appends, want the cap %d alone", c.UsedBytes, streamCap)
+	// footprint (the bytes are inside storage the segment already accounts):
+	// the segments' bytes, the pool's ready spares apart, are the cap alone.
+	if c := e.set.Counters(); segmentsBytes(e, c) != streamCap {
+		t.Fatalf("the segments account for %d after the appends, want the cap %d alone", segmentsBytes(e, c), streamCap)
 	}
 	if got := e.set.ShareBytes(7); got != sum {
 		t.Fatalf("the share holds %d record bytes, want the sum of the records' sizes %d", got, sum)
@@ -645,9 +722,9 @@ func TestStreamTheLocationIsReturnedOnlyAfterTheBytesAreWritten(t *testing.T) {
 	if got := e.set.ShareBytes(7); got != warmCharge {
 		t.Fatalf("the share holds %d bytes while the parked record is unwritten, want the warm record's %d alone: the bytes are charged only once written", got, warmCharge)
 	}
-	// The footprint holds the segment alone, the take's cap.
-	if c := e.set.Counters(); c.UsedBytes != streamCap {
-		t.Fatalf("the footprint is %d, want the take's cap %d", c.UsedBytes, streamCap)
+	// The segment's own footprint never moved past its take's cap.
+	if c := e.set.Counters(); segmentsBytes(e, c) != streamCap {
+		t.Fatalf("the segments account for %d, want the take's cap %d", segmentsBytes(e, c), streamCap)
 	}
 
 	h.Release()
@@ -715,16 +792,28 @@ func TestStreamTheHeaderIsWrittenOnceAndTheTakeSingleFlighted(t *testing.T) {
 		t.Fatalf("%d concurrent appends returned a place, want %d", count, appends)
 	}
 
-	// Exactly one segment file was created, and its header was written
-	// once: the segment's OpWrites are one header plus the records.
+	// Exactly one segment was taken, and its header was written once: the
+	// stream's is the only segment the ledger holds, the pool's ready
+	// spares beside it — a ready spare carries a `.seg` name too, its zeros
+	// never a header, so the directory holds one segment file more than the
+	// roll reached.
+	if c := e.set.Counters(); c.Segments != 1 {
+		t.Fatalf("the concurrent first appends took %d segments into the set, want exactly 1", c.Segments)
+	}
 	segs := 0
 	for _, n := range streamListNames(t, e) {
-		if kind, _ := format.ClassifyName(n); kind == format.NameSegment {
-			segs++
+		if kind, i := format.ClassifyName(n); kind == format.NameSegment {
+			raw := make([]byte, format.SegmentHeaderSize)
+			if _, err := e.s.ReadAt(i, raw, 0); err != nil {
+				continue // a spare the roll never reached
+			}
+			if _, err := format.DecodeSegmentHeader(raw, streamIdentity); err == nil {
+				segs++
+			}
 		}
 	}
 	if segs != 1 {
-		t.Fatalf("the concurrent first appends created %d segment files, want exactly 1", segs)
+		t.Fatalf("the concurrent first appends left %d segment files with headers, want exactly the one they took", segs)
 	}
 	if got := e.seam.CallsFor(journaltest.OpCreate, format.SpareName(1)); got != 1 {
 		t.Fatalf("the take created the spare %d times, want once", got)
@@ -748,6 +837,23 @@ func TestStreamTheHeaderIsWrittenOnceAndTheTakeSingleFlighted(t *testing.T) {
 	if hdr.Identity != streamIdentity {
 		t.Fatal("the header names another identity")
 	}
+}
+
+// streamSegmentHeader reads a segment's 48-byte header back through the
+// stream's ReadAt and decodes it, for the checks that pin what a taken
+// segment named.
+func streamSegmentHeader(t *testing.T, e streamEnv, id core.SegmentID) format.SegmentHeader {
+	t.Helper()
+
+	raw := make([]byte, format.SegmentHeaderSize)
+	if _, err := e.s.ReadAt(id, raw, 0); err != nil {
+		t.Fatalf("ReadAt of segment %d's header: %v", id, err)
+	}
+	hdr, err := format.DecodeSegmentHeader(raw, streamIdentity)
+	if err != nil {
+		t.Fatalf("segment %d's header does not decode: %v", id, err)
+	}
+	return hdr
 }
 
 // streamListNames returns the seam's directory through the seam's List.
@@ -786,12 +892,16 @@ func TestStreamAFailedTakeIsRefusedAndLeftForRetirement(t *testing.T) {
 
 	// The segment the failed take made is ended in the ledger: its cap is
 	// held for the retirement, and it is no spare.
+	// The take that failed wrote the header of the spare it drew, so the
+	// spare is ended in the ledger — a segment in its own right, accounted
+	// at its cap and held to its retirement — and the pool's content class
+	// is one spare down: the take popped it before the error.
 	c := e.set.Counters()
-	if c.UsedBytes != streamCap {
-		t.Fatalf("the footprint after the failed take is %d, want the failed segment's cap %d held to its retirement", c.UsedBytes, streamCap)
+	if c.Segments != 1 {
+		t.Fatalf("the ledger holds %d segments, want the failed take's one", c.Segments)
 	}
-	if c.Segments != 1 || c.Spares != 0 {
-		t.Fatalf("the ledger holds %d segments and %d spares, want the failed take's segment and no spares", c.Segments, c.Spares)
+	if got := segmentsBytes(e, c); got != streamCap {
+		t.Fatalf("the segments account for %d after the failed take, want the failed segment's cap %d held to its retirement", got, streamCap)
 	}
 	if err := e.set.Check(); err != nil {
 		t.Fatalf("the ledger after the failed take: %v", err)
@@ -806,7 +916,8 @@ func TestStreamAFailedTakeIsRefusedAndLeftForRetirement(t *testing.T) {
 		t.Fatalf("retiring the failed take's segment freed %d, %v, want its cap %d, nil: only a non-Active segment retires", freed, err, streamCap)
 	}
 
-	// The next append retries the take: a fresh segment with a higher id.
+	// The next append retries the take: a fresh segment with a higher id,
+	// the spare the roll drew after the faulted one.
 	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, streamSegName(1), 0, syscall.EIO)); err != nil {
 		t.Fatalf("disarming the header fault: %v", err)
 	}
@@ -815,11 +926,11 @@ func TestStreamAFailedTakeIsRefusedAndLeftForRetirement(t *testing.T) {
 	if p.Loc.Segment != 2 {
 		t.Fatalf("the retry landed in segment %d, want a fresh id above the failed take's 1", p.Loc.Segment)
 	}
-	// The retire above took the failed segment out, so the footprint after
-	// the retry holds the new segment's cap alone.
+	// The retire above took the failed segment out, so the segments' own
+	// footprint after the retry holds the new segment's cap alone.
 	c2 := e.set.Counters()
-	if c2.UsedBytes != streamCap {
-		t.Fatalf("the footprint after the retire and the retry is %d, want the new segment's cap %d", c2.UsedBytes, streamCap)
+	if got := segmentsBytes(e, c2); got != streamCap {
+		t.Fatalf("the segments account for %d after the retire and the retry, want the new segment's cap %d", got, streamCap)
 	}
 }
 
@@ -1117,15 +1228,18 @@ func TestStreamClosesUnderDenseAppendsRacingAppendsDoesNotPanic(t *testing.T) {
 			t.Fatalf("round %d: the seam could not be made: %v", round, err)
 		}
 		set := segment.NewSet(streamCap, nil)
-		maker := segment.NewMaker(seam.FS(), set, streamMax, 0, nil)
+		maker := segment.NewMaker(seam.FS(), set, 3*streamCap, 0, nil)
+		pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil)
+		pool.Start()
 		budget := core.NewDescriptorBudget(64)
 		cache := segment.NewDescriptors(seam.FS(), format.SegmentName, budget)
-		s := segment.NewStream(1, streamIdentity, set, maker, cache)
+		s := segment.NewStream(1, streamIdentity, set, pool, cache)
 		// The round settles itself, so the next round starts from an empty
 		// heap — a hundred rounds of caches held to the test's end would
 		// read as growth to the profiler.
 		defer func() {
 			_ = s.Close()
+			pool.Stop()
 			if err := cache.Shutdown(); err != nil {
 				t.Errorf("round %d: the cache's Shutdown = %v, want nil", round, err)
 			}
@@ -1299,11 +1413,16 @@ func TestStreamASplitPieceTakesTheWholeRoom(t *testing.T) {
 					p.N, room, reserve)
 			}
 
-			// The bytes past the one the piece places have nowhere to go:
-			// appending one more payload byte than the piece placed is
-			// refused before any write, which pins the largest-fitting
-			// piece from the other side.
-			writes := e.seam.CallsFor(journaltest.OpWrite, streamSegName(e.streamActiveID(t)))
+			// The bytes past the one the piece places belong to no second
+			// piece: appending one more payload byte than the piece placed
+			// lands none of it in this segment, which pins the largest-
+			// fitting piece from the other side — the record's whole size
+			// exceeded the room even before the piece, and one byte more
+			// does nothing to change that. Its record has no piece here
+			// and rolls, landing whole in the successor; the full segment's
+			// own writes after the piece belong to the seal the roll
+			// closed it with, not to a record.
+			active := e.streamActiveID(t)
 			oneMore := make([]byte, p.N+1)
 			h2 := format.RecordHeader{
 				Kind:    tc.kind,
@@ -1312,12 +1431,22 @@ func TestStreamASplitPieceTakesTheWholeRoom(t *testing.T) {
 				Version: core.Version{Counter: 10},
 				Tag:     7,
 			}
-			if _, err := e.s.Append(h2, format.RecordBody{Payload: oneMore}); !errors.Is(err, segment.ErrSegmentFull) {
-				t.Fatalf("an append of %d payload bytes after the piece of %d = %v, want ErrSegmentFull: the piece was not the largest that fits",
-					p.N+1, p.N, err)
+			p2, err := e.s.Append(h2, format.RecordBody{Payload: oneMore})
+			if err != nil {
+				t.Fatalf("the append of one more payload byte: %v", err)
 			}
-			if got := e.seam.CallsFor(journaltest.OpWrite, streamSegName(e.streamActiveID(t))); got != writes {
-				t.Fatalf("the refusal made %d more writes, want none: the refusal happens before any write", got-writes)
+			if p2.N != int64(len(oneMore)) {
+				t.Fatalf("the append of %d payload bytes placed %d in the successor, want the whole record: the old segment's piece was its largest",
+					len(oneMore), p2.N)
+			}
+			if p2.Loc.Segment != active {
+				t.Fatalf("the append of one more byte rolled twice, to segment %d, want one roll to the active %d", p2.Loc.Segment, active)
+			}
+			if state, err := e.set.State(active); err != nil || state != segment.Active {
+				t.Fatalf("the successor's state after the roll is %v, %v, want Active", state, err)
+			}
+			if state, err := e.set.State(p.Loc.Segment); err != nil || state != segment.Sealed {
+				t.Fatalf("the full segment's state after the roll is %v, %v, want Sealed", state, err)
 			}
 		})
 	}
@@ -1560,13 +1689,18 @@ func streamOverFS(t *testing.T, cap int64, fsys storage.FS, setup func(e streamE
 	t.Helper()
 
 	set := segment.NewSet(cap, nil)
-	maker := segment.NewMaker(fsys, set, streamMax, 0, nil)
+	maker := segment.NewMaker(fsys, set, 3*cap, 0, nil)
 	budget := core.NewDescriptorBudget(64)
 	cache := segment.NewDescriptors(fsys, format.SegmentName, budget)
+	pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil)
 
-	e := streamEnv{set: set, maker: maker, cache: cache, budget: budget}
+	e := streamEnv{set: set, maker: maker, pool: pool, cache: cache, budget: budget, cap: cap}
 	setup(e)
-	e.s = segment.NewStream(1, streamIdentity, set, maker, cache)
+	t.Cleanup(func() { pool.Stop() })
+	pool.Start()
+	awaitCounters(t, "the two content spares ready", pool,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+	e.s = segment.NewStream(1, streamIdentity, set, pool, cache)
 	return e
 }
 
