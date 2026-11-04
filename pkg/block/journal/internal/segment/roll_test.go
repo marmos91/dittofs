@@ -8,6 +8,7 @@ import (
 	"math"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -876,6 +877,11 @@ func TestRollASegmentEndedByAFailedSealSyncNamesNoPredecessor(t *testing.T) {
 				t.Fatal("the AppendRoll of the rest answered nil, want the seal's ended failure carried to its caller")
 			} else if !errors.Is(err, segment.ErrSegmentEnded) || !errors.Is(err, syscall.EIO) {
 				t.Fatalf("the AppendRoll of the rest = %v, want ErrSegmentEnded carrying the fault's EIO", err)
+			} else if strings.Count(err.Error(), segment.ErrSegmentEnded.Error()) != 1 {
+				// The seal's own refusal already names the sentinel on every
+				// ended path, so the roll must not wrap it again: a message
+				// naming the end twice reads as two failures.
+				t.Fatalf("the AppendRoll of the rest = %q, want the sentinel named once", err)
 			}
 			if state, err := e.set.State(p1.Loc.Segment); err != nil || state != segment.Ended {
 				t.Fatalf("the failed segment's state is %v, %v, want Ended", state, err)

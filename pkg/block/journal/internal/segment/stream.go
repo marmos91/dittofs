@@ -877,7 +877,13 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 			// hands it to its caller and stays on the ended segment —
 			// moving on would answer the next Sync with a nil over a
 			// window no fsync reached. The taken spare is unwound, and the
-			// next append rolls again, naming none (R33).
+			// next append rolls again, naming none (R33). The seal's
+			// refusal already names the sentinel on every ended path,
+			// so it is carried as itself — wrapping it would name the
+			// end twice.
+			if errors.Is(serr, ErrSegmentEnded) {
+				return s.endTaken(id, Ref{}, serr)
+			}
 			return s.endTaken(id, Ref{}, fmt.Errorf("%w: %w", ErrSegmentEnded, serr))
 		}
 	}
