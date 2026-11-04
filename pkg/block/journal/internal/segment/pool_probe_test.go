@@ -46,3 +46,12 @@ func (r *Retirer) StoppedForTest() bool {
 		return false
 	}
 }
+
+// ExtraNamesForTest reports how many extra names the executor still records
+// for a segment id, so a check can assert a completed retirement leaves none
+// behind: the map is bounded by the retirements still owed a retry.
+func (r *Retirer) ExtraNamesForTest(id core.SegmentID) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.extra[id])
+}

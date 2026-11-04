@@ -204,13 +204,6 @@ func (r *Retirer) Retire(id core.SegmentID, reason Reason) (Retirement, error) {
 	// failed and whose size still stands at the cap, and every ended
 	// segment, whatever the pool holds.
 	recycle := st == Sealed && full && r.cfg.Pool != nil
-	// class is the class wantRecycle reserved; its zero on a refusal names an
-	// unlink, and recycle is already false for that pool-less case, so one
-	// condition covers both.
-	var class Class
-	if recycle {
-		class, recycle = r.cfg.Pool.wantRecycle()
-	}
 
 	// RFC 1 §8.5, by way of the cache's own drain: this segment's readers are
 	// waited for and its descriptors closed before any storage moves,
@@ -218,6 +211,17 @@ func (r *Retirer) Retire(id core.SegmentID, reason Reason) (Retirement, error) {
 	if err := r.cfg.Cache.Close(id); err != nil {
 		r.log.Warn("segment: the retirement closed a descriptor with an error",
 			"segment", uint64(id), "err", err)
+	}
+
+	// The reservation is taken only once the drain is done: for the length of
+	// the drain the slot would read as filled and refill would make no spare
+	// for it, so taking it after Close returns keeps refill's window honest.
+	// class is the class wantRecycle reserved; its zero on a refusal names an
+	// unlink, and recycle is already false for that pool-less case, so one
+	// condition covers both.
+	var class Class
+	if recycle {
+		class, recycle = r.cfg.Pool.wantRecycle()
 	}
 
 	if recycle {
@@ -295,6 +299,12 @@ func (r *Retirer) recycle(id core.SegmentID, class Class) (Retirement, error) {
 	}
 	r.cfg.Pool.recycled(fresh, class)
 	r.cfg.Cache.Forget(id)
+	// The retry's names are spent with the segment: a recycle that landed
+	// owes no unlink any more, and the map holds only what a retry still
+	// owes.
+	r.mu.Lock()
+	delete(r.extra, id)
+	r.mu.Unlock()
 
 	// decision: freed_bytes rises by the cap on a recycle, against the epic
 	// plan's own R79 ("unchanged after a recycle"), because RFC 1 §3.9
@@ -614,14 +624,10 @@ func (r *Retirer) pass() {
 					"segment", uint64(id), "err", err)
 			}
 			r.dropQueued(id)
-		case errors.Is(err, ErrClaimed), errors.Is(err, fs.ErrClosed):
-			// Another path holds the claim, or the journal has closed: the id
-			// stays for a later pass, which is the retry — the same move a
-			// failed step's makes, so the two share the fallback below.
-			fallthrough
 		default:
-			// A failed step, the read-only refusal included: the id stays
-			// for the next pass.
+			// A failed step, the read-only refusal included, or another path
+			// holding the claim (ErrClaimed): the id stays for the next
+			// pass, which is the retry.
 			requeued = append(requeued, id)
 			requeuedReasons = append(requeuedReasons, reasons[i])
 		}

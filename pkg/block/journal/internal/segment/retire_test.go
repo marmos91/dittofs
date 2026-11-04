@@ -356,6 +356,13 @@ func TestRetireRecycleCallLogAndFootprint(t *testing.T) {
 	if id, err := e.p.Take(segment.Content); err != nil || id != res.Fresh {
 		t.Fatalf("the take of the recycled spare: (%d, %v), want %d", id, err, res.Fresh)
 	}
+	// The take empties the class again, and the completed recycle spent its
+	// reservation: the pool wants the next one. A recycled landing that
+	// never paid its slot back leaves the class reading one-short-forever,
+	// and every recycle after the first leaks its slot instead.
+	if class, ok := e.p.WantRecycleForTest(); !ok || class != segment.Content {
+		t.Fatalf("after the recycled spare was taken the pool wants no recycle: (%v, %v), want (content, true): a completed recycle must spend the slot it reserved", class, ok)
+	}
 	e.p.Stop()
 	if got := e.seam.Calls(journaltest.OpAllocate) - allocs; got != 0 {
 		t.Fatalf("the retirement and the take allocated %d times, want none beside the segment's own making", got)
@@ -479,8 +486,21 @@ func TestRetireDecidesAtRetirement(t *testing.T) {
 // TestRetireSealedEarlyIsUnlinked: a segment sealed early is unlinked when
 // retired, never recycled — including one whose truncation failed, which
 // stays Sealed and accounted at its cap with the full word false (R43, R35).
+// The seam assertions are the decision's own: an executor that chose a recycle
+// would rename the segment before anything else and write through the fresh
+// name, so the retire of an early seal must rename and write nothing.
 func TestRetireSealedEarlyIsUnlinked(t *testing.T) {
 	prof.Watch(t, prof.Options{})
+
+	assertNeverRecycled := func(t *testing.T, e *retireEnv, renames, writes int) {
+		t.Helper()
+		if got := e.seam.Calls(journaltest.OpRename); got != renames {
+			t.Fatalf("the early seal's retire renamed %d times, want %d: an early seal is never a recycle's candidate", got, renames)
+		}
+		if got := e.seam.Calls(journaltest.OpWrite); got != writes {
+			t.Fatalf("the early seal's retire wrote %d times, want %d: the recycle's zeroing it would have run never did", got, writes)
+		}
+	}
 
 	t.Run("after a shrink", func(t *testing.T) {
 		e, _ := retirer(t, segment.Targets{Content: 1}, nil)
@@ -488,6 +508,8 @@ func TestRetireSealedEarlyIsUnlinked(t *testing.T) {
 		if err := e.set.Shrink(old, segCap/2); err != nil {
 			t.Fatalf("the early seal's truncation: %v", err)
 		}
+		renames := e.seam.Calls(journaltest.OpRename)
+		writes := e.seam.Calls(journaltest.OpWrite)
 		res, err := e.r.Retire(old, segment.NotHeld)
 		if err != nil {
 			t.Fatalf("the retire of the early-sealed segment: %v", err)
@@ -495,6 +517,7 @@ func TestRetireSealedEarlyIsUnlinked(t *testing.T) {
 		if res.Recycled {
 			t.Fatalf("the early-sealed segment was recycled: %+v, want an unlink", res)
 		}
+		assertNeverRecycled(t, e, renames, writes)
 		if res.Freed != segCap/2 {
 			t.Fatalf("the early seal's unlink freed %d, want the shrunk size %d", res.Freed, segCap/2)
 		}
@@ -509,6 +532,8 @@ func TestRetireSealedEarlyIsUnlinked(t *testing.T) {
 		// seal's own word, not the size, is what a recycle trusts.
 		e, _ := retirer(t, segment.Targets{Content: 1}, nil)
 		old := e.segment(false)
+		renames := e.seam.Calls(journaltest.OpRename)
+		writes := e.seam.Calls(journaltest.OpWrite)
 		res, err := e.r.Retire(old, segment.NotHeld)
 		if err != nil {
 			t.Fatalf("the retire of the failed truncation: %v", err)
@@ -516,6 +541,7 @@ func TestRetireSealedEarlyIsUnlinked(t *testing.T) {
 		if res.Recycled {
 			t.Fatalf("a segment sealed early was recycled: %+v, want an unlink", res)
 		}
+		assertNeverRecycled(t, e, renames, writes)
 		if res.Freed != segCap {
 			t.Fatalf("the failed truncation's unlink freed %d, want the cap", res.Freed)
 		}
@@ -535,12 +561,22 @@ func TestRetireEndedIsUnlinkedNeverRecycled(t *testing.T) {
 		id := e.ended()
 
 		calls := e.seam.Calls(journaltest.OpRemove)
+		renames := e.seam.Calls(journaltest.OpRename)
+		writes := e.seam.Calls(journaltest.OpWrite)
 		res, err := e.r.Retire(id, segment.ReasonEnded)
 		if err != nil {
 			t.Fatalf("the retire of the ended segment: %v", err)
 		}
 		if res.Recycled {
 			t.Fatalf("the ended segment was recycled: %+v, want an unlink", res)
+		}
+		// The decision's own proof: an ended segment is never a recycle's
+		// candidate, so its retire renames and writes nothing.
+		if got := e.seam.Calls(journaltest.OpRename) - renames; got != 0 {
+			t.Fatalf("the ended segment's retire renamed %d times, want none: an ended segment is never recycled", got)
+		}
+		if got := e.seam.Calls(journaltest.OpWrite) - writes; got != 0 {
+			t.Fatalf("the ended segment's retire wrote %d times, want none: the recycle's zeroing it would have run never did", got)
 		}
 		if got := e.seam.Calls(journaltest.OpRemove) - calls; got != 2 {
 			// One for the segment's own name and one for the spare's, the
@@ -1384,6 +1420,51 @@ func TestRetireWorkerRetriesAFailedUnlink(t *testing.T) {
 		}
 		e.r.Stop()
 	})
+
+	t.Run("a recycle that failed then landed leaves no extra names behind", func(t *testing.T) {
+		e, durable := retirer(t, segment.Targets{Content: 1}, nil)
+		id := e.segment(true)
+
+		// The recycle's rename fails without applying and both of the
+		// fallback unlink's removes fail after it: the fresh name is recorded
+		// for the retry, and the segment stays claimed by the queue.
+		if err := e.seam.Schedule(
+			journaltest.Failing(journaltest.OpRename, "*", 1, syscall.EIO),
+			journaltest.Failing(journaltest.OpRemove, "*", 2, syscall.EIO),
+		); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		if _, err := e.r.Retire(id, segment.NotHeld); err == nil {
+			t.Fatal("the retire whose recycle and fallback both fail: no error")
+		}
+		if got := e.r.ExtraNamesForTest(id); got != 1 {
+			t.Fatalf("after the failed recycle the executor records %d extra names, want the fresh one for the retry", got)
+		}
+
+		// The fault is spent. The queued retry recycles the segment
+		// successfully under a fresh id, and a recycle that landed clears
+		// the recorded name with it: nothing of the segment is owed a
+		// retry any more, and the map stays bounded by what is. The wait is
+		// the durable signal — the recycle's last step — for the ledger's
+		// spare rises before the executor's own cleanup has run.
+		segment.RetryEveryForTest(e.r, time.Millisecond)
+		e.r.Start()
+		e.r.Enqueue(id, segment.NotHeld)
+		deadline := time.Now().Add(10 * time.Second)
+		for durable.len() == 0 {
+			if time.Now().After(deadline) {
+				t.Fatalf("the worker never retried the recycle: the ledger holds %+v and the signal %+v", e.set.Counters(), durable.all())
+			}
+			runtime.Gosched()
+		}
+		if got := durable.at(0); got.ID != id || !got.Recycled {
+			t.Fatalf("the retry's retirement was %+v, want the recycle of %d", got, id)
+		}
+		if got := e.r.ExtraNamesForTest(id); got != 0 {
+			t.Fatalf("after the retry landed its recycle the executor still records %d extra names for %d, want none: the map is bounded by the retirements still owed a retry", got, id)
+		}
+		e.r.Stop()
+	})
 }
 
 // readOnlyErr is the error the R89 checks refuse with.
@@ -1640,16 +1721,105 @@ func TestRetireWorkerKeepsAClaimedSegmentQueued(t *testing.T) {
 	e.r.Stop()
 }
 
+// TestRetireWorkerDropsAWrongReasonNotAQueue: a queued id handed over with
+// the wrong reason is dropped, not requeued — it can never retire as handed,
+// and a requeued one would Warn and retry forever, and Enqueue's own
+// dedup-by-id would keep ignoring the corrected hand-over. Once dropped, the
+// same id enqueued with the right reason is retired.
+func TestRetireWorkerDropsAWrongReasonNotAQueue(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	h := &logRecorder{}
+	e, durable := retirerLogged(t, noPool, nil, h)
+	id := e.ended()
+	before := e.set.Counters()
+
+	segment.RetryEveryForTest(e.r, time.Millisecond)
+	e.r.Start()
+	e.r.Enqueue(id, segment.NotHeld)
+
+	// The wrong pair runs and is dropped: the Warn names it, and passes over
+	// the finished id change nothing, for a requeued id would retry every
+	// pass and a dropped one is done.
+	if got := awaitLoggedMax(t, h, slog.LevelWarn, "dropped a segment", 5*time.Second); got < 1 {
+		t.Fatalf("the wrongly handed-over id was never dropped: %d Warns, want at least one naming the drop", got)
+	}
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if c := e.set.Counters(); c != before {
+		t.Fatalf("over the wrong-reason interval the ledger moved to %+v, want the untouched %+v: a dropped id retires nothing and a requeued one retries for ever", c, before)
+	}
+
+	// The dropped id is gone from the queue, so the corrected hand-over is
+	// accepted and retires.
+	e.r.Enqueue(id, segment.ReasonEnded)
+	deadline = time.Now().Add(10 * time.Second)
+	for durable.len() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the corrected hand-over was never retired: ledger %+v, signals %+v", e.set.Counters(), durable.all())
+		}
+		runtime.Gosched()
+	}
+	if got := durable.at(0); got.ID != id || got.Recycled {
+		t.Fatalf("the corrected hand-over's retirement was %+v, want the unlink of %d", got, id)
+	}
+	e.r.Stop()
+}
+
+// awaitLoggedMax waits up to d for the handler to hold a record at level
+// whose message contains sub, returning how many it holds when it gives up.
+func awaitLoggedMax(t *testing.T, h slog.Handler, level slog.Level, sub string, d time.Duration) int {
+	t.Helper()
+
+	recs, ok := h.(*logRecorder)
+	if !ok {
+		t.Fatalf("awaitLoggedMax: the handler is not the test's recorder")
+	}
+	deadline := time.Now().Add(d)
+	for {
+		got := recs.countAt(level, sub)
+		if got >= 1 {
+			return got
+		}
+		if time.Now().After(deadline) {
+			return got
+		}
+		runtime.Gosched()
+	}
+}
+
 // TestRetireForgetsTheCacheEntry: a retirement forgets the segment's cache
-// entry, so the entry map stays bounded by the live segments and no stray
-// acquire of a retired id leaves a tombstone behind. It catches an unlink
-// that never drops the cache's record of the segment (the map would grow one
-// stale entry per retired segment).
+// entry — on the unlink path and on the recycle's — so the entry map stays
+// bounded by the live segments and no stray acquire of a retired id leaves a
+// tombstone behind. It catches a retirement that never drops the cache's
+// record of the segment (the map would grow one stale entry per retired
+// segment, per recycle).
 func TestRetireForgetsTheCacheEntry(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	e, _ := retirer(t, noPool, nil)
-	id := e.segment(true)
+	t.Run("unlink", func(t *testing.T) {
+		e, _ := retirer(t, noPool, nil)
+		id := e.segment(true)
+		forgetEntryThenRetire(t, e, id, segment.NotHeld)
+	})
+
+	t.Run("recycle", func(t *testing.T) {
+		e, _ := retirer(t, segment.Targets{Content: 1}, nil)
+		id := e.segment(true)
+		res := forgetEntryThenRetire(t, e, id, segment.NotHeld)
+		if !res.Recycled {
+			t.Fatalf("the pool below its target did not recycle: %+v, want a recycle", res)
+		}
+	})
+}
+
+// forgetEntryThenRetire gives the cache a live entry for the segment, retires
+// it under the reason named, and asserts the cache holds nothing after: the
+// map is bounded by the live segments whatever path the retirement took.
+func forgetEntryThenRetire(t *testing.T, e *retireEnv, id core.SegmentID, reason segment.Reason) segment.Retirement {
+	t.Helper()
 
 	// A reader acquires and releases, so the cache holds a live entry for
 	// the segment before the retirement runs.
@@ -1662,12 +1832,14 @@ func TestRetireForgetsTheCacheEntry(t *testing.T) {
 		t.Fatalf("before the retire the cache holds %d entries, want the one for %d", got, id)
 	}
 
-	if _, err := e.r.Retire(id, segment.NotHeld); err != nil {
+	res, err := e.r.Retire(id, reason)
+	if err != nil {
 		t.Fatalf("the retire: %v", err)
 	}
 	if got := segment.EntryCount(e.c); got != 0 {
 		t.Fatalf("after the retire the cache holds %d entries, want none: the entry map is bounded by the live segments", got)
 	}
+	return res
 }
 
 // TestRetireUnlinkKicksTheRefill: an unlink wakes the pool's refill on its
