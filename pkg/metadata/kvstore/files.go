@@ -187,6 +187,6 @@ func newRoot(tx kv.Txn, s entity.Share) entity.File {
 	return entity.File{
 		ID: s.Root, Share: s.ID, Type: entity.Directory, Parent: s.Root,
 		Mode: 0o755, Birth: now, Modify: now, Change: now,
-		Version: nextFileVersion(tx, entity.JournalVersion{}), Number: rootNumber,
+		Version: nextFileVersion(tx, entity.JournalVersion{}), Number: rootNumber, Shard: uint64(s.Shard),
 	}
 }

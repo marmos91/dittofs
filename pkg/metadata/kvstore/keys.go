@@ -206,6 +206,9 @@ func clientNameKey(p entity.Protocol, name []byte) []byte {
 
 func nsmKey() []byte { return []byte{keys.KindNSM} }
 
+// shardsPrefix is a share's shard list: one empty row per shard of the share.
+func shardsPrefix(share entity.ShareID) []byte { return shareKey(share, keys.SShs) }
+
 // idKey is one server-wide ID allocator's next unreserved ID.
 func idKey(kind byte) []byte { return []byte{keys.KindIDS, kind} }
 

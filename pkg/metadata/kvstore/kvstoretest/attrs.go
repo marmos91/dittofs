@@ -52,8 +52,10 @@ func testSetAttrsRights(t *testing.T, kvo Opener) {
 	}
 }
 
-// A chmod asks write the ACL: a non-owner granted it changes the mode, one
-// granted write attributes alone does not; and a write's clear of setuid and
+// A chmod asks write the ACL: a non-owner granted it changes the permission
+// bits but never sets setuid or setgid on the owner's file, keeps a
+// directory's setgid, neither sets nor clears the sticky bit, one granted write
+// attributes alone changes nothing; and a write's clear of setuid and
 // setgid changes the mode alone, never the stored ACL a chmod would merge
 // into.
 func testWriteACLAndClearSetID(t *testing.T, kvo Opener) {
@@ -72,9 +74,42 @@ func testWriteACLAndClearSetID(t *testing.T, kvo Opener) {
 	if _, err := files.SetAttrs(ctx, carol, h, entity.Attrs{}.WithMode(0o666)); !isDenied(err) {
 		t.Errorf("chmod by a non-owner holding write attributes: %v", err)
 	}
-	if got, err := files.SetAttrs(ctx, bob, h, entity.Attrs{}.WithMode(0o4660)); err != nil || got.Mode&0o7777 != 0o4660 {
-		t.Errorf("chmod by a non-owner holding write the ACL: %o, %v", got.Mode, err)
+	if got, err := files.SetAttrs(ctx, bob, h, entity.Attrs{}.WithMode(0o6660)); err != nil || got.Mode&0o7777 != 0o660 || got.Owner != alice.Principal {
+		t.Errorf("chmod 6660 by a non-owner holding write the ACL: %o, %v, want 660 with setuid and setgid dropped", got.Mode, err)
 	}
+	// One in the file's group sets no setgid either.
+	staff := f.group("staff")
+	dave := f.member("dave", entity.Principal{}, staff)
+	g, _ := f.create(alice, pub, "grp", regular(0o644))
+	must(t, errOf(files.SetAttrs(ctx, f.admin, g, entity.Attrs{}.WithGroup(staff))))
+	gacl := entity.ACLFromMode(0o644)
+	gacl.Entries = append(gacl.Entries, entity.ACE{Type: entity.ACEAllow, Mask: entity.ReadData | entity.WriteACL, Who: dave.Principal})
+	must(t, errOf(files.SetACL(ctx, alice, g, gacl)))
+	if got, err := files.SetAttrs(ctx, dave, g, entity.Attrs{}.WithMode(0o2660)); err != nil || got.Mode&0o7777 != 0o660 {
+		t.Errorf("chmod 2660 by a member of the file's group holding write the ACL: %o, %v, want 660 with setgid dropped", got.Mode, err)
+	}
+	// On alice's directories bob, holding write the ACL, keeps a directory's
+	// setuid and setgid, and neither clears nor sets the sticky bit.
+	for _, tc := range []struct {
+		name      string
+		mode, set uint32
+		want      uint32
+	}{
+		{"setgid", 0o2775, 0o2770, 0o2770},
+		{"setuid", 0o4775, 0o4770, 0o4770},
+		{"sticky", 0o1777, 0o777, 0o1777},
+		{"plain", 0o777, 0o1777, 0o777},
+	} {
+		d, _ := f.create(alice, pub, tc.name, directory(0o777))
+		must(t, errOf(files.SetAttrs(ctx, alice, d, entity.Attrs{}.WithMode(tc.mode))))
+		dacl := entity.ACLFromMode(tc.mode & 0o777)
+		dacl.Entries = append(dacl.Entries, entity.ACE{Type: entity.ACEAllow, Mask: entity.ReadData | entity.WriteACL, Who: bob.Principal})
+		must(t, errOf(files.SetACL(ctx, alice, d, dacl)))
+		if got, err := files.SetAttrs(ctx, bob, d, entity.Attrs{}.WithMode(tc.set)); err != nil || got.Mode&0o7777 != tc.want {
+			t.Errorf("chmod %o of a %o directory by a non-owner holding write the ACL: %o, %v, want %o", tc.set, tc.mode, got.Mode&0o7777, err, tc.want)
+		}
+	}
+	must(t, errOf(files.SetAttrs(ctx, alice, h, entity.Attrs{}.WithMode(0o4660))))
 	before, err := files.ACL(ctx, f.admin, h)
 	must(t, err)
 	if got, err := files.ClearSetID(ctx, carol, h); err != nil || got.Mode&0o7777 != 0o660 {

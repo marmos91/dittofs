@@ -57,10 +57,10 @@ func FuzzHandles(f *testing.F) {
 	if err != nil {
 		f.Fatal(err)
 	}
-	if err := s.Start(ctx); err != nil {
+	if err := errors.Join(tab.Start(ctx, s, s.Admission), s.Start(ctx)); err != nil {
 		f.Fatal(err)
 	}
-	f.Cleanup(func() { _ = s.Drain(ctx); _ = s.Stop() })
+	f.Cleanup(func() { _ = s.Drain(ctx); _ = s.Stop(); tab.Stop() })
 	id := proven(admin.Principal, inLab)
 	tr, err := s.tree(ctx)
 	if err != nil {

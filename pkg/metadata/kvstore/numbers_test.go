@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/kv"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
@@ -158,5 +159,29 @@ func TestIDsBounded(t *testing.T) {
 		if _, err := s.NextID(context.Background(), c.kind); !errors.Is(err, ErrIDsExhausted) {
 			t.Fatalf("kind %d, an exhausted counter: %v", c.kind, err)
 		}
+	}
+}
+
+// A share created once the shard counter has reached the 24-bit shard space
+// is refused with no space, and the last number below it is still issued.
+func TestShardNumbersStopAtTheShardSpace(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	if err := s.kv.Update(ctx, func(tx kv.Txn) error {
+		return tx.Set(idKey(idShard), encodeCounter(uint64(entity.ShardLimit)-1))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	last := entity.Share{ID: entity.NewShareID(), Name: "last", Path: "/last", Root: entity.NewFileID()}
+	if err := s.ControlPlane().PutShare(ctx, last); err != nil {
+		t.Fatal(err)
+	}
+	if sh, _, err := s.ShareIndex().Share(ctx, last.ID); err != nil || sh.Shard != entity.ShardLimit-1 {
+		t.Errorf("the last share: shard %d, %v; want %d", sh.Shard, err, entity.ShardLimit-1)
+	}
+	err := s.ControlPlane().PutShare(ctx, entity.Share{ID: entity.NewShareID(), Name: "over", Path: "/over", Root: entity.NewFileID()})
+	var se *merrs.StoreError
+	if !errors.As(err, &se) || se.Code != merrs.ErrNoSpace {
+		t.Errorf("a share past the shard space: %v, want no space", err)
 	}
 }

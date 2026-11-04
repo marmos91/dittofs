@@ -142,6 +142,10 @@ func (n Namespace) Lookup(ctx context.Context, id entity.Identity, dir entity.Ha
 // the requested mode, and optionally an owner, a group and times the request
 // names. Verifier makes the create exclusive.
 type NewFile struct {
+	// ID is the new file's ID, drawn by a caller that locks the file before
+	// it exists; zero, the store draws one. A create naming an ID already in
+	// use fails as existing.
+	ID   entity.FileID
 	Type entity.FileType
 	Mode uint32
 	// Umask is the client's umask where the protocol carries it apart from
@@ -191,7 +195,10 @@ func (n Namespace) Create(ctx context.Context, id entity.Identity, dir entity.Ha
 	if err != nil {
 		return nil, entity.File{}, err
 	}
-	fileID := entity.NewFileID()
+	fileID := nf.ID
+	if fileID.IsZero() {
+		fileID = entity.NewFileID()
+	}
 	var made entity.File
 	err = n.s.kv.Update(ctx, func(tx kv.Txn) error {
 		share, d, err := dirIn(tx, dir)
@@ -217,6 +224,13 @@ func (n Namespace) Create(ctx context.Context, id entity.Identity, dir entity.Ha
 			return err
 		} else if ok {
 			return existing(tx, share, d.ID, v, name, nf.Verifier, &made)
+		}
+		if !nf.ID.IsZero() {
+			if _, ok, err := get(tx, fileKey(share, fileID)); err != nil {
+				return err
+			} else if ok {
+				return merrs.NewAlreadyExistsError(fileID.String())
+			}
 		}
 		f, err := newFile(tx, id, d, fileID, number, nf)
 		if err != nil {

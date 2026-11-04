@@ -20,11 +20,6 @@ import (
 // ponytail: a File answered here is the store's record alone, not joined with
 // the engine's overlay of writes not yet committed. Join it, as GetAttr will,
 // once writes stage in the engine.
-//
-// ponytail: a change in a share's shard not yet served answers ErrDelay, as
-// open state refuses every change there; the filesystem serves no shard
-// itself yet. Start serves the shards it is primary of once release recovery
-// is built.
 
 // Lookup resolves one name in dir: "." is dir itself, ".." its parent, and a
 // share's root its own parent. A pseudo directory's names are the
@@ -145,18 +140,36 @@ func (fs *Filesystem) Create(ctx context.Context, c vfs.Call, dir vfs.Handle, na
 		return vfs.CreateResult{}, err
 	}
 	defer release()
-	nf, err := newFile(ca)
-	if err != nil {
-		return vfs.CreateResult{}, err
-	}
-	d := lockorder.Key(fileOf(dir))
-	unlock, err := fs.locks.Take(ctx, lockorder.Set{Admit: []lockorder.Key{d}, Enter: []lockorder.Key{d}, Accept: []lockorder.Key{d}})
+	unlock, err := fs.locks.Take(ctx, creating(dir))
 	if err != nil {
 		return vfs.CreateResult{}, errContended
 	}
 	defer unlock()
+	return fs.createLocked(ctx, a, c, vfs.OpCreate, dir, name, ca, entity.FileID{})
+}
+
+// creating is the locks a create in dir takes: its admission lock, fold
+// admission and accept lock. A create takes none of the new file's, as it
+// does nothing with the file once its name commits; an open that creates
+// draws the new file's ID first and adds its admission lock to the set, so
+// it is taken in the one order with the directory's.
+func creating(dir vfs.Handle) lockorder.Set {
+	d := lockorder.Key(fileOf(dir))
+	return lockorder.Set{Admit: []lockorder.Key{d}, Enter: []lockorder.Key{d}, Accept: []lockorder.Key{d}}
+}
+
+// createLocked is a create of name in dir for op, holding creating's locks:
+// the add right and open state's refusal of a delete-pending dir, then the
+// store's create of a file with ID id, or one the store draws when id is
+// zero.
+func (fs *Filesystem) createLocked(ctx context.Context, a *admitted, c vfs.Call, op vfs.Op, dir vfs.Handle, name []byte, ca vfs.CreateArgs, id entity.FileID) (vfs.CreateResult, error) {
+	nf, err := newFile(ca)
+	if err != nil {
+		return vfs.CreateResult{}, err
+	}
+	nf.ID = id
 	var r vfs.CreateResult
-	if err := fs.addable(ctx, a, c, vfs.OpCreate, dir, name, addRight(nf.Type), &r.Dir); err != nil {
+	if err := fs.addable(ctx, a, c, op, dir, name, addRight(nf.Type), &r.Dir); err != nil {
 		return r, err
 	}
 	r.Handle, r.File, err = fs.meta.Namespace().Create(ctx, a.caller.Identity, dir, name, nf)
@@ -273,9 +286,12 @@ func (fs *Filesystem) unlinkLocked(ctx context.Context, a *admitted, c vfs.Call,
 	// alone, which checks it is the caller's open of the file. So a delete
 	// through a handle opened with DELETE by a caller without delete-child
 	// on the directory is refused. Decide through the open's grant once
-	// opens are built and record it.
+	// the store's calls take an open's grant.
 	if err := fs.authz.Decide(ctx, a.caller, op, h, dir.H, name, entity.Delete); err != nil {
 		return vfs.UnlinkResult{}, false, storeErr(err)
+	}
+	if err := onSession(c, dir.Open); err != nil {
+		return vfs.UnlinkResult{}, false, err
 	}
 	if err := fs.checks.CheckChange(ctx, a.who(), keyOf(f), dir.Open, openstate.ChangeRemove); err != nil {
 		return vfs.UnlinkResult{}, false, openErr(err)
@@ -289,7 +305,8 @@ func (fs *Filesystem) unlinkLocked(ctx context.Context, a *admitted, c vfs.Call,
 		return vfs.UnlinkResult{}, false, err
 	}
 	r.Dir.After = fs.attrs(ctx, a, dir.H)
-	return r, false, fs.release(ctx, orphan)
+	fs.releaseOrphan(ctx, f, orphan)
+	return r, false, nil
 }
 
 // Rename moves the entry fromName in from to toName in to, both of one
@@ -394,6 +411,9 @@ func (fs *Filesystem) renameLocked(ctx context.Context, a *admitted, c vfs.Call,
 	if err := fs.addable(ctx, a, c, vfs.OpRename, to, toName, addRight(src.Type), &r.To); err != nil {
 		return vfs.RenameResult{}, false, err
 	}
+	if err := onSession(c, from.Open); err != nil {
+		return vfs.RenameResult{}, false, err
+	}
 	if err := fs.checks.CheckChange(ctx, a.who(), keyOf(src), from.Open, openstate.ChangeRename); err != nil {
 		return vfs.RenameResult{}, false, openErr(err)
 	}
@@ -425,7 +445,10 @@ func (fs *Filesystem) renameLocked(ctx context.Context, a *admitted, c vfs.Call,
 		// on close to a name that is gone, which then removes nothing.
 		fs.log.Warn("vfs: open names not moved with a rename", "file", src.ID, "err", err)
 	}
-	return r, false, fs.release(ctx, orphan)
+	if replaces {
+		fs.releaseOrphan(ctx, *dst, orphan)
+	}
+	return r, false, nil
 }
 
 // admitChange admits a change to h, a directory or a file: ErrReadOnly for a
@@ -486,13 +509,20 @@ func (fs *Filesystem) unlinkDurable(ctx context.Context, f vfs.File, remove func
 	return orphan, nil
 }
 
-// release runs the release of a file a change left with no name and no
-// open: the engine's delete, whose transaction re-checks the holders.
-func (fs *Filesystem) release(ctx context.Context, orphan kvstore.Orphaned) error {
+// releaseOrphan runs f's release when a change left it orphan, with no name
+// and no open, holding f's admission lock. The change has committed, so the
+// call succeeds whatever the release answers (RFC 17 §5.3): a failure is
+// logged, and f's pending release is left for the next start's recovery.
+func (fs *Filesystem) releaseOrphan(ctx context.Context, f vfs.File, orphan kvstore.Orphaned) {
 	if orphan.File.IsZero() {
-		return nil
+		return
 	}
-	return storeErr(fs.engine.Delete(ctx, orphan.File))
+	// The release outlives a client dropping, as a last close's does.
+	ctx, cancel := fs.uncancelled(ctx)
+	defer cancel()
+	if err := fs.release(ctx, keyOf(f)); err != nil {
+		fs.log.Warn("vfs: a release after a name's removal failed", "file", f.ID, "err", err)
+	}
 }
 
 // before is dir's attributes as a WCC's Before, read under its accept lock:

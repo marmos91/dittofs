@@ -103,6 +103,7 @@ func Run(t *testing.T, open Opener) {
 		{"DeletePendingRace", testDeletePendingRace},
 		{"NSMState", testNSMState},
 		{"RaiseIncarnations", testRaiseIncarnations},
+		{"SharesGetTheirOwnShards", testSharesGetTheirOwnShards},
 		{"RaiseIncarnationsAllOrNone", testRaiseIncarnationsAllOrNone},
 		{"RaiseIncarnationsRace", testRaiseIncarnationsRace},
 		{"NextID", testNextID},

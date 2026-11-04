@@ -113,6 +113,7 @@ var openCodes = []struct {
 	{openstate.ErrRangeNotLocked, vfs.ErrRangeNotLocked},
 	{openstate.ErrLost, vfs.ErrLost},
 	{openstate.ErrStopped, vfs.ErrUnavailable},
+	{openstate.ErrReleasing, vfs.ErrStale}, // an open of a file being released meets it as released
 }
 
 // openDelays is the service's cause for each of open state's delays.

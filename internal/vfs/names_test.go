@@ -40,7 +40,6 @@ func newFoldNames(t *testing.T) *names {
 
 func namesOver(t *testing.T, s *shares) *names {
 	t.Helper()
-	s.must(t, s.tab.Recovery().ServeShard(t.Context(), s.share, 0, 1))
 	return &names{shares: s, admin: proven(s.fs.Admin.Principal, inLab)}
 }
 
@@ -754,4 +753,37 @@ func TestARenameToTheSameSpellingRecallsNoLease(t *testing.T) {
 		t.Errorf("rename a to a: %v", err)
 	}
 	none(t, "the lease holder", cb)
+}
+
+// An unlink, and a rename over a file, whose release fails still succeed:
+// the name is gone. The file's pending release stays for the next start,
+// whose recovery runs it.
+func TestARemovedNameSucceedsWhateverItsReleaseAnswers(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	a := n.create(t, n.admin, n.fs.Root, "a", vfs.CreateRegular)
+	n.create(t, n.admin, n.fs.Root, "b", vfs.CreateRegular)
+	c := n.create(t, n.admin, n.fs.Root, "c", vfs.CreateRegular)
+	for _, f := range []vfs.File{a.File, c.File} {
+		n.stored(t, f.ID)
+	}
+	n.engine.mu.Lock()
+	n.engine.deleteErr = errors.New("the journal is read-only")
+	n.engine.mu.Unlock()
+	if _, err := n.Unlink(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte("a")); err != nil {
+		t.Errorf("an unlink whose release failed: %v, want success", err)
+	}
+	if _, err := n.Rename(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte("b"), n.fs.Root, []byte("c"), false); err != nil {
+		t.Errorf("a rename over a file whose release failed: %v, want success", err)
+	}
+	n.engine.mu.Lock()
+	n.engine.deleteErr = nil
+	n.engine.mu.Unlock()
+	g := n.restart(t)
+	g.must(t, g.Start(ctx))
+	for _, f := range []vfs.File{a.File, c.File} {
+		if !g.released(f.ID, 11*time.Second) {
+			t.Errorf("file %v's release that failed at its name's removal never ran after a restart", f.ID)
+		}
+	}
 }

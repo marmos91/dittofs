@@ -68,12 +68,6 @@ func (fs *Filesystem) ClientEnded(c entity.ClientID, shards []openstate.ShardID,
 	fs.reg.unregister(c)
 }
 
-// Closed runs nothing yet.
-//
-// ponytail: until release is built, a close open state made itself is not
-// run: an orphan's content stays held. Run it as Close's release is run.
-func (fs *Filesystem) Closed(f entity.FileID, r openstate.CloseResult) {}
-
 // LockWaitOver tells the waiting owner's client, and hands its answer to a
 // grant back to open state, under the file's admission lock. A grant the
 // client gives no answer to is sent again, through the client's latest path,
@@ -184,28 +178,30 @@ func (fs *Filesystem) Revoked(r openstate.Revocation) {
 // with Watch.
 func (fs *Filesystem) Notify(c entity.ClientID, w openstate.WatchID, ch []openstate.Change) {}
 
-// GraceEnded runs nothing yet.
-//
-// ponytail: until release is built, a shard's pending releases are not run
-// when its grace ends. Run them here with release.
-func (fs *Filesystem) GraceEnded(share entity.ShareID, sh openstate.ShardID) {}
-
-// deliver runs send on a goroutine of its own with the callbacks path finds
-// there, under a context ending at callbackDeadline or at Stop. With no path
-// found, or once the filesystem is stopped, it sends nothing.
+// deliver runs send in the background with the callbacks path finds there,
+// under a context ending at callbackDeadline or at Stop. With no path found,
+// or once the filesystem is stopped, it sends nothing.
 func (fs *Filesystem) deliver(path func(context.Context) vfs.Callbacks, send func(ctx context.Context, cb vfs.Callbacks)) {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	if fs.state == stopped {
-		return
-	}
-	fs.sending.Go(func() {
-		ctx, cancel := context.WithTimeout(fs.stop, callbackDeadline)
+	fs.background(func(stop context.Context) {
+		ctx, cancel := context.WithTimeout(stop, callbackDeadline)
 		defer cancel()
 		if cb := path(ctx); cb != nil {
 			send(ctx, cb)
 		}
 	})
+}
+
+// background runs run on a goroutine of its own, which Stop ends and waits
+// for, under a context ending at Stop; once the filesystem is stopped it runs
+// nothing, answering false.
+func (fs *Filesystem) background(run func(ctx context.Context)) bool {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.state == stopped {
+		return false
+	}
+	fs.sending.Go(func() { run(fs.stop) })
+	return true
 }
 
 // latest is a path for deliver: client c's latest path as it is now, a

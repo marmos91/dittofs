@@ -18,11 +18,6 @@ import (
 // locks, once open state admits it, and answered with the WCC read in that
 // one hold.
 //
-// ponytail: a change in a share's shard not yet served answers ErrDelay, as
-// open state refuses every change there; the filesystem serves no shard
-// itself yet. Start serves the shards it is primary of once release recovery
-// is built.
-//
 // ponytail: no change draws a version from the engine: the store's SetAttrs,
 // SetACL and xattr changes each draw their own. Draw one under the accept
 // lock and hand it to the store once the store takes a version drawn by its
@@ -139,10 +134,12 @@ var errGuard = fmt.Errorf("vfs: the ctime guard no longer holds: %w", vfs.ErrInv
 // decision: a change through an open is decided against the file, not the
 // open's stored grant, which the store cannot be handed: a truncate through
 // an open whose caller has since lost write on the file is refused. A time
-// set through an open, which RFC 7 §7.7 lets an open holding write
-// attributes make whoever owns the file, is decided the same way, then
-// written as privileged, since the store's owner rule cannot see the open;
-// a change setting anything beside times keeps that rule. Overturned once
+// set through an open by a caller the owner rule refuses, which RFC 7 §7.7
+// lets an open holding write attributes make whoever owns the file, is
+// decided the same way, admitted by open state only when the open's grant
+// holds write attributes, then written as privileged, since the store's
+// owner rule cannot see the open; a change setting anything beside times
+// keeps that rule. Overturned once
 // Authorize takes an open's grant in place of the walk and SetAttrs takes
 // the open.
 func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch vfs.AttrChange) (vfs.WCC, error) {
@@ -178,7 +175,32 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 		}
 	}
 	who, key := a.who(), keyOf(f)
+	// onOpen: times set by a caller other than the owner, through an open,
+	// which open state admits only on a grant holding write attributes; any
+	// other change keeps the caller's own rights.
+	//
+	// decision: a non-owner whose ACL entry grants write attributes is judged
+	// on the open too, so its time set through an open lacking them is refused
+	// though RFC 7 §7.7 lets its own rights make it, and the same set on no
+	// open succeeds: the store's owner rule is not visible here. It fails
+	// closed. Overturned once the store's owner rules are a read-only check
+	// this can call.
+	id := a.caller.Identity
+	onOpen := t.Open != nil && ch.Mask&^(attrTimes|entity.AttrSize) == 0 && ch.Mask&attrTimes != 0 &&
+		!id.Privileged && id.Principal != f.Owner
+	// decision: open state is asked, and a delete-on-close mark is set,
+	// before the store's ownership rules judge the change's values, so a
+	// chown or chgrp the store then refuses has still recalled other
+	// clients' grants, and a delete-on-close sent with it stays marked
+	// though the call answers the refusal. The recall costs a later grant
+	// only; no protocol sends a disposition with an owner change in one
+	// call. Judge the values first, through a read-only owner check the
+	// store exposes, once a client is seen sending both together or a
+	// recall storm is traced to refused chowns.
 	if what := changeOf(ch.Attrs); what != 0 {
+		if !onOpen {
+			what &^= openstate.ChangeTimes
+		}
 		if err := fs.checks.CheckChange(ctx, who, key, t.Open, what); err != nil {
 			return vfs.WCC{}, openErr(err)
 		}
@@ -202,8 +224,7 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 	rest := ch.Attrs
 	rest.Mask &^= entity.AttrSize
 	if rest.Mask != 0 {
-		id := a.caller.Identity
-		if t.Open != nil && rest.Mask&^attrTimes == 0 {
+		if onOpen {
 			id.Privileged = true
 		}
 		if _, err := fs.meta.Files().SetAttrs(ctx, id, t.H, rest); err != nil {
@@ -284,7 +305,8 @@ func changeOf(a vfs.Attrs) openstate.ChangeMask {
 	return what
 }
 
-// GetACL is h's ACL: the stored one, or the one its mode implies.
+// GetACL is h's ACL: the stored one, or the one its mode implies, its audit
+// list left out for a caller other than an admin.
 func (fs *Filesystem) GetACL(ctx context.Context, c vfs.Call, h vfs.Handle) (vfs.ACL, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
@@ -306,6 +328,12 @@ func (fs *Filesystem) GetACL(ctx context.Context, c vfs.Call, h vfs.Handle) (vfs
 		return vfs.ACL{}, storeErr(err)
 	}
 	acl, err := fs.meta.Files().ACL(ctx, a.caller.Identity, h)
+	if !a.caller.Admin {
+		// Reading the audit list needs system security, which only an admin
+		// holds; another caller's read-edit-write then sets the access
+		// entries alone, which SetACL takes and which keeps the stored list.
+		acl.Audit = nil
+	}
 	return acl, storeErr(err)
 }
 
@@ -475,6 +503,9 @@ func (fs *Filesystem) change(ctx context.Context, c vfs.Call, t vfs.Target, op v
 // locks, and reads its attributes under them: what a WCC's Before is. Its
 // release drops both locks and uncounts the call.
 func (fs *Filesystem) hold(ctx context.Context, c vfs.Call, t vfs.Target) (*admitted, vfs.File, func(), error) {
+	if err := onSession(c, t.Open); err != nil {
+		return nil, vfs.File{}, nil, err
+	}
 	a, release, err := fs.admitChange(ctx, c, t.H)
 	if err != nil {
 		release()
