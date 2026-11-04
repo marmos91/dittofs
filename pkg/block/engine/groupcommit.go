@@ -460,6 +460,11 @@ func (e *Engine) commitNow(ctx context.Context, b *binding, f entity.FileID) err
 	}
 	target := fe.ops[len(fe.ops)-1].version
 	e.files.unlock(f, fe)
+	return e.commitThrough(ctx, b, f, target)
+}
+
+// commitThrough is commitNow covering f's operations at or below target only.
+func (e *Engine) commitThrough(ctx context.Context, b *binding, f entity.FileID, target journal.Version) error {
 	g := b.gc
 	for {
 		g.mu.Lock()

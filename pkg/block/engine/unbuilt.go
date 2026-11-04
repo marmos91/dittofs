@@ -15,12 +15,6 @@ import (
 // from the removal mark. None is built yet: each answers errUnbuilt, and moves
 // to its own file as it is built.
 
-// Commit makes [off, off+n) stable, n 0 the whole file, and answers the
-// verifier and the file's loss sequence.
-func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, off, n int64) (v vfserr.Verifier, lossSeq uint64, err error) {
-	return vfserr.Verifier{}, 0, errUnbuilt
-}
-
 // Truncate sets the file's size.
 func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID, size int64) error {
 	return errUnbuilt

@@ -107,7 +107,7 @@ func TestADeviceLostWhole(t *testing.T) {
 		}()
 	}
 	eventually(t, "the writers are running", func() bool { return accepted.Load() >= 200 })
-	u.e.LostWhole(u.j)
+	u.e.LostWhole(u.rec)
 	close(stop)
 	wg.Wait()
 	if a, d := accepted.Load(), dones.Load(); a != d {
@@ -130,6 +130,10 @@ func TestADeviceLostWhole(t *testing.T) {
 	// The lost journal is synced no more: a sync after the loss is refused.
 	if err := u.e.SyncFile(t.Context(), u.share.ID, u.create(t, "after")); !errors.Is(err, journal.ErrClosed) {
 		t.Errorf("a sync after the device was lost: %v, want the journal closed", err)
+	}
+	// So no Commit answers a verifier past the loss.
+	if _, _, err := u.e.Commit(t.Context(), u.share.ID, u.create(t, "commit after"), 0, 0); !errors.Is(err, vfserr.ErrUnavailable) {
+		t.Errorf("a Commit after the device was lost: %v, want ErrUnavailable", err)
 	}
 }
 

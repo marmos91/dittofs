@@ -286,3 +286,6 @@ func (e *Engine) SyncFile(ctx context.Context, s entity.ShareID, f entity.FileID
 	}
 	return e.sync(ctx, b, fileID(f))
 }
+
+// StabilityPoints is engine_stability_points_total.
+func (e *Engine) StabilityPoints() int64 { return e.stabilityPoints.Load() }

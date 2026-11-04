@@ -9,6 +9,13 @@
   category: feature
   reason: 'Epic 6: recovery re-applies existence at start; also Write, Read, Overlay and Allocation (epic 3). Fails at the fixture until the journal has Init, Open, WriteAt, ReadAt, Sync and Since.'
   issue: '#3589'
+- test: TestRFC8A_OverwriteWaitsForExistence
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 4: Commit waits for an overwrite''s existence; also the start (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt and Sync.'
+  issue: '#3587'
 - test: TestRFC8A_StableWriteLazyExistence
   message: 'fixture: journal init: journal: not implemented'
   status: fail
@@ -16,6 +23,13 @@
   category: feature
   reason: 'Epic 6: recovery serves size and mtime at start; also Commit and the group commit (epic 4). Fails at the fixture until the journal has Init, Open, WriteAt, Sync and Since.'
   issue: '#3589'
+- test: TestRFC8A_StalledStore
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 4: Commit under a store that commits nothing; also the start (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt and Sync.'
+  issue: '#3587'
 - test: TestRFC8A_SyncBeforeExistence
   message: 'fixture: journal init: journal: not implemented'
   status: fail
