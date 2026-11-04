@@ -895,12 +895,10 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		logger.Error("snapshot recovery returned error (continuing startup)", "error", err)
 	}
 
-	// #810: Detect and roll back any restore that a prior crash left
-	// half-applied. Runs AFTER recoverOrphanedSnapshots (so a safety
-	// snapshot stranded in 'creating' is reconciled first) and BEFORE
-	// adapters serve — a half-restored share must never be client-reachable.
-	// Failure is logged but non-fatal; the marker is retained so a later
-	// boot retries the rollback.
+	// Report any restore that a prior crash left half-applied. Runs AFTER
+	// recoverOrphanedSnapshots and BEFORE adapters serve. Failure is logged
+	// but non-fatal; a half-restored share's marker is retained so the first
+	// boot with a content store rolls it back.
 	if err := r.recoverInterruptedRestores(r.runtimeCtx); err != nil {
 		logger.Error("restore recovery returned error (continuing startup)", "error", err)
 	}

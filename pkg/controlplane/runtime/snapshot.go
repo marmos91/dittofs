@@ -226,31 +226,18 @@ func (r *Runtime) recoverOrphanedSnapshots(ctx context.Context) error {
 }
 
 // recoverInterruptedRestores scans the control-plane DB for restore markers
-// left behind by a crash that interrupted a RestoreSnapshot, and rolls each
-// affected share back to its pre-restore safety snapshot. Called once from
-// Runtime.Serve AFTER recoverOrphanedSnapshots (so any safety snapshot
-// stranded in state='creating' has already been reconciled to 'failed')
-// and BEFORE adapters start serving — a half-restored share must never be
-// reachable by clients.
+// left behind by a crash that interrupted a RestoreSnapshot. Called once from
+// Runtime.Serve AFTER recoverOrphanedSnapshots and BEFORE adapters start
+// serving.
 //
-// A marker is present iff a restore wrote it (after its safety snap
-// verified) but did not reach the post-verify clear. The half-restored
-// share could be in any state between "block-store overlay cleared, metadata
-// untouched" and "metadata fully replaced but post-verify pending". Rollback
-// is the SAME for every case: restore the named safety snapshot (which
-// captured the share immediately before the destructive steps), then clear
-// the marker. The rollback runs with restoreInternalOpts.isRollback so it
-// neither creates a fresh safety snap nor rewrites the marker — the original
-// marker is the single source of truth and is cleared only once the rollback
-// fully succeeds, so a crash DURING rollback simply re-runs the identical
-// rollback on the next boot (idempotent).
+// A marker for a share that no longer exists is cleared: there is nothing to
+// roll back. Any other marker names a half-restored share whose rollback (a
+// restore of the safety snapshot) needs a content store, so it is logged at
+// WARN and kept: the marker is the only record of the safety snapshot, and the
+// first boot with a content store rolls the share back from it.
 //
-// Non-fatal: a per-share failure (safety snap gone, reset error) is logged
-// and accumulated into firstErr; the scan continues so one unrecoverable
-// share does not block startup of the rest. The marker is intentionally
-// LEFT in place on rollback failure so a later boot (after the operator
-// fixes the cause) retries — clearing it would silently abandon a
-// half-restored share.
+// Non-fatal: a failure to list or clear markers is logged and returned; the
+// caller carries on starting the rest.
 func (r *Runtime) recoverInterruptedRestores(ctx context.Context) error {
 	if r == nil || r.store == nil {
 		return nil
@@ -261,88 +248,28 @@ func (r *Runtime) recoverInterruptedRestores(ctx context.Context) error {
 		logger.Error("restore recovery: list restore markers failed", "error", err)
 		return err
 	}
-	if len(markers) == 0 {
-		logger.Info("restore recovery: no interrupted restores at startup")
-		return nil
-	}
 
 	var firstErr error
-	var rolledBack, errs int
 	for _, m := range markers {
-		logger.Warn("restore recovery: interrupted restore detected, rolling back to safety snapshot",
-			"share", m.ShareName,
-			"target_snapshot_id", m.TargetSnapshotID,
-			"safety_snap_id", m.SafetySnapshotID,
-			"step_reached", m.Step,
-		)
-
-		// Skip-and-clear markers for shares that no longer exist in the
-		// runtime registry (the share was removed while a marker was
-		// stranded). There is nothing left to roll back, and retaining the
-		// marker would log an error on every subsequent boot forever.
 		if _, serr := r.sharesSvc.IsShareEnabled(m.ShareName); errors.Is(serr, shares.ErrShareNotFound) {
 			logger.Warn("restore recovery: marker for unknown share, clearing (share was removed)",
-				"share", m.ShareName,
-				"safety_snap_id", m.SafetySnapshotID,
-			)
+				"share", m.ShareName, "safety_snap_id", m.SafetySnapshotID)
 			if derr := r.store.DeleteRestoreMarker(ctx, m.ShareName); derr != nil {
 				logger.Error("restore recovery: failed to clear stale marker for unknown share",
 					"share", m.ShareName, "error", derr)
-				errs++
 				if firstErr == nil {
 					firstErr = derr
 				}
 			}
 			continue
 		}
-
-		// Roll back by restoring the safety snapshot. isRollback suppresses
-		// safety-snap creation + marker writes so we don't recurse or grow
-		// a pre-restore chain. AllowNonDurable mirrors the original restore's
-		// tolerance: the safety snap of a local-only / no-verify share is
-		// itself remote_durable=false, and a startup rollback must not refuse
-		// on that basis.
-		_, rerr := r.restoreSnapshot(ctx, m.ShareName, m.SafetySnapshotID,
-			RestoreSnapshotOpts{AllowNonDurable: true},
-			restoreInternalOpts{isRollback: true})
-		if rerr != nil {
-			logger.Error("restore recovery: rollback to safety snapshot failed (marker retained for next boot)",
-				"share", m.ShareName,
-				"safety_snap_id", m.SafetySnapshotID,
-				"error", rerr,
-			)
-			errs++
-			if firstErr == nil {
-				firstErr = rerr
-			}
-			continue
-		}
-
-		if derr := r.store.DeleteRestoreMarker(ctx, m.ShareName); derr != nil {
-			logger.Error("restore recovery: rollback succeeded but clearing marker failed (may re-trigger harmless rollback on restart)",
-				"share", m.ShareName,
-				"safety_snap_id", m.SafetySnapshotID,
-				"error", derr,
-			)
-			errs++
-			if firstErr == nil {
-				firstErr = derr
-			}
-			continue
-		}
-
-		rolledBack++
-		logger.Warn("restore recovery: share rolled back to safety snapshot",
+		logger.Warn("restore recovery: interrupted restore kept for a build with a content store; the share stays half-restored",
 			"share", m.ShareName,
+			"target_snapshot_id", m.TargetSnapshotID,
 			"safety_snap_id", m.SafetySnapshotID,
+			"step_reached", m.Step,
 		)
 	}
-
-	logger.Info("restore recovery: complete",
-		"markers_found", len(markers),
-		"rolled_back", rolledBack,
-		"errors", errs,
-	)
 	return firstErr
 }
 
@@ -388,9 +315,7 @@ func (r *Runtime) RestoreSnapshot(
 	shareName, snapID string,
 	opts RestoreSnapshotOpts,
 ) (safetySnapshotID string, err error) {
-	// Inline snapshot metrics: time the operator-initiated restore. The
-	// startup-recovery rollback path calls restoreSnapshot directly, so it is
-	// (correctly) not counted here as an operator restore.
+	// Inline snapshot metrics: time the operator-initiated restore.
 	opStart := time.Now()
 	defer func() {
 		result := "ok"
@@ -399,33 +324,6 @@ func (r *Runtime) RestoreSnapshot(
 		}
 		r.metrics.RecordSnapshotOp("restore", result, time.Since(opStart))
 	}()
-	return r.restoreSnapshot(ctx, shareName, snapID, opts, restoreInternalOpts{})
-}
-
-// restoreInternalOpts carries internal-only restore controls not exposed on
-// the public RestoreSnapshotOpts surface.
-type restoreInternalOpts struct {
-	// isRollback marks this restore as the startup-recovery rollback to a
-	// pre-restore safety snapshot. When set, restore skips BOTH the
-	// pre-restore safety-snapshot creation AND the durable restore-marker
-	// write:
-	//   - safety-snap: the half-restored state we are discarding is not
-	//     worth capturing (and may fail the create-side verify/empty-manifest
-	//     guards), and recursively safety-snapping a rollback would grow an
-	//     unbounded chain of pre-restore snaps on every crash-recovery.
-	//   - marker: a rollback that is itself interrupted must re-run the SAME
-	//     rollback on the next boot (the original marker is only cleared once
-	//     the rollback fully completes), so the rollback must not overwrite
-	//     that marker with one pointing at a safety snap it never created.
-	isRollback bool
-}
-
-func (r *Runtime) restoreSnapshot(
-	ctx context.Context,
-	shareName, snapID string,
-	opts RestoreSnapshotOpts,
-	internal restoreInternalOpts,
-) (safetySnapshotID string, err error) {
 	// A restore rewrites a share's content as well as its metadata, and no
 	// content store is wired. An interrupted restore's marker is therefore
 	// retained until one is.
