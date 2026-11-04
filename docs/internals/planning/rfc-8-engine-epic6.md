@@ -353,7 +353,8 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   (D2) whose shard lives on that journal (D10). `journalv2`'s doc for `Open` names the
   smallest limit; both are above every version issued, and the largest also covers a
   share whose limit was raised ahead of the others. A `decision:` marker at the computation
-  says so, withdrawn if the journal's doc and RFC 28 §3.1 settle the smallest (§9 point 4).
+  says so. RFC 8 §2.5 and §2.7, RFC 28 §3.1 and RFC 1 §3 take the largest since #3710
+  (§9 point 4).
 - **D6, the block and the trigger.** The block is a package constant, 2²⁴ versions, set by
   a hook in `export_test.go` for the tests that need 16. The peak rate is 60 one-second
   buckets on `Clock.Elapsed`; the margin is 30 s plus `existence_age` plus 1 s, read from the
@@ -960,10 +961,10 @@ A suggestion only: one pull request per subtask works as well. PR 2 can be open 
    every shard in one transaction; E40 and §2.7 bound every engine transaction by `K`, and
    §2.7 takes 10⁴ shares' 2 × 10⁴ keys as past it. On a node serving more shards than `K`,
    the two cannot both hold.
-4. **The floor at `Open`** (D5), pending #3634. RFC 8 §2.5 says "per share, the larger of the version
-   floor and the share's version limit"; RFC 28 §3.1 calls the floor "the highest content
-   version recorded in metadata", with no limit; RFC 1 §4.3 and `journalv2`'s doc for `Open`
-   take the smallest limit. One sentence in RFC 28 §3.1 would settle it.
+4. **The floor at `Open`** (D5), settled by #3710. RFC 8 §2.5 step 1 and §2.7, RFC 28 §3.1
+   and RFC 1 §3 now take the largest of every served share's version floor and version
+   limit, as D5 does. `journalv2`'s doc for `Open` still names the smallest limit, which is
+   safe; it follows in a code change.
 5. **Who writes `J‖journal`** (D3), pending #3635. RFC 16 §4.2 has the key "written when the journal is
    created", and no interface of RFC 16 §3 writes it; RFC 16 §3.2's `Init` writes `\x00format`,
    `IN` and `SL` only. RFC 16 should name the write, and how `JournalID(device)` finds a key
