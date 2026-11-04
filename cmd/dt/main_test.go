@@ -347,11 +347,15 @@ func TestRunReportsWhenTheSummaryFails(t *testing.T) {
 	}
 }
 
-// --base is the ref {base} stands for, here and in CI alike.
+// --base is the ref {base} stands for, over the event's. The event is a pull
+// request into develop, so {base} is never empty and the command always runs.
 func TestRunBase(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the suite runs test")
 	}
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITHUB_EVENT_NAME", "pull_request")
+	t.Setenv("GITHUB_BASE_REF", "develop")
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "test", "suites.yaml"), "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n"+
 		"  compares: { cmd: \"test {base} = origin/feat/stacked\" }\n")
