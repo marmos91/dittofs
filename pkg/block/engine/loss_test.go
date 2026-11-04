@@ -1,18 +1,18 @@
 package engine_test
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
-	"context"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
-	"time"
 )
 
 // A corrupt loss of one file's write raises that file's loss sequence alone,
@@ -72,8 +72,8 @@ func TestALossBeforeTheBatchsSyncCommitsTheWriteLost(t *testing.T) {
 }
 
 // A journal's device lost whole, with writers running: every write accepted
-// gets its Done exactly once, none is left pending, and every file's
-// sequence is raised.
+// gets its Done exactly once, none is left pending, a write after the loss is
+// answered unavailable with no Done, and every file's sequence is raised.
 func TestADeviceLostWhole(t *testing.T) {
 	u := newUnit(t)
 	fs := make([]entity.FileID, 16)
@@ -98,6 +98,9 @@ func TestADeviceLostWhole(t *testing.T) {
 				calls := new(atomic.Int32)
 				perWrite.Store(key, calls)
 				_, err := u.e.Write(t.Context(), u.share.ID, fs[i], int64(n), []byte("x"), engine.WriteOpts{Done: func() { calls.Add(1); dones.Add(1) }})
+				if errors.Is(err, vfserr.ErrUnavailable) {
+					return // the device is lost: refused, with no Done
+				}
 				if err != nil {
 					t.Error(err)
 					return
