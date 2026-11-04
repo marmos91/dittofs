@@ -892,11 +892,12 @@ Sections owned: RFC 8 §10 (the two measures, as far as repack goes), §10.2, §
 
 - T7.1 The refusal mapping: the journal's `NoSpaceError` by its limit onto §10.2's rows as
   narrowed above, scoped by that limit: the share's segments for its limit, journal-wide for
-  the journal's. After the first repack and retry, §10.2 step 4 as #3547 words it: sync the
-  scope, seal each active segment holding the scope's unreclaimed bytes (never one of a
+  the journal's. After the first repack and retry, §10.2 step 4 as #3547 words it, with
+  #3653's failed windows: sync the scope, seal each active segment holding the scope's unreclaimed bytes (never one of a
   stream whose capacity-sealed segment still awaits repack), repack and retry; still
-  refused, `ErrDelay` while the scope's sealed segments hold unreclaimed bytes and no cause
-  of the table's second row holds, else `ErrNoSpace`. The sync is `Sync` over the scope's
+  refused, `ErrDelay` while the scope's sealed segments, and those a failed sync or append
+  ended whose window is unresolved (RFC 1 §5.3), hold unreclaimed bytes and no cause of the
+  table's second row holds, else `ErrNoSpace`. The sync is `Sync` over the scope's
   `Files`, the seal is inside the scoped `Repack`, and the per-segment unreclaimed figure
   is the journal's to give (§6 point 8). A `SyncError` from
   that sync goes to T4.6's per-file report, so the file's next `Commit` still fails once;
@@ -909,8 +910,15 @@ Sections owned: RFC 8 §10 (the two measures, as far as repack goes), §10.2, §
   followed by a refusal whose sync takes the window's report, then the file's `Commit`
   fails once.
 - T7.2 The self-fence: the `Clock.Elapsed` at which any part of the engine last committed a
-  write transaction; after 30 s with one outstanding or failing, writes and stability points
-  `ErrDelay`, reads continue; cleared by the next commit.
+  write transaction, and the one at which the node last went from none outstanding or
+  failing to one; 30 s after the later of the two with one still outstanding or failing,
+  writes and stability points `ErrDelay`, reads continue; cleared by the next commit, or
+  once none is outstanding or failing. Failing is RFC 8 §11.2's: the latest attempt of an
+  owner that retries (the group commit, a removal's batches, the version limit's raise, the
+  late attach) failed at the store as a whole; a file's own failure (§5.2) is not one, a
+  failed one-shot call counts only while it runs, and a call ended by its caller's context
+  is neither. Tested: a one-shot failure on an idle node does not fence, and a fence a
+  stalled one-shot raised lifts once it fails.
 - T7.3 `Stats` per share and journal, with its counters and conditions (rule 3).
 - T7.4 The §2.7 version-limit stall checks under sustained load and a burst, with epic 6's
   raise.
