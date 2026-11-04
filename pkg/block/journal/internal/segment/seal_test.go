@@ -1962,6 +1962,110 @@ func TestSealCloseWaitsForAnInFlightSeal(t *testing.T) {
 	}
 }
 
+// TestSealCloseRacingADrainedSealRefusesWholeAndEnds checks the ref a close
+// racing a seal leaves behind: Close clears the active segment's ref before
+// it waits the in-flight operations out, and a Seal parked on its drain —
+// waiting an in-flight append, its lock dropped by the cond's wait — once
+// woke re-reading the stream's ref, handing WriteSeal the zero one Close
+// left to panic at its first sync. The woken seal now refuses whole with
+// ErrStreamClosed and ends its segment, driving no ref at all: the seal
+// wrote nothing, so the refusal leaves the segment exactly as the close's
+// own contract says —Ended, taking no further append — and Close, which
+// counted the seal among the operations it waits, returns whole behind it.
+func TestSealCloseRacingADrainedSealRefusesWholeAndEnds(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seg := streamSegName(1)
+	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
+
+	// One landed record warms the stream, then the next write parks: the
+	// seal below takes the segment while that append is in flight, so its
+	// drain has one to wait — the park whose wake meets the close.
+	warm := streamTestBody(64, 0x5a)
+	wh, wbody := streamWriteHeader(streamFileID(1), 0, warm, 7, core.Version{Counter: 1})
+	streamAppendWrite(t, e, wh, wbody)
+	h := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
+	inFlightDone := make(chan error, 1)
+	go func() {
+		payload := streamTestBody(64, 0x3c)
+		hh, body := streamWriteHeader(streamFileID(2), 64, payload, 7, core.Version{Counter: 2})
+		_, err := e.s.Append(hh, body)
+		inFlightDone <- err
+	}()
+	<-h.Reached()
+
+	// The seal parks on its drain: the in-flight append is reserved below
+	// it, so the seal is waiting on the cond, its lock dropped, when the
+	// close below clears the stream's ref.
+	sealed := make(chan sealRace, 1)
+	go func() {
+		r, err := e.s.Seal(false)
+		sealed <- sealRace{r: r, err: err}
+	}()
+	// The seal is on the cond's park now: no seam call of its own names
+	// the park, so a short settle gives the drain its wait — the state the
+	// close below must meet it in.
+	time.Sleep(50 * time.Millisecond)
+
+	// Close runs to its wait while the seal parks on its drain: it clears
+	// the ref first, then waits the in-flight append and the seal out.
+	closed := make(chan error, 1)
+	go func() { closed <- e.s.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned %v while the seal was still in flight, want it to wait the seal out", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// The append lands, the seal wakes with the stream closed under it: it
+	// must refuse whole — no WriteSeal call on any ref, the zero one least
+	// of all — and the close then returns behind it.
+	h.Release()
+	select {
+	case err := <-inFlightDone:
+		if err != nil {
+			t.Fatalf("the in-flight append: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the in-flight append did not return after the hold released")
+	}
+	select {
+	case race := <-sealed:
+		if !errors.Is(race.err, segment.ErrStreamClosed) {
+			t.Fatalf("the drained Seal racing the Close = %v, want ErrStreamClosed", race.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the drained Seal did not return after its drain settled")
+	}
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close after the refused seal = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return after the seal finished")
+	}
+
+	// The refused seal wrote nothing: the segment holds its records but no
+	// footer, and the ledger ends it rather than sealing it whole.
+	size := sealFileSize(t, e, 1)
+	rd := sealReaderOf(t, e, 1)
+	_, ferr := format.ReadFooter(rd, size, streamIdentity, 1)
+	_ = rd.Close() // released before the Shutdown, which waits every ref out
+	if !errors.Is(ferr, format.ErrNoFooter) {
+		t.Fatalf("the segment the refused seal left reads %v, want no footer: the seal wrote nothing", ferr)
+	}
+	if state, err := e.set.State(1); err != nil || state != segment.Ended {
+		t.Fatalf("the segment the refused seal left is %v, %v, want Ended in the ledger", state, err)
+	}
+	if err := e.cache.Shutdown(); err != nil {
+		t.Fatalf("the cache's Shutdown after the stream's Close = %v, want nil: the seal drove a cleared ref", err)
+	}
+	if err := e.set.Check(); err != nil {
+		t.Fatalf("the ledger after the raced close: %v", err)
+	}
+}
+
 // TestSealAnAppendArrivingMidSealParksAndRolls checks the sealing half of
 // R85's gate under the roll: once a seal has taken the segment — while it
 // waits the drain of the appends reserved before it, and while its own steps

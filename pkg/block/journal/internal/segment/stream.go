@@ -1070,9 +1070,17 @@ func (s *Stream) Seal(early bool) (SealResult, error) {
 		// The one state a seal closes; the count below takes it.
 	}
 	// Counted with the appends and the syncs, so Close waits a seal out
-	// before it releases the segment's ref.
+	// before it releases the segment's ref. The ref and the id are read
+	// under this same hold, before the drain's park: the park drops the
+	// lock — the drain it waits must run — and a Close racing the park
+	// clears the stream's ref and id in that window, so a woken seal that
+	// read them after the park would drive the zero ref the close left.
+	// The pair read here is the pair the seal owns and drives; whatever a
+	// close does after it, the seal is Close's in-flight operation and the
+	// pair's release is Close's own wait.
 	s.inflight.Add(1)
 	defer s.inflight.Done()
+	sealedID, sealedRef := s.id, s.ref
 	s.sealState = sealSealing
 
 	// The drain: every append reserved below the seal has left, and every
@@ -1108,14 +1116,34 @@ func (s *Stream) Seal(early bool) (SealResult, error) {
 		return SealResult{}, fmt.Errorf("%w: %s", ErrSegmentEnded, reason)
 	}
 
+	// A Close may have run while the seal parked on the drain's cond: it
+	// cleared the active segment's ref — this seal among the in-flight
+	// operations it waits, for it counted itself before the park — so the
+	// ref below must never be re-read from the stream. The seal drives the
+	// pair it read while it owned the segment, and a close that beat the
+	// drain refuses the seal whole: the stream already left the segment
+	// (its id is 0 under the close), publishes no further location, and
+	// the segment is ended so nothing lands in it again.
+	if s.closed {
+		s.sealState = sealEnded
+		s.appendMu.Unlock()
+		s.drained.Broadcast() // the Syncs parked on the seal leave with the end
+		if err := s.set.End(sealedID); err != nil {
+			return SealResult{}, errors.Join(ErrStreamClosed, err)
+		}
+		return SealResult{}, ErrStreamClosed
+	}
+
 	// The marker sits at the stream's next free slot: every record below it
 	// has completed. The entries are cloned and sorted, for the footer's
 	// reader takes them ascending by offset while the stream kept them in
-	// completion order.
+	// completion order. The id and the ref are the pair the seal read
+	// before the drain's park — the same segment it took, whose ref the
+	// close racing the park may already have cleared from the stream.
 	marker := s.next
 	entries := slices.Clone(s.entries)
 	sortSealEntries(entries)
-	id, ref := s.id, s.ref
+	id, ref := sealedID, sealedRef
 	s.appendMu.Unlock()
 
 	res, err := WriteSeal(s.set, ref, s.identity, id, marker, entries, early)
