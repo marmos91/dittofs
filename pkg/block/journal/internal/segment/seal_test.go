@@ -3,6 +3,7 @@ package segment_test
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"math"
 	"slices"
@@ -2117,4 +2118,172 @@ func TestSealAFullSealThatFillsTheSegmentWritesOnce(t *testing.T) {
 			t.Fatalf("entry %d is %+v, want %+v", i, footer.Entries[i], entries[i])
 		}
 	}
+}
+
+// TestSealRefusesAnAppendResumedFromTheTakeGate checks the parked half of
+// R85's gate: an Append parked on the first segment's take gate resumes when
+// the gate settles, and a seal that took the segment while the take ran must
+// refuse it — the seal's drain emptied and its marker was read before the
+// resumed reservation ran, so the resumed record would land exactly at the
+// marker the seal's own write is driving at: unlisted by the footer, and
+// overwriting it or overwritten by it. The warmed racing test never reaches
+// this path, for its segment is taken long before the seal starts.
+//
+// The staging follows the probe that found it: the spare's making is slowed
+// on the seam so the appends racing the take park on its gate, appenders run
+// against one seal that retries past the take's ErrNoSegment, and the rounds
+// repeat until a resumed append slips past the marker or the fixed refusal
+// holds every one.
+func TestSealRefusesAnAppendResumedFromTheTakeGate(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// The round's shape is built once: a slowed seam, and a fresh stream,
+	// set and cache per round so each race is one take and one seal. Only
+	// the spare's making is slowed — the take's own calls, under its
+	// temporary name — the way a busy device delays a new file's setup,
+	// while the records and the seal itself run at full speed.
+	spare := format.SpareName(core.SegmentID(1))
+	e := streamOver(t, streamCap, func(env streamEnv) {
+		env.seam.SetFault(&sealDelayFault{names: []string{spare}, ops: []string{journaltest.OpCreate, journaltest.OpAllocate}, beat: 20 * time.Millisecond})
+	})
+	e.cacheBuilt(t)
+	defer func() { _ = e.s.Close() }()
+
+	// The spare's creation and allocation wait the beat a busy device
+	// takes, the two calls the probe that found the bug slowed; the rest
+	// of the take, and every record and seal, run at full speed. The bug
+	// is a scheduler-race, not a certainty: unfixed, the probe fired in
+	// seven of three hundred rounds, here at rounds 31 and 97, and a
+	// hundred-round cut was seen to miss it — so the rounds stay at the
+	// probe's three hundred.
+	const appenders = 16
+	for round := range 300 {
+		set := segment.NewSet(streamCap, nil)
+		budget := core.NewDescriptorBudget(8)
+		cache := segment.NewDescriptors(e.seam.FS(), format.SegmentName, budget)
+		stream := segment.NewStream(1, streamIdentity, set, segment.NewMaker(e.seam.FS(), set, streamMax, 0, nil), cache)
+		roundCheck := func() error {
+			defer func() {
+				_ = stream.Close()
+				if err := cache.Shutdown(); err != nil {
+					t.Errorf("round %d's cache Shutdown: %v", round, err)
+				}
+			}()
+
+			type outcome struct {
+				p   segment.Placed
+				err error
+			}
+			outcomes := make(chan outcome, appenders+1)
+			var wg sync.WaitGroup
+			for i := range appenders {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					payload := streamTestBody(64, byte(i))
+					h, body := streamWriteHeader(streamFileID(i+1), int64(i)*64, payload, 7, core.Version{Counter: uint64(i + 1)})
+					p, err := stream.Append(h, body)
+					outcomes <- outcome{p: p, err: err}
+				}(i)
+			}
+			// The sealer waits for the take to hand the stream its
+			// segment, then seals once.
+			sealRes := make(chan segment.SealResult, 1)
+			sealErr := make(chan error, 1)
+			go func() {
+				for {
+					res, err := stream.Seal(true)
+					if errors.Is(err, segment.ErrNoSegment) {
+						// A caller has other work: give the
+						// take and its parked waiters a
+						// moment rather than spinning on
+						// the lock.
+						time.Sleep(time.Millisecond)
+						continue
+					}
+					sealRes <- res
+					sealErr <- err
+					return
+				}
+			}()
+			wg.Wait()
+			close(outcomes)
+			res := <-sealRes
+			if err := <-sealErr; err != nil {
+				return err
+			}
+
+			// Every success lies at or below the marker; every failure
+			// is the roll signal or its end-carrying join.
+			var placed []segment.Placed
+			for o := range outcomes {
+				if o.err != nil {
+					if !errors.Is(o.err, segment.ErrSegmentFull) {
+						return fmt.Errorf("an append: %w", o.err)
+					}
+					continue
+				}
+				if end := o.p.Loc.Off + o.p.Loc.Len; end > res.Marker {
+					return fmt.Errorf("a record ended at %d, past the seal's marker %d: an append resumed from the take gate was taken after the seal", end, res.Marker)
+				}
+				placed = append(placed, o.p)
+			}
+			if len(placed) == 0 {
+				return nil // the seal won the whole take race: nothing to check
+			}
+
+			// The footer verifies and lists exactly the successes, in
+			// offset order.
+			id := placed[0].Loc.Segment
+			ref, err := cache.Acquire(id)
+			if err != nil {
+				return fmt.Errorf("the round's Acquire: %w", err)
+			}
+			size := int64(res.Size)
+			footer, ferr := format.ReadFooter(sealReader{ref: ref}, size, streamIdentity, id)
+			ref.Release()
+			if ferr != nil {
+				return fmt.Errorf("the raced round's footer does not verify: %w", ferr)
+			}
+			offs := make([]int64, 0, len(placed))
+			for _, p := range placed {
+				offs = append(offs, p.Loc.Off)
+			}
+			slices.Sort(offs)
+			if len(footer.Entries) != len(offs) {
+				return fmt.Errorf("the footer holds %d entries, want the %d successes", len(footer.Entries), len(offs))
+			}
+			for i, want := range offs {
+				if footer.Entries[i].RecordOffset != want {
+					return fmt.Errorf("the footer's entry %d sits at %d, want the placed %d", i, footer.Entries[i].RecordOffset, want)
+				}
+			}
+			return nil
+		}
+		if err := roundCheck(); err != nil {
+			t.Fatalf("round %d: %v", round, err)
+		}
+	}
+}
+
+// sealDelayFault sleeps a beat before each seam call on the named files,
+// slowing a spare's making the way a busy device does, so the appends racing
+// the take park on its gate and resume as it settles.
+type sealDelayFault struct {
+	names []string
+	ops   []string
+	beat  time.Duration
+}
+
+func (f *sealDelayFault) At(op string, key []byte) (time.Duration, int, error) {
+	if !slices.Contains(f.ops, op) {
+		return 0, 0, nil
+	}
+	for _, n := range f.names {
+		if string(key) == n {
+			time.Sleep(f.beat)
+			break
+		}
+	}
+	return 0, 0, nil
 }

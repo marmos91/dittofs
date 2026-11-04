@@ -438,13 +438,16 @@ func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, 
 	// writes nothing and charges nothing, so the marker a seal chose and
 	// the bytes its footer names cannot be placed under. sealOpen, the
 	// stream that is still appending, alone falls through.
-	switch s.sealState {
-	case sealSealing, sealSealed:
+	//
+	// The check runs again inside the reservation loop, beside the closed
+	// check it mirrors: an append parked on the first take's gate resumes
+	// at the loop's top, and a seal that took the segment while it parked —
+	// past its drain, its marker read — must refuse it there, or its
+	// record lands exactly at the marker the seal's own write is driving
+	// at, unlisted by the footer and overwriting or overwritten by it.
+	if err := s.checkSealedForAppend(); err != nil {
 		s.appendMu.Unlock()
-		return Placed{}, fmt.Errorf("%w: a seal closed the segment", ErrSegmentFull)
-	case sealEnded:
-		s.appendMu.Unlock()
-		return Placed{}, fmt.Errorf("%w: %w", ErrSegmentFull, ErrSegmentEnded)
+		return Placed{}, err
 	}
 	// Counted before anything is reserved and under the same lock Close sets
 	// closed under, so every Add happens before Close's Wait: the group is
@@ -455,6 +458,10 @@ func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, 
 		if s.closed {
 			s.appendMu.Unlock()
 			return Placed{}, ErrStreamClosed
+		}
+		if err := s.checkSealedForAppend(); err != nil {
+			s.appendMu.Unlock()
+			return Placed{}, err
 		}
 
 		// Taking the first segment is I/O, so one caller runs it for all and
@@ -634,6 +641,20 @@ func (s *Stream) leaveDrain() {
 	s.appendMu.Unlock()
 }
 
+// checkSealedForAppend answers the seal-state refusal of Append: the roll
+// signal once a seal has closed the segment, the end's name joined to it
+// once the segment has ended. The caller holds appendMu and unlocks on the
+// refusal.
+func (s *Stream) checkSealedForAppend() error {
+	switch s.sealState {
+	case sealSealing, sealSealed:
+		return fmt.Errorf("%w: a seal closed the segment", ErrSegmentFull)
+	case sealEnded:
+		return fmt.Errorf("%w: %w", ErrSegmentFull, ErrSegmentEnded)
+	}
+	return nil
+}
+
 // takeSettle settles the take whose gate the caller armed: the gate is
 // lifted and the parked appends woken. The caller holds appendMu; the
 // waiters hold no lock while they park, so the channel's close under it is
@@ -810,12 +831,13 @@ func (s *Stream) Seal(early bool) (SealResult, error) {
 			// The marker, footer and trailer are durable and the file is
 			// cut where the seal named it; only a ledger call refused.
 			// The disk and the caller's contract say sealed, so the
-			// stream reports exactly that, carrying the refusal — never
-			// "ended", which the durable bytes contradict.
+			// stream reports exactly that — the durable facts in res
+			// reach the caller beside the refusal — never "ended",
+			// which the durable bytes contradict.
 			s.sealState = sealSealed
 			s.drained.Broadcast()
 			s.appendMu.Unlock()
-			return SealResult{}, err
+			return res, err
 		}
 		// The seal failed: the segment takes no further append and no
 		// second seal. WriteSeal has ended it in the ledger for the
