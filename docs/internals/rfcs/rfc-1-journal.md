@@ -1364,6 +1364,7 @@ times `WriteAt` and counts read hits and misses itself. The counters live in
 | `index_refusals` | calls refused naming the index ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes), [§6](#6.%20Capacity)): content writes and reservations, and releases, deallocates and clone targets that split a held extent |
 | `spare_refusals` | rolls refused at once, naming `spare`, because no spare was ready; none waits ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)) |
 | `segment_reopens` | reads that had to reopen a closed segment ([§7.4](#7.4%20Open%20descriptors)) |
+| `descriptor_overruns` | reads that opened a descriptor past the bound because every one under it was a pinned writer ([§7.4](#7.4%20Open%20descriptors)) |
 
 `RemovalMarkers` growing is a caller that never settles ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)).
 
@@ -2665,13 +2666,40 @@ unlinked at all.
 **A descriptor is not closed over unsynced writes.** Once no descriptor holds a
 file, the platform may forget a failed writeback with the file's in-memory
 state, so a sync through a reopened descriptor can succeed over writes the
-device never took ([§5.3](#5.3%20A%20failed%20sync)). So a descriptor that has written to a segment file —
-an append, a seal, a repack copy, a re-append, or a spare's fill or zeroing —
+device never took ([§5.3](#5.3%20A%20failed%20sync)). So every write to a segment file — an append, a
+seal, a repack copy, a re-append, or a spare's fill or zeroing — and every sync
+of it go through one descriptor, the segment's writer. A writer that has written
 stays open until a sync through it has covered every such write or has failed,
-and is never closed to make room under the bound. The bound counts these, and
-**MUST** exceed the most the process's journals hold at once.
+until its segment has failed ([§5.3](#5.3%20A%20failed%20sync)) and that failure's window is resolved,
+until the journal turns read-only, which fails every open window ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)), or
+until the journal closes ([§8.7](#8.7%20Shutdown)), and is never closed to make room under the
+bound. A failed segment is unlinked only after its window is resolved, so its
+writer is closed before the unlink, as above. The bound counts these.
 
-The count, its bound and the reopens **MUST** be reported through `Stats` ([§3.7](#3.7%20State%20introspection),
+**A read never waits on a pinned writer.** A read of a segment whose writer is
+open reads through it. A read that needs a reopen while every descriptor under
+the bound is a pinned writer opens one past the bound for that read alone and
+closes it when the read returns; `descriptor_overruns` counts each. The bound
+gives by at most the reads in flight, which the process's other descriptors
+absorb ([RFC 24 §6.3](rfc-24-resources.md#6.3%20File%20descriptors)), and the floor below keeps that rare.
+
+> decision: `DescriptorLimit` has a floor — per journal, two writers per append
+> stream, its active segment and one it is sealing, plus its spare target, for
+> spares being filled or zeroed, plus one repack target, summed over the
+> process's journals. At the proposed 16 streams and 16 spares that is 49 per
+> journal, and at the proposed 256 MiB segments those writers span about 12 GiB,
+> far more than a journal holds unsynced. The proposed limit, a quarter of the
+> open-file limit, is 256 at the common 1024, which clears five journals. A
+> failed segment awaiting its window is not counted: a failure is rare and its
+> window short-lived, and it can only cost an overrun, never a closed writer. A
+> limit below the floor is
+> refused by the setting's validator ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)), at a write of the limit,
+> the stream count or the spare target, and again at the engine's `Apply`
+> ([RFC 8 §2.4](rfc-8-engine.md#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced)), where the process's journals are known. Overturned if
+> `descriptor_overruns` is ever non-zero in the soak, which injects no failure,
+> so a writer the floor misses must be counted.
+
+The count, its bound, the reopens and the overruns **MUST** be reported through `Stats` ([§3.7](#3.7%20State%20introspection),
 [§3.9](#3.9%20Metrics)). A bound set too low is invisible in the count, which simply sits at the
 limit, and shows up only as a reopen on nearly every read.
 
@@ -2820,6 +2848,12 @@ half-dismantled index.
 Background work — reclamation passes, sealing idle segments — **MUST** be
 stopped and joined before the segments it touches are closed.
 
+Close then closes every segment descriptor, pinned writers included
+([§7.4](#7.4%20Open%20descriptors)), without a final sync. A write still unsynced was never reported
+durable, and the next open verifies it in place, reading past the page cache
+([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)), so a failed writeback the closed descriptor took with it
+cannot pass for a synced record.
+
 ## 9. Conformance
 
 The rules for checks, tiers and recorded results are [the index's](rfc-index.md#Test%20tiers); this
@@ -2936,7 +2970,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§5.3](#5.3%20A%20failed%20sync) a failed window is reported once | Write to file F with no `Sync` waiting; fail the timer's sync and fail the window. Assert the next `Sync(F)` fails, the one after succeeds, and a `Sync(G)` of a file with no write in the window succeeds throughout. A design that fails only the `Sync` calls waiting at the time lets F's next flush succeed with its data gone. |
 | [§4.3](#4.3%20Versions) a re-append keeps its numbers | Write A, fail its sync and resolve by re-appending; truncate over A; crash so the original, its copy and the truncate are all on disk; reopen. Assert the extent reads `missing`. A re-append given a new sequence number outranks the truncate and brings A back. |
 | [§3.3](#3.3%20Offload) no pin on a segment under repack | Select a segment for repack and hold the pass after its first copy; offload a file with dirty extents in that segment. Assert the offer pins no segment under repack, takes the copied extent from its new location, leaves the rest to a later call, and the repack completes and unlinks the segment. |
-| [§3](#3.%20Interface) unsuitable storage refused | Make the platform checks of [RFC 28 Appendix A](rfc-28-journal-format.md#Appendix%20A%20%E2%80%94%20platform%20profile) see a mount without cache flushes. Assert `Init` and `Open` each refuse with `ErrUnsuitableStorage`, the error names the directory and the rule, and the directory is left as it was: `Init` creates no file, and refuses with `ErrUnsuitableStorage`, not `ErrNotEmpty`, a directory that also holds another entry. Repeat on a copy-on-write filesystem with a directory without the attribute, with a directory that has it and holds a file without it, and, where the profile requires a subvolume's root, with a directory that is not one. Make the read of the mount table fail instead; assert `Init` and `Open` return that error and `errors.Is` does not match it to `ErrUnsuitableStorage`. Remove the directory, with `expect` set: assert `Open` fails as on a directory that holds no journal, not with an error of the check, and creates nothing. A journal that opens on such a mount loses synced records at a power cut. |
+| [§3](#3.%20Interface) unsuitable storage refused | Make the platform checks of [RFC 28 Appendix A](rfc-28-journal-format.md#Appendix%20A%20%E2%80%94%20platform%20profile) see a mount without cache flushes. Assert `Init` and `Open` each refuse with `ErrUnsuitableStorage`, the error names the directory and the rule, and the directory is left as it was: `Init` creates no file, and refuses with `ErrUnsuitableStorage`, not `ErrNotEmpty`, a directory that also holds another entry. Repeat on a copy-on-write filesystem with a directory without the attribute, with a directory that has it and holds a file without it, and, where the profile requires a subvolume's root, with a directory that is not one. Make the read of the mount table fail instead; assert `Init` and `Open` return that error and `errors.Is` does not match it to `ErrUnsuitableStorage`. Remove the directory, with `expect` set: assert `Open` fails as on a directory that holds no journal, not with an error of the check, and creates nothing. Make the platform checks see ext4 data journaling — `data=journal` in the filesystem's effective options but not in the mount table, the journal-data attribute on the directory, and on one segment file only, each also on a filesystem reported as `ext3`; assert `Init` and `Open` each refuse with `ErrUnsuitableStorage` naming the rule. A journal that opens on such a mount loses synced records at a power cut. |
 
 #### Group B — wedging and unbounded resource use
 
@@ -2951,7 +2985,8 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 | [§6](#6.%20Capacity) named refusal | Fill a share to its limit. Assert the next `WriteAt` fails with `ErrNoSpace` naming the share's limit and the missing bytes, issues no I/O through the storage seam, and returns without waiting; release and repack that many offloaded bytes and assert the retry succeeds. Repeat against the journal's maximum with no write in flight: assert the missing bytes are those of the whole segment the write needs, `UsedBytes` plus the segment cap less `MaxBytes`, not its record's; then release and repack offloaded bytes until `UsedBytes` has fallen by at least them, since freed space returns in whole segments, and assert the retry succeeds. |
 | [§6](#6.%20Capacity) share limit | Fill one share to its limit; assert its next write is refused naming the share's limit while another share still writes, and that per-share accounting is the same after reopen. |
 | [§7.2](#7.2%20Repack) repack at capacity | Fill to capacity, then repack; assert it can run and that the journal recovers space without an external write succeeding first. |
-| [§7.4](#7.4%20Open%20descriptors) descriptors | Create more segments than the descriptor bound; assert reads still succeed and open descriptors stay bounded. Read from more segments than the bound while appends are unsynced; assert no descriptor with an unsynced write is closed. |
+| [§7.4](#7.4%20Open%20descriptors) descriptors | Create more segments than the descriptor bound; assert reads still succeed and open descriptors stay bounded. Hold a seal, a repack copy, a re-append and a spare's zeroing unsynced at the seam beside unsynced appends, and read from more segments than the bound; assert no writer with an unsynced write is closed, each becomes closable once its covering sync returns, and a read needing a reopen past the bound still succeeds and counts in `descriptor_overruns`. Fail an append, let its window be re-appended, and assert the failed segment's writer is closed before its unlink. Set `DescriptorLimit` below the floor; assert the setting is refused, naming it and the floor. |
+| [§7.4](#7.4%20Open%20descriptors) a closed writer forgets its error | Give the seam a variant whose close discards a pending writeback error, as a platform that forgets it with the file's state does. Fail writeback on a segment, then force descriptor pressure with reads from more segments than the bound; assert the next `Sync` of a file written there fails. A design that closes the writer under pressure reopens it and reports that `Sync` as a success. |
 | [§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) coalescing | Offload and release 64 MiB written in 64 KiB writes, then `Fill` it back in one call per 4 MiB at one version; assert one entry per fill record piece, not per original write. Repack a segment holding adjacent held extents of one file at one version; assert the copy is one record and one entry. Report the middle block of a three-block record, then its two edges; assert `ExtentCount` goes 1, 3, 2, 1. Report one 4 MiB record as two halves in two calls; assert it goes 1, 2, 1. |
 | [§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) index bound refuses | Set `ExtentLimit` to 10^4 and write scattered 4 KiB writes; assert the write that would pass the bound is refused naming the index, at once and with no I/O, `index_refusals` counts it, a truncate and a release still succeed, and after offload, release and repack a write succeeds again. Then punch 10^5 holes inside one held extent; assert the punches past an eighth of the bound above it are refused naming the index, and so is a clone target with both ends inside one held piece of that extent, while a punch or a clone target over a punched hole, which split nothing, a truncate and a delete still succeed, and a report, a `MarkOffloaded` and an `Unmark` that end inside a held extent succeed, split it, and are not counted in `index_refusals`. |
 | [§6](#6.%20Capacity) repack beside a share at its limit | Fill share A to its limit with offloaded content and share B with released content interleaved in the same segments; repack; assert the copies of A's records are made, B's unreclaimed storage returns, and no copy is refused by A's limit. A design that reserves repack copies against the share's limit returns nothing. |
