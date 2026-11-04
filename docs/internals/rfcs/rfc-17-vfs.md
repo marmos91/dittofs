@@ -584,8 +584,10 @@ the next start's grace, and a recall in flight is neither forced nor revoked.
 **Stop.** Stops the timers. It closes nothing it was handed: the node closes
 the engine, then stops open state (`Table.Stop`), then closes the store, after
 it. A `Sink.Closed` that reaches a stopped filesystem — a clone batch's
-`CloneClose` the engine's stop joins, or a timer firing before `Table.Stop` — is
-dropped. A release it would run is a pending release, written with the unlink,
+`CloneClose` the engine's stop joins, the serving a `CloneClose` left to run
+after its clone was answered, which `Table.Stop` joins, or a timer firing
+before `Table.Stop` — is dropped. A release it would run is a pending release,
+written with the unlink,
 which the next start's recovery runs (§5.3), and so is one a background wait
 still holds: from `Drain` on, the filesystem runs no release again, and `Stop`
 ends each wait on a retry channel without its `done`, so no waiter outlives it
@@ -1691,8 +1693,9 @@ Wherever the table may grant or revoke on a file the call does not name
 `Locks.ReleaseLockOwner` and the engine's `CloneClose`), it takes that file's
 admission lock itself, through the `order` function the node hands the table
 at `Start` ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)), so the
-service, and the engine for `CloneClose`, call those holding no admission
-lock; the engine makes its `CloneOpen` and `CloneClose` holding none
+service calls those holding no admission lock; after `CloneClose` it serves
+the freed file once the clone is answered, off the clone's batch, and the
+engine makes its `CloneOpen` and `CloneClose` holding none
 ([RFC 14 §11](rfc-14-open-state.md#11.%20Interface)). Every table
 call in the sketches below passes `c.Who()`: the `Call`'s client and
 protocol, the mapped principal, and whether `Call.Session` is set, as RFC 14's `Caller`, and names a file by `keyOf`: its
@@ -1705,11 +1708,9 @@ chunk (§5.9) releases its accept lock, every open-state step it took and its
 quota reservation for the length of the hold, and when the hold ends re-runs
 §5.1's steps 3–6 from the start, re-checking grace, open state and step 5's
 flags as if it had just arrived. Holding them, a write held in a cloning source
-extent would keep the source's open-state step while the clone's last batch
-waits on that step to delete its clone-kind open; the two would wait on each
-other until the write's deadline, and every open, close, lock and break
-acknowledgement on the file with them, long enough for a lease break to run out
-and be revoked.
+extent would keep the source's open-state step for the length of the hold, and
+every open, close, lock and break acknowledgement on the file would wait with
+it, long enough for a lease break to run out and be revoked.
 
 ### 5.1 Write
 

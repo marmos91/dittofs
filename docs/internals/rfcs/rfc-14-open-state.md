@@ -2880,13 +2880,18 @@ renewal, an acknowledgement or a poll that landed meanwhile wins. **The table
 takes `order` itself wherever it may grant or revoke on a file the call does
 not name**, since serving a file's waiters may grant a callback waiter, or
 revoke a grant past its recall deadline: in the timer's steps, and in
-`AckRecall`, `FreeState`, `Clients.Connect`, `Expire`, `Revoke`, `Disconnect`,
-`Locks.ReleaseLockOwner` and `CloneClose`, each of which serves the files its own steps
+`AckRecall`, `FreeState`, `Clients.Connect`, `Expire`, `Revoke`, `Disconnect`
+and `Locks.ReleaseLockOwner`, each of which serves the files its own steps
 freed under each file's admission lock once those steps return. Their callers
-**MUST** hold no admission lock. There is no drain: draining revokes nothing,
+**MUST** hold no admission lock. `CloneClose` returns once its own step has
+closed the hold, and serves the file it freed the same way after the clone is
+answered, off the clone's batch
+([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally), step 6).
+There is no drain: draining revokes nothing,
 and open state is
 left to the next start's grace
-([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)). `Stop` stops the timers.
+([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)). `Stop` stops the timers and
+joins the serving each `CloneClose` left to run after its clone is answered.
 
 ![How open state is wired: node.New builds the table from its Deps, then the service, which holds the table and hands each area only the views it calls; Node.Start starts the table with the filesystem as its Sink before the service starts, and Node.Stop runs in reverse.](img/rfc14-wiring.svg)
 
@@ -3282,6 +3287,7 @@ Deleted numbers are not reused.
 | L67 | An open asking none of read, execute, write, append or delete is granted against any deny mode and its deny refuses nothing. | Hold an open with all access and share none; open the file asking only read-attributes with share none: granted, with no break of any grant. Reverse the order: the all-access open is granted, and an anonymous write through NFS succeeds. |
 | L68 | A range's last byte is offset + length − 1, a zero-length range's included; to end of file is held as reaching 2⁶⁴−1 without overflow. | Over SMB, hold [10, 20); a zero-length lock at 15: refused; at 10: granted, since byte 9 is not held; at 20: granted; at 0: granted against a lock on [0, 2⁶⁴−1). Hold a zero-length lock at 15: an exclusive lock on [14, 16) is refused, on [15, 16) granted. An NLM lock at offset 2⁶⁴−2 with length 0: held to 2⁶⁴−1, conflicting with an NFSv4 lock on [2⁶⁴−2, all ones). |
 | L69 | Each primary holds, per client, at most 16,384 opens, 65,536 lock ranges, 4,096 lock owners, 1,024 waiters and 1,024 watches; a request past one is refused `ErrDelay` (`DelayResources`) before it changes anything, and a close, a cancel, a refusal of a callback grant, an unlock that splits no range and what a restart installs never are. | A client at 16,384 opens at one primary: the next open `ErrDelay` (`DelayResources`), no grant recalled, no app instance's predecessor closed, the per-client index unchanged; close one: the next open granted. The same at each other cap. At the range cap, a merging owner's unlock of a range's middle: refused; an unlock of a whole range: granted. Restart a primary whose client holds more than a lowered cap: every open, owner and range installed, and counted. |
+| L70 | `CloneClose` returns once the hold is closed, and the freed file is served after the clone is answered. | Clone a 4 KiB extent while an open waits on the source: the clone is answered first and the waiter is served after it, both within 1 s. |
 
 ## 13. Conformance
 

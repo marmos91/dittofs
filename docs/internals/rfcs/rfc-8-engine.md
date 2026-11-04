@@ -917,7 +917,7 @@ type Deps struct {
 // does not fail, and its request is never answered with that error.
 type CloneHold interface {
 	Hold(ctx context.Context, src CloneSrc) (OpenID, error) // RFC 14 CloneOpen: takes over the source open phase 1 wrote
-	Release(ctx context.Context, o OpenID) error             // RFC 14 CloneClose, after the last batch; an orphan it leaves reaches the filesystem through open state's Sink.Closed
+	Release(ctx context.Context, o OpenID) error             // RFC 14 CloneClose, after the last batch: returns once the hold is closed, the freed file's waiters served after the clone is answered; an orphan it leaves reaches the filesystem through open state's Sink.Closed
 	Served(ctx context.Context, s ShardID) error             // RFC 14 Recovery.Served: returns once open state serves s, or at ctx's end
 }
 
@@ -2836,7 +2836,8 @@ refusal of the first chunk returns the error.
 6. The last batch sets the removal done; close the source's open reference
    (`Release`, [§2.6](#2.6%20Dependencies%20and%20wiring)), then drop the
    registration, so a release answered pending runs again with no clone open to
-   refuse it; serve the destination extent, and answer.
+   refuse it; serve the destination extent, and answer. Open state serves the
+   source's waiters after that ([§2.6](#2.6%20Dependencies%20and%20wiring)).
 
 > decision: a clone copies the source's unoffloaded bytes through the journal
 > rather than offloading them first, so a clone never waits on the remote tier;
