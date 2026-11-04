@@ -71,6 +71,31 @@ func (h *countingHandle) WriteAt(ctx context.Context, id journal.FileID, off int
 	return h.Handle.WriteAt(ctx, id, off, p, mtime)
 }
 
+// ctxHandle answers WriteAt with its context's error, as a journal does once
+// the call's context ends.
+type ctxHandle struct{ engine.Handle }
+
+func (h ctxHandle) WriteAt(ctx context.Context, _ journal.FileID, _ int64, _ []byte, _ int64) (journal.Version, error) {
+	return journal.Version{}, ctx.Err()
+}
+
+// A WriteAt that answers the context's error is answered with that error
+// itself, not as an unavailable journal, and leaves nothing pending.
+func TestAWriteCutShortAnswersTheContextsError(t *testing.T) {
+	u := newUnit(t)
+	u.e.BindForTest(u.share, u.j, ctxHandle{u.h})
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	f := entity.NewFileID()
+	_, err := u.e.Write(ctx, u.share.ID, f, 0, []byte("abc"), engine.WriteOpts{Done: func() {}})
+	if !errors.Is(err, context.Canceled) || errors.Is(err, vfserr.ErrUnavailable) {
+		t.Errorf("Write = %v, want context.Canceled and not ErrUnavailable", err)
+	}
+	if len(u.e.Pending(f)) != 0 {
+		t.Errorf("a write cut short left %d pending", len(u.e.Pending(f)))
+	}
+}
+
 // A write samples its verifier once, before it is staged, and answers it.
 func TestAWriteSamplesItsVerifierFirst(t *testing.T) {
 	u := newUnit(t)

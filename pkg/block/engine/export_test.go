@@ -8,8 +8,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/vfs/vfserr"
 )
 
-// Bind installs a binding of s over j and h, copying the share table as a
-// share's attach does, for a test that cannot bind through Bind and Start.
+// BindForTest installs a binding of s over j and h, copying the share table as
+// a share's attach does, for a test that cannot bind through Bind and Start.
 func (e *Engine) BindForTest(s Share, j Journal, h Handle) {
 	t := bindings{}
 	if old := e.shares.Load(); old != nil {

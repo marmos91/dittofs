@@ -171,6 +171,30 @@ func TestAHeldEntryHoldsUpNoOtherFile(t *testing.T) {
 	dropA()
 }
 
+// A caller that waited on an entry which was emptied and removed meanwhile
+// takes the file's new entry, never the removed one: its operation stays
+// visible, in the shard's map. Taking the dead entry, or not marking it dead,
+// puts the operation into an entry nothing finds again.
+func TestAWaiterOnARemovedEntryTakesTheNewOne(t *testing.T) {
+	u := newUnit(t)
+	f := entity.NewFileID()
+	release := u.e.HoldEntry(f) // empty: removed when released
+	added := make(chan struct{})
+	go func() { defer close(added); u.e.AddPending(f, 0, 1) }()
+	deadline := time.Now().Add(time.Second)
+	for u.e.FileStateWaiting() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the adder never waited")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	release()
+	<-added
+	if !u.e.HasEntry(f) || len(u.e.Pending(f)) != 1 {
+		t.Errorf("after the wait: entry %v, %d pending; want the entry with the one operation", u.e.HasEntry(f), len(u.e.Pending(f)))
+	}
+}
+
 // A wait for an entry's lock is recorded in the file_state series, timed by
 // the clock; a lock taken without waiting records nothing.
 func TestALockWaitIsRecorded(t *testing.T) {

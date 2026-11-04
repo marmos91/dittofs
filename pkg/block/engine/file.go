@@ -191,7 +191,12 @@ func (fs *files) lock(fe *fileEntry) {
 }
 
 // lockWaits is one area's engine_lock_wait_seconds series: the waits for its
-// locks, counted and summed. A lock taken without waiting records nothing.
+// locks, counted and summed. A lock taken without waiting records nothing, so
+// the count is of contended takes.
+//
+// ponytail: a count and a sum, not RFC 8 §14's histogram, so a scrape gives
+// the mean contended wait but no tail. Add the buckets when epic 7 exposes the
+// engine's metrics, which is where an exporter first reads this.
 type lockWaits struct {
 	count   atomic.Int64
 	total   atomic.Int64 // nanoseconds
