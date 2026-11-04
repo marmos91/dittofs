@@ -106,11 +106,11 @@ type Retirer struct {
 	cfg RetirerConfig
 	log *slog.Logger
 
-	mu     sync.Mutex
-	freedB uint64 // freed_bytes; guarded by mu
-	queue  []core.SegmentID
+	mu      sync.Mutex
+	freedB  uint64 // freed_bytes; guarded by mu
+	queue   []core.SegmentID
 	reasons []Reason
-	queued map[core.SegmentID]struct{}
+	queued  map[core.SegmentID]struct{}
 	started bool
 	// owed holds the retirements whose directory sync failed: their signal
 	// is held back until the worker's own re-sync returns.
