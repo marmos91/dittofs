@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io/fs"
+	"math"
 	"slices"
 	"sync"
 	"syscall"
@@ -56,7 +57,7 @@ func sealFileSize(t *testing.T, e streamEnv, id core.SegmentID) int64 {
 	if err != nil {
 		t.Fatalf("opening segment %d's file: %v", id, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	size, err := f.Size()
 	if err != nil {
 		t.Fatalf("the size of segment %d's file: %v", id, err)
@@ -67,28 +68,15 @@ func sealFileSize(t *testing.T, e streamEnv, id core.SegmentID) int64 {
 // sealRecorderFault is a recording fault: it logs every seam call on the
 // segment's file, and can fail chosen ops the first times they arrive.
 type sealRecorderFault struct {
-	log   *[]string
-	seg   string
-	fails map[string][]error // op -> the errors to fail in order
+	log *[]string
+	seg string
 }
 
 func (f *sealRecorderFault) At(op string, key []byte) (dl time.Duration, tear int, err error) {
 	if string(key) == f.seg {
 		*f.log = append(*f.log, op)
-		if errs := f.fails[op]; len(errs) > 0 {
-			f.fails[op] = errs[1:]
-			return 0, 0, errs[0]
-		}
 	}
 	return 0, 0, nil
-}
-
-// fail arms op to fail with errs, in the order given, once each.
-func (f *sealRecorderFault) fail(op string, errs ...error) {
-	if f.fails == nil {
-		f.fails = map[string][]error{}
-	}
-	f.fails[op] = errs
 }
 
 // sealRecordFault installs a recorder over the whole seam and returns it.
@@ -183,7 +171,7 @@ func TestSealFullWritesTheTrailerAtTheCapInTwoSyncs(t *testing.T) {
 	// The footer verifies and describes every record. A Ref is an
 	// io.ReaderAt, so the format's reader runs over it directly.
 	r := sealReaderOf(t, e, 1)
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	footer, err := format.ReadFooter(r, size, streamIdentity, 1)
 	if err != nil {
 		t.Fatalf("the sealed segment's footer does not verify: %v", err)
@@ -294,7 +282,7 @@ func TestSealEarlyReturnsTheTailInThreeSyncs(t *testing.T) {
 
 	// The footer verifies at the truncated size, with every record in it.
 	r := sealReaderOf(t, e, 1)
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	footer, err := format.ReadFooter(r, size, streamIdentity, 1)
 	if err != nil {
 		t.Fatalf("the early-sealed segment's footer does not verify: %v", err)
@@ -956,7 +944,7 @@ func TestSealASecondSealWritesNothing(t *testing.T) {
 		}
 		size := sealFileSize(t, e, 1)
 		r := sealReaderOf(t, e, 1)
-		defer r.Close()
+		defer func() { _ = r.Close() }()
 		footer, err := format.ReadFooter(r, size, streamIdentity, 1)
 		if err != nil {
 			t.Fatalf("the raced footer does not verify: %v", err)
@@ -1035,7 +1023,7 @@ func TestSealWaitsForTheInFlightAppends(t *testing.T) {
 	}
 	size := sealFileSize(t, e, 1)
 	rd := sealReaderOf(t, e, 1)
-	defer rd.Close()
+	defer func() { _ = rd.Close() }()
 	footer, err := format.ReadFooter(rd, size, streamIdentity, 1)
 	if err != nil {
 		t.Fatalf("the footer after the waited seal does not verify: %v", err)
@@ -1068,7 +1056,6 @@ func TestSealAppendsRacingItLandBeforeItsMarkerOrAreRefused(t *testing.T) {
 
 	type outcome struct {
 		p   segment.Placed
-		ok  bool
 		len int64
 	}
 	outcomes := make(chan outcome, appenders*perAppender)
@@ -1137,7 +1124,7 @@ func TestSealAppendsRacingItLandBeforeItsMarkerOrAreRefused(t *testing.T) {
 	// The footer lists exactly the successes, ascending by offset.
 	size := sealFileSize(t, e, 1)
 	rd := sealReaderOf(t, e, 1)
-	defer rd.Close()
+	defer func() { _ = rd.Close() }()
 	footer, err := format.ReadFooter(rd, size, streamIdentity, 1)
 	if err != nil {
 		t.Fatalf("the raced footer does not verify: %v", err)
@@ -1435,6 +1422,83 @@ func TestSealWriteSealTakesEntriesAsData(t *testing.T) {
 		})
 	}
 
+	// The segment cap the writer serves is bounded by the record header's
+	// own 32-bit offset column, so a Set whose cap is above 4 GiB is a
+	// misconfigured one the writer must still police: the entries pass
+	// every other check — they ascent, their last record ends at the
+	// marker, the marker, the footer and the trailer fit the cap — and
+	// only the column's bound refuses the record offset it cannot carry.
+	// The refusal makes no I/O, so no 4 GiB file is ever built: the
+	// segment lives in the ledger alone, and the writer hands back its
+	// answer before it could touch a reference.
+	t.Run("a record offset above the 32-bit column", func(t *testing.T) {
+		// The ledger alone: a Set whose cap is above 4 GiB is a
+		// misconfigured one the writer must still police, and the
+		// refusal it answers makes no I/O, so no 4 GiB file is ever
+		// built. The reference is a real one over a small file of its
+		// own, for the refusal runs before the writer could touch it
+		// and the test asserts exactly that.
+		set := segment.NewSet(1<<34, nil)
+		if err := set.AddSpare(1, streamMax); err != nil {
+			t.Fatalf("the spare for the oversized-cap refusal: %v", err)
+		}
+		if err := set.Take(1); err != nil {
+			t.Fatalf("the take of the oversized-cap refusal: %v", err)
+		}
+
+		// One record whose offset sits above MaxUint32 and whose end
+		// names the marker, so only the column's bound refuses it. The
+		// offset is the first 8-aligned one past the column's top —
+		// MaxUint32 itself is off the grid — and the record's end at
+		// the marker passes the end check the grid and the column
+		// alone would leave standing.
+		reclen := format.RecordHeader{Kind: format.KindWrite, Extent: core.Extent{Len: 64}}.Size()
+		above := (int64(math.MaxUint32) + 8) &^ 7
+		cross := []format.CatalogEntry{{
+			File:         streamFileID(1),
+			Extent:       core.Extent{Off: 0, Len: 64},
+			RecordOffset: above,
+			Seq:          1,
+			Version:      core.Version{Counter: 1},
+			Kind:         format.KindWrite,
+			Tag:          7,
+		}}
+
+		small := segment.NewSet(streamCap, nil)
+		smallMaker := segment.NewMaker(e.seam.FS(), small, streamMax, 0, nil)
+		smallID, err := smallMaker.Make()
+		if err != nil {
+			t.Fatalf("the small file for the oversized-cap refusal: %v", err)
+		}
+		budget := core.NewDescriptorBudget(2)
+		smallCache := segment.NewDescriptors(e.seam.FS(), format.SegmentName, budget)
+		t.Cleanup(func() {
+			if err := smallCache.Shutdown(); err != nil {
+				t.Errorf("the refusal's cache Shutdown: %v", err)
+			}
+		})
+		ref, err := smallCache.Acquire(smallID)
+		if err != nil {
+			t.Fatalf("the refusal's reference: %v", err)
+		}
+		defer ref.Release()
+
+		calls := sealCountersOf(e, format.SegmentName(smallID))
+		counters := set.Counters()
+		if _, err := segment.WriteSeal(set, ref, streamIdentity, 1, above+reclen, cross, false); !errors.Is(err, segment.ErrBadCatalog) {
+			t.Fatalf("the WriteSeal over the 32-bit column = %v, want ErrBadCatalog: the record header cannot carry the offset %d", err, above)
+		}
+		if state, err := set.State(1); err != nil || state != segment.Active {
+			t.Fatalf("the refused WriteSeal left the segment %v, %v, want Active", state, err)
+		}
+		if now := set.Counters(); now != counters {
+			t.Fatalf("the refused WriteSeal moved the ledger: %+v, want %+v", now, counters)
+		}
+		if now := sealCountersOf(e, format.SegmentName(smallID)); now != calls {
+			t.Fatalf("the refused WriteSeal moved the seam: %+v, want %+v", now, calls)
+		}
+	})
+
 	// The acceptance, on a second segment the refusals' own shape built:
 	// entries as data, scanned from the records of a segment a fresh
 	// stream appended, seal the segment whose header names it.
@@ -1497,7 +1561,7 @@ func TestSealWriteSealTakesEntriesAsData(t *testing.T) {
 		// The footer verifies and lists every scanned record, and the
 		// ledger carries the segment at its truncated size.
 		rd := sealReaderOf(t, streamEnv{cache: cache}, id)
-		defer rd.Close()
+		defer func() { _ = rd.Close() }()
 		footer, err := format.ReadFooter(rd, want, streamIdentity, id)
 		if err != nil {
 			t.Fatalf("the scanned footer does not verify: %v", err)
@@ -1619,7 +1683,7 @@ func TestSealTheStreamEdges(t *testing.T) {
 			t.Fatalf("the empty early seal's file is %d bytes, want %d", size, res.Size)
 		}
 		footerRd := sealReaderOf(t, e, id)
-		defer footerRd.Close()
+		defer func() { _ = footerRd.Close() }()
 		got, err := format.ReadFooter(footerRd, size, streamIdentity, id)
 		if err != nil {
 			t.Fatalf("the empty footer does not verify: %v", err)
