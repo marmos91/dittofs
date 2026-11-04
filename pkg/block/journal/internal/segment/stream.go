@@ -560,32 +560,20 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 			s.appendMu.Unlock()
 			return Placed{}, ErrStreamClosed
 		}
-		// The seal states refuse before anything is reserved (R1, R85): once
-		// a seal has taken the segment — while it drains the reservations
-		// below it, and while its own steps run — and once it has completed
-		// or the segment has ended, no append is taken. The refusal reserves
-		// nothing, writes nothing and charges nothing, so the marker a seal
-		// chose and the bytes its footer names cannot be placed under.
-		// sealOpen, the stream that is still appending, alone falls through.
-		//
-		// The check runs at every loop top, beside the closed check it
-		// mirrors: an append parked on the first take's gate resumes at the
-		// loop's top, and a seal that took the segment while it parked —
-		// past its drain, its marker read — must refuse it there, or its
-		// record lands exactly at the marker the seal's own write is
-		// driving at, unlisted by the footer and overwriting or
-		// overwritten by it.
 		// decision: the seal states are not re-checked here, the way an
-		// append resumed from the take gate once re-checked one. The roll
-		// replaced the take, and the roll's own gate now parks the same
-		// caller the take gate parked — with no lock and no in-flight
-		// reservation — so a seal that took the segment while this append
-		// parked is waited by the sealRunning branch the loop's next turn
-		// runs, and the roll the append arms after it names the segment the
-		// settled seal left. The re-check would refuse what the turn after
-		// the wait places. Withdraw it if a roll is ever armed with the
-		// segment left open, which the roll's own first step would have to
-		// account for again.
+		// append resumed from the take gate once re-checked one (R1, R85:
+		// once a seal has taken the segment and once it has completed or
+		// the segment has ended, the past-seal refusal reserved nothing,
+		// so the marker a seal chose and the bytes its footer names cannot
+		// be placed under). The roll replaced the take, and the roll's own
+		// gate now parks the same caller the take gate parked — with no
+		// lock and no in-flight reservation — so a seal that took the
+		// segment while this append parked is waited by the sealRunning
+		// branch the loop's next turn runs, and the roll the append arms
+		// after it names the segment the settled seal left. The re-check
+		// would refuse what the turn after the wait places. Withdraw it if
+		// a roll is ever armed with the segment left open, which the roll's
+		// own first step would have to account for again.
 
 		// A seal someone else runs — the idle seal, or one the caller asked
 		// for — parks this append on the drain's cond until the seal
