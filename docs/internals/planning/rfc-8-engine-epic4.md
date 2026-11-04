@@ -57,7 +57,9 @@ window reported per file; `Done` on the four paths this epic builds; the split o
 `kvstore.PendingOp`'s time into a modify and a change time; the series
 `engine_stability_points_total`, `engine_pending_existence_ops` and
 `engine_group_commit_splits_total`; the spans `engine.sync` and `engine.existence_commit`;
-the condition `existence_commit_failing`.
+the condition `existence_commit_failing`. The test components it adds to E2's: the fake
+journal's `FailSync(also)` and `Durable`, the fixture's `FailNextSync` and `Stall`, and
+the engine test package's `newUnitOver`.
 
 ### 1.2 Out of scope
 
@@ -181,7 +183,7 @@ the condition `existence_commit_failing`.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| 1 Unit tests | all | every subtask tests over E2's fake journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition; the split's and the stalled store's tests put E2's fault-injecting `kv.KV` under `kvstore` |
+| 1 Unit tests | all | every subtask tests over E2's fake journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition; the split's test puts a `kv.KV` wrapper under `kvstore` through `newUnitOver`, and the stalled store's a stalling `Existence` wrapper, since E2's fault-injecting `kv.KV` does not exist |
 | 2 Fuzz | none | no parser: the group commit's split is checked by its table test (T4.4), which carries RFC 8 §15's `ponytail:` marker |
 | 3 Observability | T4.2, T4.3, T4.4 | T4.2 counts `engine_stability_points_total` and opens `engine.sync`; T4.3 records `engine_pending_existence_ops` (the operations one commit applied) and opens `engine.existence_commit`; T4.4 counts `engine_group_commit_splits_total` and raises `existence_commit_failing` naming the file, logged at `Warn` on entering and leaving. Counters in unexported fields epic 7's `Stats` exposes; none labelled by share |
 | 4 Profiling | all | the unit composition calls `prof.Watch`; T4.3's timer and its batch goroutine are joined by `closeGroupCommits`, which the tests call as epic 6's `Close` will, so a leak fails the test that composes the engine |
@@ -265,7 +267,7 @@ subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R36 | `Done` is called exactly once for every write `Write` accepted: by the existence commit that records its usage, after it commits; by the engine, charging nothing, for a write a failed window drops and for every uncommitted write of a journal whose device is lost whole; by the commit from its loss event | MUST | §5.1, §12.1 | T4.3, T4.5, T4.6, T4.7 |
 | R37 | The paths are exclusive: a write leaves the set of accepted, uncommitted writes under one lock, and the path that removes it calls `Done`; the commit claims the write before its transaction, calls `Done` once it commits and releases the claim when it fails and is retried | invariant | §5.1 | T4.7 |
-| R38 | A write a failed window drops, or whose synced loss is reported after a batch captured it, leaves that batch: the batch neither commits its size nor calls its `Done` | invariant | §5.1 | T4.6, T4.7 |
+| R38 | A write a failed window drops leaves the batch that claimed it: the batch neither commits its size nor calls its `Done`. A corrupt loss drained before the batch builds its operations is committed from that batch as `OpLost` (R32); one reported after it built them is committed as written (D13) | invariant | §5.1 | T4.6, T4.7 |
 | R39 | After a restart nothing is reserved and nothing waits on a `Done`: recovery calls none. The reservations go with the process, so nothing in this epic can break it; epic 6's recovery (T6.5) carries its test | invariant | §5.1 | T4.7 |
 
 ## 4. Decisions this epic takes
@@ -297,13 +299,15 @@ subtasks and tests can cite them.
   files in due order. The group commit of a journal starts when its first binding is made and
   is joined by `closeGroupCommits`, which epic 6's `Close` calls (§9, point 6). The capture,
   under each file's entry lock, marks the file in-batch and claims its operations in place,
-  as a count (T4.7): they stay in the entry, so `Overlay` and `Read` keep answering them
+  as a count (the claim's marks are T4.6's): they stay in the entry, so `Overlay` and `Read` keep answering them
   (R18). `Sync` is the share's handle's, so the batch makes one sync per share among its
   files, through the sync function (D9); only then, under each entry's lock again, does it
   build the store's `PendingExistence` with D6's times from the claimed operations, so a
   loss the drain marked after the capture is left out. It commits them in one
   `Existence.Commit`, which splits by `K` itself and returns only once every
-  file's transactions are done. On return the committed operations leave their entries, the
+  file's transactions are done. Each existence commit runs under its own bound,
+  `conflictBound`, 1 s, because `kv.Update` retries a conflict until its context ends; a
+  call cut off by the bound on a conflict is split (T4.4), and only a conflict splits. On return the committed operations leave their entries, the
   in-batch mark is cleared and its waiters woken. A batch wakes the waiters on every file it
   took from the due set, whether it captured the file or not, so a `commitNow` on a file it
   could not capture looks again rather than waiting for a batch that never comes. A file
@@ -320,8 +324,8 @@ subtasks and tests can cite them.
   same type, read `Ctime` where they read `Time`. A new kind, `kvstore.OpLost`, commits an
   extent uncarved, holding nothing, and changes neither `Charged` nor the usage counters,
   for R32.
-- **D7, the failing file's backoff.** A file failing alone is retried from the group commit
-  with a doubling backoff from 100 ms to 30 s. A `ponytail:` marker: a fixed doubling
+- **D7, the failing file's backoff.** A file failing alone goes back on the due set at once,
+  held only by a doubling backoff from 100 ms to 30 s before a batch may take it again. A `ponytail:` marker: a fixed doubling
   schedule rather than the shared scheduler's `offload.retry_min`/`retry_max`; move it there
   when offload brings the scheduler. Its stability points answer `ErrDelay` with
   `DelayConflict` when the last failure was a conflict, else `DelayCommit`.
@@ -336,8 +340,14 @@ subtasks and tests can cite them.
 - **D9, the one sync function.** Every `Sync` the engine makes goes through one function:
   the group commit's, `Commit`'s, epic 5's phase 1, epic 6's recovery, epic 7's capacity
   sync and epic 8's clone. After the sync returns, and before the caller commits any
-  existence, it runs the drain (D8); on a `SyncError` it also raises the loss sequence of
-  each file the error names (T4.6). The two split a failed window's write: the drain (T4.5)
+  existence, it runs the drain (D8). On a `SyncError` it syncs again until one succeeds,
+  since RFC 1 §5.3 promises nothing durable past a failed window, and raises each named
+  file's sequence once (T4.6): a failed window arrives both as the `SyncError` and as a
+  `LossFailedWindow` event, so the files a `SyncError` names are noted in the journal's
+  `losses.windows`, and the event of a noted file is consumed there rather than raising it
+  again. A file a `SyncError` names with no event (the ring overflowed) keeps its pending
+  writes, which the next group commit commits as written; a `decision:` marker at the
+  function names it (§9, point 5). The two split a failed window's write: the drain (T4.5)
   raises the file's sequence, and the write stays pending, committed as written by the next
   group commit, until T4.6 drops it from the entry and from any batch that claimed it. The loss generation the journal raised changes the
   verifier of every later `Commit`, so the report needs no other state. A `decision:` marker
@@ -363,6 +373,13 @@ subtasks and tests can cite them.
   accepted, so no reservation is held for it, and the filesystem service maps the error as
   it maps any other unavailable journal. A `decision:` marker at the refusal names it,
   withdrawn if the service needs a cause it can retry, which `ErrDelay` would give.
+- **D13, a loss reported after the batch built its operations.** A corrupt loss the drain
+  finds before the batch builds the store's operations commits the write as `OpLost` from
+  that batch (R32). One reported after, between `pending()` and the commit, is committed as
+  written: the journal no longer holds its bytes, and committed unoffloaded content with
+  none behind it reads **Lost** only if the journal reports it. A `decision:` marker names
+  the fix: a loss path for committed unoffloaded content, which a later drain turns into an
+  `OpLost` over committed existence.
 
 ## 5. Target tree
 
@@ -444,10 +461,10 @@ test/enginev2/known.yaml  T4.1–T4.4, T4.6  their entries
   `Commit`'s sync whose batch a hook keeps from being captured does not hold the `Commit`,
   which returns once its own version is committed (catches a wait on versions above D3's,
   through `commitNow` in place of `commitThrough`); with a stalling `Existence` wrapper
-  standing in for E2's fault-injecting `kv.KV`, which is not built yet, an overwrite's
+  standing in for E2's fault-injecting `kv.KV`, which does not exist, an overwrite's
   `Commit` answers `ErrDelay` at its deadline and an append's succeeds (catches success under
   a stall, R11). Conformance rows over the real journal for §5.1 overwrite waits for
-  existence (adapted) and stalled store, red until the journal's `Sync` exists, and the
+  existence (adapted) and stalled store, the latter through E2's `Fixture.Stall`, added here, red until the journal's `Sync` exists, and the
   engine assertions of `TestRFC8A_StableWriteLazyExistence`.
 
 ### T4.3 The group commit per journal
@@ -505,21 +522,30 @@ test/enginev2/known.yaml  T4.1–T4.4, T4.6  their entries
   error halving the batch until each failing file stands alone; a file failing alone backed
   off by D7's schedule; `existence_commit_failing` naming it, raised and cleared, logged at
   `Warn`; the cause its stability points answer (D7); a conflict retried within the
-  caller's deadline and answered `DelayConflict` at it; `engine_group_commit_splits_total`;
-  RFC 8 §15's `ponytail:` at the split table.
+  caller's deadline and answered `DelayConflict` at it, the engine naming a conflict through
+  `kvstore.ErrConflict`, since its import rule forbids `kv`; `existence_commit_failing`
+  cleared too when a capture finds the file's entry gone, on `lostWhole` and on
+  `dropShare`; `engine_group_commit_splits_total`; RFC 8 §15's `ponytail:` at the split
+  table. In the engine's test package, `newUnitOver`, which composes the unit over a given
+  `kv.KV`, for a wrapper that fails or conflicts on chosen keys; E2's fault-injecting
+  `kv.KV` does not exist.
 - **Acceptance criteria:**
   - a conflict on one file of 64 that the store names no key for delays the other 63 by at
     most `log₂ 64` extra calls; one the store names in its map delays none;
   - the failing file's `Commit` answers `ErrDelay` while every other file's succeeds;
-  - the condition clears on the file's next commit that succeeds.
+  - the condition clears on the file's next commit that succeeds, when a capture finds its
+    entry gone, on `lostWhole` and on `dropShare`.
 - **Tests:** the split's table over a stub `Existence`: each failure shape (a file in the
   map, a whole-call error, two failing files, every file failing) against the expected calls
   (catches a committed file resubmitted, or a failing one resubmitted with the rest). Over
-  the real `kvstore` with the fault-injecting `kv.KV` making one file's File record
-  undecodable: the other files' overwrite `Commit`s succeed, that file's answers `ErrDelay`,
+  the real `kvstore` over a `kv.KV` wrapper, through `newUnitOver`, making one file's File
+  record undecodable: the other files' overwrite `Commit`s succeed, that file's answers `ErrDelay`,
   and the condition names it (catches a whole-batch failure, R22, R23). A conflict held past
   a `Commit`'s deadline answers `DelayConflict`, never `ErrUnavailable` (catches a conflict
-  surfaced as an I/O error, R24). The §5.2 group commit row, a conformance row over the real
+  surfaced as an I/O error, R24); a conflict held past `conflictBound` splits the batch,
+  and any other error does not (catches a split on every error, or a commit left retrying
+  until the caller's deadline); the condition cleared on `dropShare` and on `lostWhole`
+  (catches a condition naming a file nothing will commit). The §5.2 group commit row, a conformance row over the real
   journal and `kvstore`: 64 writers flushing while `chmod` writes random File records, no
   flush waiting beyond the split bound, red until the journal's `Sync` exists.
 
@@ -558,14 +584,16 @@ test/enginev2/known.yaml  T4.1–T4.4, T4.6  their entries
 
 ### T4.6 The failed window, per file
 
-**Subtask T4.6 estimate: 1.5 man-days.**
+**Subtask T4.6 estimate: 2.5 man-days.**
 
-- **Track:** B. **Depends on:** T4.2, T4.5.
+- **Track:** B. **Depends on:** T4.2, T4.3, T4.5.
 - **Covers:** R6 (verifier after a loss), R33–R35, R36 (the failed window's path).
-- **Deliverables:** in `loss.go`: the sync function's `SyncError` case raising each named
-  file's sequence, used by every engine sync, epic 7's capacity sync included; a
-  `LossFailedWindow` event dropping the matching pending write from its entry, its `Done`
-  charging nothing (R38 with T4.7's batch half); `Commit`
+- **Deliverables:** in `loss.go`: the sync function's `SyncError` case (D9): the sync
+  repeated until one succeeds, each named file's sequence raised once through
+  `losses.windows`, used by every engine sync, epic 7's capacity sync included; in
+  `groupcommit.go`: the claim's and the drop's marks on an operation, made under the entry's
+  lock, so a `LossFailedWindow` event drops the matching pending write from its entry and
+  from any batch that claimed it, its `Done` charging nothing (R38); `Commit`
   answering it with the new verifier and sequence, never mapped to `ErrUnavailable` (epic
   3's D4 left an unnamed journal error so).
 - **Acceptance criteria:**
@@ -577,19 +605,22 @@ test/enginev2/known.yaml  T4.1–T4.4, T4.6  their entries
   A's next `Commit` answers the new verifier and a raised sequence, A's following one after a
   new write matches that write's (catches a report lost when no `Commit` waited, and a file
   wedged); a `SyncError` on `Commit`'s own sync answers success with the new verifier, not an
-  error (catches D4's mapping). A conformance row over the real journal for §5.1 failed
-  window and §4.1 verifier after a loss, red until the journal fails windows.
+  error (catches D4's mapping); a window reported as both a `SyncError` and an event raises
+  the sequence once (catches a double raise); a `SyncError` followed by a successful sync
+  answers only after the second (catches a sync that returns at the failure); a batch
+  claims a write, then its window fails before the batch commits: the committed size
+  excludes it (catches a batch that keeps the dropped write). E2's fake journal gains
+  `FailSync(also)` and `Durable`, and its fixture `FailNextSync`, for these tests and the
+  conformance row over the real journal for §5.1 failed window and §4.1 verifier after a
+  loss, red until the journal fails windows.
 
 ### T4.7 `Done` exactly once
 
-**Subtask T4.7 estimate: 3 man-days.**
+**Subtask T4.7 estimate: 2 man-days.**
 
-- **Track:** B. **Depends on:** T4.3, T4.5.
+- **Track:** B. **Depends on:** T4.6.
 - **Covers:** R36–R39.
-- **Deliverables:** in `groupcommit.go`: the claim as one operation under the entry's lock,
-  marking a write claimed in place so no other path takes it; the claim released on a failed
-  commit; a failed window's drop and a loss reported after a capture taking the write out of
-  the batch that claimed it, so the batch neither commits its size nor calls its `Done`.
+- **Deliverables:** the claim's release on a failed commit, over T4.6's marks;
   `enginev2test/reservations.go`: the reservation counter, a `Done` wrapper incremented by
   each accepted `Write` and decremented by its `Done`, failing the test on a second call,
   which epics 5, 6 and 8 reuse.
@@ -618,7 +649,7 @@ flowchart TD
   T4_1 & T4_3 & T4_5 --> T4_2["T4.2 Commit"]
   T4_3 --> T4_4["T4.4 Split"]
   T4_2 & T4_5 --> T4_6["T4.6 Failed window"]
-  T4_3 & T4_5 --> T4_7["T4.7 Done exactly once"]
+  T4_6 --> T4_7["T4.7 Done exactly once"]
   T4_4 & T4_6 & T4_7 --> C2(["after T4.7: every accepted write gets one Done"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
