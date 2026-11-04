@@ -1543,10 +1543,10 @@ Sync and unlink, per platform ([§2.2](#2.2%20Segments), [RFC 1 §5.2](rfc-1-jou
   only at creation and can be set on one file alone, and a recycle renames a
   file with its attribute. An attribute set while the journal runs is found at
   the next open, as the copy-on-write attribute is. Open **MUST** refuse a
-  kernel older than 4.13: from there a writeback error is recorded per file and
-  reported to every descriptor open when it happened, which
-  [RFC 1 §7.4](rfc-1-journal.md#7.4%20Open%20descriptors)'s pinned writer relies on; an earlier kernel reports it to
-  the first sync through any descriptor and clears it.
+  kernel older than 4.13: there ext4, XFS and Btrfs each began recording a
+  writeback error per file and reporting it to every descriptor open when it
+  happened, which [RFC 1 §7.4](rfc-1-journal.md#7.4%20Open%20descriptors)'s pinned writer relies on; an earlier kernel
+  reports it to the first sync through any descriptor and clears it.
 - **Windows**: segments are opened with `FILE_SHARE_DELETE`, so one can be
   deleted while a reader still holds it; `FlushFileBuffers` is the sync. There
   is no directory sync: a create, rename or unlink is made durable by opening the
