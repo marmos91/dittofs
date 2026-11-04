@@ -2022,12 +2022,23 @@ func TestSealASyncOnItParksUntilItCompletes(t *testing.T) {
 		r, err := e.s.Seal(true)
 		sealed <- sealRace{r: r, err: err}
 	}()
-	<-h.Reached()
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the seal never reached the hold inside its own first sync")
+	}
 	syncsAtPark := e.seam.CallsFor(journaltest.OpSync, seg)
 
 	syncErr := make(chan error, 1)
 	go func() { syncErr <- e.s.Sync() }()
-	time.Sleep(50 * time.Millisecond)
+	// A short bounded window, not a sleep alone: the Sync must still be
+	// pending while the seal is parked, and the counts it would have
+	// moved are the assertion that it never ran.
+	select {
+	case err := <-syncErr:
+		t.Fatalf("the Sync returned %v while the seal was still in its own steps, want it parked on the drain until the seal settles", err)
+	case <-time.After(50 * time.Millisecond):
+	}
 	if got := e.seam.CallsFor(journaltest.OpSync, seg); got != syncsAtPark {
 		t.Fatalf("a Sync racing the seal issued %d syncs of its own, want none: its fsync must not run beside the seal's", got-syncsAtPark)
 	}
@@ -2036,12 +2047,21 @@ func TestSealASyncOnItParksUntilItCompletes(t *testing.T) {
 	// whole early seal shows its three, no more — and the parked Sync
 	// answers nil, for the records are durable by the seal's first step.
 	h.Release()
-	race := <-sealed
-	if race.err != nil {
-		t.Fatalf("the early Seal under the parked Sync: %v", race.err)
+	select {
+	case race := <-sealed:
+		if race.err != nil {
+			t.Fatalf("the early Seal under the parked Sync: %v", race.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the early Seal did not return after the hold was released")
 	}
-	if err := <-syncErr; err != nil {
-		t.Fatalf("the parked Sync after the seal = %v, want nil: the seal's first step made the records durable", err)
+	select {
+	case err := <-syncErr:
+		if err != nil {
+			t.Fatalf("the parked Sync after the seal = %v, want nil: the seal's first step made the records durable", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the parked Sync did not return after the seal completed")
 	}
 	if got := e.seam.CallsFor(journaltest.OpSync, seg); got != syncsAtPark+2 {
 		t.Fatalf("the whole early seal plus the parked Sync issued %d syncs past the held one, want the seal's two alone", got-syncsAtPark)
