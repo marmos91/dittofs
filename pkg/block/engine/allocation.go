@@ -62,7 +62,7 @@ func (e *Engine) Allocation(ctx context.Context, s entity.ShareID, f entity.File
 		// needs the run as of one instant.
 		var ops []pendingOp
 		if fe := e.files.lockOf(f); fe != nil {
-			ops = slices.Clone(fe.ops)
+			ops = slices.DeleteFunc(slices.Clone(fe.ops), func(op pendingOp) bool { return op.dropped })
 			e.files.unlock(f, fe)
 		}
 		if e.files.removals.Load() != gen {

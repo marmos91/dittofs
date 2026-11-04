@@ -86,6 +86,15 @@ type Fixture struct {
 // until its context ends.
 func (f *Fixture) Stall() { f.stalled.Store(true) }
 
+// FailNextSync makes the journal's next fsync fail, so the sync window it
+// belongs to fails.
+func (f *Fixture) FailNextSync() {
+	f.t.Helper()
+	if err := f.Seam.Schedule(journaltest.Failing(journaltest.OpSync, "*", 1, errors.New("fixture: an injected sync failure"))); err != nil {
+		f.t.Fatalf("fixture: schedule a sync failure: %v", err)
+	}
+}
+
 // New creates the journal and the store, then starts a process over them: the
 // open-state table and the engine, the engine started with the share bound.
 // Everything is closed when the test ends.

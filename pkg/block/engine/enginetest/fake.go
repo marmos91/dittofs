@@ -25,15 +25,17 @@ import (
 // operation is synced and durable at once, unless the test loses it with
 // Lose.
 type FakeJournal struct {
-	mu      sync.Mutex
-	last    uint64 // the counter of the last version issued
-	limit   uint64 // no version is issued at or above it; zero until set
-	files   map[journal.FileID]*fakeFile
-	held    map[journal.ShareTag]int64 // held bytes per tag
-	losses  []journal.LossEvent
-	gen     uint64
-	closed  bool
-	handles []*FakeHandle
+	mu        sync.Mutex
+	last      uint64 // the counter of the last version issued
+	limit     uint64 // no version is issued at or above it; zero until set
+	files     map[journal.FileID]*fakeFile
+	held      map[journal.ShareTag]int64 // held bytes per tag
+	losses    []journal.LossEvent
+	gen       uint64
+	closed    bool
+	handles   []*FakeHandle
+	failing   map[journal.FileID]bool // FailSync's files: the next Sync naming one fails its window
+	undurable map[journal.FileID]bool // files a failed window left undurable, until a Sync of theirs succeeds
 }
 
 // fakeFile is one file: its tag, its held pieces in offset order, and its
@@ -348,13 +350,56 @@ func (h *FakeHandle) ReadAt(_ context.Context, id journal.FileID, off int64, p [
 }
 
 // Sync answers at once: every operation of the fake is durable on return.
-func (h *FakeHandle) Sync(context.Context, ...journal.FileID) error {
+// The first Sync naming a file FailSync armed answers a SyncError naming
+// those of its files.
+func (h *FakeHandle) Sync(_ context.Context, ids ...journal.FileID) error {
 	h.j.mu.Lock()
 	defer h.j.mu.Unlock()
 	if h.closed {
 		return journal.ErrClosed
 	}
+	var failed []journal.FileID
+	for _, id := range ids {
+		if h.j.failing[id] {
+			failed = append(failed, id)
+			delete(h.j.failing, id)
+		}
+	}
+	if len(failed) > 0 {
+		return &journal.SyncError{Files: failed, Err: journal.ErrSyncFailed}
+	}
+	for _, id := range ids {
+		delete(h.j.undurable, id)
+	}
 	return nil
+}
+
+// Durable reports whether file id's writes are durable: false from a
+// FailSync naming it until a Sync of it succeeds.
+func (j *FakeJournal) Durable(id journal.FileID) bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return !j.undurable[id]
+}
+
+// FailSync fails the sync window of file id's extent e: the extent is lost
+// as a failed window's, and the next Sync naming id answers a SyncError
+// naming it, as the journal reports a failed window to the next Sync of each
+// file that had a write in it. Each of also, and id, is left undurable until
+// a Sync of it succeeds, as a failed window promises nothing durable.
+func (j *FakeJournal) FailSync(id journal.FileID, e journal.Extent, also ...journal.FileID) {
+	j.Lose(id, e, journal.LossFailedWindow)
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.failing == nil {
+		j.failing = map[journal.FileID]bool{}
+		j.undurable = map[journal.FileID]bool{}
+	}
+	j.failing[id] = true
+	j.undurable[id] = true
+	for _, a := range also {
+		j.undurable[a] = true
+	}
 }
 
 // remove runs a removal of kind k over [from, to) under a new version and

@@ -30,6 +30,8 @@ type pendingOp struct {
 	at        time.Time      // the clock's time when staged: the file's change time
 	setsMtime bool           // the operation moves the file's modification time
 	lost      bool           // the journal dropped it after its sync: its existence commits lost
+	claimed   bool           // a batch claimed it: no other path commits it or calls its Done
+	dropped   bool           // a failed window dropped it while claimed: it no longer exists, its Done has run
 	done      func()         // the write's WriteOpts.Done, called once its existence commits or it is dropped
 }
 

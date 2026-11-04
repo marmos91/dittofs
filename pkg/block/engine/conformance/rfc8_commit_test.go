@@ -133,3 +133,21 @@ func TestRFC8A_GroupCommit(t *testing.T) {
 	close(stop)
 	chmods.Wait()
 }
+
+// A sync window the journal fails is reported to the file's next Commit as a
+// success with a verifier other than the write's and a raised loss sequence,
+// and the verifier after a new write is that write's.
+func TestRFC8A_FailedWindow(t *testing.T) {
+	f := enginetest.New(t)
+	_, id := f.File("a")
+	v := write(t, f, id, 0, []byte("in a failed window"))
+	f.FailNextSync()
+	cv, seq, err := f.E.Commit(t.Context(), f.Share.ID, id, 0, 0)
+	if err != nil || cv == v || seq == 0 {
+		t.Errorf("Commit over a failed window: verifier %x, sequence %d, %v; want success, other than %x, raised", cv, seq, err, v)
+	}
+	w := write(t, f, id, 0, []byte("after it"))
+	if cw, _, err := f.E.Commit(t.Context(), f.Share.ID, id, 0, 0); err != nil || cw != w {
+		t.Errorf("the Commit after a new write: %x, %v; want the write's %x", cw, err, w)
+	}
+}
