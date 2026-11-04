@@ -240,7 +240,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | --- | --- | --- | --- | --- |
 | R13 | `New` opens nothing; `Start` runs its steps in order, each complete before the next; a failing step closes in reverse what earlier steps opened and returns its error, so the engine is serving or as built | invariant | §2.5 | T6.3 |
 | R14 | The engine opens each journal itself through `Deps.Open`, with the floor and the identity read from the store; start never creates a journal | invariant | §2.5 step 1 | T6.3 |
-| R15 | The floor a journal opens with is at least every share's version floor and version limit (D5) | invariant | §2.5 step 1, §2.7; RFC 1 §4.3 and RFC 28 §3.1 word it otherwise (#3634) | T6.3, T6.7 |
+| R15 | The floor a journal opens with is at least every share's version floor and version limit (D5) | invariant | §2.5 step 1, §2.7; RFC 28 §3.1; RFC 1 §3, §4.3 | T6.3, T6.7 |
 | R16 | A journal missing or foreign where one is recorded (an `Open` with a recorded `expect` answering `ErrNoJournal`, an `IdentityError` or `ErrUnidentified`): every share on that device (D10) is refused, each named in `Stats` with its device, and `Start` does not fail for it | MUST | §2.5 step 1, RFC 28 §3.4 | T6.3 |
 | R17 | The directory of a missing or foreign journal is never opened as a new journal until an operator acknowledges the loss | MUST NOT | §2.5 step 1, RFC 28 §3.4 | T6.3 |
 | R18 | An `Open` with no identity recorded for its directory (zero `expect`), which always fails, fails `Start`: the metadata store lost when the directory holds a journal, uninitialised when it holds none, and the node serves nothing until an operator says what happened | invariant | §2.5 step 1, RFC 28 §3.4 | T6.3 |
@@ -353,7 +353,8 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   (D2) whose shard lives on that journal (D10). `journalv2`'s doc for `Open` names the
   smallest limit; both are above every version issued, and the largest also covers a
   share whose limit was raised ahead of the others. A `decision:` marker at the computation
-  says so, withdrawn if the journal's doc and RFC 28 §3.1 settle the smallest (§9 point 4).
+  says so. RFC 8 §2.5 and §2.7, RFC 28 §3.1 and RFC 1 §3 take the largest since #3710
+  (§9 point 4).
 - **D6, the block and the trigger.** The block is a package constant, 2²⁴ versions, set by
   a hook in `export_test.go` for the tests that need 16. The peak rate is 60 one-second
   buckets on `Clock.Elapsed`; the margin is 30 s plus `existence_age` plus 1 s, read from the
@@ -960,10 +961,10 @@ A suggestion only: one pull request per subtask works as well. PR 2 can be open 
    every shard in one transaction; E40 and §2.7 bound every engine transaction by `K`, and
    §2.7 takes 10⁴ shares' 2 × 10⁴ keys as past it. On a node serving more shards than `K`,
    the two cannot both hold.
-4. **The floor at `Open`** (D5), pending #3634. RFC 8 §2.5 says "per share, the larger of the version
-   floor and the share's version limit"; RFC 28 §3.1 calls the floor "the highest content
-   version recorded in metadata", with no limit; RFC 1 §4.3 and `journalv2`'s doc for `Open`
-   take the smallest limit. One sentence in RFC 28 §3.1 would settle it.
+4. **The floor at `Open`** (D5), settled by #3710. RFC 8 §2.5 step 1 and §2.7, RFC 28 §3.1
+   and RFC 1 §3 now take the largest of every served share's version floor and version
+   limit, as D5 does. `journalv2`'s doc for `Open` still names the smallest limit, which is
+   safe; it follows in a code change.
 5. **Who writes `J‖journal`** (D3), pending #3635. RFC 16 §4.2 has the key "written when the journal is
    created", and no interface of RFC 16 §3 writes it; RFC 16 §3.2's `Init` writes `\x00format`,
    `IN` and `SL` only. RFC 16 should name the write, and how `JournalID(device)` finds a key
