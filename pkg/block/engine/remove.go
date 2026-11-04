@@ -143,6 +143,39 @@ func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID
 	return e.phase1(ctx, r, kvstore.RemoveOp{Kind: entity.RemoveTruncate, Extent: entity.ExtentOf(size, entity.EndOfFile)})
 }
 
+// Deallocate makes [off, off+n) of file f a hole: the journal stops holding
+// it and phase 1 records the extent's merged hole at once, staging no zeros.
+// A zero length removes nothing.
+func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.FileID, off, n int64) error {
+	switch {
+	case off < 0 || n < 0 || n > entity.EndOfFile-off:
+		return vfserr.ErrInvalid
+	case n == 0:
+		return nil
+	}
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return err
+	}
+	r, err := e.guard(ctx, b, f, entity.RemoveDeallocate, extent{off, off + n})
+	if err != nil {
+		return err
+	}
+	if err := e.waitBatch(ctx, f); err != nil {
+		e.release(r, false)
+		return err
+	}
+	x := journal.Extent{Off: off, Len: n}
+	if _, err := e.stage(ctx, r, func(*fileEntry) (journal.Version, error) {
+		return b.h.Deallocate(ctx, fileID(f), x)
+	}, opDeallocate, x, nil); err != nil {
+		e.release(r, false)
+		return err
+	}
+	e.staged()
+	return e.phase1(ctx, r, kvstore.RemoveOp{Kind: entity.RemoveDeallocate, Extent: entity.Extent{Offset: off, Length: n}})
+}
+
 // stage runs the journal's removal j under f's entry lock and inserts its
 // pending operation before the lock is released, answering whether grow,
 // asked under the same lock, made it a grow rather than a removal.
