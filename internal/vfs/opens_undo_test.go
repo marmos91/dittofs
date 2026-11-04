@@ -465,10 +465,6 @@ func TestADeleteOnCloseEndsAtItsCallsDeadline(t *testing.T) {
 // A file marked delete pending while a failed open was recorded is unlinked
 // once that open is undone, when it was the last open, as after its Close
 // (RFC 17 §5.3).
-
-// A file marked delete pending while a failed open was recorded is unlinked
-// once that open is undone, when it was the last open, as after its Close
-// (RFC 17 §5.3).
 func TestAnUndoneOpensDeferredUnlinkRuns(t *testing.T) {
 	n := newNames(t)
 	ctx := t.Context()
