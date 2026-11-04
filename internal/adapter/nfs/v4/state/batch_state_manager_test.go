@@ -121,8 +121,9 @@ func TestLockNew_BadLockSeqidDoesNotLeakLockState(t *testing.T) {
 // client's lease expires, the session reaper stops the backchannel sender
 // (closing its stopCh) instead of leaking the goroutine.
 func TestReapExpiredSessions_StopsBackchannelSender(t *testing.T) {
-	// Very short lease so it expires almost immediately.
-	sm := NewStateManager(1 * time.Millisecond)
+	// A normal lease, so the client is still live when CREATE_SESSION runs on
+	// a loaded machine; the lease is expired by hand before the reap below.
+	sm := NewStateManager(time.Minute)
 	clientID, seqID := registerV41Client(t, sm)
 
 	csResult, _, err := sm.CreateSession(
@@ -144,8 +145,13 @@ func TestReapExpiredSessions_StopsBackchannelSender(t *testing.T) {
 	sm.mu.Unlock()
 	go sender.Run(context.Background())
 
-	// Let the lease expire, then run the reaper.
-	time.Sleep(10 * time.Millisecond)
+	// Expire the client's lease, then run the reaper.
+	sm.mu.Lock()
+	lease := sm.clientsByID[clientID].Lease
+	sm.mu.Unlock()
+	lease.mu.Lock()
+	lease.LastRenew = time.Now().Add(-2 * time.Minute)
+	lease.mu.Unlock()
 	sm.reapExpiredSessions()
 
 	// The sender's stopCh must be closed (Stop was called by purgeV41Client).
