@@ -135,7 +135,7 @@ offer picks it up, and a release of it is refused until then.
   releases draw on space set aside for them, never on a share's limit or the
   journal's maximum; they are refused only when that space is exhausted, at the
   version limit (a truncate or delete, which draws a version), or when a split
-  would pass the index's cap, each retry-later
+  would pass the index's cap, each answered as [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table does
   ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)). After a crash the journal rebuilds itself from its own
   files alone ([RFC 28 §3](rfc-28-journal-format.md#3.%20Recovery)).
 
@@ -1135,7 +1135,7 @@ the version limit ([§4.3](#4.3%20Versions)), since each draws a version; and a 
 deallocate or clone target that would split a held extent can meet the index's
 cap on what removals add ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)). A clone target record meets a fourth: it frees nothing, so below
 half the headroom it is refused naming the headroom ([§6](#6.%20Capacity)). The engine answers
-each retry-later.
+each as [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table does.
 
 None of them is gated on the offloaded bit, and an implementation **MUST NOT**
 gate one. Discarding content the user removed is not data loss, and an
@@ -1625,8 +1625,8 @@ what removals, releases and these calls added since; content writes stay refused
 is bounded too: once the count stands an eighth of `ExtentLimit` above it, a
 release, deallocate or clone target that would split a held extent is refused
 with the same named refusal, counted in `index_refusals`, which the engine
-answers retry-later while it offloads, releases
-and repacks ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)); a removal that splits nothing, a truncate, a delete and a
+answers as [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table does
+([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)); a removal that splits nothing, a truncate, a delete and a
 `Forget` are never refused by it, since none splits a held extent: each adds at
 most its one removal marker, and drops the held extents it covers. A report,
 `MarkOffloaded` and `Unmark` are never refused by it either, though each can
@@ -1641,7 +1641,11 @@ opened under a lowered `ExtentLimit` — is no different: the open **MUST**
 succeed, and `WriteAt` and `Fill` are refused until the count drops below the
 bound. The engine gets out of the refusal as out
 of a capacity one: it offloads and releases dirty content of the files holding
-the most entries, and repacks to coalesce what stays.
+the most entries, syncs the files with unsynced overwrites, which drops their
+retained extents no snapshot hold keeps ([§3.8](#3.8%20Loss%20events)), stamps
+those overwrites' existence commits, which drops the existence-committed
+versions they superseded that no snapshot hold keeps
+([§3.11](#3.11%20Snapshot%20holds)), and repacks to coalesce what stays.
 
 This index is never stored, so [RFC 0 §9.1](rfc-0-data-lifecycle.md#9.1%20Records%20and%20their%20reclamation) (I7) does not reach it; its failure is
 exhaustion, which the bound reports. The one stored artifact besides records, a
@@ -1743,8 +1747,8 @@ exhaust it before the self-fence would ([RFC 8 §2.7](rfc-8-engine.md#2.7%20The%
 `WriteAt`, `Draw` or header-only record that draws a new version — a truncate,
 deallocate, delete or clone target — that would reach it fails with
 `ErrNoSpace` naming the limit, which the engine answers as `ErrDelay`
-(retry-later), like the headroom's refusal ([§6](#6.%20Capacity),
-[RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)).
+(retry-later) until the raise commits, as
+[RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table does.
 
 Because precedence is decided by the two numbers and not by position, **recovery
 MAY process segments in any order, including concurrently.** An implementation
