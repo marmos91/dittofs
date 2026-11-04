@@ -1,151 +1,57 @@
 package engine
 
 import (
-	"errors"
-	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/marmos91/dittofs/pkg/metadata/entity"
 )
 
-// ErrClosed is returned when an operation is attempted on a closed RemoteSync.
-var ErrClosed = errors.New("remote sync is closed")
+// Settings are the engine's node-level settings, handed to Apply. Every one
+// must be positive.
+type Settings struct {
+	ExistenceAge        time.Duration // existence_age: how long a write's existence may stay uncommitted
+	GroupCommitMaxFiles int           // group_commit.max_files: the most files one group commit batch holds
+	CloneMaxLen         int64         // clone_max_len: the longest extent one Clone takes, in bytes
+}
 
-// ErrStoreClosed is returned by a Store data op (WriteAt, ReadAt, Flush,
-// Truncate, Delete, …) that arrives after the Store has been Closed —
-// typically because an admin removed or hot-reloaded the share while a
-// client was mid-transfer (area-7 H-A). Adapters map it to a stale-handle
-// status (NFS NFS3ERR_STALE / NFS4ERR_STALE, SMB STATUS_FILE_CLOSED) so the
-// client observes the share going away rather than a torn op or a panic.
-var ErrStoreClosed = errors.New("engine: block store is closed")
+// Share is one share's storage binding, as Start and Bind take it.
+type Share struct {
+	ID         entity.ShareID
+	Tag        journal.ShareTag   // the share's tag in every journal
+	Shard      entity.ShardID     // the share's own shard, which keys a clone's source open
+	Limit      int64              // the share's journal limit, in bytes
+	SyncPolicy journal.SyncPolicy // the share's sync.policy
+	State      ShareState
+}
 
-// DefaultParallelDownloads is the default number of concurrent downloads per file.
-// With 200-connection S3 pool and 8MB blocks, 32 workers can saturate the pool.
-const DefaultParallelDownloads = 32
+// ShareState is what a bound share admits.
+type ShareState uint8
 
-// Adaptive upload-concurrency bounds (#1407). When RemoteSyncConfig.ParallelUploads
-// is unset (0), the syncer auto-tunes the upload window to saturate the uplink:
-// it starts at AdaptiveUploadFloor and ramps toward AdaptiveUploadCeiling,
-// settling at the goodput knee. A pinned ParallelUploads > 0 overrides this with
-// a fixed window. MaxParallelUploads is not applied here — it is the bound the
-// control plane validates a pinned value against before it ever reaches this
-// package. The window bounds concurrent
-// block PUTs directly — one slot per in-flight PutBlock, shared by every carve
-// pass — so the ceiling here is the real ceiling. Block PUTs are
-// network-latency bound, so a serial carver leaves the link idle — one
-// in-flight PutBlock sustained only ~200 Mbit/s VM→fr-par.
 const (
-	AdaptiveUploadFloor   = 16  // starting window in adaptive mode (greedy start)
-	AdaptiveUploadCeiling = 64  // max window the adaptive controller ramps to
-	AdaptiveUploadDefault = 0   // ParallelUploads sentinel: 0 = adaptive auto-tune
-	MaxParallelUploads    = 256 // upper bound on a pinned ParallelUploads window
+	Serving  ShareState = iota + 1 // reads and writes
+	Quiesced                       // nothing new admitted
 )
 
-// uploadControlInterval is how often the adaptive controller samples goodput and
-// resizes the upload window (#1407).
-const uploadControlInterval = 500 * time.Millisecond
+// Stats is the engine's counters and conditions, per share and journal.
+type Stats struct{}
 
-// DefaultDemandFetchTimeout bounds a single client-blocking cold read's remote
-// hydration. It is well under a protocol client's "server not responding"
-// window (SMB2/CIFS treats ~180s of silence as a dead server) so a stalled
-// remote surfaces as a fast ErrRemoteUnavailable rather than a wedged mount,
-// yet generous enough that a legitimately slow WAN fetch of a read window
-// still completes.
-const DefaultDemandFetchTimeout = 60 * time.Second
-
-// DefaultPrefetchBlocks is the default number of blocks to prefetch.
-// 64 blocks = 512MB lookahead at 8MB block size.
-const DefaultPrefetchBlocks = 64
-
-// TransferRequest holds data for a pending prefetch operation.
-type TransferRequest struct {
-	PayloadID  string     // Payload ID
-	BlockIndex uint64     // Flat block index (fileOffset / BlockSize)
-	Done       chan error // Completion channel; nil for async (fire-and-forget)
+// WriteOpts is what a write carries besides its bytes.
+type WriteOpts struct {
+	Suspend entity.TimeMask // the times this write leaves alone
+	// Done is called exactly once for every write Write accepted: by the
+	// existence commit that records its usage or the commit recording its
+	// loss, or by the engine, charging nothing, when it drops the write
+	// uncommitted. It is never called if Write fails.
+	Done func()
 }
 
-// Config holds configuration for the RemoteSync.
-type RemoteSyncConfig struct {
-	ParallelDownloads  int           // Concurrent block downloads per file (default: 32)
-	PrefetchBlocks     int           // Blocks to prefetch ahead of reads; 0 = disabled (default: 64)
-	SmallFileThreshold int64         // Files below this are flushed synchronously; 0 = disabled
-	UploadInterval     time.Duration // Periodic uploader scan interval (default: 2s)
-	UploadDelay        time.Duration // Min block age before periodic upload; Flush ignores this (default: 10s)
-
-	// ParallelUploads bounds concurrent block PUTs from the carver (#1407 /
-	// #1432). 0 (the default, AdaptiveUploadDefault) means the carver auto-tunes
-	// the window between AdaptiveUploadFloor and AdaptiveUploadCeiling to
-	// saturate the uplink; > 0 pins a fixed window (from the per-remote
-	// parallel_uploads config / --parallel-uploads). A serial carver (window 1)
-	// leaves a WAN link idle, which is the #1432 upload-throughput regression.
-	ParallelUploads int
-
-	// ChunkParams is the share's FastCDC profile: the sizing the carver built
-	// for each flush pass cuts chunks with. The zero value (or any params that
-	// fail Validate) degrades to chunker.DefaultParams — the historical
-	// 1M/4M/16M profile — so a misconfiguration is never a hard error.
-	//
-	// It lives here rather than on the local store because the local store's
-	// flush seam is content-agnostic: it hands out byte runs and never learns
-	// how they are cut. The carver is the engine's, so the profile is too.
-	ChunkParams chunker.Params
-
-	// ManualSync, when true, suppresses the background carve dispatcher.
-	// Durability is then driven solely by explicit Flush, making Flush the
-	// single deterministic durability driver. Off by default; used where a
-	// concurrent carver would race observable sync semantics (snapshot
-	// bounds, crash-replay).
-	ManualSync bool
-
-	// DemandFetchTimeout bounds a single client-blocking cold read's remote
-	// hydration. A demand read (ReadAt over not-local bytes) fetches every
-	// covering chunk from the remote inline; if the remote stalls after the
-	// pre-check health gate passed, that fetch would otherwise block for the
-	// remote client's full per-request timeout times its retry budget — minutes,
-	// far past a protocol client's "server not responding" deadline, so the
-	// mount wedges. Bounding the demand fan-out to this budget makes the read
-	// fail fast with ErrRemoteUnavailable instead of hanging. Background
-	// prefetch and explicit warm are NOT bounded by this (they never block a
-	// client). <= 0 falls back to DefaultDemandFetchTimeout.
-	DemandFetchTimeout time.Duration
-
-	// Health check configuration for remote store monitoring.
-	HealthCheckInterval         time.Duration // Probe interval when healthy (default: 30s)
-	HealthCheckFailureThreshold int           // Consecutive failures to mark unhealthy (default: 3)
-	UnhealthyCheckInterval      time.Duration // Probe interval when unhealthy (default: 5s)
-
-	// ClaimTimeout lives on the engine-local config struct rather than being
-	// read from pkg/config, so a RemoteSync can be constructed by low-level
-	// callers without an import cycle. Its default is set by DefaultConfig.
-	ClaimTimeout time.Duration // Max age of a Syncing row before the janitor requeues it (default: 10m)
-}
-
-// DefaultConfig returns the default RemoteSync configuration tuned for S3 performance.
-func DefaultConfig() RemoteSyncConfig {
-	return RemoteSyncConfig{
-		ParallelDownloads:           DefaultParallelDownloads,
-		PrefetchBlocks:              DefaultPrefetchBlocks,
-		SmallFileThreshold:          0,
-		UploadInterval:              2 * time.Second,
-		UploadDelay:                 10 * time.Second,
-		ParallelUploads:             AdaptiveUploadDefault,
-		DemandFetchTimeout:          DefaultDemandFetchTimeout,
-		HealthCheckInterval:         30 * time.Second,
-		HealthCheckFailureThreshold: 3,
-		UnhealthyCheckInterval:      5 * time.Second,
-		// — match pkg/config defaults.
-		ClaimTimeout: 10 * time.Minute,
-	}
-}
-
-// SyncQueueConfig holds configuration for the transfer queue.
-type SyncQueueConfig struct {
-	QueueSize       int // Max pending requests per channel (default: 1000)
-	DownloadWorkers int // Download+prefetch worker goroutines (default: ParallelDownloads)
-}
-
-// DefaultSyncQueueConfig returns sensible defaults.
-func DefaultSyncQueueConfig() SyncQueueConfig {
-	return SyncQueueConfig{
-		QueueSize:       1000,
-		DownloadWorkers: DefaultParallelDownloads,
-	}
+// Overlay is a file's size, times and version as its uncommitted operations
+// leave them, replayed in version order: a truncate sets Size and SizeSet, and
+// each later write raises Size to its end.
+type Overlay struct {
+	Size         int64 // SizeSet: the size; else the end of the pending writes
+	SizeSet      bool  // a truncate is pending, so Size is exact
+	Mtime, Ctime time.Time
+	Version      entity.JournalVersion
 }

@@ -27,7 +27,6 @@ cp "$F" /tmp/ODFC_tester.vhdx
 head -c 700K /dev/urandom >/tmp/ODFC_tester.vhdx.metadata
 smbclient //127.0.0.1/test -c 'lcd /tmp; put ODFC_tester.vhdx; put ODFC_tester.vhdx.metadata'
 dfsctl system drain-uploads --timeout 60m
-dfsctl store block evict --share /test
 
 # A session: the metadata file read at sign-in, then one handle that writes 2000 random 4 KiB-aligned
 # 64 KiB blocks in place, grows the container to 30 GB and, at sign-out, shrinks it to 24 GB before
@@ -42,8 +41,6 @@ truncate -s 24000000000 /tmp/ODFC_tester.vhdx
 
 # Signed out: drained and evicted, then both files read cold
 dfsctl system drain-uploads --timeout 60m
-dfsctl store block evict --share /test
-dfsctl store block stats --share /test -o json | jq -c '.totals | {unsynced_bytes, pending_uploads, local_disk_used}'
 rclone size --json s3:dittofs/test/
 smbclient //127.0.0.1/test -c 'get ODFC_tester.vhdx.metadata -' | cmp - /tmp/ODFC_tester.vhdx.metadata
 smbclient //127.0.0.1/test -c 'get ODFC_tester.vhdx -' | cmp - /tmp/ODFC_tester.vhdx

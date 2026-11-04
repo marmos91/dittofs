@@ -23,14 +23,12 @@ rclone size --json s3:dittofs | tee /tmp/s0.json
 
 smbclient //127.0.0.1/a -c 'del only.bin'
 dfsctl store block gc /a --grace-period 0 -o json | tee /tmp/gc1.json
-dfsctl store block evict --share /b
 rclone size --json s3:dittofs | tee /tmp/s1.json
 smbclient //127.0.0.1/b -c 'lcd /tmp/back; get only.bin; get shared.bin'
 (cd /tmp/back && sha256sum -c /tmp/b.sha256) && echo "b after gc1: ok" || echo "b after gc1: FAILED"
 
 smbclient //127.0.0.1/a -c 'del shared.bin'
 dfsctl store block gc /a --grace-period 0 -o json | tee /tmp/gc2.json
-dfsctl store block evict --share /b
 rclone size --json s3:dittofs | tee /tmp/s2.json
 rm /tmp/back/*
 smbclient //127.0.0.1/b -c 'lcd /tmp/back; get only.bin; get shared.bin'

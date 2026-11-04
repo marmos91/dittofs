@@ -30,9 +30,9 @@ import (
 //     base file's PARENT directory (block-backed, full file identity). These
 //     are enumerated with a colon-prefix scan over ListChildren, mirroring
 //     internal/adapter/smb/handlers/query_info.go:buildFileStreamInformation.
-//     A stream's content is the xattr value and is read through the block store
-//     (engine.Store.ReadAt) via an injected StreamContentReader — the metadata
-//     layer never imports the block engine directly.
+//     A stream's content is the xattr value and is read through an injected
+//     StreamContentReader — the metadata layer never imports the block engine
+//     directly.
 //
 // Precedence: STREAM-ENTITY-WINS-ELSE-INLINE. When both a same-named stream
 // child and an inline EA exist, Get/List surface the stream's content/name.

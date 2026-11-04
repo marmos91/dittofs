@@ -4,10 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/mfsymlink"
-	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -24,23 +21,6 @@ func (e *validationError) Error() string {
 
 // ErrMetadataServiceNotInitialized is returned when the metadata service is not available.
 var ErrMetadataServiceNotInitialized = errors.New("metadata service not initialized")
-
-// getServicesForHandle returns both the metadata service and the per-share block store
-// resolved from the given file handle.
-// Returns an error if either service is not initialized or handle resolution fails.
-func getServicesForHandle(reg nfsRuntime, ctx context.Context, handle metadata.FileHandle) (*metadata.Service, *engine.Store, error) {
-	metaSvc := reg.GetMetadataService()
-	if metaSvc == nil {
-		return nil, nil, ErrMetadataServiceNotInitialized
-	}
-
-	blockStore, err := common.ResolveForWrite(ctx, reg, handle)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return metaSvc, blockStore, nil
-}
 
 // getMetadataService returns the metadata service from the runtime.
 // Returns an error if the service is not initialized.
@@ -78,116 +58,4 @@ func logWarn(ctx context.Context, err error, msg string, args ...any) {
 		args = append(args, "error", err)
 	}
 	logger.WarnCtx(ctx, msg, args...)
-}
-
-// MFsymlink Detection for NFS/SMB Interoperability
-//
-// MFsymlinks are 1067-byte files with "XSym\n" header used by macOS/Windows
-// SMB clients for symlink creation. When accessed via NFS, these files should
-// appear as symlinks for cross-protocol compatibility.
-//
-// Detection is performed when:
-// - File is regular type (not already a symlink)
-// - File size is exactly 1067 bytes (mfsymlink.Size)
-// - File content starts with "XSym\n" magic marker
-
-// MFsymlinkResult contains the result of MFsymlink detection.
-type MFsymlinkResult struct {
-	// IsMFsymlink indicates if the file is a valid MFsymlink
-	IsMFsymlink bool
-
-	// Target is the symlink target (only valid if IsMFsymlink is true)
-	Target string
-
-	// ModifiedAttr contains modified attributes to present the file as a symlink
-	// (only valid if IsMFsymlink is true)
-	ModifiedAttr *metadata.FileAttr
-}
-
-// checkMFsymlink checks if a file is an unconverted MFsymlink and returns
-// the symlink target if so. This enables NFS clients to see SMB-created
-// symlinks before they are converted on CLOSE.
-func checkMFsymlink(
-	ctx context.Context,
-	reg nfsRuntime,
-	handle metadata.FileHandle,
-	file *metadata.File,
-) MFsymlinkResult {
-	// Quick checks first (no I/O)
-	if file.Type != metadata.FileTypeRegular {
-		return MFsymlinkResult{}
-	}
-
-	if file.Size != uint64(mfsymlink.Size) {
-		return MFsymlinkResult{}
-	}
-
-	// File has correct size - need to check content
-	content, err := readMFsymlinkContentForNFS(ctx, reg, handle, file.PayloadID)
-	if err != nil {
-		logger.Debug("checkMFsymlink: failed to read content",
-			"payloadID", file.PayloadID,
-			"error", err)
-		return MFsymlinkResult{}
-	}
-
-	if !mfsymlink.IsMFsymlink(content) {
-		return MFsymlinkResult{}
-	}
-
-	target, err := mfsymlink.Decode(content)
-	if err != nil {
-		logger.Debug("checkMFsymlink: invalid MFsymlink format",
-			"payloadID", file.PayloadID,
-			"error", err)
-		return MFsymlinkResult{}
-	}
-
-	// Create modified attributes to present as symlink
-	modifiedAttr := file.FileAttr // Copy
-	modifiedAttr.Type = metadata.FileTypeSymlink
-	modifiedAttr.Size = uint64(len(target))
-	// Mode: symlinks typically have 0777 permissions
-	modifiedAttr.Mode = modifiedAttr.Mode&^uint32(0777) | 0777
-
-	logger.Debug("checkMFsymlink: detected MFsymlink",
-		"payloadID", file.PayloadID,
-		"target", target)
-
-	return MFsymlinkResult{
-		IsMFsymlink:  true,
-		Target:       target,
-		ModifiedAttr: &modifiedAttr,
-	}
-}
-
-// readMFsymlinkContentForNFS reads content from the block store (uses local cache internally).
-func readMFsymlinkContentForNFS(
-	ctx context.Context,
-	reg nfsRuntime,
-	handle metadata.FileHandle,
-	payloadID metadata.PayloadID,
-) ([]byte, error) {
-	if payloadID == "" {
-		return nil, nil
-	}
-
-	blockStore, err := common.ResolveForRead(ctx, reg, handle)
-	if err != nil {
-		return nil, err
-	}
-
-	// Routed through common.ReadFromBlockStore so any future []ChunkRef
-	// plumbing lands in one place (see common/doc.go).
-	// The copy below materialises the pooled buffer into a caller-owned
-	// slice because the MFsymlink path retains the bytes past Release().
-	result, err := common.ReadFromBlockStore(ctx, blockStore, payloadID, 0, uint32(mfsymlink.Size))
-	if err != nil {
-		return nil, err
-	}
-	defer result.Release()
-
-	out := make([]byte, len(result.Data))
-	copy(out, result.Data)
-	return out, nil
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
@@ -14,8 +13,9 @@ import (
 
 // handleCommit implements the COMMIT operation (RFC 7530 Section 16.5).
 // Flushes unstable writes to stable storage and returns a server boot verifier.
-// Delegates to BlockStore.Flush for the file referenced by the current filehandle.
-// Persists cached write data to the backing store; verifier enables server-restart detection.
+// An empty file is trivially durable and succeeds; any other answers NFS4ERR_IO,
+// since no content store is wired (common.ErrNoContentStore). The verifier
+// enables server-restart detection.
 // Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_STALE, NFS4ERR_IO, NFS4ERR_BADXDR.
 func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
@@ -89,49 +89,13 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 	}
 
 	// If no content, just return success
-	if file.PayloadID == "" {
+	if file.PayloadID == "" || file.Size == 0 {
 		logger.Debug("NFSv4 COMMIT: no content to flush", "client", ctx.ClientAddr)
 		return encodeCommit4resok()
 	}
 
-	// Get per-share block store and flush
-	blockStore, errResult := h.resolveBlockStore(ctx, types.OP_COMMIT, true)
-	if errResult != nil {
-		return errResult
-	}
-
-	// Routed through common.CommitBlockStore so any future []ChunkRef
-	// plumbing lands in one place (see common/doc.go).
-	flushErr := common.CommitBlockStore(authCtx.Context, blockStore, file.PayloadID)
-	if flushErr != nil {
-		logger.Debug("NFSv4 COMMIT flush failed",
-			"error", flushErr,
-			"payloadID", file.PayloadID,
-			"client", ctx.ClientAddr)
-		return commitErr(types.StatusFor(common.ClassifyBlockStoreError(flushErr)))
-	}
-
-	// Flush pending metadata writes (deferred commit optimization)
-	// This is critical - without this, file size and other metadata changes
-	// are not persisted to the store, causing data loss on server restart.
-	// Relaxed metadata commit (#1687): the size/mtime fsync is deferred; restart
-	// reconciliation against the journal high-water mark prevents truncation.
-	flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle, false)
-	if metaErr != nil {
-		logger.Error("NFSv4 COMMIT metadata flush failed",
-			"error", metaErr,
-			"client", ctx.ClientAddr)
-		return commitErr(types.NFS4ERR_SERVERFAULT)
-	} else if flushed {
-		logger.Debug("NFSv4 COMMIT flushed pending metadata",
-			"client", ctx.ClientAddr)
-	}
-
-	logger.Debug("NFSv4 COMMIT successful",
-		"payloadID", file.PayloadID,
-		"client", ctx.ClientAddr)
-
-	return encodeCommit4resok()
+	// A commit makes written content durable, and no content store is wired.
+	return noContentStoreResult(types.OP_COMMIT)
 }
 
 // commitErr builds a COMMIT error result (status only).

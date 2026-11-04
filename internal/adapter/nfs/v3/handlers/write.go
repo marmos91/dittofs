@@ -1,15 +1,12 @@
 package handlers
 
 import (
-	"fmt"
-
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // Write Stability Levels (RFC 1813 Section 3.3.7)
@@ -31,25 +28,6 @@ const (
 	// to stable storage before returning success.
 	// Safest option but slowest performance.
 	FileSyncWrite = 2
-)
-
-// Flush Reasons
-
-// FlushReason indicates why a block store flush was triggered.
-type FlushReason string
-
-const (
-	// FlushReasonStableWrite indicates flush due to stable write requirement
-	FlushReasonStableWrite FlushReason = "stable_write"
-
-	// FlushReasonThreshold indicates flush due to cache size threshold reached
-	FlushReasonThreshold FlushReason = "threshold_reached"
-
-	// FlushReasonCommit indicates flush due to COMMIT procedure
-	FlushReasonCommit FlushReason = "commit"
-
-	// FlushReasonTimeout indicates flush due to auto-flush timeout (for macOS compatibility)
-	FlushReasonTimeout FlushReason = "timeout"
 )
 
 // Request and Response Structures
@@ -113,8 +91,9 @@ type WriteResponse struct {
 
 // Write handles NFS WRITE (RFC 1813 Section 3.3.7).
 // Writes data to a regular file at a given offset using two-phase PrepareWrite/CommitWrite pattern.
-// Delegates to MetadataService.PrepareWrite+CommitWrite and BlockStore.WriteAt (cache-backed).
-// Updates file size/timestamps via metadata; writes data to local store (flushed on COMMIT); returns WCC data.
+// Runs MetadataService.PrepareWrite, so a refused write answers its own status; a
+// zero-count write then succeeds, and any other answers NFS3ErrIO, since no
+// content store is wired (common.ErrNoContentStore).
 // Errors: NFS3ErrNoEnt, NFS3ErrAcces, NFS3ErrFBig (offset overflow), NFS3ErrNoSpc, NFS3ErrIO.
 func (h *Handler) Write(
 	ctx *NFSHandlerContext,
@@ -140,7 +119,7 @@ func (h *Handler) Write(
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
-	metaSvc, blockStore, err := getServicesForHandle(h.Registry, ctx.Context, fileHandle)
+	metaSvc, err := getMetadataService(h.Registry)
 	if err != nil {
 		logger.ErrorCtx(ctx.Context, "WRITE failed: service not available", "client", clientIP, "error", err)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
@@ -210,127 +189,31 @@ func (h *Handler) Write(
 		}, nil
 	}
 
-	// Fire-and-forget: per Samba behavior, NFS proceeds even if break is pending.
-	// The break notification is sent to the SMB client asynchronously.
-	if breaker := h.getOplockBreaker(); breaker != nil {
-		if err := breaker.CheckAndBreakForWrite(ctx.Context, lock.FileHandle(string(fileHandle))); err != nil {
-			logger.Debug("NFS WRITE: oplock break initiated",
-				"handle", fileHandle, "result", err)
-		}
+	// PrepareWrite validates the target (type, permissions, read-only share)
+	// and modifies no metadata, so a refused write still answers with its own
+	// status.
+	writeIntent, err := metaSvc.PrepareWrite(authCtx, fileHandle, newSize)
+	if err != nil {
+		logger.WarnCtx(ctx.Context, "WRITE failed: PrepareWrite error", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP, "error", err)
+		return h.buildWriteErrorResponse(types.StatusForErr(err), fileHandle, nil, nil), nil
 	}
 
-	// PrepareWrite validates permissions but does NOT modify metadata yet.
-	// Metadata is updated by CommitWrite after BlockStore write succeeds.
-
-	// Check context before store call
-	if ctx.isContextCancelled() {
-		logger.WarnCtx(ctx.Context, "WRITE cancelled before PrepareWrite", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
-
-		// No WCC data available - we haven't called PrepareWrite yet
-		return &WriteResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-		}, nil
-	}
-
-	result, scopeErr := common.WithFilePayloadScope(authCtx, metaSvc, blockStore, fileHandle, func(authCtx *metadata.AuthContext) (*WriteResponse, error) {
-		scopedHandler := *ctx
-		scopedHandler.Context = authCtx.Context
-		ctx := &scopedHandler
-		writeIntent, err := metaSvc.PrepareWrite(authCtx, fileHandle, newSize)
-		if err != nil {
-			// Map store error to NFS status
-			status := types.StatusForErr(err)
-
-			logger.WarnCtx(ctx.Context, "WRITE failed: PrepareWrite error", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP, "error", err)
-
-			// No WCC data available - PrepareWrite failed so we don't have file attributes
-			return h.buildWriteErrorResponse(status, fileHandle, nil, nil), nil
-		}
-
-		// Build WCC attributes from pre-write state
-		nfsWccAttr := xdr.CaptureWccAttr(writeIntent.PreWriteAttr)
-
-		// Check context before write operation
-		if ctx.isContextCancelled() {
-			logger.WarnCtx(ctx.Context, "WRITE cancelled before write", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
-			return h.buildWriteErrorResponse(types.NFS3ErrIO, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
-		}
-
-		// Write to BlockStore (uses local cache, will be flushed on COMMIT).
-		// Routed through common.WriteToBlockStore so any future []ChunkRef
-		// plumbing lands in one place (see common/doc.go).
-		err = common.WriteToBlockStore(ctx.Context, blockStore, writeIntent.PayloadID, req.Data, req.Offset)
-		if err != nil {
-			logError(ctx.Context, err, "WRITE failed: BlockStore write error", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", len(req.Data), "payload_id", writeIntent.PayloadID, "client", clientIP)
-			status := types.StatusFor(common.ClassifyBlockStoreError(err))
-			return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
-		}
-		logger.DebugCtx(ctx.Context, "WRITE: cached successfully", "payload_id", writeIntent.PayloadID)
-
-		updatedFile, err := metaSvc.CommitWrite(authCtx, writeIntent)
-		if err != nil {
-			logError(ctx.Context, err, "WRITE failed: CommitWrite error (content written but metadata not updated)", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP)
-
-			// Content is written but metadata not updated - this is an inconsistent state
-			// Map error to NFS status
-			status := types.StatusForErr(err)
-
-			return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
-		}
-
-		nfsAttr := h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
-
-		logger.DebugCtx(ctx.Context, "WRITE successful", "file", updatedFile.PayloadID, "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "written", bytesize.ByteSize(len(req.Data)), "new_size", bytesize.ByteSize(updatedFile.Size), "client", clientIP)
-
-		// Stability Level (RFC 1813 Section 3.3.7)
-		//
-		// The `stable` field is the client's request. The server reports what it
-		// ACTUALLY did via the `committed` field.
-		//
-		// Default: UNSTABLE. Cache is always enabled, so an unstable WRITE leaves the
-		// data in the local cache (crash-safe via the WAL) and the client calls COMMIT
-		// when it needs durability. This is much faster for high-latency backends (S3
-		// writes are 100ms+; batching on COMMIT is 10-100x faster for sequential I/O).
-		//
-		// When the client requests DATA_SYNC or FILE_SYNC, RFC 1813 requires the data
-		// (and, for FILE_SYNC, metadata) to be on stable storage before the reply. We
-		// honor that by flushing this file synchronously and reporting the requested
-		// stability level, mirroring the COMMIT path. On flush failure we fall back to
-		// reporting UNSTABLE rather than failing the WRITE — the bytes are still in the
-		// crash-safe cache and the client can retry COMMIT.
-		committed := uint32(UnstableWrite)
-		if req.Stable >= DataSyncWrite {
-			if err := common.FlushStableWrite(authCtx, metaSvc, blockStore, fileHandle, writeIntent.PayloadID, req.Stable >= FileSyncWrite); err != nil {
-				logError(ctx.Context, err, "WRITE: stable flush failed, downgrading to UNSTABLE",
-					"handle", xdr.LazyHandle(req.Handle), "stable_requested", req.Stable, "client", clientIP)
-			} else {
-				committed = req.Stable
-			}
-		}
-
-		logger.DebugCtx(ctx.Context, "WRITE details", "stable_requested", req.Stable, "committed", committed, "size", bytesize.ByteSize(updatedFile.Size), "type", updatedFile.Type, "mode", fmt.Sprintf("%o", updatedFile.Mode))
-
+	// A zero-count write writes nothing, so it needs no content store: the
+	// file is left as it is and any committed level is truthful.
+	if len(req.Data) == 0 {
+		wcc := xdr.CaptureWccAttr(writeIntent.PreWriteAttr)
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
-			AttrBefore:      nfsWccAttr,
-			AttrAfter:       nfsAttr,
-			// Count: RFC 1813 specifies this as "The number of bytes of data written".
-			// We currently assume that the block store WriteAt is all-or-nothing:
-			// it either writes all bytes or fails entirely. Under that assumption,
-			// len(req.Data) equals the actual bytes written on success.
-			// NOTE: If a future block store allows partial writes, this code must
-			// be updated to report the actual number of bytes written instead of
-			// len(req.Data), and the WriteAt contract should document that behavior.
-			Count:     uint32(len(req.Data)),
-			Committed: committed,      // requested stability if flushed, else UNSTABLE (client calls COMMIT)
-			Verf:      serverBootTime, // Server boot time for restart detection
+			AttrBefore:      wcc,
+			AttrAfter:       h.convertFileAttrToNFS(fileHandle, writeIntent.PreWriteAttr),
+			Count:           0,
+			Committed:       req.Stable,
+			Verf:            serverBootTime,
 		}, nil
-	})
-	if scopeErr != nil && result == nil {
-		return h.buildWriteErrorResponse(types.StatusForErr(scopeErr), fileHandle, nil, nil), nil
 	}
-	return result, scopeErr
 
+	// A write stores content, and no content store is wired.
+	return h.buildWriteErrorResponse(types.StatusForErr(common.ErrNoContentStore), fileHandle, nil, nil), nil
 }
 
 // Write Helper Functions

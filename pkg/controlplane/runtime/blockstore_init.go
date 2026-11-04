@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/middleware/encryption"
 	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
 	s3store "github.com/marmos91/dittofs/pkg/block/remote/s3"
@@ -96,6 +95,9 @@ func validateCompressionSubconfig(config map[string]any) error {
 	}
 }
 
+// maxParallelUploads is the upper bound on a pinned parallel_uploads window.
+const maxParallelUploads = 256
+
 // validateParallelUploads checks the optional per-remote parallel_uploads
 // override. 0 / absent means "use the server default" (CPU-deduced); a
 // positive value pins the per-remote upload concurrency. JSON numbers decode
@@ -112,8 +114,8 @@ func validateParallelUploads(config map[string]any) error {
 	if n != float64(int(n)) {
 		return fmt.Errorf("parallel_uploads: expected integer, got %v", n)
 	}
-	if n < 0 || n > engine.MaxParallelUploads {
-		return fmt.Errorf("parallel_uploads: must be between 0 and %d (got %d)", engine.MaxParallelUploads, int(n))
+	if n < 0 || n > maxParallelUploads {
+		return fmt.Errorf("parallel_uploads: must be between 0 and %d (got %d)", maxParallelUploads, int(n))
 	}
 	return nil
 }

@@ -211,7 +211,6 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			})
 
 			// Handlers shared between multiple route groups.
-			blockStoreHandler := handlers.NewBlockStoreStatsHandler(rt)
 			blockGCHandler := handlers.NewBlockStoreGCHandler(rt)
 			blockAuditHandler := handlers.NewBlockStoreAuditHandler(rt)
 			manifestCheckHandler := handlers.NewBlockStoreManifestCheckHandler(rt)
@@ -306,16 +305,9 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Put("/{name}/permissions/sids/{sid}", shareHandler.SetSIDPermission)
 				r.Delete("/{name}/permissions/sids/{sid}", shareHandler.RemoveSIDPermission)
 
-				// Per-share block store management
-				r.Get("/{name}/blockstore/stats", blockStoreHandler.Stats)
-				r.Post("/{name}/blockstore/evict", blockStoreHandler.Evict)
-				// Per-share async warm: start a job that materializes the
-				// share's blocks onto the local tier, then poll its status.
-				r.Post("/{name}/blockstore/warm", blockStoreHandler.Warm)
-				r.Get("/{name}/blockstore/warm/{job_id}", blockStoreHandler.WarmStatus)
 				// Per-share GC trigger + last-run summary.
 				// Mounted under /shares/{name}/blockstore/... so the route
-				// pattern stays consistent with stats/evict and avoids the
+				// pattern stays consistent and avoids the
 				// /store/block/{name} wildcard collision (chi cannot
 				// disambiguate two wildcards at the same segment).
 				r.Post("/{name}/blockstore/gc", blockGCHandler.RunGC)
@@ -344,8 +336,6 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			r.Route("/blockstore", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())
 
-				r.Get("/stats", blockStoreHandler.Stats)
-				r.Post("/evict", blockStoreHandler.Evict)
 				// Read-only orphan-storage reporter (#1493/#1525). Server-wide
 				// scan; mutates nothing. Reviewed before the delete stages act.
 				r.Get("/reconcile-report", blockGCHandler.ReconcileReport)

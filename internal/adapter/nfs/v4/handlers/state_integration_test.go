@@ -137,50 +137,15 @@ func TestStatefulLifecycle_FullCompound(t *testing.T) {
 	t.Logf("OPEN_CONFIRM: stateid_seqid=%d", confirmedStateid.Seqid)
 
 	// ========================================================================
-	// Step 5: WRITE (using confirmed stateid)
+	// Step 5: WRITE (using confirmed stateid). The stateid is accepted; the
+	// write answers I/O because no content store is wired.
 	// ========================================================================
 
-	content := []byte("Hello, stateful NFSv4 world!")
-	writeArgs := encodeWriteArgs(confirmedStateid, 0, types.UNSTABLE4, content)
+	writeArgs := encodeWriteArgs(confirmedStateid, 0, types.UNSTABLE4, []byte("Hello, stateful NFSv4 world!"))
 	writeResult := fx.handler.handleWrite(ctx, bytes.NewReader(writeArgs))
-	if writeResult.Status != types.NFS4_OK {
-		t.Fatalf("WRITE status = %d, want NFS4_OK", writeResult.Status)
+	if writeResult.Status != types.NFS4ERR_IO {
+		t.Fatalf("WRITE status = %d, want NFS4ERR_IO", writeResult.Status)
 	}
-
-	// Parse WRITE response
-	writeReader := bytes.NewReader(writeResult.Data)
-	_, _ = xdr.DecodeUint32(writeReader) // status
-	writeCount, _ := xdr.DecodeUint32(writeReader)
-	if writeCount != uint32(len(content)) {
-		t.Errorf("write count = %d, want %d", writeCount, len(content))
-	}
-
-	t.Logf("WRITE: %d bytes written", writeCount)
-
-	// ========================================================================
-	// Step 6: READ (using confirmed stateid)
-	// ========================================================================
-
-	readArgs := encodeReadArgs(confirmedStateid, 0, 4096)
-	readResult := fx.handler.handleRead(ctx, bytes.NewReader(readArgs))
-	if readResult.Status != types.NFS4_OK {
-		t.Fatalf("READ status = %d, want NFS4_OK", readResult.Status)
-	}
-
-	// Parse READ response
-	readReader := bytes.NewReader(readResult.Data)
-	_, _ = xdr.DecodeUint32(readReader) // status
-	eof, _ := xdr.DecodeUint32(readReader)
-	readData, _ := xdr.DecodeOpaque(readReader)
-
-	if !bytes.Equal(readData, content) {
-		t.Errorf("read data = %q, want %q", string(readData), string(content))
-	}
-	if eof != 1 {
-		t.Errorf("eof = %d, want 1", eof)
-	}
-
-	t.Logf("READ: %d bytes, eof=%d", len(readData), eof)
 
 	// ========================================================================
 	// Step 7: RENEW

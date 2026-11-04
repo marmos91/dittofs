@@ -42,7 +42,6 @@ func TestAddShare_RejectsColonInName(t *testing.T) {
 			metaSvcRegistrar{},
 			memBlockStoreProvider{},
 			journalDefaults(t, svc),
-			nil,
 		)
 		if err == nil {
 			t.Fatal("AddShare with ':' in name: want error, got nil")
@@ -78,7 +77,6 @@ func TestAddShare_RejectsColonInName(t *testing.T) {
 			metaSvcRegistrar{},
 			memBlockStoreProvider{},
 			journalDefaults(t, svc),
-			nil,
 		); err != nil {
 			t.Fatalf("AddShare(%q): %v", name, err)
 		}
@@ -126,7 +124,6 @@ func TestAddShare_RejectsOverLongName(t *testing.T) {
 			metaSvcRegistrar{},
 			memBlockStoreProvider{},
 			journalDefaults(t, svc),
-			nil,
 		)
 		if err == nil {
 			t.Fatal("AddShare with over-long name: want error, got nil")
@@ -159,7 +156,6 @@ func TestAddShare_RejectsOverLongName(t *testing.T) {
 			metaSvcRegistrar{},
 			memBlockStoreProvider{},
 			journalDefaults(t, svc),
-			nil,
 		); err != nil {
 			t.Fatalf("AddShare(%q) (%d bytes, the limit): %v", longest, len(longest), err)
 		}
@@ -188,7 +184,6 @@ func newAddShareFixture(t *testing.T) (*Service, *LocalStoreDefaults, func(name 
 			metaSvcRegistrar{},
 			memBlockStoreProvider{},
 			defaults,
-			nil,
 		)
 	}
 	return svc, defaults, add

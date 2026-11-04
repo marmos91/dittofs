@@ -1,4 +1,4 @@
-.PHONY: vulncheck vulncheck-main vulncheck-operator setup-hooks check-hooks fmt lint vet build bench-phase12 build-bench bench-blockstore bench-all test-unit test-e2e test-all
+.PHONY: vulncheck vulncheck-main vulncheck-operator setup-hooks check-hooks fmt lint vet build build-bench test-unit test-e2e test-all
 
 # Configure git to use the project's hooks directory and make hooks
 # executable. Safe to re-run.
@@ -63,28 +63,11 @@ build:
 	go build -o dfs ./cmd/dfs
 	go build -o dfsctl ./cmd/dfsctl
 
-# Phase 12 perf gate (D-43): rand-read regression gate vs per-machine
-# microbench floor in test/e2e/BENCHMARKS.md. -benchtime=10s gives a
-# stable b.N auto-tune; -run=^$$ skips all tests so only the gate
-# benchmark runs. The benchmark fails fast (b.Fatalf) on >5%
-# regression, which surfaces as a non-zero exit from `go test -bench`.
-bench-phase12:
-	go test -bench BenchmarkPerfGate_Phase12 -benchtime=10s -run=^$$ ./pkg/block/engine/...
-
 # Build the unified bench CLI (cmd/bench). See bench/README.md.
 # Output is dfsbench (not "bench") to avoid colliding with the
 # bench/ source directory at the repo root.
 build-bench:
 	go build -o dfsbench ./cmd/bench
-
-# Run the blockstore engine write-path Go benchmarks (10 samples of 10 iterations).
-bench-blockstore:
-	go test -bench 'SequentialWrite8MB|RandomWrite4KB|DedupHeavy|MixedRW|FlushChurn' \
-		-benchtime=10x -count=10 -run=^$$ ./pkg/block/engine/
-
-# Umbrella target for the relocated component benches. Append more bench-<area>
-# targets (e.g. ./pkg/snapshot/) as they grow.
-bench-all: bench-blockstore
 
 # Run unit + integration tests with the race detector, matching CI.
 test-unit:

@@ -142,7 +142,7 @@ func TestCombineShareReports_WorstOfDerivation(t *testing.T) {
 // report purely on the metadata store. Uses the real in-memory
 // metadata store implementation to keep the test free of fakes.
 func TestShareHealthcheck_HealthyWithMetaOnly(t *testing.T) {
-	share := &Share{Name: "test", BlockStore: nil}
+	share := &Share{Name: "test"}
 	meta := badgertest.NewInMemory(t)
 	defer func() { _ = meta.Close() }()
 
@@ -203,7 +203,7 @@ func TestShareHealthcheck_StampsTimestampAndLatency(t *testing.T) {
 // block store — combineShareReports falls through to its
 // "neither side present" branch.
 func TestShareHealthcheck_NeitherSidePresent(t *testing.T) {
-	share := &Share{Name: "test", BlockStore: nil}
+	share := &Share{Name: "test"}
 
 	rep := share.Healthcheck(context.Background(), nil)
 	if rep.Status != health.StatusUnknown {

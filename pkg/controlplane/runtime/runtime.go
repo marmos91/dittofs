@@ -13,7 +13,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/sid"
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/adapters"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/identity"
@@ -151,7 +150,6 @@ type Runtime struct {
 	snapSchedDisabled     bool
 
 	localStoreDefaults *shares.LocalStoreDefaults
-	syncerDefaults     *shares.SyncerDefaults
 	gcDefaults         *GCDefaults
 	gcReg              *gcRegistry
 	settingsWatcher    *SettingsWatcher
@@ -164,13 +162,6 @@ type Runtime struct {
 	// common no-SMB case is a single nil-check instead of a locked map access.
 	oplockBreaker atomic.Value
 
-	// snapInFlight tracks per-share in-flight snapshot orchestration
-	// goroutines so RemoveShare and the shutdown drain can
-	// cancel + wait before tearing down state. Keyed by share name.
-	// See pkg/controlplane/runtime/snapshot.go.
-	snapInFlight   map[string]*snapInFlight
-	snapInFlightMu sync.Mutex
-
 	// snapDeleteLocks is the shared registry of per-share RWMutexes that
 	// serialize the snapshot GC mark phase (HeldHashes, RLock) against
 	// the snapshot-delete write path (AcquireDeleteLock, Lock). The
@@ -180,16 +171,6 @@ type Runtime struct {
 	// the provider can never collude with a delete on a different
 	// provider instance.
 	snapDeleteLocks keyedMutex[sync.RWMutex]
-
-	// restoreLocks serializes RestoreSnapshot per share. Restore requires
-	// the share be disabled, but two concurrent restore calls both observe
-	// "disabled" and would otherwise interleave their destructive metadata
-	// Reset + dump-replay (the single-`creating`-slot DB index only
-	// serializes the safety-snap create, which frees between steps). A
-	// per-share mutex held for the whole restore makes a second concurrent
-	// restore fail fast with models.ErrRestoreInProgress. Keyed by share
-	// name; the same pointer is reused per share via restoreLock().
-	restoreLocks keyedMutex[sync.Mutex]
 
 	// remoteGCLocks serializes block-store GC sweeps that touch the same
 	// remote, keyed by the remote-store config UUID used for ref-counting.
@@ -251,7 +232,6 @@ func New(s store.Store) *Runtime {
 		mountTracker:     NewMountTracker(),
 		clientRegistry:   NewClientRegistry(),
 		adapterProviders: make(map[string]any),
-		snapInFlight:     make(map[string]*snapInFlight),
 		storesSvc:        stores.New(),
 		sharesSvc:        shares.New(),
 		lifecycleSvc:     lifecycle.New(DefaultShutdownTimeout),
@@ -553,9 +533,8 @@ func (r *Runtime) CloseMetadataStores() {
 func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	r.mu.RLock()
 	localDefaults := r.localStoreDefaults
-	syncDefaults := r.syncerDefaults
 	r.mu.RUnlock()
-	if err := r.sharesSvc.AddShare(ctx, config, r.storesSvc, r.metadataService, r.store, localDefaults, syncDefaults); err != nil {
+	if err := r.sharesSvc.AddShare(ctx, config, r.storesSvc, r.metadataService, r.store, localDefaults); err != nil {
 		return err
 	}
 	// The share is serving now, so any earlier refusal no longer describes it.
@@ -588,19 +567,13 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	// permission. Re-resolve them now that the name resolves again. Independent
 	// of the reconcile above, which is a projection and can fail.
 	r.InvalidateAuthCache()
-	// Reconstruct the local-only journal snapshot pin from the durable snapshot
-	// list so GC/eviction keep the segments backing every live snapshot's bytes
-	// across a restart, before any background reclaim runs. No-op for remote
-	// shares and shares without snapshots (#1718).
-	r.recomputePinVersion(ctx, config.Name)
 	return nil
 }
 
-// ApplyShareDurability puts a share's durability choice into effect on the
-// running share, so an edit does not wait for a restart to change what a COMMIT
-// acknowledges.
-func (r *Runtime) ApplyShareDurability(name string, requireDurableCommit, relaxedMetadataCommit bool) error {
-	return r.sharesSvc.ApplyDurability(name, requireDurableCommit, relaxedMetadataCommit, r.GetMetadataService())
+// ApplyShareDurability puts a share's relaxed metadata commit tier into effect
+// on the running share, so an edit does not wait for a restart.
+func (r *Runtime) ApplyShareDurability(name string, relaxedMetadataCommit bool) error {
+	return r.sharesSvc.ApplyDurability(name, relaxedMetadataCommit, r.GetMetadataService())
 }
 
 // AddShareFromStore loads a persisted share row into the runtime, building its
@@ -622,35 +595,15 @@ func (r *Runtime) AddShareFromStore(ctx context.Context, name string) error {
 	return r.AddShare(ctx, cfg)
 }
 
-// RebindShareBlockStore hot-reloads a running share's per-share BlockStore after
-// its local/remote block-store binding changed, so the change takes effect
-// without a server restart (#1532). It rebuilds the new ShareConfig from the
-// (already-persisted) DB row and passes the previous block-store IDs so the
-// share service can restore the old binding if the new one fails to build.
-func (r *Runtime) RebindShareBlockStore(ctx context.Context, name, oldBlockStoreID string) error {
+// RebindShareBlockStore moves a running share onto the remote store its
+// (already-persisted) changed block-store binding names, so the change takes
+// effect without a server restart.
+func (r *Runtime) RebindShareBlockStore(ctx context.Context, name string) error {
 	shareModel, err := r.store.GetShare(ctx, name)
 	if err != nil {
 		return fmt.Errorf("rebind: failed to load share %q: %w", name, err)
 	}
-	newCfg, err := buildShareConfig(ctx, r.store, shareModel)
-	if err != nil {
-		return fmt.Errorf("rebind: failed to build share config for %q: %w", name, err)
-	}
-	if newCfg == nil {
-		return fmt.Errorf("rebind: share %q references an unknown metadata store", name)
-	}
-
-	// oldConfig is the same row with the previous block-store binding — used only
-	// for recovery if the new store fails to build.
-	oldCfg := *newCfg
-	oldCfg.BlockStoreID = oldBlockStoreID
-
-	r.mu.RLock()
-	localDefaults := r.localStoreDefaults
-	syncDefaults := r.syncerDefaults
-	r.mu.RUnlock()
-
-	return r.sharesSvc.RebindShareBlockStore(ctx, newCfg, &oldCfg, r.storesSvc, r.store, localDefaults, syncDefaults)
+	return r.sharesSvc.RebindShareBlockStore(ctx, name, shareModel.BlockStoreID, r.store)
 }
 
 // RegisterShareForTesting registers a minimal enabled share in the share
@@ -661,20 +614,15 @@ func (r *Runtime) RegisterShareForTesting(name string) {
 	r.sharesSvc.RegisterShareForTesting(name)
 }
 
-// RemoveShare removes a share. Snapshot orchestration goroutines for the
-// share are cancelled and drained BEFORE the per-share snapshots/ tree is
-// wiped (hook inside sharesSvc.RemoveShare) — without this
-// ordering a still-running snap goroutine could write into the
-// about-to-be-deleted directory.
+// RemoveShare removes a share. No snapshot orchestration runs while no
+// content store is wired (CreateSnapshot refuses), so nothing writes into the
+// per-share snapshots/ tree that sharesSvc.RemoveShare wipes.
 //
 // Per the invariant in shares/service.go ("DB row is the source of
-// truth"), snapshot DB rows are NOT cascade-deleted: the cancelled
-// goroutine has already flipped its row to state=failed (or the
-// startup-recovery sweep will), and that orphan row
-// is harmless because the on-disk manifest is wiped and the hold filter
+// truth"), snapshot DB rows are NOT cascade-deleted: an orphan row is
+// harmless because the on-disk manifest is wiped and the hold filter
 // returns false once the snapshots/ tree is gone.
 func (r *Runtime) RemoveShare(name string) error {
-	r.cancelAndWaitInFlightSnaps(name) // drain BEFORE tree wipe
 	// sharesSvc.RemoveShare now performs ordered best-effort teardown and may
 	// return an aggregated error (REVIEW M4). We must NOT early-return on it:
 	// the metadata deregistration below is what prevents the unbounded
@@ -813,14 +761,6 @@ func (r *Runtime) GetShare(name string) (*Share, error) {
 	return r.sharesSvc.GetShare(name)
 }
 
-// SetBlockStoreForTesting publishes a per-share BlockStore into the registry
-// under the share service lock. Test-only — production code sets BlockStore
-// only during AddShare. Use this instead of mutating a *Share returned by
-// GetShare, which is now a snapshot copy.
-func (r *Runtime) SetBlockStoreForTesting(name string, bs *engine.Store) error {
-	return r.sharesSvc.SetBlockStoreForTesting(name, bs)
-}
-
 // SetEnabledForTesting overrides a share's Enabled flag in the registry under
 // the share service lock. Test-only — use instead of mutating a *Share
 // returned by GetShare, which is now a snapshot copy.
@@ -887,10 +827,8 @@ func (r *Runtime) UpdateShareQuota(shareName string, quotaBytes int64) {
 // metadata store config and are then served by one store instance, whose
 // counter is their combined total.
 //
-// The physical figure is the block store's on-disk size, which is per block
-// store rather than per share — shares that name the same local store report
-// the same number, and dedup, compression and tiering all move it away from
-// the logical one. Only the logical figure is share-specific.
+// The physical figure is the content store's on-disk size. No content store
+// is wired (block.ErrNoContentStore), so it is always 0.
 func (r *Runtime) GetShareUsage(ctx context.Context, shareName string) (usedBytes int64, physicalBytes int64) {
 	metaStore, err := r.metadataService.GetStoreForShare(shareName)
 	if err == nil {
@@ -898,28 +836,7 @@ func (r *Runtime) GetShareUsage(ctx context.Context, shareName string) (usedByte
 			usedBytes = used
 		}
 	}
-
-	// Get physical bytes from the block store.
-	bs, bsErr := r.sharesSvc.GetBlockStoreForShare(shareName)
-	if bsErr == nil {
-		if stats, statsErr := bs.Stats(); statsErr == nil {
-			physicalBytes = int64(stats.UsedSize)
-		}
-	}
-	return usedBytes, physicalBytes
-}
-
-// GetBlockStoreForHandle resolves the per-share BlockStore from a file handle.
-func (r *Runtime) GetBlockStoreForHandle(ctx context.Context, handle metadata.FileHandle) (*engine.Store, error) {
-	return r.sharesSvc.GetBlockStoreForHandle(ctx, handle)
-}
-
-// GetBlockStoreForShare resolves the per-share BlockStore by name, skipping the
-// handle decode when the caller already knows the share (e.g. SMB handlers that
-// carry OpenFile.ShareName). Backed by the same lock-free cache as
-// GetBlockStoreForHandle.
-func (r *Runtime) GetBlockStoreForShare(name string) (*engine.Store, error) {
-	return r.sharesSvc.GetBlockStoreForShare(name)
+	return usedBytes, 0
 }
 
 // --- Lifecycle (delegated to lifecycle.Service) ---
@@ -929,20 +846,10 @@ func (r *Runtime) SetAPIServer(server AuxiliaryServer) {
 }
 
 // SetMetrics installs the Prometheus metrics handle. Call once at startup
-// before Serve. Passing nil makes all inline instrument recording a no-op (a
-// nil *metrics.Metrics is wrapped in a non-nil journal.MetricsRecorder interface,
-// but every Record* method early-returns on the nil receiver, so nothing is
-// emitted — the observable effect is the same as "disabled").
-//
-// It also threads the handle down into every per-share block store's
-// eviction/backpressure path: those stores are constructed during startup
-// share loading, which precedes metrics.New, so the handle is back-filled
-// here (and createBlockStoreForShare applies it to shares added later).
+// before Serve. Passing nil makes all inline instrument recording a no-op:
+// every Record* method early-returns on the nil receiver.
 func (r *Runtime) SetMetrics(m *metrics.Metrics) {
 	r.metrics = m
-	// *metrics.Metrics satisfies journal.MetricsRecorder; its Record* methods
-	// are nil-safe so a nil m still installs a safe no-op recorder.
-	r.sharesSvc.SetMetrics(m)
 }
 
 // Metrics returns the Prometheus metrics handle (may be nil). All Record*
@@ -988,12 +895,10 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		logger.Error("snapshot recovery returned error (continuing startup)", "error", err)
 	}
 
-	// #810: Detect and roll back any restore that a prior crash left
-	// half-applied. Runs AFTER recoverOrphanedSnapshots (so a safety
-	// snapshot stranded in 'creating' is reconciled first) and BEFORE
-	// adapters serve — a half-restored share must never be client-reachable.
-	// Failure is logged but non-fatal; the marker is retained so a later
-	// boot retries the rollback.
+	// Report any restore that a prior crash left half-applied. Runs AFTER
+	// recoverOrphanedSnapshots and BEFORE adapters serve. Failure is logged
+	// but non-fatal; a half-restored share's marker is retained so the first
+	// boot with a content store rolls it back.
 	if err := r.recoverInterruptedRestores(r.runtimeCtx); err != nil {
 		logger.Error("restore recovery returned error (continuing startup)", "error", err)
 	}
@@ -1208,13 +1113,6 @@ func (r *Runtime) SetLocalStoreDefaults(cfg *shares.LocalStoreDefaults) {
 	r.localStoreDefaults = cfg
 }
 
-// SetSyncerDefaults sets the default syncer configuration for per-share BlockStores.
-func (r *Runtime) SetSyncerDefaults(cfg *shares.SyncerDefaults) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.syncerDefaults = cfg
-}
-
 // GCDefaults captures the operator-configured GC knobs the runtime threads
 // into gc.Options on every CollectGarbage invocation. Without this
 // wiring the engine silently falls back to its hardcoded defaults (1h
@@ -1250,47 +1148,18 @@ func (r *Runtime) gcDefaultsSnapshot() *GCDefaults {
 	return &cp
 }
 
-// DrainAllUploads waits for all in-flight uploads across all per-share BlockStores to complete.
-func (r *Runtime) DrainAllUploads(ctx context.Context) error {
-	return r.sharesSvc.DrainAllBlockStores(ctx)
-}
+// DrainAllUploads waits until no content is queued for a remote store. No
+// content store is wired (block.ErrNoContentStore), so nothing is ever queued
+// and it returns at once.
+func (r *Runtime) DrainAllUploads(_ context.Context) error { return nil }
 
-// UploadProgress returns a monotonic count of concluded mirror attempts
-// (completed + failed) across all per-share BlockStores. The drain-uploads
-// handler polls it as an idle/liveness signal: a flat value across the idle
-// window means the drain has stalled.
-func (r *Runtime) UploadProgress() int64 {
-	return r.sharesSvc.UploadProgress()
-}
+// UploadProgress returns a monotonic count of concluded remote uploads, the
+// drain-uploads handler's liveness signal. Always 0: nothing uploads.
+func (r *Runtime) UploadProgress() int64 { return 0 }
 
-// UnsyncedBytes returns the local bytes not yet mirrored to a remote across all
-// per-share BlockStores. The drain-uploads handler reads it to distinguish a
-// drain with nothing left to upload from one whose remote has stalled.
-func (r *Runtime) UnsyncedBytes() int64 {
-	return r.sharesSvc.UnsyncedBytes()
-}
-
-// GetBlockStoreStats returns block store statistics, optionally filtered by share name.
-func (r *Runtime) GetBlockStoreStats(shareName string) (*shares.BlockStoreStatsResponse, error) {
-	return r.sharesSvc.GetBlockStoreStats(shareName)
-}
-
-// EvictBlockStore evicts block store data for the given share (or all shares).
-func (r *Runtime) EvictBlockStore(ctx context.Context, shareName string, opts shares.EvictOptions) (*shares.EvictResult, error) {
-	return r.sharesSvc.EvictBlockStore(ctx, shareName, opts)
-}
-
-// StartWarmBlockStore starts (or returns the already-running) async warm job
-// that materializes the named share's blocks onto its local tier.
-func (r *Runtime) StartWarmBlockStore(ctx context.Context, shareName string) (*shares.WarmJob, error) {
-	return r.sharesSvc.StartWarm(ctx, shareName)
-}
-
-// GetWarmStatus returns a snapshot of a warm job by ID, or (nil, false) if the
-// job is unknown.
-func (r *Runtime) GetWarmStatus(jobID string) (*shares.WarmJob, bool) {
-	return r.sharesSvc.GetWarm(jobID)
-}
+// UnsyncedBytes returns the bytes still awaiting a remote store. Always 0:
+// nothing is written.
+func (r *Runtime) UnsyncedBytes() int64 { return 0 }
 
 func (r *Runtime) GetUserStore() models.UserStore { return r.store }
 
@@ -1583,37 +1452,4 @@ func (r *Runtime) GetAdapterProvider(key string) any {
 	r.adapterProvidersMu.RLock()
 	defer r.adapterProvidersMu.RUnlock()
 	return r.adapterProviders[key]
-}
-
-// snapInFlight tracks the per-share orchestration goroutines launched
-// by Runtime.CreateSnapshot. See pkg/controlplane/runtime/snapshot.go
-// for the registration + cleanup helpers.
-//
-// The done map keys are snapshot IDs; each chan is buffered (cap 1) and
-// receives exactly one snapResult before the goroutine closes it, so
-// WaitForSnapshot can surface the orchestration error via
-// errors.Is without consulting the DB.
-type snapInFlight struct {
-	wg sync.WaitGroup
-	// cancels is keyed by snapshot ID so completed snapshots can release
-	// their cancel func (and the derived ctx attached to runtimeCtx) at
-	// unregisterSnap time instead of leaking for the share's lifetime.
-	cancels map[string]context.CancelFunc
-	done    map[string]chan snapResult
-	mu      sync.Mutex
-	// draining is set true by cancelAndWaitInFlightSnaps after it has
-	// cancelled the per-snap ctxs but BEFORE wg.Wait, so concurrent
-	// WaitForSnapshot callers continue to observe the per-snap doneCh
-	// (instead of falling through to GetSnapshot and reporting a row
-	// still in state='creating'). A registerSnapInFlight observing a
-	// draining entry replaces the map slot with a fresh entry — the
-	// original entry pointer is still held locally by the draining
-	// caller, so its wg.Wait remains valid.
-	draining bool
-}
-
-// snapResult is sent exactly once on a snap's done channel, immediately
-// before close. nil err == success; non-nil err is wrapped.
-type snapResult struct {
-	err error
 }

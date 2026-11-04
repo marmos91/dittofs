@@ -298,7 +298,7 @@ referencing the same chunk via dedup share one `Hash`, which is what
 makes cross-file dedup work both for storage (CAS) and in the cache (a
 shared hash hits the same entry).
 
-See [ARCHITECTURE.md](../internals/architecture.md#engine-api--blockref--cache)
+See [ARCHITECTURE.md](../internals/architecture.md#data-path)
 for the full design and
 [IMPLEMENTING_STORES.md](../internals/implementing-stores.md) for storage-encoding
 requirements.

@@ -1,0 +1,421 @@
+package format
+
+import (
+	"encoding/binary"
+	"encoding/hex"
+	"hash/crc32"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+)
+
+// Test values. Within one structure every field gets its own range of byte
+// values, so a field written a byte off, big-endian or in another field's
+// place reads back as bytes from the wrong range, never as the right value by
+// accident. The identity and the installation use the byte ranges raw's tests
+// use, so the golden file and raw's bytes agree field for field.
+var testIdentity = core.JournalID{
+	0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+	0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+}
+
+var testInstallation = core.InstallationID{
+	0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67,
+	0x68, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f,
+}
+
+// testFormatFile is the format file the golden file holds.
+var testFormatFile = FormatFile{Identity: testIdentity, Installation: testInstallation}
+
+// otherIdentity is a second journal's identity: a segment naming it is that
+// journal's, not damaged. Its bytes are in no other header field's range.
+var otherIdentity = core.JournalID{
+	0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
+	0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f,
+}
+
+// The segment header's test values, one range of bytes per field, raw's.
+var (
+	testSegment            = core.SegmentID(0x0807060504030201)
+	testPredecessor        = core.SegmentID(0x3837363534333231)
+	testStream      uint32 = 0x44434241
+)
+
+// testSegmentHeader is the header the pred golden holds; with a zero
+// predecessor it is the nopred golden's. The identity is testIdentity in
+// both, so a decode with testIdentity succeeds and one with otherIdentity
+// reports foreign.
+var testSegmentHeader = SegmentHeader{
+	Identity:    testIdentity,
+	ID:          testSegment,
+	Predecessor: testPredecessor,
+	Stream:      testStream,
+}
+
+// testOffset is the seal marker's own offset in the segment: raw's test
+// value shifted into the multiple of 8 a record slot's offset is, a byte
+// range no other field's.
+const testOffset int64 = 0x2827262524232220
+
+// testSealMarker is the marker the seal golden holds: it seals testSegment
+// at testOffset, written under testIdentity, so a decode under that
+// identity, at that segment and offset, succeeds and one under any other
+// does not.
+var testSealMarker = SealMarker{Segment: testSegment, Offset: testOffset}
+
+// The record's test values, one byte-value pattern per field, raw's own
+// where the two share a field: every 8-byte integer counts down from a
+// distinctive hex pattern and every array holds one run of bytes, so a field
+// written a byte off, big-endian or in another field's place reads back as
+// bytes from the wrong pattern, never as the right value by accident. The
+// clone source file and the write payload share 0xc0.., the only two fields
+// that can: they never meet in one record, and neither is ever compared with
+// the other.
+var (
+	// testRecordFile is the FileID every record golden but the unhold
+	// and forget ones carries.
+	testRecordFile = core.NewFileID([16]byte{
+		0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
+		0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf,
+	})
+
+	// testRecordOffset is the record's own offset in its segment: a
+	// multiple of 8, as a record slot is.
+	testRecordOffset int64 = 0xdbdad9d8
+
+	// testRecordFileOffset is the file offset every kind with an offset
+	// carries in its golden.
+	testRecordFileOffset int64 = 0x3736353433323130
+
+	// testRecordLength is the length of the release, deallocate, clone
+	// target, offloaded, unmark and loss goldens.
+	testRecordLength int64 = 0x4746454443424140
+
+	// testRecordSeq is the sequence number every record golden carries.
+	testRecordSeq = core.Seq(0x5756555453525150)
+
+	// testRecordVersion is the content version every record golden carries,
+	// with the epoch half zero as this format version requires.
+	testRecordVersion = core.Version{Epoch: 0, Counter: 0x6766656463626160}
+
+	// testRecordTag is the share tag every record golden carries.
+	testRecordTag = core.ShareTag(0x73727170)
+
+	// testRecordSyncedThrough is the synced-through offset every record
+	// golden carries.
+	testRecordSyncedThrough int64 = 0x4f4e4d4c4b4a4948
+
+	// testWriteMTime is the modification time of the write golden.
+	testWriteMTime int64 = 0x6f6e6d6c6b6a6968
+
+	// testWritePayload is the 13 payload bytes of the write golden.
+	testWritePayload = []byte{
+		0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7,
+		0xc8, 0xc9, 0xca, 0xcb, 0xcc,
+	}
+
+	// testFillPayload is the 21 payload bytes of the fill golden.
+	testFillPayload = []byte{
+		0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7,
+		0xe8, 0xe9, 0xea, 0xeb, 0xec, 0xed, 0xee, 0xef,
+		0xf0, 0xf1, 0xf2, 0xf3, 0xf4,
+	}
+
+	// testLoss is the loss body of the loss golden: a dropped sequence
+	// number, and flags naming a synced drop of an offloaded record for
+	// reason 3.
+	testLoss = Loss{
+		Dropped:   core.Seq(0x8f8e8d8c8b8a8988),
+		Synced:    true,
+		Offloaded: true,
+		Reason:    LossFailedSync,
+	}
+
+	// testClone is the clone source of the clone target golden.
+	testClone = CloneSource{
+		Share: core.ShareID{
+			0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7,
+			0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf,
+		},
+		File: core.NewFileID([16]byte{
+			0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7,
+			0xc8, 0xc9, 0xca, 0xcb, 0xcc, 0xcd, 0xce, 0xcf,
+		}),
+		Off:  0x2726252423222120,
+		AsOf: core.Version{Epoch: 0, Counter: 0x9f9e9d9c9b9a9998},
+	}
+
+	// testCut is the cut number of the hold, unhold and stamp goldens.
+	testCut = core.SnapshotCut(0xefeeedecebeae9e8)
+
+	// The footer's test values, entry B's own byte patterns: entry A's
+	// fields reuse the record ones above, so both entries' bytes stay in
+	// ranges no other structure's uses. Every field reads back as its own
+	// pattern, so a field written a byte off, big-endian or in another
+	// field's place reads back wrong.
+	testEntryBFile = core.NewFileID([16]byte{
+		0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7,
+		0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf,
+	})
+
+	// testEntryBFileOffset is entry B's file offset.
+	testEntryBFileOffset int64 = 0x1716151413121110
+
+	// testEntryBRecordOffset is entry B's record offset within the segment:
+	// just past entry A's record, which runs 144 bytes from its own slot
+	// at 48.
+	testEntryBRecordOffset int64 = 144
+
+	// testEntryBLength is entry B's length.
+	testEntryBLength int64 = 0x2f2e2d2c2b2a2928
+
+	// testEntryBSeq is entry B's sequence number.
+	testEntryBSeq = core.Seq(0x5f5e5d5c5b5a5958)
+
+	// testEntryBVersion is entry B's content version, epoch half zero as
+	// this format version requires.
+	testEntryBVersion = core.Version{Epoch: 0, Counter: 0x7f7e7d7c7b7a7978}
+
+	// testEntryBTag is entry B's share tag.
+	testEntryBTag = core.ShareTag(0x87868584)
+)
+
+// testEntryA is the golden's first footer entry: a release whose record runs
+// 48..144, so the next record slot starts at 144.
+var testEntryA = CatalogEntry{
+	File:         testRecordFile,
+	Extent:       core.Extent{Off: testRecordFileOffset, Len: testRecordLength},
+	RecordOffset: 48,
+	Seq:          testRecordSeq,
+	Version:      testRecordVersion,
+	Kind:         KindRelease,
+	Tag:          testRecordTag,
+}
+
+// testEntryB is the golden's second footer entry: an unmark whose record runs
+// 144..240, so the seal marker sits at 240.
+var testEntryB = CatalogEntry{
+	File:         testEntryBFile,
+	Extent:       core.Extent{Off: testEntryBFileOffset, Len: testEntryBLength},
+	RecordOffset: testEntryBRecordOffset,
+	Seq:          testEntryBSeq,
+	Version:      testEntryBVersion,
+	Kind:         KindUnmark,
+	Tag:          testEntryBTag,
+}
+
+// testFooterOffset is the footerOffset the golden's trailer names: just past
+// the seal marker at 240, which sits just past entry B's record.
+const testFooterOffset int64 = 272
+
+// rechecksumRecord stores the seeded CRC32C of identity then [92,96)'s
+// covered bytes at [92,96) of a record header, so an edit fails a decode only
+// for the edit, not for its stale checksum.
+func rechecksumRecord(b []byte, identity core.JournalID) {
+	binary.LittleEndian.PutUint32(b[92:96], wantSeededCRC(identity, b[0:92]))
+}
+
+// rechecksumRecordBody stores the seeded CRC32C of identity then the body's
+// bytes at [84,88) of a record header and then redoes the header checksum,
+// so an edit to a body, its length or its checksum fails a verify only for
+// the edit, not for a stale checksum.
+func rechecksumRecordBody(b []byte, identity core.JournalID, bodyLen int) {
+	binary.LittleEndian.PutUint32(b[84:88], wantSeededCRC(identity, b[96:96+bodyLen]))
+	rechecksumRecord(b, identity)
+}
+
+// readGolden reads testdata/golden/<name>.hex: # to end of line a comment,
+// whitespace ignored, the rest hex. It takes the interface of both testing.T
+// and testing.F, so a fuzz test's seeds read it too.
+func readGolden(t testing.TB, name string) []byte {
+	t.Helper()
+
+	data, err := os.ReadFile("testdata/golden/" + name + ".hex")
+	if err != nil {
+		t.Fatalf("read golden %s: %v", name, err)
+	}
+
+	// A comment is cut line by line, so a # never hides digits after it,
+	// and whitespace is dropped so the digits of a line join.
+	var digits strings.Builder
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		for _, r := range line {
+			if !strings.ContainsRune(" \t\r", r) {
+				digits.WriteRune(r)
+			}
+		}
+	}
+	if digits.Len()%2 != 0 {
+		t.Fatalf("golden %s holds an odd number of hex digits", name)
+	}
+	b := make([]byte, digits.Len()/2)
+	if _, err := hex.Decode(b, []byte(digits.String())); err != nil {
+		t.Fatalf("decode golden %s: %v", name, err)
+	}
+	return b
+}
+
+// wantCRC is the standard library's CRC32C of b, computed here and not by
+// the package, so a test never checks the codec against itself.
+func wantCRC(b []byte) uint32 {
+	return crc32.Checksum(b, crc32.MakeTable(crc32.Castagnoli))
+}
+
+// rechecksum stores the CRC32C of [0,52) at [52,56) of a format file, so an
+// edit fails a decode only for the edit, not for its stale checksum.
+func rechecksum(b []byte) {
+	binary.LittleEndian.PutUint32(b[52:56], wantCRC(b[0:52]))
+}
+
+// rechecksumHeader stores the CRC32C of [0,44) at [44,48) of a segment
+// header, so an edit fails a decode only for the edit, not for its stale
+// checksum.
+func rechecksumHeader(b []byte) {
+	binary.LittleEndian.PutUint32(b[44:48], wantCRC(b[0:44]))
+}
+
+// wantSeededCRC is the standard library's CRC32C of identity followed by b,
+// computed here and not by the package, on a fresh slice, so a test never
+// checks the codec against itself.
+func wantSeededCRC(identity core.JournalID, b []byte) uint32 {
+	return crc32.Checksum(append(identity[:], b...), crc32.MakeTable(crc32.Castagnoli))
+}
+
+// rechecksumSeal stores the CRC32C of identity then [0,28) at [28,32) of a
+// seal marker, so an edit fails a decode only for the edit, not for its
+// stale checksum.
+func rechecksumSeal(b []byte, identity core.JournalID) {
+	binary.LittleEndian.PutUint32(b[28:32], wantSeededCRC(identity, b[0:28]))
+}
+
+// rechecksumTrailer stores the CRC32C of [0,28) at [28,32) of a 32-byte
+// trailer, so an edit fails a read only for the edit, not for its stale
+// checksum.
+func rechecksumTrailer(b []byte) {
+	binary.LittleEndian.PutUint32(b[28:32], wantCRC(b[0:28]))
+}
+
+// rechecksumFooter recomputes a whole segment's trailer from the footer it
+// names: the footer CRC is taken over the entries again, and then the trailer
+// CRC over the trailer's own changed bytes. An edit to an entry or the
+// trailer's fields then fails a read only for the edit, never for a part of
+// the checksum chain the edit did not touch.
+//
+// The footer span is clamped to the bytes that exist, so a case whose edit
+// moves footerOffset or entryCount beyond the file still gets a checksum
+// over something: the reader refuses such a case by its own rule before it
+// reads any entries, so the checksum is never what fails it.
+func rechecksumFooter(seg []byte) {
+	trailer := seg[len(seg)-TrailerSize:]
+	footerOffset := int64(binary.LittleEndian.Uint64(trailer[8:16]))
+	entryCount := int64(binary.LittleEndian.Uint32(trailer[16:20]))
+
+	footer := []byte{}
+	if footerOffset >= 0 && footerOffset < int64(len(seg)-TrailerSize) {
+		end := footerOffset + entryCount*CatalogEntrySize
+		if end > int64(len(seg)-TrailerSize) || end < footerOffset {
+			end = int64(len(seg) - TrailerSize)
+		}
+		footer = seg[footerOffset:end]
+	}
+	binary.LittleEndian.PutUint32(trailer[20:24], wantCRC(footer))
+	rechecksumTrailer(trailer)
+}
+
+// scanPayload fills n bytes with the fixed non-zero pattern the scan tests'
+// payloads use, so an accidental zero never passes for content and a payload
+// never reads as zeros. The pattern stays under 'A'..'M', so no four of its
+// bytes ever spell a magic.
+func scanPayload(n int) []byte {
+	p := make([]byte, n)
+	for i := range p {
+		p[i] = byte('A' + i%13)
+	}
+	return p
+}
+
+// scanRecord is one record planted in a scanned segment: its header fields
+// and the body its kind gives it.
+type scanRecord struct {
+	h    RecordHeader
+	body RecordBody
+}
+
+// scanSegment builds a scanned segment's bytes: this test journal's own
+// segment header, then the records planted at consecutive slots, and returns
+// the segment and each record's offset. A caller extends the segment with
+// anything else, by appending to the returned slice or through scanAppend.
+func scanSegment(t testing.TB, identity core.JournalID, recs ...scanRecord) ([]byte, []int64) {
+	t.Helper()
+
+	seg := AppendSegmentHeader(nil, testSegmentHeader)
+	offsets := make([]int64, len(recs))
+	for i, r := range recs {
+		var off int64
+		seg, off = scanAppend(t, seg, identity, r)
+		offsets[i] = off
+	}
+	return seg, offsets
+}
+
+// scanAppend appends one record at the segment's next record slot and returns
+// the extended segment with the record's planted offset.
+func scanAppend(t testing.TB, seg []byte, identity core.JournalID, r scanRecord) ([]byte, int64) {
+	t.Helper()
+
+	off := int64(len(seg))
+	if off%8 != 0 {
+		t.Fatalf("scan: a record would land at %d, not a slot's multiple of 8", off)
+	}
+	h := r.h
+	h.Offset = off
+	return AppendRecord(seg, identity, h, r.body), off
+}
+
+// scanSeal appends a verifying seal marker at the segment's next record slot
+// and returns its offset.
+func scanSeal(t testing.TB, seg *[]byte, identity core.JournalID, segment core.SegmentID) int64 {
+	t.Helper()
+
+	off := int64(len(*seg))
+	*seg = AppendSealMarker(*seg, identity, SealMarker{Segment: segment, Offset: off})
+	return off
+}
+
+// sealedSegment builds a whole segment's bytes for a footer of entries: zeros
+// up to where the seal marker sits — the first record slot, 48, when there is
+// no entry, else just past the last entry's record — then the marker, the
+// entries, gap zero bytes (a full seal leaves the old life's or the cap's
+// bytes there; the reader never reads them), and the trailer. The records
+// themselves are zeros: the reader never reads them either, only their
+// entries' offsets.
+func sealedSegment(t testing.TB, entries []CatalogEntry, gap int) []byte {
+	t.Helper()
+
+	sealOff := int64(SegmentHeaderSize)
+	if len(entries) > 0 {
+		last := entries[len(entries)-1]
+		if last.RecordOffset < 0 {
+			t.Fatalf("entry record offset %d is below 0", last.RecordOffset)
+		}
+		sealOff = last.RecordOffset + RecordHeader{Kind: last.Kind, Extent: core.Extent{Len: last.Extent.Len}}.Size()
+	}
+	if sealOff%8 != 0 {
+		t.Fatalf("seal marker offset %d is not a multiple of 8", sealOff)
+	}
+
+	seg := make([]byte, sealOff)
+	seg = AppendSealMarker(seg, testIdentity, SealMarker{Segment: testSegment, Offset: sealOff})
+	footerOffset := sealOff + SealMarkerSize
+	for _, e := range entries {
+		seg = AppendCatalogEntry(seg, e)
+	}
+	footer := seg[footerOffset:]
+	seg = append(seg, make([]byte, gap)...)
+	return AppendTrailer(seg, footerOffset, footer)
+}

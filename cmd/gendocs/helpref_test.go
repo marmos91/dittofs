@@ -417,7 +417,7 @@ func TestCheckerAcceptsAndRejects(t *testing.T) {
 		"`dfsctl -o json share list`",
 		"`dfsctl --server https://host:8443 share list`",
 		"`dfs start`",
-		"`dfsctl share warm <share>`",
+		"`dfsctl share show <share>`",
 		"dfsctl is the REST client for a running dfs instance",
 		"run `dfsctl login` first",
 	}

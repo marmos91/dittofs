@@ -4,8 +4,6 @@ import (
 	"context"
 	"net"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
-	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -20,14 +18,6 @@ import (
 // concrete *runtime.Runtime god-object. *runtime.Runtime satisfies it
 // implicitly (compile-time assertion below).
 type smbRuntime interface {
-	// Per-share block-store resolution (used via common.ResolveFor* and
-	// directly for FLUSH / copychunk / scavenger paths).
-	common.BlockStoreRegistry
-
-	// GetBlockStoreForShare resolves the store by share name, skipping the
-	// handle decode when a handler already holds OpenFile.ShareName.
-	GetBlockStoreForShare(name string) (*engine.Store, error)
-
 	// Metadata service access.
 	GetMetadataService() *metadata.Service
 

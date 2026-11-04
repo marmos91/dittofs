@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/testruntime"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
@@ -38,6 +36,9 @@ type shareServer struct {
 	h       *ShareHandler
 	journal string
 	blockID string
+	// sizes records what write set each file's size to. No content store is
+	// wired, so a file's size in metadata is what survives or not.
+	sizes map[string]uint64
 }
 
 // gatedStore is a control-plane store whose next GetShare, once a gate is
@@ -177,7 +178,8 @@ func (s *shareServer) isEmpty(share string) bool {
 	return len(page.Entries) == 0
 }
 
-// write creates dir/name under the share root and writes data to it.
+// write creates dir/name under the share root with len(data) as its size. No
+// content store is wired, so the bytes themselves are not stored.
 func (s *shareServer) write(share, dir, name string, data []byte) metadata.FileHandle {
 	s.t.Helper()
 	ctx := context.Background()
@@ -204,38 +206,26 @@ func (s *shareServer) write(share, dir, name string, data []byte) metadata.FileH
 	if err != nil {
 		s.t.Fatalf("EncodeFileHandle: %v", err)
 	}
-	bs, err := s.rt.GetBlockStoreForHandle(ctx, fh)
-	if err != nil {
-		s.t.Fatalf("GetBlockStoreForHandle: %v", err)
+	size := uint64(len(data))
+	if _, err := svc.SetFileAttributes(actx, fh, &metadata.SetAttrs{Size: &size}); err != nil {
+		s.t.Fatalf("SetFileAttributes: %v", err)
 	}
-	if err := common.WriteToBlockStore(ctx, bs, f.PayloadID, data, 0); err != nil {
-		s.t.Fatalf("WriteToBlockStore: %v", err)
+	if s.sizes == nil {
+		s.sizes = map[string]uint64{}
 	}
-	if err := common.CommitBlockStore(ctx, bs, f.PayloadID); err != nil {
-		s.t.Fatalf("CommitBlockStore: %v", err)
-	}
+	s.sizes[string(fh)] = size
 	return fh
 }
 
-// read reads n bytes of the file the way an NFS READ does: the attributes
-// through the read fast path, which caches them, then the bytes.
-func (s *shareServer) read(h metadata.FileHandle, n int) string {
+// intact reports whether the file write created still resolves, through the
+// read fast path that caches its attributes, with the size it was written with.
+func (s *shareServer) intact(h metadata.FileHandle) bool {
 	s.t.Helper()
-	ctx := context.Background()
-	f, err := s.rt.GetMetadataService().GetFileForRead(ctx, h)
+	f, err := s.rt.GetMetadataService().GetFileForRead(context.Background(), h)
 	if err != nil {
 		s.t.Fatalf("GetFileForRead: %v", err)
 	}
-	bs, err := s.rt.GetBlockStoreForHandle(ctx, h)
-	if err != nil {
-		s.t.Fatalf("GetBlockStoreForHandle: %v", err)
-	}
-	res, err := common.ReadFromBlockStore(ctx, bs, f.PayloadID, 0, uint32(n))
-	if err != nil {
-		s.t.Fatalf("ReadFromBlockStore: %v", err)
-	}
-	defer res.Release()
-	return string(bytes.Clone(res.Data))
+	return f.Size == s.sizes[string(h)]
 }
 
 // Removing a share deletes its metadata, journal and local blocks, so a share
@@ -250,8 +240,8 @@ func TestShareRemove_RecreatedShareStartsEmpty(t *testing.T) {
 	const oldText, keptText = "written to the removed share", "written to the share beside it"
 	old := s.write("/team", "docs", "old.txt", []byte(oldText))
 	kept := s.write("/team-archive", "docs", "kept.txt", []byte(keptText))
-	if got := s.read(old, len(oldText)); got != oldText {
-		t.Fatalf("read %q, want %q", got, oldText)
+	if !s.intact(old) {
+		t.Fatalf("read: file did not survive its write")
 	}
 
 	for _, name := range []string{"/team", "/team-archive"} {
@@ -262,8 +252,8 @@ func TestShareRemove_RecreatedShareStartsEmpty(t *testing.T) {
 	if err := runtime.LoadSharesFromStore(ctx, s.rt, s.cp); err != nil {
 		t.Fatalf("LoadSharesFromStore: %v", err)
 	}
-	if got := s.read(old, len(oldText)); got != oldText {
-		t.Fatalf("after a restart the share reads %q, want %q", got, oldText)
+	if !s.intact(old) {
+		t.Fatalf("after a restart the share does not read back its write")
 	}
 
 	if code := s.remove("/team"); code != http.StatusNoContent {
@@ -294,8 +284,8 @@ func TestShareRemove_RecreatedShareStartsEmpty(t *testing.T) {
 		t.Fatalf("a handle into the removed share still resolves: %v", err)
 	}
 
-	if got := s.read(kept, len(keptText)); got != keptText {
-		t.Fatalf("the other share reads %q, want %q", got, keptText)
+	if !s.intact(kept) {
+		t.Fatalf("the other share does not read back its write")
 	}
 	if _, err := os.Stat(shares.ShareJournalDir(s.journal, "/team-archive")); err != nil {
 		t.Fatalf("the other share's journal directory: %v", err)
@@ -444,8 +434,8 @@ func TestShareRemove_StaleIDLeavesNewShare(t *testing.T) {
 	if code := <-byID; code != http.StatusNotFound {
 		t.Fatalf("the removal by the old ID = %d, want 404", code)
 	}
-	if got := s.read(h, len(text)); got != text {
-		t.Fatalf("the new share reads %q, want %q", got, text)
+	if !s.intact(h) {
+		t.Fatalf("the new share does not read back its write")
 	}
 	if _, err := s.cp.GetShare(ctx, "/team"); err != nil {
 		t.Fatalf("the new share's row: %v", err)

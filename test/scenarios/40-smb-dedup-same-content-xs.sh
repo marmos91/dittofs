@@ -17,7 +17,6 @@ rclone size --json s3:dittofs/test >/tmp/after-b.json
 smbclient //127.0.0.1/test -c 'lcd /tmp; put c.bin'
 dfsctl system drain-uploads
 rclone size --json s3:dittofs/test >/tmp/after-c.json
-dfsctl store block evict --share /test
 mkdir /tmp/back
 smbclient //127.0.0.1/test -c 'lcd /tmp/back; get b.bin'
 

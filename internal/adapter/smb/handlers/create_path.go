@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -426,19 +425,15 @@ func (h *Handler) overwriteFile(
 	setAttrs.Hidden = &hiddenVal
 
 	metaSvc := h.Registry.GetMetadataService()
-	blockStore, err := common.ResolveForWrite(authCtx.Context, h.Registry, fileHandle)
-	if err != nil {
+	// The truncate is metadata only: no content store is wired, so there is no
+	// content to cut.
+	//
+	// decision: a shrink leaves the FileChunk rows past the new EOF until
+	// the cutover (package common, Size changes).
+	if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs); err != nil {
 		return nil, nil, err
 	}
-
-	// A replacement owns the payload until its bytes and metadata agree. Keep
-	// the truncate and the response's fresh attributes in one admitted operation.
-	updatedFile, err := common.WithFilePayloadScope(authCtx, metaSvc, blockStore, fileHandle, func(scopedAuth *metadata.AuthContext) (*metadata.File, error) {
-		if _, err := metaSvc.SetFileAttributes(scopedAuth, fileHandle, setAttrs); err != nil {
-			return nil, err
-		}
-		return metaSvc.GetFile(scopedAuth.Context, fileHandle)
-	})
+	updatedFile, err := metaSvc.GetFile(authCtx.Context, fileHandle)
 	if err != nil {
 		return nil, nil, err
 	}

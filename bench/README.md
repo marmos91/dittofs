@@ -47,25 +47,12 @@ the runner, not a DittoFS server, so its numbers are not performance data.
 
 ## Component microbenchmarks live with their code
 
-Per-package `Benchmark*` functions (chunker, hash, block engine, metadata,
+Per-package `Benchmark*` functions (chunker, hash, metadata,
 snapshot) run via `go test -bench` in their home package — not here:
 
 ```sh
-go test -bench=. -benchmem -run=^$ ./pkg/block/engine/    # write/read-path engine benches
 go test -bench=. -benchmem -run=^$ ./pkg/snapshot/        # snapshot create/manifest/verify scale
 go test -bench=. -benchmem -run=^$ ./pkg/block/chunker/   # FastCDC throughput
-```
-
-Use `benchstat` to compare the five write-path benchmarks across two commits.
-`make bench-blockstore` collects ten samples per benchmark (`-count=10`),
-with ten iterations in each sample (`-benchtime=10x`). Keep the machine,
-Go version, and benchmark settings the same for both runs:
-
-```sh
-make bench-blockstore > before.txt
-# ... checkout other commit ...
-make bench-blockstore > after.txt
-benchstat before.txt after.txt
 ```
 
 ## Layout

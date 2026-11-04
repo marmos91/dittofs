@@ -1,14 +1,7 @@
 package handlers
 
-// Tests for SMB2 READ handler. These focus on the narrow scope:
-// regular-file READ uses common.ReadFromBlockStore and hands Release to
-// the encoder via SMBResponseBase.ReleaseData; pipe and symlink READ
-// variants stay on their heap-allocated source buffers and MUST leave
-// ReleaseData nil.
-//
-// Integration tests that exercise the full regular-file READ round trip
-// require a full metadata+block-store fixture — those are covered by the
-// whole-repo -race regression.
+// Tests for SMB2 READ handler. Pipe and symlink READ variants stay on their
+// heap-allocated source buffers and MUST leave ReleaseData nil.
 
 import (
 	"context"

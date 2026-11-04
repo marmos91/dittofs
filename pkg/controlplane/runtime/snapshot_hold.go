@@ -274,13 +274,3 @@ func (r *Runtime) snapshotHoldForRemote(shareNames []string) blockgc.HoldProvide
 func (r *Runtime) snapshotDeleteLock(shareName string) *sync.RWMutex {
 	return r.snapDeleteLocks.get(shareName)
 }
-
-// restoreLock returns the shared per-share mutex that serializes
-// RestoreSnapshot. Allocated on first lookup and reused thereafter so every
-// restore for the same share contends on the SAME pointer. Held for the
-// whole restore (via TryLock in restoreSnapshot); a second concurrent
-// restore fails fast with models.ErrRestoreInProgress rather than
-// interleaving the destructive metadata Reset + dump replay.
-func (r *Runtime) restoreLock(shareName string) *sync.Mutex {
-	return r.restoreLocks.get(shareName)
-}

@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
@@ -36,7 +34,6 @@ const DefaultGID = uint32(1000)
 //
 // It sets up:
 //   - A real in-memory Badger metadata store (owned by MetadataService)
-//   - A BlockStore for content operations
 //   - A registry with a configured share
 //   - A Handler instance ready for testing
 //
@@ -58,14 +55,6 @@ type HandlerTestFixture struct {
 	// tests can adjust static capabilities (e.g. MaxWriteSize) directly.
 	MetaStore *badger.BadgerMetadataStore
 
-	// BlockStore provides block storage for content operations.
-	BlockStore *engine.Store
-
-	// LocalStore is the block store's local tier. Exposed so tests can assert
-	// that a payload's bytes actually left the disk, which is the precondition
-	// every reclamation path shares.
-	LocalStore *journal.Store
-
 	// ShareName is the name of the test share.
 	ShareName string
 
@@ -77,7 +66,6 @@ type HandlerTestFixture struct {
 //
 // The fixture includes:
 //   - In-memory Badger metadata store with default capabilities
-//   - BlockStore for content operations
 //   - A share named "/export"
 //   - Handler with the registry configured
 //
@@ -90,8 +78,7 @@ func NewHandlerFixture(t testing.TB) *HandlerTestFixture {
 // NewHandlerFixtureWithStore is like NewHandlerFixture but lets a test wrap the
 // underlying in-memory Badger metadata store before it is registered with the runtime.
 //
-// The wrap function receives the concrete Badger store (already wired to the
-// block store / syncer) and returns the metadata.Store to register. This lets a
+// The wrap function receives the concrete Badger store and returns the metadata.Store to register. This lets a
 // test inject fault behaviour (e.g. a GetFile that returns nil) to exercise
 // handler error paths that the plain store cannot reach. A nil wrap
 // registers the store unchanged.
@@ -111,30 +98,8 @@ func NewHandlerFixtureWithStore(
 	// Create stores
 	metaStore := badgertest.NewInMemory(t)
 
-	// Create local store, syncer, and block store engine
-	tmpDir := t.TempDir()
-	localStore, err := journal.Open(filepath.Join(tmpDir, "journal"), journal.Config{})
-	if err != nil {
-		t.Fatalf("Failed to create local store: %v", err)
-	}
-	t.Cleanup(func() { _ = localStore.Close() })
-	syncer := engine.NewRemoteSync(localStore, nil, metaStore, engine.DefaultConfig())
-
-	blockSvc, err := engine.New(engine.BlockStoreConfig{
-		Local:      localStore,
-		RemoteSync: syncer,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create block store: %v", err)
-	}
-	if err := blockSvc.Start(context.Background()); err != nil {
-		t.Fatalf("Failed to start block store: %v", err)
-	}
-	t.Cleanup(func() { _ = blockSvc.Close() })
-
 	// Create registry. The control-plane store exists to hold the share's block
-	// store: a share cannot be added without one, even though the fixture
-	// replaces the resulting engine with the one built above.
+	// store config: a share cannot be added without one.
 	cps, err := cpstore.New(&cpstore.Config{
 		Type:   cpstore.DatabaseTypeSQLite,
 		SQLite: cpstore.SQLiteConfig{Path: ":memory:"},
@@ -152,18 +117,13 @@ func NewHandlerFixtureWithStore(
 
 	reg := runtime.New(cps)
 	reg.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir()})
-	// A share holds its journal open until it is removed. Registered after the
-	// temp dir so cleanup's reverse order releases the journals before the dir
-	// is removed.
 	t.Cleanup(func() {
 		for _, name := range reg.ListShares() {
 			_ = reg.RemoveShare(name)
 		}
 	})
 
-	// Register the (optionally wrapped) metadata store. The block store/syncer
-	// above always reference the concrete inner store; the wrapper only changes
-	// what the runtime's metadata Service sees.
+	// Register the (optionally wrapped) metadata store.
 	var registerStore metadata.Store = metaStore
 	if wrap != nil {
 		registerStore = wrap(metaStore)
@@ -191,22 +151,6 @@ func NewHandlerFixtureWithStore(
 		t.Fatalf("Failed to add share: %v", err)
 	}
 
-	// AddShare built a block store of its own from the config above. The fixture
-	// serves the engine built here instead, so close that one rather than leave
-	// its syncer and journal running for the rest of the test.
-	added, err := reg.GetBlockStoreForShare(DefaultShareName)
-	if err != nil {
-		t.Fatalf("Failed to resolve the share's block store: %v", err)
-	}
-	_ = added.Close()
-
-	// Publish the per-share BlockStore via the locked setter. GetShare returns
-	// a snapshot copy, so mutating its BlockStore field would not reach the
-	// registry.
-	if err := reg.SetBlockStoreForTesting(DefaultShareName, blockSvc); err != nil {
-		t.Fatalf("Failed to set block store: %v", err)
-	}
-
 	rootHandle, err := reg.GetRootHandle(DefaultShareName)
 	if err != nil {
 		t.Fatalf("Failed to get root handle: %v", err)
@@ -223,8 +167,6 @@ func NewHandlerFixtureWithStore(
 		Registry:        reg,
 		MetadataService: reg.GetMetadataService(),
 		MetaStore:       metaStore,
-		BlockStore:      blockSvc,
-		LocalStore:      localStore,
 		ShareName:       DefaultShareName,
 		RootHandle:      rootHandle,
 	}
@@ -334,7 +276,8 @@ func (f *HandlerTestFixture) CreateDirectory(path string) metadata.FileHandle {
 	return parentHandle
 }
 
-// CreateFile creates a file at the given path with the specified content.
+// CreateFile creates a file at the given path. No content store is wired, so
+// content only sets the file's size in metadata; its bytes are not stored.
 //
 // The path should be relative to the share root.
 // Parent directories are created automatically.
@@ -344,7 +287,6 @@ func (f *HandlerTestFixture) CreateFile(path string, content []byte) metadata.Fi
 	f.t.Helper()
 
 	authCtx := f.authContext()
-	ctx := context.Background()
 
 	// Ensure parent directory exists
 	dir := filepath.Dir(path)
@@ -367,14 +309,7 @@ func (f *HandlerTestFixture) CreateFile(path string, content []byte) metadata.Fi
 		f.t.Fatalf("Failed to create file %q: %v", path, err)
 	}
 
-	// Write content if provided (using BlockStore with local cache)
 	if len(content) > 0 {
-		// Nil currentBlocks => dual-read shim path.
-		if _, err := f.BlockStore.WriteAt(ctx, string(file.PayloadID), nil, content, 0); err != nil {
-			f.t.Fatalf("Failed to write content to file %q: %v", path, err)
-		}
-
-		// Update file size in metadata
 		newSize := uint64(len(content))
 		_, err := f.MetadataService.SetFileAttributes(authCtx, mustEncodeHandle(f.t, file), &metadata.SetAttrs{
 			Size: &newSize,
@@ -491,34 +426,6 @@ func (f *HandlerTestFixture) GetFile(path string) *metadata.File {
 		return nil
 	}
 	return file
-}
-
-// ReadContent reads the content of a file at the given path.
-func (f *HandlerTestFixture) ReadContent(path string) []byte {
-	f.t.Helper()
-
-	file := f.GetFile(path)
-	if file == nil {
-		f.t.Fatalf("File %q does not exist", path)
-		return nil // unreachable after Fatalf; keeps staticcheck happy for testing.TB
-	}
-
-	ctx := context.Background()
-
-	// Get content size
-	size, err := f.BlockStore.GetSize(ctx, string(file.PayloadID))
-	if err != nil {
-		f.t.Fatalf("Failed to get content size for %q: %v", path, err)
-	}
-
-	// Read content using BlockStore
-	content := make([]byte, size)
-	n, err := f.BlockStore.ReadAt(ctx, string(file.PayloadID), content, 0)
-	if err != nil {
-		f.t.Fatalf("Failed to read content from %q: %v", path, err)
-	}
-
-	return content[:n]
 }
 
 // authContext creates a metadata.AuthContext for store operations.

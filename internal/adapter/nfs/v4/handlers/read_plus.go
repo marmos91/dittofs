@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"errors"
 	"io"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
@@ -11,14 +10,8 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
-
-// errNoRegistry signals READ_PLUS could not resolve a block store because no
-// runtime registry is configured (mirrors the READ handler's nil-Registry guard).
-var errNoRegistry = errors.New("no registry configured")
 
 // READ_PLUS4args / READ_PLUS4res (RFC 7862 Section 15.10):
 //
@@ -116,14 +109,7 @@ func (h *Handler) handleReadPlus(ctx *types.CompoundContext, reader io.Reader) *
 	contents, err := h.buildReadPlusContents(ctx, file, offset, readEnd)
 	if err != nil {
 		logger.Debug("NFSv4.2 READ_PLUS content build failed", "error", err, "client", ctx.ClientAddr)
-		// A missing registry is a server misconfiguration, not an I/O fault —
-		// mirror READ's nil-Registry guard (NFS4ERR_SERVERFAULT). All other
-		// failures are block-store read errors, mapped via the shared content
-		// mapper (ErrStoreClosed → STALE, the rest keep their I/O class).
-		if errors.Is(err, errNoRegistry) {
-			return readPlusErr(types.NFS4ERR_SERVERFAULT)
-		}
-		return readPlusErr(types.StatusFor(common.ClassifyBlockStoreError(err)))
+		return readPlusErr(types.StatusForErr(err))
 	}
 	eof := readEnd >= file.Size
 
@@ -142,85 +128,15 @@ type readPlusContent struct {
 	Data   []byte // data bytes (Hole=false only)
 }
 
-// buildReadPlusContents segments [offset, readEnd) of the file into data and
-// hole runs using the shared hole map, reading the data runs from the block
-// store. Each segment is clipped to the requested window. Returned data byte
-// slices are copies (the pooled read buffers are released here), so the caller
-// may retain them past encoding.
+// buildReadPlusContents answers [offset, readEnd) of a payloadless file as one
+// hole. A file with a payload answers common.ErrNoContentStore, as READ does:
+// File.Blocks lists uploaded chunks only, so a range missing from it may hold
+// bytes in a journal, and reporting it as a hole would read data back as zeros.
 func (h *Handler) buildReadPlusContents(ctx *types.CompoundContext, file *metadata.File, offset, readEnd uint64) ([]readPlusContent, error) {
-	// No backing payload: the whole window is a single hole (reads as zeros).
 	if file.PayloadID == "" {
 		return []readPlusContent{{Hole: true, Offset: offset, Length: readEnd - offset}}, nil
 	}
-
-	// Derive the data/hole segmentation from the block-store engine's full
-	// multi-tier data view (append-log + in-memory + persisted CAS) — the same
-	// view READ reconstructs — so READ_PLUS never reports a hole where written-
-	// but-not-yet-rolled-up data exists (RFC 7862). Resolving the engine
-	// here also reuses it for the data-run reads below. Fall back to the CAS
-	// block list if the engine can't be resolved or DataExtents errors, so
-	// READ_PLUS never regresses (including the all-hole/no-registry path, which
-	// must stay lazy — see the data-run guard below).
-	var blockStore *engine.Store
-	var segs []block.Segment
-	if h.Registry != nil {
-		if bs, err := common.ResolveForRead(ctx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH)); err == nil {
-			blockStore = bs
-			if ext, derr := bs.DataExtents(ctx.Context, string(file.PayloadID), file.Size); derr == nil {
-				segs = block.SegmentsExtents(ext, file.Size)
-			}
-		}
-	}
-	if len(segs) == 0 {
-		segs = block.Segments(file.Blocks, file.Size)
-	}
-	// One deadline for every data-run read of the reply, not one per run.
-	readCtx, cancel := common.WithRequestDeadline(ctx.Context)
-	defer cancel()
-	var contents []readPlusContent
-
-	for _, seg := range segs {
-		// Intersect the segment with the requested window.
-		segStart := seg.Start
-		if segStart < offset {
-			segStart = offset
-		}
-		segEnd := seg.End
-		if segEnd > readEnd {
-			segEnd = readEnd
-		}
-		if segStart >= segEnd {
-			continue
-		}
-
-		if seg.Kind == block.SegmentHole {
-			contents = append(contents, readPlusContent{Hole: true, Offset: segStart, Length: segEnd - segStart})
-			continue
-		}
-
-		// Data segment: read the bytes from the block store (lazily resolved on
-		// the first data run so an all-hole window touches no block store).
-		if blockStore == nil {
-			if h.Registry == nil {
-				return nil, errNoRegistry
-			}
-			bs, err := common.ResolveForRead(ctx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH))
-			if err != nil {
-				return nil, err
-			}
-			blockStore = bs
-		}
-		res, err := common.ReadFromBlockStore(readCtx, blockStore, file.PayloadID, segStart, uint32(segEnd-segStart))
-		if err != nil {
-			return nil, err
-		}
-		// Copy out of the pooled buffer so it can be released immediately; the
-		// content array outlives this loop and is encoded later.
-		data := append([]byte(nil), res.Data...)
-		res.Release()
-		contents = append(contents, readPlusContent{Hole: false, Offset: segStart, Data: data})
-	}
-	return contents, nil
+	return nil, common.ErrNoContentStore
 }
 
 // encodeReadPlusResok encodes a successful READ_PLUS reply: status, eof, and the

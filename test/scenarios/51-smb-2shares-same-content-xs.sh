@@ -21,7 +21,6 @@ test "$(rclone size --json s3:export | jq .count)" -gt 0
 smbclient //127.0.0.1/cubbit -c 'lcd /tmp; put d.bin'
 dfsctl system drain-uploads
 test "$(rclone size --json s3:cubbit | jq .count)" -gt 0
-dfsctl store block evict --share /cubbit
 mkdir /tmp/back
 smbclient //127.0.0.1/cubbit -c 'lcd /tmp/back; get d.bin'
 (cd /tmp/back && sha256sum -c --quiet /tmp/d.sha256)

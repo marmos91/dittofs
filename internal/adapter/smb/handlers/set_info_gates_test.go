@@ -330,30 +330,6 @@ func TestSetInfo_PositionInfo_ConcurrentSetQuery_RaceFree(t *testing.T) {
 	close(stop)
 }
 
-func TestWrite_AdvancesPositionInfo(t *testing.T) {
-	h, fileID, open, sessionID, treeID := setupSetInfoGateTest(t, gateFileWriteData|gateFileWriteAttr)
-	resp, err := h.Write(gateContext(sessionID, treeID), &WriteRequest{
-		FileID:     fileID,
-		Offset:     100,
-		Length:     4,
-		DataOffset: 64 + 48,
-		Data:       []byte("data"),
-	})
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if got := resp.GetStatus(); got != types.StatusSuccess {
-		t.Fatalf("Write status = 0x%08x, want STATUS_SUCCESS", uint32(got))
-	}
-	// Per MS-FSA 2.1.5.4: CurrentByteOffset advances to Offset + BytesWritten.
-	open.RLock()
-	got := open.PositionInfo
-	open.RUnlock()
-	if got != 104 {
-		t.Fatalf("PositionInfo after WRITE = %d, want 104", got)
-	}
-}
-
 // gateEncodeEAEntry builds a minimal FILE_FULL_EA_INFORMATION buffer with one
 // entry (name + value) per [MS-FSCC] 2.4.16: NextEntryOffset (4B LE), Flags
 // (1B), NameLength (1B), ValueLength (2B LE), Name, NUL, Value.
@@ -482,52 +458,6 @@ func TestSetInfo_AllocAndMode_ConcurrentSetQuery_RaceFree(t *testing.T) {
 		}(class)
 	}
 	wg.Wait()
-}
-
-// TestWrite_ZeroLength_AdvancesPositionInfo covers the success path that returns
-// before the position update the sibling test exercises.
-//
-// A zero-length WRITE is a valid no-op for the data, but it is still a
-// successful WRITE, so MS-FSA 2.1.5.4 sets CurrentByteOffset to
-// ByteOffset + BytesWritten — the offset itself. Returning early left
-// PositionInfo reporting the position of the previous write, so a client
-// pipelining a zero-length WRITE and then querying FilePositionInformation read
-// a stale offset.
-//
-// The first write is what makes the assertion mean something: without it the
-// handle's PositionInfo starts at 0 and any offset would look like a change.
-func TestWrite_ZeroLength_AdvancesPositionInfo(t *testing.T) {
-	h, fileID, open, sessionID, treeID := setupSetInfoGateTest(t, gateFileWriteData|gateFileWriteAttr)
-
-	resp, err := h.Write(gateContext(sessionID, treeID), &WriteRequest{
-		FileID: fileID, Offset: 100, Length: 4, DataOffset: 64 + 48, Data: []byte("data"),
-	})
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if got := resp.GetStatus(); got != types.StatusSuccess {
-		t.Fatalf("seed Write status = 0x%08x, want STATUS_SUCCESS", uint32(got))
-	}
-
-	resp, err = h.Write(gateContext(sessionID, treeID), &WriteRequest{
-		FileID: fileID, Offset: 4096, Length: 0, DataOffset: 64 + 48, Data: nil,
-	})
-	if err != nil {
-		t.Fatalf("zero-length Write: %v", err)
-	}
-	if got := resp.GetStatus(); got != types.StatusSuccess {
-		t.Fatalf("zero-length Write status = 0x%08x, want STATUS_SUCCESS", uint32(got))
-	}
-	if resp.Count != 0 {
-		t.Fatalf("zero-length Write Count = %d, want 0", resp.Count)
-	}
-
-	open.RLock()
-	got := open.PositionInfo
-	open.RUnlock()
-	if got != 4096 {
-		t.Fatalf("PositionInfo after zero-length WRITE = %d, want 4096: a successful WRITE must advance CurrentByteOffset to ByteOffset + BytesWritten", got)
-	}
 }
 
 // TestDecodeWriteRequest_HugeLengthIsRefusedNotSliced pins the bound on the

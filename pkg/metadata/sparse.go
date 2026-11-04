@@ -21,9 +21,9 @@ import (
 type SparseResult struct {
 	// File is the file as it stands after the mutation (post-op attrs).
 	File *File
-	// PreOpBlocks is the file's block list BEFORE the mutation. The adapter
-	// passes this to BlockStore.Truncate so dropped/clipped tail chunks have
-	// their dedup refcounts decremented and remote bytes reclaimed.
+	// PreOpBlocks is the file's block list BEFORE the mutation, for a reclaim
+	// of the dropped/clipped chunks. No content store is wired to reclaim
+	// them (see internal/adapter/common, "Size changes").
 	PreOpBlocks []block.ChunkRef
 	// PayloadID identifies the block-store payload for the reclaim call. Empty
 	// when the file has no backing payload (nothing to reclaim).

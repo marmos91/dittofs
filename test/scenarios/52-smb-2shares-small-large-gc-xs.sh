@@ -39,7 +39,6 @@ test "$(jq .bytes_freed /tmp/gc1.json)" -lt $((1024 * 1024))
 test "$(jq .hashes_marked /tmp/gc1.json)" -gt 0
 test "$(rclone size --json s3:export | jq .count)" -lt "$(jq .count /tmp/export0.json)"
 rclone lsf -R --files-only --format ps s3:cubbit | cmp - /tmp/cubbit0.lst
-dfsctl store block evict --share /export
 mkdir /tmp/export
 smbclient //127.0.0.1/export -c 'lcd /tmp/export; get large.bin'
 (cd /tmp/export && sha256sum -c --quiet /tmp/e.sha256)
@@ -62,7 +61,6 @@ test "$(jq .objects_swept /tmp/gc3.json)" -ge 1
 test "$(jq .bytes_freed /tmp/gc3.json)" -lt $((1024 * 1024))
 test "$(jq .hashes_marked /tmp/gc3.json)" -gt 0
 test "$(rclone size --json s3:cubbit | jq .count)" -lt "$(jq .count /tmp/cubbit0.json)"
-dfsctl store block evict --share /cubbit
 mkdir /tmp/cubbit
 smbclient //127.0.0.1/cubbit -c 'lcd /tmp/cubbit; get large.bin'
 (cd /tmp/cubbit && sha256sum -c --quiet /tmp/c.sha256)
@@ -73,5 +71,3 @@ test "$(jq .bytes_freed /tmp/gc4.json)" -ge "$(stat -c %s /tmp/c/large.bin)"
 test "$(jq .hashes_marked /tmp/gc4.json)" -eq 0
 for _ in $(seq 1 60); do test "$(rclone size --json s3:cubbit | jq .count)" -eq 0 && break; sleep 2; done
 test "$(rclone size --json s3:cubbit | jq .count)" -eq 0
-test "$(dfsctl store block stats --share /export -o json | jq .totals.blocks_total)" -eq 0
-test "$(dfsctl store block stats --share /cubbit -o json | jq .totals.blocks_total)" -eq 0

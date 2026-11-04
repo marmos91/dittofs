@@ -29,7 +29,6 @@ comm -13 /tmp/objects1 /tmp/objects2 | tee /tmp/b.objects
 rclone deletefile "s3:dittofs/test/$(head -1 /tmp/a.objects)"
 rclone cat "s3:dittofs/test/$(head -1 /tmp/b.objects)" | wc -c >/tmp/b.size
 head -c "$(cat /tmp/b.size)" /dev/urandom | rclone rcat "s3:dittofs/test/$(head -1 /tmp/b.objects)"
-dfsctl store block evict --share /test
 
 # Reads: a.bin and b.bin must fail, c.bin must not; each one's output is kept to compare
 for f in a b c; do timeout 300 smbclient //127.0.0.1/test -c "get $f.bin /tmp/smb-$f.bin" >"/tmp/smb-$f.out" 2>&1 || echo "exit $?" >"/tmp/smb-$f.rc"; done

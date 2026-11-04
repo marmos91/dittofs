@@ -83,24 +83,6 @@ func openFileAndGetStateid(t *testing.T, fx *ioTestFixture, owner string, shareA
 // Special stateids on write-family ops
 // ============================================================================
 
-// TestWrite_ReadBypassStateid_BehavesAsAnonymous checks that a WRITE carrying
-// the all-ones READ-bypass stateid is serviced. RFC 7530 Section 16.36.4:
-// "the WRITE is treated exactly the same as if the anonymous stateid were used".
-func TestWrite_ReadBypassStateid_BehavesAsAnonymous(t *testing.T) {
-	fx := newIOTestFixture(t, "/export")
-	fileHandle := fx.createRegularFile(t, fx.rootHandle, "wbypass.txt", 0o644, 0, 0)
-
-	ctx := newRealFSContext(0, 0)
-	setCurrentFH(ctx, fileHandle)
-
-	args := encodeWriteArgs(readBypassStateidH(), 0, types.UNSTABLE4, []byte("yes"))
-	result := fx.handler.handleWrite(ctx, bytes.NewReader(args))
-
-	if result.Status != types.NFS4_OK {
-		t.Errorf("WRITE with all-ones stateid status = %d, want NFS4_OK", result.Status)
-	}
-}
-
 // TestWrite_SpecialStateid_DeniedByShareReservation is the other half of that
 // rule: neither special stateid may write past an open that denies writing
 // (RFC 7530 Section 9.1.4.3), and the refusal is NFS4ERR_LOCKED.
@@ -226,37 +208,6 @@ func TestSetAttr_WriteOpenStateid_OnSizeChange_Allowed(t *testing.T) {
 	}
 }
 
-func TestRead_ReadBypassStateid_Allowed(t *testing.T) {
-	fx := newIOTestFixture(t, "/export")
-	fileHandle := fx.createRegularFile(t, fx.rootHandle, "rbypass.txt", 0o644, 0, 0)
-	fx.writeContent(t, fileHandle, []byte("readable"))
-
-	ctx := newRealFSContext(0, 0)
-	setCurrentFH(ctx, fileHandle)
-
-	args := encodeReadArgs(readBypassStateidH(), 0, 1024)
-	result := fx.handler.handleRead(ctx, bytes.NewReader(args))
-
-	if result.Status != types.NFS4_OK {
-		t.Errorf("READ with all-ones stateid status = %d, want NFS4_OK", result.Status)
-	}
-}
-
-func TestWrite_AnonymousStateid_Allowed(t *testing.T) {
-	fx := newIOTestFixture(t, "/export")
-	fileHandle := fx.createRegularFile(t, fx.rootHandle, "anon.txt", 0o644, 0, 0)
-
-	ctx := newRealFSContext(0, 0)
-	setCurrentFH(ctx, fileHandle)
-
-	args := encodeWriteArgs(&anonymousStateid, 0, types.UNSTABLE4, []byte("data"))
-	result := fx.handler.handleWrite(ctx, bytes.NewReader(args))
-
-	if result.Status != types.NFS4_OK {
-		t.Errorf("WRITE with anonymous stateid status = %d, want NFS4_OK", result.Status)
-	}
-}
-
 // ============================================================================
 // H19 — READ enforces SHARE_ACCESS_READ on the open stateid
 // ============================================================================
@@ -276,23 +227,6 @@ func TestRead_WriteOnlyOpenStateid_ReturnsOpenMode(t *testing.T) {
 	if result.Status != types.NFS4ERR_OPENMODE {
 		t.Errorf("READ with write-only open stateid status = %d, want NFS4ERR_OPENMODE (%d)",
 			result.Status, types.NFS4ERR_OPENMODE)
-	}
-}
-
-func TestRead_ReadWriteOpenStateid_Allowed(t *testing.T) {
-	fx := newIOTestFixture(t, "/export")
-
-	fileHandle, stateid := openFileAndGetStateid(t, fx, "readwrite", types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE)
-	fx.writeContent(t, fileHandle, []byte("content"))
-
-	ctx := newRealFSContext(0, 0)
-	setCurrentFH(ctx, fileHandle)
-
-	args := encodeReadArgs(stateid, 0, 1024)
-	result := fx.handler.handleRead(ctx, bytes.NewReader(args))
-
-	if result.Status != types.NFS4_OK {
-		t.Errorf("READ with read-write open stateid status = %d, want NFS4_OK", result.Status)
 	}
 }
 

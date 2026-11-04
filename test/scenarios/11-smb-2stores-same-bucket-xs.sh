@@ -27,7 +27,6 @@ if test "$Y" = accepted; then
   dfsctl store block gc /x --grace-period 0 -o json
   dfsctl store block reclaim
   rclone size --json s3:dittofs/shared | tee /tmp/s1.json
-  dfsctl store block evict --share /y
   smbclient //127.0.0.1/y -c 'lcd /tmp/back; get y.bin'
   test "$(jq .bytes /tmp/s1.json)" -ge "$(stat -c %s /tmp/y/y.bin)"
   (cd /tmp/back && sha256sum -c /tmp/y.sha256)

@@ -12,7 +12,6 @@ head -c 64M /dev/urandom >/tmp/a.bin
 head -c 1M /dev/urandom >/tmp/b.bin
 smbclient //127.0.0.1/test -c 'lcd /tmp; put a.bin'
 dfsctl system drain-uploads
-dfsctl store block evict --share /test
 rclone size --json s3:dittofs/test/ | tee /tmp/before.json
 
 # S3 down: both reads must fail; whatever bytes they return must match a.bin; a write is accepted
@@ -21,14 +20,11 @@ timeout 300 smbclient //127.0.0.1/test -c 'get a.bin /tmp/smb.bin' >/tmp/smb.out
 timeout 300 nfs-cp "$NFS/a.bin$OPT" /tmp/nfs.bin >/tmp/nfs.out 2>&1 || echo "exit $?" >/tmp/nfs.rc
 touch /tmp/smb.bin /tmp/nfs.bin
 smbclient //127.0.0.1/test -c 'lcd /tmp; put b.bin'
-for _ in $(seq 1 180); do dfsctl store block stats --share /test -o json | jq -e '.totals.remote_healthy == false' >/dev/null && break; sleep 1; done
-dfsctl store block stats --share /test -o json | jq -c '.totals | {remote_healthy, outage_duration_seconds}' | tee /tmp/down.json
 
 # S3 back: the read works again by itself, the drain completes, b.bin reaches the bucket
 s3 start
 for _ in $(seq 1 120); do smbclient //127.0.0.1/test -c 'get a.bin /tmp/back.bin' >/dev/null 2>&1 && break; sleep 1; done
 dfsctl system drain-uploads
-dfsctl store block stats --share /test -o json | jq -c '.totals | {remote_healthy, outage_duration_seconds}' | tee /tmp/up.json
 rclone size --json s3:dittofs/test/ | tee /tmp/after.json
 
 # Outcomes first, then the checks
@@ -39,7 +35,5 @@ test -s /tmp/smb.rc
 test -s /tmp/nfs.rc
 cmp -n "$(stat -c %s /tmp/smb.bin)" /tmp/smb.bin /tmp/a.bin
 cmp -n "$(stat -c %s /tmp/nfs.bin)" /tmp/nfs.bin /tmp/a.bin
-test "$(jq .remote_healthy /tmp/down.json)" = false
-test "$(jq .remote_healthy /tmp/up.json)" = true
 cmp /tmp/back.bin /tmp/a.bin
 test "$(jq .bytes /tmp/after.json)" -ge "$(($(jq .bytes /tmp/before.json) + 1048576))"

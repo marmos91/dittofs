@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"github.com/marmos91/dittofs/pkg/block"
 	"os"
 	"path/filepath"
 	"testing"
@@ -107,68 +108,6 @@ func TestWaitForSnapshot_NotFound(t *testing.T) {
 	}
 }
 
-// TestWaitForSnapshot_CtxCancelDuringWait asserts ctx cancellation
-// while blocked on the per-snap result chan returns ctx.Err() and does
-// not consult GetSnapshot afterward.
-func TestWaitForSnapshot_CtxCancelDuringWait(t *testing.T) {
-	cp, err := cpstore.New(&cpstore.Config{
-		Type:   cpstore.DatabaseTypeSQLite,
-		SQLite: cpstore.SQLiteConfig{Path: ":memory:"},
-	})
-	if err != nil {
-		t.Fatalf("cpstore.New: %v", err)
-	}
-	t.Cleanup(func() { _ = cp.Close() })
-
-	rt := New(cp)
-	setJournalRoot(t, rt)
-
-	const shareName = "alpha"
-
-	// Insert the row, then plant an in-flight registry entry pointing at
-	// a chan no one will ever signal. WaitForSnapshot must select on
-	// ctx.Done().
-	bg := context.Background()
-	snapID, err := rt.store.CreateSnapshot(bg, &models.Snapshot{
-		ShareName:      shareName,
-		State:          models.StateCreating,
-		MetadataEngine: "memory",
-	})
-	if err != nil {
-		t.Fatalf("CreateSnapshot: %v", err)
-	}
-
-	// Plant a registry entry by reusing registerSnapInFlight. The child
-	// ctx + cancel are discarded; we only care that the done chan exists.
-	_, _, _, _ = rt.registerSnapInFlight(shareName, snapID)
-
-	ctx, cancel := context.WithCancel(bg)
-	cancel() // pre-cancel — guarantees Wait returns ctx.Err() without racing.
-
-	got, err := rt.WaitForSnapshot(ctx, shareName, snapID)
-	if err == nil {
-		t.Fatal("WaitForSnapshot: err = nil, want ctx.Canceled")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("WaitForSnapshot: err = %v, want errors.Is(context.Canceled)", err)
-	}
-	if got != nil {
-		t.Fatalf("WaitForSnapshot: got = %v, want nil on ctx cancel", got)
-	}
-
-	// Cleanup the planted registry entry so other goroutines/test teardown
-	// don't trip over an unowned WG.
-	rt.snapInFlightMu.Lock()
-	entry := rt.snapInFlight[shareName]
-	delete(rt.snapInFlight, shareName)
-	rt.snapInFlightMu.Unlock()
-	if entry != nil {
-		// Decrement the WG slot so it does not leak. registerSnapInFlight
-		// did wg.Add(1); no goroutine will ever wg.Done it.
-		entry.wg.Done()
-	}
-}
-
 // newTestRuntime builds a Runtime backed by an in-memory SQLite cpstore,
 // suitable for testing the new GetSnapshot / ListSnapshots / DeleteSnapshot
 // wrappers without spinning up a metadata store or block store.
@@ -213,104 +152,19 @@ func TestRuntimeSnapshot_NamePersists(t *testing.T) {
 	}
 }
 
-// TestRuntimeFailSnap_RecordsError asserts failSnap persists the cause's
-// message onto the row so show/list surface the reason instead of
-// "(no error message)", and that a failed->creating retry clears it.
-func TestRuntimeFailSnap_RecordsError(t *testing.T) {
+// TestRuntimeCreateSnapshot_NoContentStore asserts a snapshot, which captures
+// a share's content, answers block.ErrNoContentStore while none is wired.
+func TestRuntimeCreateSnapshot_NoContentStore(t *testing.T) {
 	rt := newTestRuntime(t)
 	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	defer cancel()
 
 	const shareName = "alpha"
-	snapID, err := rt.store.CreateSnapshot(ctx, &models.Snapshot{
-		ShareName:      shareName,
-		State:          models.StateCreating,
-		MetadataEngine: "memory",
-	})
-	if err != nil {
-		t.Fatalf("CreateSnapshot: %v", err)
-	}
-
-	cause := errors.New("backup: disk full")
-	rt.failSnap(shareName, snapID, cause)
-
-	got, err := rt.GetSnapshot(ctx, shareName, snapID)
-	if err != nil {
-		t.Fatalf("GetSnapshot: %v", err)
-	}
-	if got.State != models.StateFailed {
-		t.Fatalf("State = %q, want failed", got.State)
-	}
-	if got.Error != "backup: disk full" {
-		t.Fatalf("Error = %q, want %q", got.Error, "backup: disk full")
-	}
-
-	// A retry (failed -> creating) clears the stale error.
-	if err := rt.store.UpdateSnapshotState(ctx, shareName, snapID, models.StateCreating); err != nil {
-		t.Fatalf("UpdateSnapshotState->creating: %v", err)
-	}
-	got, err = rt.GetSnapshot(ctx, shareName, snapID)
-	if err != nil {
-		t.Fatalf("GetSnapshot after retry: %v", err)
-	}
-	if got.Error != "" {
-		t.Fatalf("Error after retry = %q, want empty", got.Error)
-	}
-}
-
-// TestRuntimeCreateSnapshot_MemoryLocalStore asserts a snapshot on a share
-// whose local block store has no on-disk root fails up front with the typed
-// ErrSnapshotLocalStoreUnsupported sentinel (mapped to 400) rather than an
-// opaque 500.
-func TestRuntimeCreateSnapshot_MemoryLocalStore(t *testing.T) {
-	rt := newTestRuntime(t)
-	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
-	defer cancel()
-
-	const shareName = "alpha"
-	// Inject a share with no local store dir (the in-memory backend case).
 	rt.sharesSvc.InjectShareForTesting(&shares.Share{Name: shareName})
 
 	_, err := rt.CreateSnapshot(ctx, shareName, CreateSnapshotOpts{})
-	if !errors.Is(err, models.ErrSnapshotLocalStoreUnsupported) {
-		t.Fatalf("CreateSnapshot err = %v, want errors.Is(ErrSnapshotLocalStoreUnsupported)", err)
-	}
-}
-
-// TestRuntimeDeriveWaitCtx_IgnoresCallerCancel asserts the safety-snap wait
-// ctx is rooted at runtimeCtx, so a cancelled caller (client disconnect)
-// does not abort it, while runtime shutdown does. A caller deadline is
-// preserved.
-func TestRuntimeDeriveWaitCtx_IgnoresCallerCancel(t *testing.T) {
-	rt := newTestRuntime(t)
-
-	// Caller cancelled, no deadline → derived ctx stays alive.
-	callerCtx, callerCancel := context.WithCancel(context.Background())
-	callerCancel()
-	waitCtx, waitCancel := rt.deriveWaitCtx(callerCtx)
-	if waitCtx.Err() != nil {
-		t.Fatalf("waitCtx already cancelled by caller cancel: %v", waitCtx.Err())
-	}
-
-	// Runtime shutdown DOES cancel it.
-	rt.runtimeCancel()
-	select {
-	case <-waitCtx.Done():
-	case <-time.After(2 * time.Second):
-		t.Fatal("waitCtx not cancelled after runtime shutdown")
-	}
-	waitCancel()
-
-	// Caller deadline is preserved on the derived ctx.
-	rt2 := newTestRuntime(t)
-	dl := time.Now().Add(123 * time.Hour)
-	withDL, dlCancel := context.WithDeadline(context.Background(), dl)
-	defer dlCancel()
-	got, gotCancel := rt2.deriveWaitCtx(withDL)
-	defer gotCancel()
-	gotDL, ok := got.Deadline()
-	if !ok || !gotDL.Equal(dl) {
-		t.Fatalf("derived deadline = (%v, %v), want %v", gotDL, ok, dl)
+	if !errors.Is(err, block.ErrNoContentStore) {
+		t.Fatalf("CreateSnapshot err = %v, want errors.Is(block.ErrNoContentStore)", err)
 	}
 }
 
@@ -415,47 +269,6 @@ func TestRuntimeDeleteSnapshot_HappyPath(t *testing.T) {
 	case <-gotLock:
 	case <-time.After(2 * time.Second):
 		t.Fatal("snapshot delete lock not released after DeleteSnapshot")
-	}
-}
-
-// TestRuntimeDeleteSnapshot_RefusesInFlight asserts DeleteSnapshot refuses
-// with ErrSnapshotInFlight when an orchestration goroutine is registered for
-// the same snapID, so a delete cannot race a running create/retry.
-func TestRuntimeDeleteSnapshot_RefusesInFlight(t *testing.T) {
-	rt := newTestRuntime(t)
-	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
-	defer cancel()
-
-	const shareName = "alpha"
-	localStoreDir := t.TempDir()
-	rt.sharesSvc.InjectShareForTesting(&shares.Share{Name: shareName})
-	if err := rt.sharesSvc.SetLocalStoreDirForTesting(shareName, localStoreDir); err != nil {
-		t.Fatalf("SetLocalStoreDirForTesting: %v", err)
-	}
-
-	snap := &models.Snapshot{ShareName: shareName, State: models.StateCreating, MetadataEngine: "memory"}
-	snapID, err := rt.store.CreateSnapshot(ctx, snap)
-	if err != nil {
-		t.Fatalf("CreateSnapshot: %v", err)
-	}
-
-	// Plant an in-flight registry entry (mimics a running orchestration).
-	_, snapCancel, doneCh, entry := rt.registerSnapInFlight(shareName, snapID)
-
-	if derr := rt.DeleteSnapshot(ctx, shareName, snapID); !errors.Is(derr, models.ErrSnapshotInFlight) {
-		t.Fatalf("DeleteSnapshot err = %v, want errors.Is(ErrSnapshotInFlight)", derr)
-	}
-
-	// Row must still exist (delete refused).
-	if _, gerr := rt.store.GetSnapshot(ctx, shareName, snapID); gerr != nil {
-		t.Fatalf("row deleted despite in-flight refusal: %v", gerr)
-	}
-
-	// Drain the planted entry, then delete succeeds.
-	rt.unregisterSnap(shareName, snapID, entry, snapCancel, doneCh)
-	entry.wg.Done()
-	if derr := rt.DeleteSnapshot(ctx, shareName, snapID); derr != nil {
-		t.Fatalf("DeleteSnapshot after drain: %v", derr)
 	}
 }
 

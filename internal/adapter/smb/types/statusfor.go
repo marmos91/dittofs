@@ -3,7 +3,6 @@ package types
 import (
 	goerrors "errors"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
@@ -146,16 +145,11 @@ func StatusForLock(code merrs.ErrorCode) Status {
 const smbDefault = StatusInternalError
 
 // StatusForErr translates an error to an SMB NT status code in the general
-// (non-LOCK) context. nil maps to StatusSuccess; a block store closed under
-// an in-flight op maps to the closed-file status (the share went away
-// mid-transfer); a *merrs.StoreError (including wrapped forms) maps through
+// (non-LOCK) context. nil maps to StatusSuccess; a *merrs.StoreError (including wrapped forms) maps through
 // StatusFor; any other error falls back to StatusInternalError.
 func StatusForErr(err error) Status {
 	if err == nil {
 		return StatusSuccess
-	}
-	if goerrors.Is(err, engine.ErrStoreClosed) {
-		return StatusFor(merrs.ErrStaleHandle)
 	}
 	var storeErr *merrs.StoreError
 	if !goerrors.As(err, &storeErr) {
@@ -165,16 +159,13 @@ func StatusForErr(err error) Status {
 }
 
 // StatusForLockErr is the LOCK-context twin of StatusForErr: nil maps to
-// StatusSuccess, a closed block store to the closed-file status, a
+// StatusSuccess, a
 // *merrs.StoreError through StatusForLock, anything else to the lock
 // context's default (the generic internal error — the same fallback both
 // contexts use).
 func StatusForLockErr(err error) Status {
 	if err == nil {
 		return StatusSuccess
-	}
-	if goerrors.Is(err, engine.ErrStoreClosed) {
-		return StatusForLock(merrs.ErrStaleHandle)
 	}
 	var storeErr *merrs.StoreError
 	if !goerrors.As(err, &storeErr) {

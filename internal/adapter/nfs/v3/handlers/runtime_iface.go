@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -13,9 +12,6 @@ import (
 // concrete *runtime.Runtime god-object. *runtime.Runtime satisfies it
 // implicitly (compile-time assertion below).
 type nfsRuntime interface {
-	// Per-share block-store resolution (used via common.ResolveFor*).
-	common.BlockStoreRegistry
-
 	// Metadata service access.
 	GetMetadataService() *metadata.Service
 

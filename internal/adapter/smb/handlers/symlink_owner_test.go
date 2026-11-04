@@ -123,25 +123,6 @@ func TestSetReparsePoint_PreservesPlaceholderOwner(t *testing.T) {
 	}
 }
 
-// TestClose_MFsymlink_PreservesPlaceholderOwner is the CLOSE-path sibling of
-// the reparse test: promoting an MFsymlink must not re-home it either.
-func TestClose_MFsymlink_PreservesPlaceholderOwner(t *testing.T) {
-	const ownerUID, ownerGID uint32 = 4242, 4343
-
-	h, smbCtx, rootHandle, fileID := setupMFsymlinkShare(t, true, "valid/target")
-	rehomePlaceholder(t, h, smbCtx, rootHandle, ownerUID, ownerGID, 0o600)
-
-	if got := fileTypeAfterClose(t, h, smbCtx, rootHandle, fileID); got != metadata.FileTypeSymlink {
-		t.Fatalf("file type after close = %v, expected FileTypeSymlink (conversion did not fire)", got)
-	}
-
-	after := entryAttrAfter(t, h, smbCtx, rootHandle)
-	if after.UID != ownerUID || after.GID != ownerGID {
-		t.Errorf("owner = %d:%d after MFsymlink promotion; want %d:%d (placeholder's owner) unchanged",
-			after.UID, after.GID, ownerUID, ownerGID)
-	}
-}
-
 // TestSetReparsePoint_PreservesOwnerUnderSGIDParent covers the SGID case: the
 // create path inherits a new entry's group from an SGID parent, which would
 // override the placeholder's own group on the re-create. The conversion must

@@ -300,21 +300,10 @@ func (h *Handler) removeElectedTarget(
 
 	// For a deferred base-file delete (reached via a stream handle), resolve
 	// the actual target type — stream handles always have IsDirectory=false.
-	//
-	// Capture the delete target's metadata handle BEFORE removal so the
-	// block-store payload purge can be routed afterwards (the handle encodes
-	// share identity and stays valid). The PayloadID to purge comes from
-	// RemoveFile's RETURN value, which is empty when content must survive (a
-	// surviving hard link, or a recycle to trash) — purging the open handle's
-	// PayloadID instead would destroy still-referenced content.
 	isDeleteTargetDir := openFile.IsDirectory
-	deleteTargetHandle := openFile.GetMetadataHandle()
 	if target.IsBaseFile {
 		if targetFile, _, lookupErr := metaSvc.LookupCaseInsensitive(authCtx, target.ParentHandle, target.FileName); lookupErr == nil && targetFile != nil {
 			isDeleteTargetDir = targetFile.Type == metadata.FileTypeDirectory
-			if encoded, encErr := metadata.EncodeFileHandle(targetFile); encErr == nil {
-				deleteTargetHandle = encoded
-			}
 		}
 	}
 
@@ -348,7 +337,6 @@ func (h *Handler) removeElectedTarget(
 		h.NotifyRegistry.ClearDeletePendingMark(openFile.ShareName, clearedPath)
 	}
 
-	var removedPayloadID metadata.PayloadID
 	if isDeleteTargetDir {
 		_, err = metaSvc.RemoveDirectory(authCtx, target.ParentHandle, target.FileName)
 		var storeErr *metadata.StoreError
@@ -359,11 +347,7 @@ func (h *Handler) removeElectedTarget(
 			return true, false, nil
 		}
 	} else {
-		var removedFile *metadata.File
-		removedFile, _, err = metaSvc.RemoveFile(authCtx, target.ParentHandle, target.FileName)
-		if removedFile != nil {
-			removedPayloadID = removedFile.PayloadID
-		}
+		_, _, err = metaSvc.RemoveFile(authCtx, target.ParentHandle, target.FileName)
 	}
 	if err != nil {
 		logger.Debug(caller+": failed to delete",
@@ -395,7 +379,6 @@ func (h *Handler) removeElectedTarget(
 		h.cascadeDeleteADSStreams(authCtx, metaSvc, cascadeOF)
 	}
 
-	h.purgeBlockStorePayload(ctx, deleteTargetHandle, removedPayloadID, target.Name.Path, caller)
 	h.restoreParentDirFrozenTimestamps(authCtx, target.ParentHandle)
 
 	return isDeleteTargetDir, true, nil

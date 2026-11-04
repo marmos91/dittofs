@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
 
@@ -560,69 +559,6 @@ func TestGetServices(t *testing.T) {
 		svc := rt.GetMetadataService()
 		if svc == nil {
 			t.Error("expected non-nil metadata service")
-		}
-	})
-}
-
-func TestGetBlockStoreForHandle(t *testing.T) {
-	rt, bsID := newRuntimeWithBlockStore(t)
-	ctx := context.Background()
-
-	// Register a metadata store and create a share so we can get a valid handle.
-	metaStore := badgertest.NewInMemory(t)
-	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
-		t.Fatalf("RegisterMetadataStore failed: %v", err)
-	}
-
-	config := &ShareConfig{
-		Name:          "/bs-test",
-		MetadataStore: "test-meta",
-		BlockStoreID:  bsID,
-	}
-	if err := rt.AddShare(ctx, config); err != nil {
-		t.Fatalf("AddShare failed: %v", err)
-	}
-
-	// AddShare gives every share a journal-backed BlockStore, so the one to
-	// resolve against is the share's own — no need to publish a stand-in.
-	bs, err := rt.sharesSvc.GetBlockStoreForShare("/bs-test")
-	if err != nil {
-		t.Fatalf("GetBlockStoreForShare failed: %v", err)
-	}
-
-	// Get a file handle for this share.
-	handle, err := rt.GetRootHandle("/bs-test")
-	if err != nil {
-		t.Fatalf("GetRootHandle failed: %v", err)
-	}
-
-	t.Run("resolves per-share BlockStore from handle", func(t *testing.T) {
-		resolved, err := rt.GetBlockStoreForHandle(ctx, handle)
-		if err != nil {
-			t.Fatalf("GetBlockStoreForHandle failed: %v", err)
-		}
-		if resolved != bs {
-			t.Error("expected resolved BlockStore to match the share's BlockStore")
-		}
-	})
-
-	t.Run("returns error for invalid handle", func(t *testing.T) {
-		badHandle := metadata.FileHandle([]byte("invalid-handle"))
-		_, err := rt.GetBlockStoreForHandle(ctx, badHandle)
-		if err == nil {
-			t.Error("expected error for invalid handle")
-		}
-	})
-
-	t.Run("returns error for handle of non-existing share", func(t *testing.T) {
-		// Create a handle that encodes a non-existing share name.
-		fakeHandle, encErr := metadata.EncodeShareHandle("/nonexistent", uuid.New())
-		if encErr != nil {
-			t.Skipf("cannot encode fake handle: %v", encErr)
-		}
-		_, err := rt.GetBlockStoreForHandle(ctx, fakeHandle)
-		if err == nil {
-			t.Error("expected error for non-existing share handle")
 		}
 	})
 }

@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -101,7 +99,7 @@ func (h *Handler) Create(
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
 
-	metaSvc, blockStore, err := getServicesForHandle(h.Registry, ctx.Context, parentHandle)
+	metaSvc, err := getMetadataService(h.Registry)
 	if err != nil {
 		logger.ErrorCtx(ctx.Context, "CREATE failed: service not available", "client", clientIP, "error", err)
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
@@ -254,7 +252,7 @@ func (h *Handler) Create(
 		if fileExists {
 			existingHandle, _ := metadata.EncodeFileHandle(existingFile)
 			fileHandle = existingHandle
-			fileAttr, err = resizeExistingFile(authCtx, blockStore, metaSvc, existingFile, req)
+			fileAttr, err = resizeExistingFile(authCtx, metaSvc, existingFile, req)
 		} else {
 			// Create new file
 			fileHandle, fileAttr, createDirWcc, err = createNewFile(authCtx, metaSvc, parentHandle, req)
@@ -306,18 +304,10 @@ func (h *Handler) Create(
 	// Pre-warm auth context cache (avoids registry lookups on WRITE)
 	_, _ = h.GetCachedAuthContext(ctx)
 
-	// Publish current attributes under payload admission so a completed clone
-	// cannot be followed by a pre-create snapshot entering the write cache.
 	if fileAttr.Type == metadata.FileTypeRegular {
-		_, warmErr := common.WithFilePayloadScope(authCtx, metaSvc, blockStore, fileHandle, func(scoped *metadata.AuthContext) (struct{}, error) {
-			fresh, err := metaSvc.GetFileForRead(scoped.Context, fileHandle)
-			if err != nil {
-				return struct{}{}, err
-			}
+		if fresh, warmErr := metaSvc.GetFileForRead(authCtx.Context, fileHandle); warmErr == nil {
 			metaSvc.PrewarmWriteCache(fileHandle, fresh)
-			return struct{}{}, nil
-		})
-		if warmErr != nil {
+		} else {
 			logger.DebugCtx(ctx.Context, "CREATE: write cache warm failed", "error", warmErr)
 		}
 	}
@@ -472,7 +462,6 @@ func createNewFile(
 //
 // Parameters:
 //   - authCtx: Authentication context for permission checking
-//   - blockStore: Block store engine for truncation
 //   - metaSvc: Metadata service for file operations
 //   - existingFile: The existing file
 //   - req: Create request with attributes
@@ -481,7 +470,6 @@ func createNewFile(
 //   - The file's attributes after the operation, and an error
 func resizeExistingFile(
 	authCtx *metadata.AuthContext,
-	blockStore *engine.Store,
 	metaSvc *metadata.Service,
 	existingFile *metadata.File,
 	req *CreateRequest,
@@ -508,43 +496,21 @@ func resizeExistingFile(
 	}
 	targetSize := *req.Attr.Size
 
-	return common.WithFilePayloadScope(authCtx, metaSvc, blockStore, fileHandle, func(authCtx *metadata.AuthContext) (*metadata.FileAttr, error) {
-		existingFile, err := metaSvc.GetFile(authCtx.Context, fileHandle)
-		if err != nil {
-			return nil, err
-		}
-
-		// Update file metadata using metaSvc
-		// This includes permission checking. The returned WCC describes the file
-		// being resized; the CREATE response's directory WCC is unaffected because
-		// resizing an existing entry does not modify the parent directory.
-		if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{Size: &targetSize}); err != nil {
-			return nil, fmt.Errorf("update file metadata: %w", err)
-		}
-
-		// Truncate content if file has content.
-		if existingFile.PayloadID != "" {
-			// Thread the file's pre-truncate FileAttr.Blocks snapshot so the
-			// engine reaps RefCount on every block dropped past targetSize —
-			// without it the truncated tail chunks leak on the remote forever.
-			// existingFile was fetched (via Lookup → GetFile) BEFORE
-			// SetFileAttributes pruned the store copy, so its Blocks list still
-			// reflects the full pre-truncate extent. Returned []ChunkRef is
-			// discarded — the canonical FileAttr.Blocks is reconciled at flush.
-			if _, err := blockStore.Truncate(authCtx.Context, string(existingFile.PayloadID), existingFile.Blocks, targetSize); err != nil {
-				logger.Warn("Failed to truncate content", "size", targetSize, "error", err)
-				// Non-fatal: metadata is already updated
-			}
-		}
-
-		// Get updated attributes
-		updatedFile, err := metaSvc.GetFile(authCtx.Context, fileHandle)
-		if err != nil {
-			return nil, fmt.Errorf("get updated attributes: %w", err)
-		}
-
-		return &updatedFile.FileAttr, nil
-	})
+	// The resize is metadata only: no content store is wired, so there is no
+	// content to cut or extend. The returned WCC describes the file being
+	// resized; the CREATE response's directory WCC is unaffected because
+	// resizing an existing entry does not modify the parent directory.
+	//
+	// decision: a shrink leaves the FileChunk rows past the new EOF until
+	// the cutover (package common, Size changes).
+	if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{Size: &targetSize}); err != nil {
+		return nil, fmt.Errorf("update file metadata: %w", err)
+	}
+	updatedFile, err := metaSvc.GetFile(authCtx.Context, fileHandle)
+	if err != nil {
+		return nil, fmt.Errorf("get updated attributes: %w", err)
+	}
+	return &updatedFile.FileAttr, nil
 }
 
 // applySetAttrsToFileAttr applies SetAttrs to FileAttr for initial file creation.

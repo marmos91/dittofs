@@ -3,19 +3,14 @@ package handlers
 import (
 	"bytes"
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -24,50 +19,24 @@ import (
 )
 
 // ============================================================================
-// I/O Test Fixture (includes BlockStore for READ/WRITE/COMMIT)
+// I/O Test Fixture
 // ============================================================================
 
-// ioTestFixture extends realFSTestFixture with block store support.
+// ioTestFixture is a share served by the metadata service alone.
 type ioTestFixture struct {
 	handler    *Handler
 	metaSvc    *metadata.Service
-	blockStore *engine.Store
 	store      metadata.Store
 	rootHandle metadata.FileHandle
 	shareName  string
-	// localStore and localDir are the local tier and its directory, so a test can
-	// observe the bytes a payload actually occupies on disk.
-	localStore *journal.Store
-	localDir   string
 }
 
-// newIOTestFixture creates a test fixture with metadata service and block store.
+// newIOTestFixture creates a test fixture with a metadata service.
 func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 	t.Helper()
 
 	// Create in-memory metadata store
 	metaStore := badgertest.NewInMemory(t)
-
-	// Create local store, syncer, and block store engine
-	tmpDir := t.TempDir()
-	localStore, err := journal.Open(tmpDir, journal.Config{})
-	if err != nil {
-		t.Fatalf("create local store: %v", err)
-	}
-	t.Cleanup(func() { _ = localStore.Close() })
-	syncer := engine.NewRemoteSync(localStore, nil, metaStore, engine.DefaultConfig())
-
-	blockSvc, err := engine.New(engine.BlockStoreConfig{
-		Local:      localStore,
-		RemoteSync: syncer,
-	})
-	if err != nil {
-		t.Fatalf("create block store: %v", err)
-	}
-	if err := blockSvc.Start(context.Background()); err != nil {
-		t.Fatalf("start block store: %v", err)
-	}
-	t.Cleanup(func() { _ = blockSvc.Close() })
 
 	// Create runtime
 	rt, bsID := newTestShareRuntime(t)
@@ -94,19 +63,6 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 		t.Fatalf("add share: %v", err)
 	}
 
-	// AddShare built a block store of its own from the config above. This
-	// fixture serves the engine built here instead, so close that one rather
-	// than leave its syncer and journal running for the rest of the test.
-	if added, aerr := rt.GetBlockStoreForShare(shareName); aerr == nil && added != nil {
-		_ = added.Close()
-	}
-
-	// Publish the per-share BlockStore via the locked setter (GetShare returns
-	// a snapshot copy, so mutating its field would not reach the registry).
-	if err := rt.SetBlockStoreForTesting(shareName, blockSvc); err != nil {
-		t.Fatalf("set block store: %v", err)
-	}
-
 	rootHandle, err := rt.GetRootHandle(shareName)
 	if err != nil {
 		t.Fatalf("get root handle: %v", err)
@@ -121,12 +77,9 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 	return &ioTestFixture{
 		handler:    handler,
 		metaSvc:    metaSvc,
-		blockStore: blockSvc,
 		store:      metaStore,
 		rootHandle: rootHandle,
 		shareName:  shareName,
-		localStore: localStore,
-		localDir:   tmpDir,
 	}
 }
 
@@ -160,24 +113,12 @@ func (fx *ioTestFixture) createRegularFile(t *testing.T, parentHandle metadata.F
 	return fh
 }
 
-// writeContent writes content to a file's payload and updates metadata size.
+// writeContent sets a file's metadata size to len(data). No content store is
+// wired, so the bytes themselves are not stored.
 func (fx *ioTestFixture) writeContent(t *testing.T, fileHandle metadata.FileHandle, data []byte) {
 	t.Helper()
 
 	ctx := context.Background()
-
-	// Get file to obtain PayloadID
-	file, err := fx.metaSvc.GetFile(ctx, fileHandle)
-	if err != nil {
-		t.Fatalf("get file for write: %v", err)
-	}
-
-	// Write via block store (test oracle — route through common helper so
-	// the Phase-12 []ChunkRef plumbing covers fixtures too, not just
-	// production handlers).
-	if err := common.WriteToBlockStore(ctx, fx.blockStore, file.PayloadID, data, 0); err != nil {
-		t.Fatalf("write payload: %v", err)
-	}
 
 	// Update file size in metadata
 	uid := uint32(0)
@@ -959,79 +900,6 @@ func TestClose_NoCurrentFH(t *testing.T) {
 // READ Tests
 // ============================================================================
 
-func TestRead_Success(t *testing.T) {
-	fx := newIOTestFixture(t, "/export")
-
-	fileHandle := fx.createRegularFile(t, fx.rootHandle, "readme.txt", 0o644, 0, 0)
-	content := []byte("Hello, NFSv4!")
-	fx.writeContent(t, fileHandle, content)
-
-	ctx := newRealFSContext(0, 0)
-	ctx.CurrentFH = make([]byte, len(fileHandle))
-	copy(ctx.CurrentFH, fileHandle)
-
-	args := encodeReadArgs(&anonymousStateid, 0, 1024)
-	result := fx.handler.handleRead(ctx, bytes.NewReader(args))
-
-	if result.Status != types.NFS4_OK {
-		t.Fatalf("READ status = %d, want NFS4_OK", result.Status)
-	}
-
-	// Parse response
-	reader := bytes.NewReader(result.Data)
-	status, _ := xdr.DecodeUint32(reader) // status
-	if status != types.NFS4_OK {
-		t.Fatalf("encoded status = %d, want NFS4_OK", status)
-	}
-
-	eof, _ := xdr.DecodeUint32(reader)
-	if eof != 1 {
-		t.Errorf("eof = %d, want 1 (EOF for small file read completely)", eof)
-	}
-
-	readData, err := xdr.DecodeOpaque(reader)
-	if err != nil {
-		t.Fatalf("decode read data: %v", err)
-	}
-	if !bytes.Equal(readData, content) {
-		t.Errorf("read data = %q, want %q", string(readData), string(content))
-	}
-}
-
-func TestRead_PartialRead(t *testing.T) {
-	fx := newIOTestFixture(t, "/export")
-
-	fileHandle := fx.createRegularFile(t, fx.rootHandle, "data.txt", 0o644, 0, 0)
-	content := []byte("0123456789ABCDEF")
-	fx.writeContent(t, fileHandle, content)
-
-	ctx := newRealFSContext(0, 0)
-	ctx.CurrentFH = make([]byte, len(fileHandle))
-	copy(ctx.CurrentFH, fileHandle)
-
-	// Read 5 bytes starting at offset 3
-	args := encodeReadArgs(&anonymousStateid, 3, 5)
-	result := fx.handler.handleRead(ctx, bytes.NewReader(args))
-
-	if result.Status != types.NFS4_OK {
-		t.Fatalf("READ partial status = %d, want NFS4_OK", result.Status)
-	}
-
-	reader := bytes.NewReader(result.Data)
-	_, _ = xdr.DecodeUint32(reader) // status
-
-	eof, _ := xdr.DecodeUint32(reader)
-	if eof != 0 {
-		t.Errorf("eof = %d, want 0 (partial read)", eof)
-	}
-
-	readData, _ := xdr.DecodeOpaque(reader)
-	expected := content[3:8] // "34567"
-	if !bytes.Equal(readData, expected) {
-		t.Errorf("read data = %q, want %q", string(readData), string(expected))
-	}
-}
-
 func TestRead_BeyondEOF(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 
@@ -1150,100 +1018,6 @@ func TestRead_NoCurrentFH(t *testing.T) {
 // WRITE Tests
 // ============================================================================
 
-func TestWrite_Success(t *testing.T) {
-	fx := newIOTestFixture(t, "/export")
-
-	fileHandle := fx.createRegularFile(t, fx.rootHandle, "writeme.txt", 0o644, 0, 0)
-
-	ctx := newRealFSContext(0, 0) // root can write
-	ctx.CurrentFH = make([]byte, len(fileHandle))
-	copy(ctx.CurrentFH, fileHandle)
-
-	content := []byte("Hello from NFSv4 WRITE!")
-	args := encodeWriteArgs(&anonymousStateid, 0, types.UNSTABLE4, content)
-	result := fx.handler.handleWrite(ctx, bytes.NewReader(args))
-
-	if result.Status != types.NFS4_OK {
-		t.Fatalf("WRITE status = %d, want NFS4_OK", result.Status)
-	}
-
-	// Parse response
-	reader := bytes.NewReader(result.Data)
-	status, _ := xdr.DecodeUint32(reader)
-	if status != types.NFS4_OK {
-		t.Fatalf("encoded status = %d, want NFS4_OK", status)
-	}
-
-	// count
-	count, _ := xdr.DecodeUint32(reader)
-	if count != uint32(len(content)) {
-		t.Errorf("write count = %d, want %d", count, len(content))
-	}
-
-	// committed
-	committed, _ := xdr.DecodeUint32(reader)
-	if committed != types.UNSTABLE4 {
-		t.Errorf("committed = %d, want UNSTABLE4 (%d)", committed, types.UNSTABLE4)
-	}
-
-	// writeverf (8 bytes fixed)
-	verf := make([]byte, 8)
-	n, err := reader.Read(verf)
-	if err != nil || n != 8 {
-		t.Fatalf("read writeverf: %v (n=%d)", err, n)
-	}
-
-	// Verify verifier matches serverBootVerifier
-	want := bootVerifierBytes()
-	if !bytes.Equal(verf, want[:]) {
-		t.Error("writeverf should match server boot verifier")
-	}
-
-	// Verify content was written by reading it back
-	authCtx := newTestAuthCtx(0, 0)
-	file, _ := fx.metaSvc.GetFile(authCtx.Context, fileHandle)
-	if file.Size != uint64(len(content)) {
-		t.Errorf("file size = %d, want %d", file.Size, len(content))
-	}
-
-	// Read back via test oracle — route through common helper for Phase-12
-	// seam coverage.
-	readResult, readErr := common.ReadFromBlockStore(context.Background(), fx.blockStore, file.PayloadID, 0, uint32(len(content)))
-	if readErr != nil {
-		t.Fatalf("read back: %v", readErr)
-	}
-	defer readResult.Release()
-	if !bytes.Equal(readResult.Data, content) {
-		t.Errorf("read back = %q, want %q", string(readResult.Data), string(content))
-	}
-}
-
-func TestWrite_AtOffset(t *testing.T) {
-	fx := newIOTestFixture(t, "/export")
-
-	fileHandle := fx.createRegularFile(t, fx.rootHandle, "offset.txt", 0o644, 0, 0)
-
-	ctx := newRealFSContext(0, 0)
-	ctx.CurrentFH = make([]byte, len(fileHandle))
-	copy(ctx.CurrentFH, fileHandle)
-
-	content := []byte("World!")
-	args := encodeWriteArgs(&anonymousStateid, 5, types.UNSTABLE4, content)
-	result := fx.handler.handleWrite(ctx, bytes.NewReader(args))
-
-	if result.Status != types.NFS4_OK {
-		t.Fatalf("WRITE at offset status = %d, want NFS4_OK", result.Status)
-	}
-
-	// Verify file size is offset + length
-	authCtx := newTestAuthCtx(0, 0)
-	file, _ := fx.metaSvc.GetFile(authCtx.Context, fileHandle)
-	expectedSize := uint64(5 + len(content))
-	if file.Size != expectedSize {
-		t.Errorf("file size = %d, want %d", file.Size, expectedSize)
-	}
-}
-
 func TestWrite_PseudoFS_ReturnsROFS(t *testing.T) {
 	pfs := pseudofs.New()
 	pfs.Rebuild([]string{"/export"})
@@ -1281,69 +1055,6 @@ func TestWrite_NoCurrentFH(t *testing.T) {
 // COMMIT Tests
 // ============================================================================
 
-func TestCommit_Success(t *testing.T) {
-	fx := newIOTestFixture(t, "/export")
-
-	fileHandle := fx.createRegularFile(t, fx.rootHandle, "commit.txt", 0o644, 0, 0)
-
-	// Write some data first
-	ctx := newRealFSContext(0, 0)
-	ctx.CurrentFH = make([]byte, len(fileHandle))
-	copy(ctx.CurrentFH, fileHandle)
-
-	writeArgs := encodeWriteArgs(&anonymousStateid, 0, types.UNSTABLE4, []byte("data to commit"))
-	writeResult := fx.handler.handleWrite(ctx, bytes.NewReader(writeArgs))
-	if writeResult.Status != types.NFS4_OK {
-		t.Fatalf("WRITE for COMMIT setup: status = %d", writeResult.Status)
-	}
-
-	// COMMIT
-	commitArgs := encodeCommitArgs(0, 0) // offset=0, count=0 = all
-	commitResult := fx.handler.handleCommit(ctx, bytes.NewReader(commitArgs))
-
-	if commitResult.Status != types.NFS4_OK {
-		t.Fatalf("COMMIT status = %d, want NFS4_OK", commitResult.Status)
-	}
-
-	// Parse response
-	reader := bytes.NewReader(commitResult.Data)
-	status, _ := xdr.DecodeUint32(reader)
-	if status != types.NFS4_OK {
-		t.Fatalf("encoded status = %d, want NFS4_OK", status)
-	}
-
-	// writeverf (8 bytes fixed)
-	verf := make([]byte, 8)
-	n, err := reader.Read(verf)
-	if err != nil || n != 8 {
-		t.Fatalf("read writeverf: %v (n=%d)", err, n)
-	}
-
-	// Verifier should match WRITE verifier
-	want := bootVerifierBytes()
-	if !bytes.Equal(verf, want[:]) {
-		t.Error("COMMIT writeverf should match server boot verifier")
-	}
-}
-
-func TestCommit_EmptyFile_Success(t *testing.T) {
-	fx := newIOTestFixture(t, "/export")
-
-	fileHandle := fx.createRegularFile(t, fx.rootHandle, "empty.txt", 0o644, 0, 0)
-
-	ctx := newRealFSContext(0, 0)
-	ctx.CurrentFH = make([]byte, len(fileHandle))
-	copy(ctx.CurrentFH, fileHandle)
-
-	args := encodeCommitArgs(0, 0)
-	result := fx.handler.handleCommit(ctx, bytes.NewReader(args))
-
-	// COMMIT on empty file should succeed
-	if result.Status != types.NFS4_OK {
-		t.Errorf("COMMIT on empty file status = %d, want NFS4_OK", result.Status)
-	}
-}
-
 func TestCommit_PseudoFS_ReturnsROFS(t *testing.T) {
 	pfs := pseudofs.New()
 	pfs.Rebuild([]string{"/export"})
@@ -1380,104 +1091,6 @@ func TestCommit_NoCurrentFH(t *testing.T) {
 // ============================================================================
 // Write-Read Roundtrip Tests
 // ============================================================================
-
-func TestWriteReadRoundtrip(t *testing.T) {
-	fx := newIOTestFixture(t, "/export")
-
-	// OPEN (create file)
-	ctx := newRealFSContext(0, 0)
-	ctx.CurrentFH = make([]byte, len(fx.rootHandle))
-	copy(ctx.CurrentFH, fx.rootHandle)
-
-	openArgs := encodeOpenArgs(
-		1, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE,
-		testClientID(t, fx.handler.StateManager, "io-test-client"), []byte("test-owner"),
-		types.OPEN4_CREATE, types.UNCHECKED4, types.CLAIM_NULL, "roundtrip.txt",
-	)
-	openResult := fx.handler.handleOpen(ctx, bytes.NewReader(openArgs))
-	if openResult.Status != types.NFS4_OK {
-		t.Fatalf("OPEN status = %d", openResult.Status)
-	}
-
-	// WRITE
-	content := []byte("NFSv4 roundtrip test data -- longer content to verify chunked behavior")
-	writeArgs := encodeWriteArgs(&anonymousStateid, 0, types.UNSTABLE4, content)
-	writeResult := fx.handler.handleWrite(ctx, bytes.NewReader(writeArgs))
-	if writeResult.Status != types.NFS4_OK {
-		t.Fatalf("WRITE status = %d", writeResult.Status)
-	}
-
-	// COMMIT
-	commitArgs := encodeCommitArgs(0, 0)
-	commitResult := fx.handler.handleCommit(ctx, bytes.NewReader(commitArgs))
-	if commitResult.Status != types.NFS4_OK {
-		t.Fatalf("COMMIT status = %d", commitResult.Status)
-	}
-
-	// READ back
-	readArgs := encodeReadArgs(&anonymousStateid, 0, uint32(len(content)+100))
-	readResult := fx.handler.handleRead(ctx, bytes.NewReader(readArgs))
-	if readResult.Status != types.NFS4_OK {
-		t.Fatalf("READ status = %d", readResult.Status)
-	}
-
-	// Verify read data
-	reader := bytes.NewReader(readResult.Data)
-	_, _ = xdr.DecodeUint32(reader) // status
-	eof, _ := xdr.DecodeUint32(reader)
-	readData, err := xdr.DecodeOpaque(reader)
-	if err != nil {
-		t.Fatalf("decode read data: %v", err)
-	}
-
-	if !bytes.Equal(readData, content) {
-		t.Errorf("roundtrip data mismatch:\n  got:  %q\n  want: %q", string(readData), string(content))
-	}
-	if eof != 1 {
-		t.Errorf("eof = %d, want 1 (read all data)", eof)
-	}
-}
-
-func TestWriteReadRoundtrip_MultipleWrites(t *testing.T) {
-	fx := newIOTestFixture(t, "/export")
-
-	fileHandle := fx.createRegularFile(t, fx.rootHandle, "multi.txt", 0o644, 0, 0)
-
-	ctx := newRealFSContext(0, 0)
-	ctx.CurrentFH = make([]byte, len(fileHandle))
-	copy(ctx.CurrentFH, fileHandle)
-
-	// Write "Hello" at offset 0
-	args1 := encodeWriteArgs(&anonymousStateid, 0, types.UNSTABLE4, []byte("Hello"))
-	res1 := fx.handler.handleWrite(ctx, bytes.NewReader(args1))
-	if res1.Status != types.NFS4_OK {
-		t.Fatalf("WRITE 1 status = %d", res1.Status)
-	}
-
-	// Write " World" at offset 5
-	args2 := encodeWriteArgs(&anonymousStateid, 5, types.UNSTABLE4, []byte(" World"))
-	res2 := fx.handler.handleWrite(ctx, bytes.NewReader(args2))
-	if res2.Status != types.NFS4_OK {
-		t.Fatalf("WRITE 2 status = %d", res2.Status)
-	}
-
-	// READ full content
-	readArgs := encodeReadArgs(&anonymousStateid, 0, 1024)
-	readResult := fx.handler.handleRead(ctx, bytes.NewReader(readArgs))
-	if readResult.Status != types.NFS4_OK {
-		t.Fatalf("READ status = %d", readResult.Status)
-	}
-
-	reader := bytes.NewReader(readResult.Data)
-	_, _ = xdr.DecodeUint32(reader) // status
-	_, _ = xdr.DecodeUint32(reader) // eof
-	readData, _ := xdr.DecodeOpaque(reader)
-
-	expected := "Hello World"
-	if string(readData) != expected {
-		t.Errorf("multi-write data = %q, want %q", string(readData), expected)
-	}
-}
 
 // ============================================================================
 // Stateid4 Tests
@@ -1564,26 +1177,6 @@ func TestCommit_PermissionDenied(t *testing.T) {
 	}
 }
 
-// TestCommit_PermissionGranted is the companion: the owner of a writable file
-// still commits successfully, so the gate costs the normal write-then-commit
-// flow nothing.
-func TestCommit_PermissionGranted(t *testing.T) {
-	fx := newIOTestFixture(t, "/export")
-
-	fileHandle := fx.createRegularFile(t, fx.rootHandle, "mine.txt", 0o644, 1000, 1000)
-	fx.writeContent(t, fileHandle, []byte("committed content"))
-
-	ctx := newRealFSContext(1000, 1000)
-	ctx.CurrentFH = make([]byte, len(fileHandle))
-	copy(ctx.CurrentFH, fileHandle)
-
-	result := fx.handler.handleCommit(ctx, bytes.NewReader(encodeCommitArgs(0, 0)))
-
-	if result.Status != types.NFS4_OK {
-		t.Errorf("COMMIT by the file owner status = %d, want NFS4_OK", result.Status)
-	}
-}
-
 // createNonRegular creates a non-regular, non-directory object and returns its handle.
 func (fx *ioTestFixture) createNonRegular(t *testing.T, name string, fileType metadata.FileType) metadata.FileHandle {
 	t.Helper()
@@ -1663,127 +1256,6 @@ func TestReadNonRegularType(t *testing.T) {
 	}
 }
 
-// localDirBytes sums every file under dir: the bytes the local tier actually
-// occupies, which is what an operator sees and what survives a restart.
-func localDirBytes(t *testing.T, dir string) int64 {
-	t.Helper()
-	var total int64
-	if err := filepath.Walk(dir, func(_ string, fi os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if !fi.IsDir() {
-			total += fi.Size()
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("walk local dir: %v", err)
-	}
-	return total
-}
-
-// TestRemove_ReclaimsLocalPayloadBytes pins that a v4 REMOVE frees the removed
-// file's content, not just its name. The metadata layer deliberately never
-// deletes payload bytes — it returns the removed file's PayloadID so the
-// protocol handler can — so a handler that discards that return value never
-// tells the block store the file is gone. Its records stay indexed as live, no
-// reclamation path (fast-path retire, eviction, repack) will ever treat them as
-// dead, and the share keeps those bytes on disk across restarts even once every
-// file in it has been removed.
-//
-// The assertion is on block-store state an operator can observe rather than on
-// how the handler achieves it: after the unlink the payload must be unknown to
-// the local tier, which is the precondition every reclamation path shares.
-func TestRemove_ReclaimsLocalPayloadBytes(t *testing.T) {
-	fx := newIOTestFixture(t, "/export")
-	ctxBg := context.Background()
-
-	fh := fx.createRegularFile(t, fx.rootHandle, "big.bin", 0o644, 1000, 1000)
-	file, err := fx.metaSvc.GetFile(ctxBg, fh)
-	if err != nil {
-		t.Fatalf("get file: %v", err)
-	}
-	payloadID := string(file.PayloadID)
-	payload := bytes.Repeat([]byte{0xAB}, 4<<20)
-	fx.writeContent(t, fh, payload)
-
-	if size, ok := fx.localStore.FileSize(ctxBg, journal.FileID(payloadID)); !ok || size != int64(len(payload)) {
-		t.Fatalf("local tier holds %d bytes (present=%v) before REMOVE, want %d", size, ok, len(payload))
-	}
-	if before := localDirBytes(t, fx.localDir); before < int64(len(payload)) {
-		t.Fatalf("local dir holds %d bytes before REMOVE, want at least the %d written", before, len(payload))
-	}
-
-	ctx := newRealFSContext(1000, 1000)
-	ctx.CurrentFH = append([]byte(nil), fx.rootHandle...)
-
-	result := fx.handler.handleRemove(ctx, bytes.NewReader(encodeRemoveArgs("big.bin")))
-	if result.Status != types.NFS4_OK {
-		t.Fatalf("REMOVE status = %d, want NFS4_OK", result.Status)
-	}
-
-	if size, ok := fx.localStore.FileSize(ctxBg, journal.FileID(payloadID)); ok {
-		t.Fatalf("payload %q still holds %d live bytes in the local tier after REMOVE", payloadID, size)
-	}
-}
-
-// TestRename_ReclaimsClobberedPayloadBytes pins that renaming onto an existing
-// name frees the clobbered file's content, not just its directory entry. The
-// metadata layer deliberately never deletes payload bytes — Move returns the
-// clobbered victim so the handler can — and a handler that ignores that return
-// leaves the victim's records indexed as live in the local tier, where no
-// reclamation path treats them as dead and the bytes survive every restart.
-// Write-to-temp-then-rename makes this a steady churn, not a corner case.
-//
-// Asserting on observable block-store state pins both directions: the victim's
-// payload must be gone AND the renamed file's must survive, so releasing the
-// wrong payload fails here instead of passing.
-func TestRename_ReclaimsClobberedPayloadBytes(t *testing.T) {
-	fx := newIOTestFixture(t, "/export")
-	ctxBg := context.Background()
-
-	payloadIDOf := func(fh metadata.FileHandle) string {
-		t.Helper()
-		file, err := fx.metaSvc.GetFile(ctxBg, fh)
-		if err != nil {
-			t.Fatalf("get file: %v", err)
-		}
-		return string(file.PayloadID)
-	}
-
-	victimFH := fx.createRegularFile(t, fx.rootHandle, "victim.bin", 0o644, 1000, 1000)
-	victimPayload := payloadIDOf(victimFH)
-	victimBytes := bytes.Repeat([]byte{0xAB}, 4<<20)
-	fx.writeContent(t, victimFH, victimBytes)
-
-	survivorFH := fx.createRegularFile(t, fx.rootHandle, "incoming.bin", 0o644, 1000, 1000)
-	survivorPayload := payloadIDOf(survivorFH)
-	fx.writeContent(t, survivorFH, bytes.Repeat([]byte{0xCD}, 1<<20))
-
-	if survivorPayload == victimPayload {
-		t.Fatalf("test setup: both files share payload %q, the assertions below cannot discriminate", victimPayload)
-	}
-	if size, ok := fx.localStore.FileSize(ctxBg, journal.FileID(victimPayload)); !ok || size != int64(len(victimBytes)) {
-		t.Fatalf("local tier holds %d bytes (present=%v) for the victim before RENAME, want %d", size, ok, len(victimBytes))
-	}
-
-	ctx := newRealFSContext(1000, 1000)
-	setCurrentFH(ctx, fx.rootHandle) // target dir
-	setSavedFH(ctx, fx.rootHandle)   // source dir
-
-	result := fx.handler.handleRename(ctx, bytes.NewReader(encodeRenameArgs("incoming.bin", "victim.bin")))
-	if result.Status != types.NFS4_OK {
-		t.Fatalf("RENAME status = %d, want NFS4_OK", result.Status)
-	}
-
-	if size, ok := fx.localStore.FileSize(ctxBg, journal.FileID(victimPayload)); ok {
-		t.Fatalf("clobbered payload %q still holds %d live bytes in the local tier after RENAME", victimPayload, size)
-	}
-	if _, ok := fx.localStore.FileSize(ctxBg, journal.FileID(survivorPayload)); !ok {
-		t.Fatalf("renamed file's payload %q was dropped from the local tier by RENAME", survivorPayload)
-	}
-}
-
 // readFamilyOps are the v4 operations that serve, or derive from, file
 // content and therefore share one read-permission gate.
 var readFamilyOps = []struct {
@@ -1835,22 +1307,20 @@ func TestReadPermissionDenied(t *testing.T) {
 	}
 }
 
-// TestReadPermissionGranted is the companion: the gate must cost an ordinary
-// owner read nothing. It also establishes that the denials above come from the
-// per-file check and not from the share-level policy, which is permissive for
-// uid 1000 in this fixture.
-func TestReadPermissionGranted(t *testing.T) {
+func TestCommit_EmptyFile_Success(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
-	fileHandle := fx.createRegularFile(t, fx.rootHandle, "mine.txt", 0o644, 1000, 1000)
-	fx.writeContent(t, fileHandle, []byte("owner readable"))
 
-	for _, op := range readFamilyOps {
-		t.Run(op.name, func(t *testing.T) {
-			ctx := newRealFSContext(1000, 1000)
-			ctx.CurrentFH = fileHandle
-			if result := op.call(fx.handler, ctx); result.Status != types.NFS4_OK {
-				t.Errorf("status = %d, want NFS4_OK", result.Status)
-			}
-		})
+	fileHandle := fx.createRegularFile(t, fx.rootHandle, "empty.txt", 0o644, 0, 0)
+
+	ctx := newRealFSContext(0, 0)
+	ctx.CurrentFH = make([]byte, len(fileHandle))
+	copy(ctx.CurrentFH, fileHandle)
+
+	args := encodeCommitArgs(0, 0)
+	result := fx.handler.handleCommit(ctx, bytes.NewReader(args))
+
+	// COMMIT on empty file should succeed
+	if result.Status != types.NFS4_OK {
+		t.Errorf("COMMIT on empty file status = %d, want NFS4_OK", result.Status)
 	}
 }

@@ -20,7 +20,6 @@ rclone size --json s3:dittofs/test | tee /tmp/before.json
 smbclient //127.0.0.1/test -c 'del a.bin'
 dfsctl store block gc /test --grace-period 0 -o json | tee /tmp/gc.json
 rclone size --json s3:dittofs/test | tee /tmp/after.json
-dfsctl store block evict --share /test
 mkdir /tmp/back
 smbclient //127.0.0.1/test -c 'lcd /tmp/back; get b.bin; get c.bin'
 
@@ -40,7 +39,6 @@ dfs-server stop
 dfs-server start
 dfsctl store block gc /test --grace-period 0 -o json | tee /tmp/gc2.json
 rclone size --json s3:dittofs/test | tee /tmp/after2.json
-dfsctl store block evict --share /test
 smbclient //127.0.0.1/test -c 'lcd /tmp/back; get b2.bin; get c2.bin'
 
 test "$(jq .bytes /tmp/before.json)" -ge $((48 * 1024 * 1024))

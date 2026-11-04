@@ -59,13 +59,13 @@ func uncheckedCreate(t *testing.T, fx *handlertesting.HandlerTestFixture, name s
 	return resp
 }
 
-// readAll reads the whole file through the READ handler.
-func readAll(t *testing.T, fx *handlertesting.HandlerTestFixture, handle []byte) []byte {
+// sizeOf reads the file's size through GETATTR.
+func sizeOf(t *testing.T, fx *handlertesting.HandlerTestFixture, handle []byte) uint64 {
 	t.Helper()
-	resp, err := fx.Handler.Read(fx.ContextWithUID(0, 0), &handlers.ReadRequest{Handle: handle, Count: 1 << 16})
+	resp, err := fx.Handler.GetAttr(fx.ContextWithUID(0, 0), &handlers.GetAttrRequest{Handle: handle})
 	require.NoError(t, err)
 	require.EqualValues(t, types.NFS3OK, resp.Status)
-	return resp.Data[:resp.Count]
+	return resp.Attr.Size
 }
 
 // TestCreate_UncheckedExistingFile_NoSizeKeepsFile tests that an UNCHECKED
@@ -83,19 +83,7 @@ func TestCreate_UncheckedExistingFile_NoSizeKeepsFile(t *testing.T) {
 
 	assert.EqualValues(t, 5, resp.Attr.Size, "the reply must carry the existing size")
 	assert.EqualValues(t, 0644, resp.Attr.Mode&0o7777, "the mode of an existing file must not change")
-	assert.Equal(t, []byte("ABCDE"), readAll(t, fx, resp.FileHandle), "the existing data must survive")
-
-	// The client appends at the size the reply gave it.
-	wresp, err := fx.Handler.Write(fx.ContextWithUID(0, 0), &handlers.WriteRequest{
-		Handle: resp.FileHandle,
-		Offset: resp.Attr.Size,
-		Count:  5,
-		Stable: 2, // FILE_SYNC
-		Data:   []byte("abcde"),
-	})
-	require.NoError(t, err)
-	require.EqualValues(t, types.NFS3OK, wresp.Status)
-	assert.Equal(t, []byte("ABCDEabcde"), readAll(t, fx, resp.FileHandle), "an append must land after the existing data")
+	assert.EqualValues(t, 5, sizeOf(t, fx, resp.FileHandle), "the existing file must keep its size")
 }
 
 // TestCreate_UncheckedExistingDirectory_NoSize tests that an UNCHECKED CREATE
@@ -148,7 +136,7 @@ func TestCreate_UncheckedExistingFile_ReadOnlyShare(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.EqualValues(t, types.NFS3ErrRofs, resp.Status)
-	assert.Equal(t, []byte("ABCDE"), fx.ReadContent("existing.txt"), "the existing data must survive")
+	assert.EqualValues(t, 5, fx.GetFile("existing.txt").Size, "the existing file must keep its size")
 }
 
 // TestCreate_UncheckedExistingFile_NilAttrKeepsFile tests the same with no
@@ -160,7 +148,7 @@ func TestCreate_UncheckedExistingFile_NilAttrKeepsFile(t *testing.T) {
 	resp := uncheckedCreate(t, fx, "existing.txt", nil)
 
 	assert.EqualValues(t, 5, resp.Attr.Size)
-	assert.Equal(t, []byte("ABCDE"), readAll(t, fx, resp.FileHandle))
+	assert.EqualValues(t, 5, sizeOf(t, fx, resp.FileHandle))
 }
 
 // TestCreate_UncheckedExistingFile_ZeroSizeTruncates tests that a size of
@@ -173,7 +161,7 @@ func TestCreate_UncheckedExistingFile_ZeroSizeTruncates(t *testing.T) {
 	resp := uncheckedCreate(t, fx, "existing.txt", &metadata.SetAttrs{Size: &size})
 
 	assert.EqualValues(t, 0, resp.Attr.Size, "a size of zero must truncate")
-	assert.Empty(t, readAll(t, fx, resp.FileHandle))
+	assert.Zero(t, sizeOf(t, fx, resp.FileHandle))
 }
 
 // TestCreate_UncheckedExistingFile_SizeResizes tests that a non-zero size
@@ -188,12 +176,12 @@ func TestCreate_UncheckedExistingFile_SizeResizes(t *testing.T) {
 	resp := uncheckedCreate(t, fx, "existing.txt", &metadata.SetAttrs{Size: &short, Mode: &mode})
 	assert.EqualValues(t, 3, resp.Attr.Size)
 	assert.EqualValues(t, 0644, resp.Attr.Mode&0o7777, "only the size is applied to an existing file")
-	assert.Equal(t, []byte("ABC"), readAll(t, fx, resp.FileHandle))
+	assert.EqualValues(t, 3, sizeOf(t, fx, resp.FileHandle))
 
 	long := uint64(6)
 	resp = uncheckedCreate(t, fx, "existing.txt", &metadata.SetAttrs{Size: &long})
 	assert.EqualValues(t, 6, resp.Attr.Size)
-	assert.Equal(t, []byte("ABC\x00\x00\x00"), readAll(t, fx, resp.FileHandle), "an extension reads back as zeros")
+	assert.EqualValues(t, 6, sizeOf(t, fx, resp.FileHandle))
 }
 
 // TestCreate_GuardedNewFile tests creating a new file with GUARDED mode.
@@ -438,8 +426,7 @@ func TestCreate_HandleTooShort(t *testing.T) {
 	resp, err := fx.Handler.Create(fx.Context(), req)
 
 	require.NoError(t, err)
-	// Implementation returns NFS3ErrStale for invalid/unrecognized handles
-	assert.EqualValues(t, types.NFS3ErrStale, resp.Status, "Invalid handle should return error")
+	assert.EqualValues(t, types.NFS3ErrBadHandle, resp.Status, "Invalid handle should return error")
 }
 
 // TestCreate_HandleTooLong tests CREATE returns error for long handles.

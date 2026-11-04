@@ -444,18 +444,11 @@ func (h *Handler) handleFileLinkInformation(
 				return setInfoStatus(types.StatusSuccess), nil
 			}
 
-			removed, _, rmErr := metaSvc.RemoveFile(authCtx, dstDir, matchedName)
+			_, _, rmErr := metaSvc.RemoveFile(authCtx, dstDir, matchedName)
 			if rmErr != nil {
 				logger.Debug("SET_INFO: hardlink replace failed to remove existing",
 					"name", matchedName, "error", rmErr)
 				return setInfoStatus(types.StatusForErr(rmErr)), nil
-			}
-			// RemoveFile drops the name and the inode but never the bytes; its
-			// PayloadID is empty whenever the content must survive. Left
-			// unreleased, the replaced file's records stay indexed as live in
-			// the local tier, where no reclamation path can reach them.
-			if removed != nil {
-				h.purgeBlockStorePayload(authCtx.Context, dstDir, removed.PayloadID, matchedName, "SET_INFO hardlink replace")
 			}
 		}
 	}

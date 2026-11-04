@@ -164,19 +164,6 @@ func (s *DurableHandleScavenger) cleanupAndDelete(ctx context.Context, h *lock.P
 			}
 		}
 
-		// Flush block cache
-		if h.PayloadID != "" && len(h.MetadataHandle) > 0 {
-			if blockStore, bsErr := s.handler.Registry.GetBlockStoreForHandle(ctx, metadata.FileHandle(h.MetadataHandle)); bsErr == nil {
-				if _, err := blockStore.Flush(ctx, h.PayloadID); err != nil {
-					logger.Debug("DurableHandleScavenger: failed to flush cache",
-						"id", h.ID, "path", h.Path, "error", err)
-				}
-			} else {
-				logger.Debug("DurableHandleScavenger: block store not available",
-					"id", h.ID, "path", h.Path, "error", bsErr)
-			}
-		}
-
 		// Delete-on-close: if the handle had DeletePending set, delete the file
 		// from the metadata store now that the durable timeout has expired.
 		if h.DeletePending && metaSvc != nil && len(h.ParentHandle) > 0 && h.FileName != "" {

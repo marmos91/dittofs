@@ -13,15 +13,12 @@ package helpers
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"io"
 	"sort"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/marmos91/dittofs/test/e2e/framework"
 )
 
@@ -101,35 +98,4 @@ func PutBlockObject(t *testing.T, lsHelper *framework.LocalstackHelper, bucketNa
 	if err != nil {
 		t.Fatalf("PutBlockObject: PUT %s/%s: %v", bucketName, key, err)
 	}
-}
-
-// EvictBlocks evicts every local tier (read buffer + journal) for a single
-// share via `dfsctl store block evict --share <share>`. This forces the next
-// read of an evicted block to miss both in-memory and on-disk caches and
-// fetch the packed block from the share's block store (a genuine cold read
-// that exercises the block-locator fetch → blockcodec decode → BLAKE3 verify
-// path).
-func EvictBlocks(t *testing.T, runner *CLIRunner, shareName string) error {
-	t.Helper()
-	_, err := runner.Run("store", "block", "evict", "--share", shareName)
-	if err != nil {
-		return fmt.Errorf("dfsctl store block evict --share %s: %w", shareName, err)
-	}
-	return nil
-}
-
-// GetBlockStats fetches per-share block-store statistics via
-// `dfsctl store block stats --share <share>` and decodes the JSON. Used to
-// assert journal occupancy before/after eviction and GC.
-func GetBlockStats(t *testing.T, runner *CLIRunner, shareName string) *apiclient.BlockStoreStatsResponse {
-	t.Helper()
-	out, err := runner.Run("store", "block", "stats", "--share", shareName)
-	if err != nil {
-		t.Fatalf("GetBlockStats: dfsctl store block stats --share %s: %v (out=%s)", shareName, err, string(out))
-	}
-	var resp apiclient.BlockStoreStatsResponse
-	if err := json.Unmarshal(out, &resp); err != nil {
-		t.Fatalf("GetBlockStats: decode stats JSON for %s: %v (out=%s)", shareName, err, string(out))
-	}
-	return &resp
 }

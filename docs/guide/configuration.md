@@ -291,215 +291,41 @@ Related glossary terms: [TLS / mTLS](glossary.md#authentication).
 
 ### 6. Block Store Configuration
 
-Every share has exactly **one block store** — the durable home for its content —
-plus an on-disk **journal** that absorbs writes in front of it. Block stores are
-created with `dfsctl store block …` and attached to a share with
-`dfsctl share create/edit --block-store <name>`. Valid types are `s3` and
-`memory`; a block store has no *kind*, and the old local/remote split is gone.
+Every share references exactly **one block store** — the durable home for its
+content. Block stores are created with `dfsctl store block …` and attached to a
+share with `dfsctl share create/edit --block-store <name>`. Valid types are `s3`
+and `memory`.
 
-The journal is **not** a store you create. It is provisioned automatically under
-one server-level root, `blockstore.journal.path`, with each share getting its own
-subdirectory (`<path>/shares/<share-name>/journal/`). The block store lives in
-`pkg/block/engine/` and composes the journal, the block store, the unified
-CAS-keyed in-memory `Cache`, a syncer (async journal-to-block-store transfer), and
-a garbage collector.
+> **No content store is wired yet.** The data path is being moved onto the new
+> engine (`pkg/block/engine`), served through the filesystem service. Until that
+> cutover, every operation that reads or writes file content (NFS READ, WRITE,
+> COMMIT; SMB READ, WRITE, FLUSH, copy-chunk, sparse ranges) answers each
+> protocol's generic I/O error. Metadata operations — lookup, getattr, setattr,
+> create, mkdir, rename, readdir, remove — work normally.
 
-#### Journal tuning (`blockstore.journal`)
+#### Share state root (`blockstore.journal.path`)
 
-The journal (`pkg/block/journal/`) is an append-only, log-structured write-back
-tier. Writes append to it and are acknowledged locally; a background flush pass
-packs dirty ranges into packed blocks (`blocks/<id>`) and offloads them to the
-block store. Pre-v0.16 `{payloadID}/block-{idx}` layouts must be converted with
-dittofs ≤ v0.21 (its `migrate-to-cas` command) before the server will start.
-
-Its knobs are **server-level** config, not per-share store JSON. They used to live
-in a per-share `local` block store `config` blob; that store is gone and every key
-below moved into the top-level `blockstore.journal` block:
+Each share keeps a state directory (gc-state, snapshots, the migration journal)
+beneath one server-level root, `<path>/shares/<share-name>/`:
 
 ```yaml
 blockstore:
   journal:
-    path: /var/lib/dittofs/blocks   # journal root; default <state dir>/blocks
-    chunk_size: 0                   # FastCDC minimum chunk size; 0 = built-in profile
-    chunk_max: 0                    # override the derived maximum; 0 = derived from chunk_size
-    dirty_expire: 30s               # dirty-age fsync ceiling; negative disables the loop
-    max_log_bytes: 2147483648       # 2 GiB append-log pressure budget
-    backpressure_max_wait: 60s      # how long a write stalls before ErrDiskFull
+    path: /var/lib/dittofs/blocks   # default <state dir>/blocks
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `path` | string | `<state dir>/blocks` | Root holding every share's journal. Must be absolute (a leading `~` is expanded). |
-| `chunk_size` | int | `0` (built-in profile) | FastCDC minimum chunk size in bytes — see [Chunk size](#chunk-size--random-access-shares-chunk_size). |
-| `chunk_max` | int | `0` (derived) | Overrides the derived maximum chunk size. |
-| `dirty_expire` | duration | `30s` | Dirty-age fsync ceiling — see [below](#dirty-age-fsync-ceiling-dirty_expire). Negative disables it; values under 1 s are clamped with a warning. |
-| `max_log_bytes` | int | deduced (25% of RAM, floor 1 GiB) | Append-log pressure budget. `AppendWrite` stalls once the buffered total exceeds it. |
-| `backpressure_max_wait` | duration | `60s` | How long a write blocks waiting for the syncer to drain before returning `ErrDiskFull`. |
+| `path` | string | `<state dir>/blocks` | Root holding every share's state directory. Must be absolute (a leading `~` is expanded). |
 
-Env-var mapping follows the dot-path convention, e.g.
-`DITTOFS_BLOCKSTORE_JOURNAL_MAX_LOG_BYTES`.
+Env-var mapping follows the dot-path convention:
+`DITTOFS_BLOCKSTORE_JOURNAL_PATH`.
 
 A config file still carrying the old `blockstore.local.*` keys is **refused at
 startup**, naming both spellings — see [Upgrading](#upgrading-from-the-localremote-block-store-split).
-Because these knobs are now server-level, a node mixing a VM-image share with a
-general-purpose one gets a single chunking profile for both.
-
-There is no `metadata.RollupStore` backend requirement any more — the journal
-owns its own local state; a metadata backend only needs the block-record and
-synced-hash contracts (see [implementing stores](../internals/implementing-stores.md)).
-
-##### Journal size and eviction
-
-The journal's ceiling is a **per-share** setting, `--journal-size` on
-`dfsctl share create` / `share edit` (`journal_size` in the share JSON). It
-replaces the old `--local-store-size` flag and the deleted
-`blockstore.journal.default_remote_cache_size` key.
-
-- **Unset** — the share has no configured ceiling. The journal still sizes a soft
-  default off the volume's free space when it opens (80% of what is free at that
-  moment), and only degrades to genuinely unbounded growth if the free-space probe
-  fails, which it warns about. This is a real change from the old behaviour, which
-  deduced a ceiling from RAM (25%) or capped a remote-backed share at 10 GiB: a
-  fast writer against a slow uploader can now fill much more of the volume before
-  anything pushes back.
-- **Set** — the value is the ceiling eviction reclaims against.
-
-Eviction can only reclaim blocks **already offloaded to the block store**.
-Anything else is still the only copy of those bytes, so dropping it would lose
-them. The consequence is easy to get wrong: **a cap reached with nothing yet
-offloaded cannot be honoured by eviction at all** — the write path falls straight
-through to backpressure, stalls for up to
-`blockstore.journal.backpressure_max_wait`, and then returns `ErrLocalStoreFull`
-(surfaced as disk-full to the protocol). That is the correct response, not dead
-code: a healthy block store lets the flush pass drain dirty bytes, eviction frees
-space, and the writer proceeds.
-
-A stall logs its cause so the next move is unambiguous:
-
-```
-WARN journal local store full: nothing evictable, backpressuring writes
-     dir=… disk_bytes=… max_local_bytes=… unsynced_bytes=…
-     eviction_suspended=… eviction_pinned=…
-```
-
-`unsynced_bytes > 0` means the flush pass is behind and the wait will clear;
-`eviction_suspended` means the block store is unhealthy (fix the outage);
-`eviction_pinned` means a retention policy is holding the blocks (change the
-policy).
-
-#### Durability & the CLOSE/COMMIT contract
-
-Durability is a **per-store property**: whether bytes a store has accepted survive
-a daemon crash / restart. Each store resolves an effective `durable` flag at
-construction — a **type default** that an operator may override.
-
-| Store | Default `durable` |
-|-------|-------------------|
-| journal (every share) | `true` — bytes are on disk; un-offloaded chunks are never evicted, survive restart, and offload asynchronously |
-| `s3` block store | `true` — durable object storage |
-| `memory` block store | `false` — test/dev fixture, lost on restart |
-
-Override the default per store by adding a `durable` bool to the store's `config`
-JSON — `{"durable": false}` for a journal on a volatile tmpfs mount, or
-`{"durable": true}` to deliberately treat a memory store as durable in a test/dev
-setup. A non-bool value is ignored with a startup warning (the type default
-stands). The effective values are surfaced as `Local Durable` / `Remote Durable`
-in `dfsctl store block stats`.
-
-**CLOSE/COMMIT semantics.** SMB CLOSE and NFS COMMIT (and the NFSv3 stable-WRITE
-path) call the engine flush. A **hard** flush error (I/O fault, block-store
-rejection, metadata error) is **always** surfaced to the client. Beyond that, what
-a COMMIT waits for is the per-share **commit acknowledgement**, `commit_ack`
-(default `journal`):
-
-| `commit_ack` | CLOSE/COMMIT behavior |
-|--------------|-----------------------|
-| `journal` (default) | Acknowledge once the write is durable in the share's journal. The offload to the block store stays fully **asynchronous** and observable via the unsynced-bytes metric / `Pending Remote (bytes)`. Ordinary NFS/POSIX writes **never** EIO. |
-| `block-store` | Acknowledge only when the data is on a durable store: `committed := localDurable \|\| (Finalized && remoteDurable)`. Every commit waits for an upload. |
-
-`dfsctl share show <name>` prints the setting in force as a **Commit Ack** row.
-See [Durability](durability.md) for what each one survives and the throughput
-cost — and note that the metadata-commit relaxation is a **separate, independent**
-axis, not a third value of this one.
-
-Under `commit_ack: block-store` the COMMIT drives the offload inline — it flushes
-the file's dirty ranges into packed blocks, uploads them, and only then returns.
-What happens when that cannot finish depends on whether the journal is durable:
-
-- **Durable journal (the normal case):** an unhealthy block store makes the flush
-  return its soft, non-finalized result, and the COMMIT is acked anyway — the
-  bytes already survive a restart, and the syncer keeps retrying.
-- **Volatile local tier** (a journal explicitly marked `{"durable": false}`):
-  nothing crash-safe holds the bytes, so the
-  COMMIT returns a transient I/O error (`NFS3ERR_IO` / `NFS4ERR_IO` / SMB
-  `STATUS_UNEXPECTED_IO_ERROR`) and the client re-drives.
-
-(NFS *unstable* WRITE is unaffected either way: it still returns `UNSTABLE` and
-defers durability to a later COMMIT.)
-
-`dfsctl store block stats` also shows `Pending Remote (bytes)` — the headline
-data-at-risk gauge (journal bytes not yet offloaded) — which is the way to observe
-the async offload backlog under the default policy.
-
-#### Chunk size — random-access shares (`chunk_size`)
-
-DittoFS splits file data into content-defined (FastCDC) chunks. A chunk is the
-unit of dedup, of the local cache, and — critically — of a **read fetch**: a
-small random read pulls the whole chunk covering its offset. The default chunk
-floor is ~1 MiB, so a 4 KiB random read into a large file amplifies to ~1 MiB
-(~256×). That is fine for sequential and archival workloads but poor for random
-I/O (VM images, databases).
-
-`chunk_size` (bytes) lowers the FastCDC minimum for a share, shrinking the read
-unit. Effective average chunk size ≈ `chunk_size`; a hard ceiling is derived
-(8× `chunk_size`) unless you set `chunk_max` explicitly.
-
-Random-access node: ~128 KiB chunks (≈8× less read amplification) — set
-`blockstore.journal.chunk_size: 131072` in the server config. This is a
-server-level knob, so it applies to every share on the node.
-
-| Setting | Effective avg | 4 KiB random-read amplification | Trade-off |
-|---------|---------------|---------------------------------|-----------|
-| default (unset) | ~1 MiB | ~256× | best dedup, fewest manifest rows |
-| `65536` (64 KiB) | ~94 KiB | ~16× | ~16× more `FileChunk` rows; ~0 extra dedup loss on VM/DB |
-| `131072` (128 KiB) | ~159 KiB | ~32× | ~8× more manifest rows |
-| `262144` (256 KiB) | ~287 KiB | ~64× | ~4× more manifest rows |
-
-Notes:
-
-- **S3 object count is unchanged.** Chunks are packed into ~16 MiB block objects
-  regardless of `chunk_size`, so smaller chunks do **not** create more/smaller
-  S3 objects — only more `FileChunk` manifest rows. Writes/uploads keep their
-  full throughput.
-- **Write-time only.** Reads never re-chunk — the manifest records each chunk's
-  boundaries — so changing `chunk_size` affects only newly written data, and old
-  data stays readable. Dedup is not restored across a change (different
-  boundaries → different hashes), but on VM/DB images dedup is already ~0.
-- An invalid `chunk_size` / `chunk_max` combination is warned about and dropped,
-  leaving the built-in profile in force — a bad profile would otherwise cut every
-  newly written block to the wrong size, and reads never re-chunk, so the damage
-  would outlive the misconfiguration.
-
-#### Dirty-age fsync ceiling (`dirty_expire`)
-
-A client that writes and never issues an NFS `COMMIT`/`FILE_SYNC` or an SMB
-`FLUSH`/`CLOSE` never asks the server for durability. A background loop fsyncs
-each journal shard still holding uncommitted records once per interval, so those
-writes reach the device within roughly that window instead of waiting for the
-shard's next 256 MiB segment rotation.
-
-The default is 30s; tighten it with `blockstore.journal.dirty_expire: 5s` in the
-server config, or set a negative value to disable the loop. It used to be a
-per-share `dirty_expire_seconds` key in the local block store's `config` JSON.
-
-- Default **30 s**, on for every share; the loop costs an idle store nothing and
-  never runs on the ack path.
-- Negative disables it, leaving the client's own fsync and segment rotation as
-  the only durability points — the loss window is then unbounded in time.
-- Values below 1 s are clamped with a warning.
-- This is a **ceiling on the loss window, not a durability guarantee**: only a
-  returned `COMMIT`/`FLUSH` says the bytes are on the device. See
-  [Durability](durability.md#the-dirty-age-ceiling-dirty_expire).
+The former journal tuning keys (`chunk_size`, `chunk_max`, `dirty_expire`,
+`max_log_bytes`, `backpressure_max_wait`) are no longer read; a config file
+carrying them loads with an unknown-key warning.
 
 #### GC knobs
 
@@ -649,60 +475,6 @@ Findings surface in three places:
 Run `dfsctl store check <share>` for the per-file detail behind a finding,
 and `--repair` to act on it.
 
-#### Offline read safety
-
-A share's journal is a cache in front of its block store: once a range is
-offloaded it becomes evictable, and an evicted range is served by fetching it
-back. Reads of such a range fail while the block store is unreachable. Whether a
-box would keep serving through an outage therefore depends on how much of its
-data is currently block-store-only, and that number moves with every eviction and
-every warm.
-
-The server reports it per share:
-
-- `dfsctl share show <name>` prints `Offline Safe: yes`, or
-  `no (12.4 GiB remote-only across 431 ranges)`.
-- Prometheus: `dittofs_offline_safe{share}` (1/0),
-  `dittofs_offline_remote_only_bytes{share}` and
-  `dittofs_offline_remote_only_ranges{share}`.
-
-Zero remote-only bytes is a provably offline-safe share. To get there, warm
-the share and stop it evicting again:
-
-```bash
-dfsctl share warm /archive
-dfsctl share edit /archive --retention pin
-```
-
-The measurement never guesses. Three cases report **unknown** rather than a
-number, because a zero would read as "provably safe" for exactly the shares
-whose data is most likely to be remote-only:
-
-- the share's journal does not track residency (the in-memory backend),
-- the journal has not been seeded from the manifest yet — it holds no
-  record of ranges that live only in the block store, so they would count as
-  absent rather than remote-only,
-- the block store is closed,
-- the residency scan did not finish inside the request's deadline.
-
-An unknown share reports `dittofs_offline_safe = 0` but publishes no byte
-counts, so a dashboard cannot mistake it for a clean fully-local share.
-
-A share whose block store was swapped out after it had already evicted is the
-awkward case: the evicted ranges stay recorded in the journal and are replayed
-from its cold log on the next open, but there is no longer anything to fetch them
-from, so they never serve. Those shares report a non-zero remote-only figure
-rather than being waved through as safe.
-
-The figure is **bytes, not blocks**. The journal tracks byte ranges, which
-split and merge independently of manifest chunk rows; a block count would
-need a metadata walk to produce and would not answer "how much would break
-offline" any more precisely.
-
-Note this is read availability only. Offline **writes** already work — writes
-land in the journal and drain when the block store returns.
-
-
 The schedule restarts from zero on server start, so a box restarted more
 often than `auto_interval` never completes a scan. Lower the interval on a
 host that reboots frequently.
@@ -710,71 +482,6 @@ host that reboots frequently.
 Env-var mapping:
 `DITTOFS_INTEGRITY_AUTO_ENABLED`,
 `DITTOFS_INTEGRITY_AUTO_INTERVAL`.
-
-#### Journal size limit & write backpressure
-
-The on-disk journal is a **temporary write-through tier**, not the durable copy —
-every chunk is offloaded to the block store and may be evicted locally once
-offloaded. To stop a fast writer with a slow/lagging uploader from filling the
-host volume, the journal is bounded and writes apply **graceful, observable
-backpressure** when it fills:
-
-- **Bounded journal.** The ceiling is the per-share `--journal-size`. With none
-  set, the journal claims a soft default of 80% of the volume's free space at open
-  time — see [Journal size and eviction](#journal-size-and-eviction) for the full
-  rule and for why eviction can only reclaim already-offloaded blocks. The cap is
-  enforced **lazily, on the write/flush path** (it evicts offloaded segments to
-  make room for new writes); it
-  is **not** a background reaper, so on an idle or read-only workload the
-  resident local tier is not shrunk toward the cap. To reclaim local disk — or
-  to force cold, remote-served reads for read-path benchmarking — evict on
-  demand with `dfsctl store block evict` (drops the read buffer and drains
-  resident offloaded blocks; never drops not-yet-uploaded data). Read-miss
-  volume (the read-amplification signal) is observable via the
-  `dittofs_datapath_block_range_read_bytes_total` metric.
-- **Backpressure stall.** When the journal is full and every resident chunk is
-  still unsynced, a write **stalls** waiting for the syncer to drain to the
-  block store and free space, rather than failing. The stall is bounded by
-  `blockstore.journal.backpressure_max_wait` (default **60s**).
-- **Hard failure only when the block store cannot drain.** If it is
-  **unhealthy** (genuinely unreachable, not merely slow) or the backpressure
-  window is exceeded, the write fails with disk-full
-  (`NFS3ERR_NOSPC` / `NFS4ERR_NOSPC` / SMB `STATUS_DISK_FULL`) instead of
-  silently filling the disk.
-
-**Diagnosing a stall.** A stall warns once with the state that explains it, so a
-stalled writer is never a mystery — see
-[Journal size and eviction](#journal-size-and-eviction) for how to read the
-fields:
-
-```
-WARN  journal local store full: nothing evictable, backpressuring writes
-      dir=… disk_bytes=… max_local_bytes=… unsynced_bytes=…
-      eviction_suspended=… eviction_pinned=…
-```
-
-These knobs live in the top-level server-config `blockstore.journal` block:
-
-```yaml
-blockstore:
-  journal:
-    backpressure_max_wait: 60s               # Max time a write stalls for the
-                                             # syncer to drain before disk-full.
-    max_log_bytes: 2147483648                # Append-log pressure budget
-                                             # (see above). 0/unset = deduced.
-```
-
-`default_remote_cache_size` was deleted along with its "10 GiB when a remote is
-configured, deduced size otherwise" conditional; the per-share `--journal-size`
-is now the whole of the sizing policy.
-
-Env-var mapping (dot-path convention):
-`DITTOFS_BLOCKSTORE_JOURNAL_BACKPRESSURE_MAX_WAIT`,
-`DITTOFS_BLOCKSTORE_JOURNAL_MAX_LOG_BYTES`.
-
-> Prometheus metrics for cache pressure / unsynced bytes are tracked
-> separately (server-wide instrumentation, issue #1188); today the signal is
-> the structured logs above.
 
 #### Recycle bin (trash)
 

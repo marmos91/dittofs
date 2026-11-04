@@ -77,8 +77,9 @@ type CommitResponse struct {
 
 // Commit handles NFS COMMIT (RFC 1813 Section 3.3.21).
 // Flushes cached unstable writes to stable storage for a file byte range.
-// Delegates to BlockStore.Flush and MetadataService.FlushPendingWriteForFile.
-// Triggers cache-to-store transfer; returns WCC data and server boot-time write verifier.
+// An empty file is trivially durable and succeeds with WCC data and the boot-time
+// write verifier; any other answers NFS3ErrIO, since no content store is wired
+// (common.ErrNoContentStore).
 // Errors: NFS3ErrStale (handle does not resolve), NFS3ErrIsDir (directory handle),
 // NFS3ErrAccess / NFS3ErrRofs (no write permission on the file or its share),
 // NFS3ErrIO (flush failure).
@@ -218,7 +219,7 @@ func (h *Handler) Commit(
 	wccAfter := h.convertFileAttrToNFS(handle, &file.FileAttr)
 
 	// Check if there's content to flush
-	if file.PayloadID == "" {
+	if file.PayloadID == "" || file.Size == 0 {
 		logger.DebugCtx(ctx.Context, "COMMIT: no content to flush")
 		logger.DebugCtx(ctx.Context, "COMMIT successful (no content)", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
 		return &CommitResponse{
@@ -231,67 +232,11 @@ func (h *Handler) Commit(
 
 	logger.DebugCtx(ctx.Context, "COMMIT: flushing data", "share", ctx.Share)
 
-	blockStore, err := common.ResolveForWrite(ctx.Context, h.Registry, handle)
-	if err != nil {
-		logger.ErrorCtx(ctx.Context, "COMMIT failed: block store not available", "client", clientIP, "error", err)
-		return &CommitResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-			AttrBefore:      wccBefore,
-			AttrAfter:       wccAfter,
-		}, nil
-	}
-
-	// Flush cache to block store (non-blocking)
-	//
-	// NOTE: Flush is non-blocking because:
-	//   - Data is already safe in local store (crash-safe)
-	//   - macOS sends COMMIT every 4MB, so blocking would kill performance
-	//   - Background uploads happen via eager upload mechanism
-	//   - This matches the NFS3 spec which allows async commits
-	//
-	// Per RFC 1813 Section 3.3.21, the server MAY choose when data reaches
-	// stable storage. Our WAL cache provides the durability guarantee.
-	//
-	// Routed through common.CommitBlockStore so any future []ChunkRef
-	// plumbing lands in one place (see common/doc.go).
-	flushErr := common.CommitBlockStore(ctx.Context, blockStore, file.PayloadID)
-	if flushErr != nil {
-		logError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", xdr.LazyHandle(req.Handle), "payload_id", file.PayloadID, "client", clientIP)
-
-		// Try to get updated attributes for error response
-		if updatedFile, getErr := metaSvc.GetFile(ctx.Context, handle); getErr == nil {
-			wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
-		}
-
-		return &CommitResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-			AttrBefore:      wccBefore,
-			AttrAfter:       wccAfter,
-		}, nil
-	}
-
-	// Flush pending metadata for this specific file.
-	// Relaxed metadata commit: COMMIT already forced the block data durable
-	// above; the size/mtime fsync is deferred to the background syncer, with
-	// the journal size reconcile on restart as the crash-safety net.
-	flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, handle, false)
-	if metaErr != nil {
-		logger.WarnCtx(ctx.Context, "COMMIT: metadata flush failed", "handle", xdr.LazyHandle(req.Handle), "error", metaErr)
-		// Continue - content is flushed, metadata will be fixed eventually
-	} else if flushed {
-		logger.DebugCtx(ctx.Context, "COMMIT: flushed pending metadata", "handle", xdr.LazyHandle(req.Handle))
-	}
-
-	// wccAfter is already correct: GetFileCached returned the file with pending
-	// writes merged (size, mtime applied). FlushPendingWriteForFile persists those
-	// same values to BadgerDB -- no need to read them back.
-
-	logger.DebugCtx(ctx.Context, "COMMIT successful", "file", file.PayloadID, "offset", req.Offset, "count", req.Count, "client", clientIP)
+	// A commit makes written content durable, and no content store is wired.
 	return &CommitResponse{
-		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+		NFSResponseBase: NFSResponseBase{Status: types.StatusForErr(common.ErrNoContentStore)},
 		AttrBefore:      wccBefore,
 		AttrAfter:       wccAfter,
-		WriteVerifier:   serverBootTime,
 	}, nil
 }
 

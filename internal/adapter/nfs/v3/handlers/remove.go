@@ -62,8 +62,9 @@ type RemoveResponse struct {
 
 // Remove handles NFS REMOVE (RFC 1813 Section 3.3.12).
 // Deletes a non-directory file from a parent directory (symlinks and special files included).
-// Delegates to MetadataService.RemoveFile then BlockStore.Delete for content cleanup.
-// Removes directory entry and file metadata; deletes block data; returns parent WCC data.
+// Delegates to MetadataService.RemoveFile; removes the directory entry and file
+// metadata and returns parent WCC data. No content store is wired, so no content
+// is deleted here.
 // Errors: NFS3ErrNoEnt, NFS3ErrIsDir (use RMDIR), NFS3ErrAcces, NFS3ErrIO.
 func (h *Handler) Remove(
 	ctx *NFSHandlerContext,
@@ -88,7 +89,7 @@ func (h *Handler) Remove(
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 
-	metaSvc, blockStore, err := getServicesForHandle(h.Registry, ctx.Context, dirHandle)
+	metaSvc, err := getMetadataService(h.Registry)
 	if err != nil {
 		logger.ErrorCtx(ctx.Context, "REMOVE failed: service not available", "client", clientIP, "error", err)
 		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
@@ -184,29 +185,6 @@ func (h *Handler) Remove(
 			DirWccBefore:    wccBefore,
 			DirWccAfter:     wccAfter,
 		}, nil
-	}
-
-	// After successfully removing the metadata, attempt to delete the actual
-	// file content. This is done after metadata removal to ensure consistency:
-	// if metadata is removed but content deletion fails, the content becomes
-	// orphaned but the file is still properly deleted from the client's view.
-	//
-	// Note: With async write mode, pending writes are flushed during COMMIT.
-	// REMOVE should only delete what's already in the block store.
-	// Any unflushed cache data will be cleaned up by cache eviction.
-
-	if removedFileAttr.PayloadID != "" {
-		// Pass nil blocks: the block store resolves this payload's manifest
-		// and reaps each row's refcount, so the chunks become GC-eligible
-		// (#1433). Passing nil here is the supported file-removal contract.
-		if err := blockStore.Delete(ctx.Context, string(removedFileAttr.PayloadID), nil); err != nil {
-			// Log but don't fail the operation - metadata is already removed
-			logger.WarnCtx(ctx.Context, "REMOVE: failed to delete content", "name", req.Filename, "payload_id", removedFileAttr.PayloadID, "error", err)
-			// This is non-fatal - the file is successfully removed from metadata
-			// The orphaned content can be cleaned up later via garbage collection
-		} else {
-			logger.DebugCtx(ctx.Context, "REMOVE: deleted content", "name", req.Filename, "payload_id", removedFileAttr.PayloadID)
-		}
 	}
 
 	// H9: use the parent attributes captured atomically with the removal,

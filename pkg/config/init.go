@@ -154,17 +154,6 @@ controlplane:
     # Refresh token lifetime
     refresh_token_duration: 168h  # 7 days
 
-# Block Store Defaults
-# DittoFS auto-detects system resources (memory, CPU) at startup and
-# derives optimal block store settings per share:
-#   - JournalSize: 25% of available memory (per share)
-#   - ReadBufferSize: 12.5% of available memory (per share)
-#   - ParallelSyncs: adaptive (upload concurrency auto-tunes to saturate the uplink)
-#   - ParallelFetches: max(8, CPU count * 2)
-#
-# View current deduced values:
-#   dfs config show --deduced
-
 # Metadata engine tunables (optional)
 # BadgerDB block/index cache sizes (MiB). Both auto-size from available RAM
 # when unset (~15% / ~7.5%, floors 512/256 MiB, ceilings 4 GiB/2 GiB), so a

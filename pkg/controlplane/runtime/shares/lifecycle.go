@@ -4,22 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
-	"slices"
 	"strings"
-	"sync"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -31,15 +22,14 @@ func (s *Service) AddShare(
 	metadataSvc MetadataServiceRegistrar,
 	blockStoreProvider BlockStoreConfigProvider,
 	localStoreDefaults *LocalStoreDefaults,
-	syncerDefaults *SyncerDefaults,
 ) error {
 	// Fold the name before anything keys off it: spellings differing only in
-	// leading slashes share a journal directory, so the second one must fail the
-	// reservation below as a duplicate instead of opening the first one's journal.
+	// leading slashes share a state directory, so the second one must fail the
+	// reservation below as a duplicate instead of adopting the first one's.
 	//
 	// The fold touches only leading slashes. The name arrives from a persisted
 	// share row, where a '%' is a character and not an escape, so decoding it
-	// would key the journal directory and the registry off a name no row holds.
+	// would key the state directory and the registry off a name no row holds.
 	config.Name = metadata.NormalizeShareName(config.Name)
 
 	// A share whose name cannot encode a file handle can never serve a file, so
@@ -48,11 +38,7 @@ func (s *Service) AddShare(
 		return err
 	}
 
-	// A share's durable tier is its block store: the journal holds bytes only
-	// until they are synced out, and eviction reclaims journal space on the
-	// promise that a durable copy exists elsewhere. A share without a block
-	// store has no such copy, so eviction could drop the only one. Refuse the
-	// share instead of building one that can lose data.
+	// Every share references the block store its content is to be kept in.
 	if config.BlockStoreID == "" {
 		return fmt.Errorf("share %q has no block store: every share must reference one", config.Name)
 	}
@@ -65,14 +51,11 @@ func (s *Service) AddShare(
 	}
 
 	// Phase 0: Reserve the share name under s.mu BEFORE any side-effecting init
-	// (root-dir create, block-store start, metadata RegisterStoreForShare). This
-	// closes the AddShare(sameName) race (REVIEW M2): the OLD ordering let two
-	// racing callers both run RegisterStoreForShare (last writer wins on the
-	// MetadataService store map) and only THEN recheck the registry under the
-	// lock — so the loser would tear down its block store yet leave its metadata
-	// store registered, pointing the MetadataService at a different store than
-	// the registry exposes. Reserving here serializes on the name first: the
-	// loser fails before touching any shared store, so no mismatch can form.
+	// (root-dir create, remote acquire, metadata RegisterStoreForShare), so two
+	// racing callers cannot both run RegisterStoreForShare (last writer wins on
+	// the MetadataService store map) and leave the metadata service pointing at a
+	// different store than the registry exposes. The loser fails before touching
+	// any shared store.
 	//
 	// The reservation is NOT inserted into registry, so a half-built share is
 	// never visible to handlers; it is converted to a registry entry only in
@@ -97,34 +80,34 @@ func (s *Service) AddShare(
 		return err
 	}
 
-	// Phase 2: Create the per-share BlockStore. Every share has a journal, so
-	// this is unconditional — there is no longer a share without local storage.
-	if err := s.createBlockStoreForShare(ctx, share, config, blockStoreProvider, metadataStore, localStoreDefaults, syncerDefaults); err != nil {
-		return fmt.Errorf("failed to create block store for share %q: %w", config.Name, err)
+	// Phase 2: Create the share's state directory, which holds the migration
+	// journal, the persistent gc-state and the snapshots tree. None when no
+	// root is configured.
+	if localStoreDefaults != nil && localStoreDefaults.JournalRoot != "" {
+		dir := ShareJournalDir(localStoreDefaults.JournalRoot, config.Name)
+		if err := checkUnderJournalRoot(localStoreDefaults.JournalRoot, dir); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create share directory: %w", err)
+		}
+		share.localStoreDir = dir
+		share.gcStateRoot = filepath.Join(dir, "gc-state")
+		warnV1Journal(config.Name, dir)
 	}
+	share.writeback = config.RelaxedMetadataCommit
+
+	// Acquire the share's ref-counted remote store. Block GC reaches the remote
+	// through it.
+	_, remoteConfigID, err := s.acquireRemoteStore(ctx, config.BlockStoreID, blockStoreProvider)
+	if err != nil {
+		return fmt.Errorf("failed to create remote store for share %q: %w", config.Name, err)
+	}
+	share.remoteConfigID = remoteConfigID
 
 	// cleanupShare releases resources for a share that failed to fully initialize.
 	cleanupShare := func() {
-		if share.BlockStore != nil {
-			_ = share.BlockStore.Close()
-		}
-		if share.remoteConfigID != "" {
-			s.releaseRemoteStore(share.remoteConfigID)
-		}
-	}
-
-	// Phase 2.5: Reconcile metadata file sizes against the local journal's durable
-	// high-water mark (#1687 safety net). WRITE/COMMIT now commit file size via a
-	// relaxed (deferred-fsync) metadata transaction, so a crash between a relaxed
-	// size commit and its background fsync can leave metadata.Size smaller than the
-	// data actually made durable in the journal. This grows metadata.Size up to the
-	// journal size (max-only, never shrinks) BEFORE the share is registered and any
-	// protocol handler can read it, so ACK'd bytes are never truncated.
-	if share.BlockStore != nil {
-		if err := reconcileMetadataSizeFromJournal(ctx, metadataStore, share.BlockStore); err != nil {
-			cleanupShare()
-			return fmt.Errorf("failed to reconcile metadata sizes for share %q: %w", config.Name, err)
-		}
+		s.releaseRemoteStore(remoteConfigID)
 	}
 
 	// Phase 3: Register metadata store. Safe to call unconditionally now: the
@@ -136,18 +119,11 @@ func (s *Service) AddShare(
 		return fmt.Errorf("failed to configure metadata for share: %w", err)
 	}
 
-	// Apply the share's relaxed metadata commit tier, stashed by
-	// createBlockStoreForShare. Set explicitly (true or false) so a re-add that
-	// toggles it off is honored. Only the concrete *metadata.Service implements
-	// the setter.
+	// Apply the share's relaxed metadata commit tier. Set explicitly (true or
+	// false) so a re-add that toggles it off is honored. Only the concrete
+	// *metadata.Service implements the setter.
 	if wb, ok := metadataSvc.(MetadataWritebackSetter); ok {
 		wb.SetShareWriteback(config.Name, share.writeback)
-	}
-
-	// Let size commits consult the block store's durable extent. The resolver is
-	// share-agnostic, so re-installing it on every AddShare is idempotent.
-	if de, ok := metadataSvc.(MetadataDurableExtentSetter); ok {
-		de.SetDurableExtentResolver(s.durableExtent)
 	}
 
 	// Phase 4: Convert the reservation into a registry entry under s.mu.
@@ -156,10 +132,9 @@ func (s *Service) AddShare(
 	// exist here; we assert it defensively and hand off the reservation.
 	s.mu.Lock()
 	_, exists := s.registry[config.Name]
-	// Shutdown may have closed every block store while the phases above were
-	// running. Publishing now would hand protocol handlers a share whose carve
-	// dispatcher the fence has already run past, so this share is dropped
-	// instead — its persisted row is still there for the next boot to load.
+	// Shutdown may have run while the phases above were running; a share
+	// published now would outlive the fence, so it is dropped instead — its
+	// persisted row is still there for the next boot to load.
 	closed := s.closed
 	if closed || exists {
 		// The exists branch should be unreachable while the reservation is
@@ -178,173 +153,17 @@ func (s *Service) AddShare(
 		return fmt.Errorf("share %q already exists", config.Name)
 	}
 	s.registry[config.Name] = share
-	if share.BlockStore != nil {
-		s.blockStoreCache.Store(config.Name, share.BlockStore)
-	}
 	delete(s.reservations, config.Name)
 	reservationHeld = false
 	s.mu.Unlock()
 
+	logger.Info("Share registered",
+		"share", config.Name,
+		"retention", config.RetentionPolicy,
+		"retention_ttl", config.RetentionTTL)
+
 	s.notifyShareChange()
 
-	return nil
-}
-
-// durableExtent reports how far a payload's bytes are on stable storage in its
-// share's block store. A share with no block store answers "unknown" (false),
-// and the caller then commits the size unclamped as before.
-//
-// It is the commit-time half of the size invariant whose restart-time half is
-// reconcileMetadataSizeFromJournal: a persisted size never runs ahead of the
-// durable data, and share start grows it back up to that data.
-func (s *Service) durableExtent(shareName string, payloadID metadata.PayloadID) (int64, bool) {
-	bs, err := s.GetBlockStoreForShare(shareName)
-	if err != nil || bs == nil {
-		return 0, false
-	}
-	return bs.DurableExtent(context.Background(), payloadID)
-}
-
-// payloadSizer is the narrow read the size reconcile needs: one file's persisted
-// size, addressed by payload, without the link count, chunk manifest and derived
-// path GetFileByPayloadID also loads and the reconcile then throws away.
-type payloadSizer interface {
-	FileSizeByPayloadID(ctx context.Context, payloadID metadata.PayloadID) (uint64, bool, error)
-}
-
-// payloadSizeLookup returns the cheapest size-by-payload read the store offers,
-// falling back to the full GetFileByPayloadID load for stores that have none.
-func payloadSizeLookup(metadataStore metadata.Store) func(context.Context, metadata.PayloadID) (uint64, bool, error) {
-	if ps, ok := metadataStore.(payloadSizer); ok {
-		return ps.FileSizeByPayloadID
-	}
-	return func(ctx context.Context, payloadID metadata.PayloadID) (uint64, bool, error) {
-		f, err := metadataStore.GetFileByPayloadID(ctx, payloadID)
-		if err != nil {
-			if metadata.IsNotFoundError(err) {
-				return 0, false, nil
-			}
-			return 0, false, err
-		}
-		if f == nil {
-			return 0, false, nil
-		}
-		return f.Size, true, nil
-	}
-}
-
-// staleSize names a file whose persisted metadata size trails the journal's
-// durable high-water mark, and the mark to grow it to.
-type staleSize struct {
-	id          string
-	journalSize uint64
-}
-
-// findStaleSizes reports which of the journal's files have a persisted metadata
-// size below their journal high-water mark. The comparison is read-only and
-// order-free, so workers take contiguous slices of the list rather than one
-// goroutine per file: share start compares every locally-resident file, and on a
-// store holding millions of them that is what the share's visibility waits on.
-//
-// A real store error (I/O, corruption) aborts the scan rather than being
-// swallowed — skipping a file would leave its metadata.Size stale and truncate
-// reads. A file the metadata store does not know is an orphan journal entry and
-// is simply skipped.
-func findStaleSizes(ctx context.Context, metadataStore metadata.Store, localStore journal.LocalStore, files []string) ([]staleSize, error) {
-	if len(files) == 0 {
-		return nil, nil
-	}
-	workers := min(len(files), runtime.NumCPU(), 8)
-	chunk := (len(files) + workers - 1) / workers
-
-	sizeOf := payloadSizeLookup(metadataStore)
-	var (
-		mu    sync.Mutex
-		stale []staleSize
-	)
-	g, gctx := errgroup.WithContext(ctx)
-	for start := 0; start < len(files); start += chunk {
-		batch := files[start:min(start+chunk, len(files))]
-		g.Go(func() error {
-			var found []staleSize
-			for _, id := range batch {
-				journalSize, ok := localStore.FileSize(gctx, journal.FileID(id))
-				if !ok || journalSize < 0 {
-					continue
-				}
-				size, known, err := sizeOf(gctx, metadata.PayloadID(id))
-				if err != nil {
-					return fmt.Errorf("reconcile size: lookup payload %s: %w", id, err)
-				}
-				// Grow only, and compare in uint64: a size past the journal mark
-				// must never cast negative and shrink the file.
-				if !known || size >= uint64(journalSize) {
-					continue
-				}
-				found = append(found, staleSize{id: id, journalSize: uint64(journalSize)})
-			}
-			if len(found) == 0 {
-				return nil
-			}
-			mu.Lock()
-			stale = append(stale, found...)
-			mu.Unlock()
-			return nil
-		})
-	}
-	if err := g.Wait(); err != nil {
-		return nil, err
-	}
-	return stale, nil
-}
-
-// reconcileMetadataSizeFromJournal grows each file's metadata size up to the
-// local journal's durable high-water mark (#1687 crash-safety net). It is the
-// load-bearing counterpart to the relaxed (deferred-fsync) size commits done on
-// WRITE/COMMIT: if the server crashed after the data was fsync'd into the journal
-// but before the relaxed metadata size fsync ran, metadata.Size is stale/smaller
-// than the durable data. Reading that file would truncate ACK'd bytes (#588
-// class). This runs on share start, before the share is visible to handlers, and
-// only ever GROWS the size — a legitimate shrink (SetAttr/truncate) commits
-// strictly and is never rolled back here.
-//
-// bs.Local.ListFiles/FileSize are served from the journal's in-memory index
-// (populated by recover() at open), so the common no-mismatch case is cheap: a
-// point read of metadata per file, and a strict UpdateAttrs only on an actual gap.
-func reconcileMetadataSizeFromJournal(ctx context.Context, metadataStore metadata.Store, bs *engine.Store) error {
-	if bs == nil {
-		return nil
-	}
-	localStore := bs.Local()
-	if localStore == nil {
-		return nil
-	}
-	ids := localStore.ListFiles(ctx)
-	files := make([]string, 0, len(ids))
-	for _, id := range ids {
-		files = append(files, string(id))
-	}
-	stale, err := findStaleSizes(ctx, metadataStore, localStore, files)
-	if err != nil {
-		return err
-	}
-	for _, m := range stale {
-		// Grow to the journal high-water mark under a STRICT transaction; re-read
-		// inside the txn so a concurrent legitimate update can't be clobbered.
-		if err := metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
-			cur, err := tx.GetFileByPayloadID(ctx, metadata.PayloadID(m.id))
-			if err != nil {
-				return err
-			}
-			if cur == nil || cur.Size >= m.journalSize {
-				return nil // another writer already caught up; never shrink
-			}
-			cur.Size = m.journalSize
-			return tx.UpdateAttrs(ctx, cur)
-		}); err != nil {
-			return fmt.Errorf("reconcile size for payload %s: %w", m.id, err)
-		}
-	}
 	return nil
 }
 
@@ -574,20 +393,15 @@ func (s *Service) prepareShare(
 	return share, metadataStore, nil
 }
 
-// RemoveShare removes a share from the registry and closes its BlockStore.
+// RemoveShare removes a share from the registry and releases its remote store.
 // Does not close the underlying metadata store.
 //
 // Teardown is ordered best-effort (REVIEW M4): every step runs even if an
 // earlier one fails, and the per-step errors are aggregated into the returned
-// error so the registry / snapshot-dir / block-store / remote-ref state is
-// never left half-removed by an early return. The registry entry is dropped
-// first (under the lock) so the share disappears from routing immediately;
-// the remaining steps are pure resource teardown.
-//
-// bs.Close() is now drain-safe: it takes the engine's lifecycle
-// write lock, which blocks until all in-flight WriteAt/ReadAt/Flush ops on the
-// store have completed, so calling it here outside s.mu can no longer race a
-// client mid-transfer into a torn op or panic.
+// error so the registry / snapshot-dir / remote-ref state is never left
+// half-removed by an early return. The registry entry is dropped first (under
+// the lock) so the share disappears from routing immediately; the remaining
+// steps are pure resource teardown.
 func (s *Service) RemoveShare(name string) error {
 	s.mu.Lock()
 	share, exists := s.registry[name]
@@ -595,16 +409,10 @@ func (s *Service) RemoveShare(name string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("share %q not found", name)
 	}
-	bs := share.BlockStore
 	remoteConfigID := share.remoteConfigID
 	localStoreDir := share.localStoreDir
 	delete(s.registry, name)
-	s.blockStoreCache.Delete(name)
 	s.mu.Unlock()
-
-	// Cancel any in-flight warm job for this share so it cannot keep fetching
-	// into a block store that is about to be closed.
-	s.warmJobs.cancelForShare(name)
 
 	var errs []error
 
@@ -621,15 +429,8 @@ func (s *Service) RemoveShare(name string) error {
 		}
 	}
 
-	if bs != nil {
-		if err := bs.Close(); err != nil {
-			logger.Warn("Failed to close BlockStore for share", "share", name, "error", err)
-			errs = append(errs, fmt.Errorf("close block store for share %q: %w", name, err))
-		}
-	}
-
 	// Always release the remote-store reference even if a prior step errored,
-	// otherwise a Close failure would leak the shared remote ref-count.
+	// otherwise a failure would leak the shared remote ref-count.
 	if remoteConfigID != "" {
 		s.releaseRemoteStore(remoteConfigID)
 	}
@@ -643,201 +444,35 @@ func (s *Service) RemoveShare(name string) error {
 	return errors.Join(errs...)
 }
 
-// CloseBlockStores closes every registered share's block store. It is the
-// shutdown fence between the data plane and the metadata stores, and it MUST
-// run before they close.
-//
-// A share's block store owns a carve dispatcher that ticks on its own interval
-// and commits FileChunk manifest rows through that share's metadata store.
-// Nothing else stops it: it runs on a background context, so cancelling the
-// runtime's does not reach it. Closing here stops the loops, drains the
-// uploads in flight and joins the goroutines while the metadata store can
-// still receive their commits — otherwise every tick after the close fails
-// with "sql: database is closed" and the chunks it was carving stay local and
-// unmirrored.
-//
-// Closing also releases the journals. Each share holds its append log and
-// index open for as long as it is registered; nothing on a Unix filesystem
-// reports that — an open file can still be unlinked — but the handles are
-// real, and a platform that refuses to remove a file while it is open
-// surfaces the leak as a directory that cannot be cleaned up.
-//
-// Close is idempotent, so a share removed afterwards closes harmlessly again.
-// The registry is left intact: this is resource teardown, not removal.
-//
-// The shares close concurrently, and ctx bounds the WAIT — not any single
-// close. Concurrency is what keeps a slow share's cost from being paid once per
-// share, and it is also what lets one budget cover them all: the deadline is
-// wall clock every share shares rather than a slice each. A ctx with no
-// deadline waits indefinitely.
-//
-// decision: nothing here can bound a close itself. bs.Close takes no context
-// and opens by waiting on closeMu until every in-flight data op on that store
-// returns, and stopping the adapters does not join the handlers that may still
-// be inside one. So when the budget expires this RETURNS, naming the shares
-// still closing, and leaves them running.
-//
-// That is a trade, not a safety margin. The degraded path reintroduces the very
-// harm this ordering exists to prevent: the wedged share's in-flight carve
-// commits meet a metadata store that is closing and fail, and the chunks it was
-// carving stay local and unmirrored. It is chosen because waiting instead is
-// worse in kind rather than in degree — the process reaches its own self-exit
-// deadline and is killed with EVERY share's metadata store unclosed, so one
-// share's lost carve becomes all of them. An operator who sets a shutdown
-// timeout is asking for exactly this trade.
-//
-// Withdraw it by bounding the closeMu wait, which would make the close itself
-// interruptible and the expiry branch dead.
-func (s *Service) CloseBlockStores(ctx context.Context) {
-	// The write lock, and the flag set inside it, are what make this snapshot a
-	// fence rather than a photograph: a share published after it would run a
-	// carve dispatcher past the close. Every path that publishes one takes mu
-	// and refuses once this is set, so ordering here orders them.
+// CloseBlockStores is the shutdown fence: once it has run no share is
+// published any more, so nothing added during shutdown outlives the metadata
+// stores the shutdown is about to close. It never returns early; ctx is kept
+// for the lifecycle's closer contract.
+func (s *Service) CloseBlockStores(_ context.Context) {
 	s.mu.Lock()
 	s.closed = true
-	stores := make(map[string]*engine.Store, len(s.registry))
-	for name, share := range s.registry {
-		if share.BlockStore != nil {
-			stores[name] = share.BlockStore
-		}
-	}
 	s.mu.Unlock()
-
-	// Filled before anything is spawned, so every write to the map happens on
-	// this goroutine and mu is left guarding the deletes alone. Inserting
-	// inside the spawn loop instead would race a delete from a store that
-	// closed while the loop was still going — a map write concurrent with
-	// another goroutine's delete is a fatal error, not a recoverable panic,
-	// and it would land on the one path where aborting costs what this
-	// ordering exists to protect.
-	stillOpen := make(map[string]struct{}, len(stores))
-	for name := range stores {
-		stillOpen[name] = struct{}{}
-	}
-
-	var (
-		mu sync.Mutex
-		wg sync.WaitGroup
-	)
-	for name, bs := range stores {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := bs.Close(); err != nil {
-				logger.Warn("Shutdown: failed to close block store for share", "share", name, "error", err)
-			}
-			mu.Lock()
-			delete(stillOpen, name)
-			mu.Unlock()
-		}()
-	}
-
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-		mu.Lock()
-		stuck := slices.Collect(maps.Keys(stillOpen))
-		mu.Unlock()
-		slices.Sort(stuck)
-		logger.Warn("Shutdown: block stores did not finish closing within the budget; "+
-			"closing the metadata stores anyway, so any carve still in flight on these shares fails "+
-			"and its chunks stay local and unmirrored",
-			"shares", stuck)
-	}
 }
 
-// SeedColdFromManifest seeds a cold journal interval for every FileChunk in the
-// share's metadata manifest so a subsequent read faults the bytes in from the
-// remote store instead of zero-filling. It is used when the journal has no local
-// copy of the data — after a snapshot restore wiped the local tier, or after a
-// pre-journal upgrade archived the legacy local layout aside. Remote-backed
-// shares only (the caller gates on that); the cold fetch it arms is
-// BLAKE3-verified. One ListFileChunks per payload — O(chunks), acceptable for a
-// rare control-plane / startup path — and the seeds themselves are batched, so
-// the local tier's durable write costs one per batch rather than one per file.
-//
-// Seeding says only where the bytes are, never what they are: the cold fetch it
-// arms verifies its own BLAKE3 when a read faults the range in.
-func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metadata.Store) error {
-	var payloads, chunks int
-	// EnumeratePayloads is a callback iteration with no cheap denominator, so
-	// the heartbeat reports a running count rather than a fraction.
-	started := time.Now()
-	lastLog := started
-	logger.Info("seeding cold intervals from the metadata manifest")
-	// Extents are buffered across payloads and flushed as one durable write. The
-	// bound is on extents rather than payloads because that is what the buffer
-	// actually holds: a share of huge files would otherwise buffer the whole
-	// manifest before it hit any payload count worth flushing at.
-	//
-	// It bounds what the buffering adds, not the peak: a payload whose own extents
-	// exceed the bound goes in whole and flushes on the next check. Splitting one
-	// would buy nothing — ListFileChunks has already materialized that payload's
-	// rows in full before this sees them, so the slice is live either way.
-	batch := make([]engine.ColdSeed, 0, 256)
-	buffered := 0
-	flush := func() error {
-		if len(batch) == 0 {
-			return nil
-		}
-		if err := bs.SeedColdBatch(ctx, batch); err != nil {
-			return fmt.Errorf("seed cold %d payloads from %s: %w", len(batch), batch[0].PayloadID, err)
-		}
-		batch, buffered = batch[:0], 0
-		return nil
-	}
-	err := metaStore.EnumeratePayloads(ctx, func(payloadID string) error {
-		rows, err := metaStore.ListFileChunks(ctx, payloadID)
-		if err != nil {
-			return fmt.Errorf("list manifest for %s: %w", payloadID, err)
-		}
-		extents := make([][2]int64, 0, len(rows))
-		for _, row := range rows {
-			if row == nil {
-				continue
-			}
-			off, ok := block.ParseChunkOffset(row.ID)
-			if !ok {
-				// Which range this row describes cannot be recovered — that is what
-				// makes it unplaceable — so it is logged verbatim and seeding
-				// continues: one such row is not worth stranding every other share.
-				// Leaving the range unseeded is safe because the engine reconciles an
-				// uncovered read against the manifest whether or not the range is
-				// cold, so it refuses with ErrManifestInconsistent rather than serving
-				// zeros.
-				logger.Error("cold seed: unplaceable manifest row, range will not be seeded",
-					"payload", payloadID, "row", row.ID, "size", row.DataSize)
-				continue
-			}
-			extents = append(extents, [2]int64{int64(off), int64(row.DataSize)})
-			chunks++
-		}
-		if len(extents) > 0 {
-			batch = append(batch, engine.ColdSeed{PayloadID: payloadID, Extents: extents})
-			buffered += len(extents)
-		}
-		if buffered >= coldSeedBatchExtents {
-			if err := flush(); err != nil {
-				return err
-			}
-		}
-		payloads++
-		if time.Since(lastLog) >= coldSeedProgressInterval {
-			lastLog = time.Now()
-			logger.Info("seeding cold intervals from the metadata manifest",
-				"payloads", payloads, "chunks", chunks,
-				"elapsed", time.Since(started).Round(time.Second))
-		}
-		return nil
-	})
+// v1JournalDir is where the previous engine kept a share's journal inside the
+// share's state directory: its segments (*.seg) and its format stamp.
+const v1JournalDir = "journal"
+
+// warnV1Journal logs a WARN when the share's state directory still holds the
+// previous engine's journal. This build reads none of it, so content written
+// only to that journal is not served; the directory is left untouched. It runs
+// once per share start.
+func warnV1Journal(shareName, stateDir string) {
+	dir := filepath.Join(stateDir, v1JournalDir)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return err
+		return
 	}
-	return flush()
+	for _, e := range entries {
+		if e.Name() == "format" || strings.HasSuffix(e.Name(), ".seg") {
+			logger.Warn("share state directory holds a journal from the previous engine; this build cannot read its content",
+				"share", shareName, "dir", dir)
+			return
+		}
+	}
 }

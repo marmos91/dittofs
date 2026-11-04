@@ -7,13 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/mfsymlink"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -195,31 +193,22 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 3: Flush cached data to block store (ensures durability)
+	// Step 3: Snapshot the handle for the teardown
 	// ========================================================================
 
-	// Flush cached data to ensure durability.
-	// Unlike NFS COMMIT which is non-blocking, SMB CLOSE requires immediate durability.
-	// Routed through common.CommitBlockStore so any future []ChunkRef
-	// plumbing lands in one place (see common/doc.go).
+	// CLOSE is a durability point (MS-SMB2 3.3.5.10): a failed flush is
+	// recorded in flushFailStatus and applied to the response below, while
+	// handle teardown still runs unconditionally. No content store is wired
+	// (common.ErrNoContentStore), so only the pending metadata is flushed.
 	//
-	// CLOSE is a durability point (MS-SMB2 3.3.5.10): the client treats a
-	// successful CLOSE as a guarantee that its writes reached stable storage.
-	// If the durable flush fails (e.g. append-log backpressure surfaces
-	// fs.ErrPressureTimeout when the rollup pool is wedged), we MUST surface
-	// the failure as a non-success status rather than silently ack the close —
-	// otherwise the client believes data it never persisted is committed
-	// (silent write truncation, #1267). The mapped status is recorded and
-	// applied to the response below; handle teardown still runs unconditionally
-	// so the failed flush does not leak the open-file/lease state.
 	// Snapshot the path once so the flush and teardown log lines below all
 	// name the same file even if a rename lands mid-close. The delete block
 	// takes its own snapshot: the delete must act on the handle's name as of
 	// the delete, not as of CLOSE entry.
 	closePath := openFile.Name().Path
 
-	// One metadata-handle snapshot for the whole teardown. The block-store
-	// resolve, the pending-write flush, the atime write, the lock release and
+	// One metadata-handle snapshot for the whole teardown. The pending-write
+	// flush, the atime write, the lock release and
 	// the lease break must all name the same file: SET_REPARSE_POINT republishes
 	// MetadataHandle under openFile.mu when a placeholder becomes a symlink, and
 	// a mid-teardown republish would otherwise split the flush, the unlock and
@@ -227,25 +216,6 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	metaHandle := openFile.GetMetadataHandle()
 
 	var flushFailStatus types.Status
-	payloadID := openFile.GetPayloadID()
-	if !openFile.IsDirectory && payloadID != "" {
-		blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, metaHandle)
-		if bsErr != nil {
-			// A ResolveForWrite failure is NOT a block-store content/durability
-			// error — it surfaces handle-decode / share-registry / config
-			// problems. Map it through the generic mapper (StatusInternalError
-			// etc.), mirroring READ/WRITE/FLUSH which map their resolve/handle
-			// errors via smb/types.StatusForErr. Only the CommitBlockStore failure
-			// below is a true content error (ClassifyBlockStoreError).
-			logger.Warn("CLOSE: block store not available for handle", "path", closePath, "error", bsErr)
-			flushFailStatus = types.StatusForErr(bsErr)
-		} else if flushErr := common.CommitBlockStore(ctx.Context, blockStore, payloadID); flushErr != nil {
-			logger.Warn("CLOSE: flush failed", "path", closePath, "error", flushErr)
-			flushFailStatus = types.StatusFor(common.ClassifyBlockStoreError(flushErr))
-		} else {
-			logger.Debug("CLOSE: flushed", "path", closePath, "payloadID", payloadID)
-		}
-	}
 
 	// ========================================================================
 	// Step 4: Flush pending metadata writes (deferred commit optimization)
@@ -316,24 +286,6 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// write of the teardown, and a republish landing before it would leave
 			// the frozen timestamps restored on a file this open never held.
 			h.restoreFrozenTimestampsOn(authCtx, openFile, metaHandle, preOpCtime)
-		}
-	}
-
-	// ========================================================================
-	// Step 5: Check for MFsymlink conversion
-	// ========================================================================
-	//
-	// macOS/Windows SMB clients create symlinks by writing MFsymlink content
-	// (1067-byte files with XSym\n header). On CLOSE, we convert these to
-	// real symlinks in the metadata store for NFS interoperability.
-
-	if !openFile.IsDirectory && payloadID != "" && !openFile.IsDeletePending() && !openFile.InitialDeleteOnClose {
-		// MFsymlink conversion promotes client-controlled file content to a real
-		// symlink, so it is opt-in per share (default disabled).
-		if tree, treeOK := h.GetTree(ctx.TreeID); treeOK && tree.AllowMFsymlink {
-			if converted, _ := h.checkAndConvertMFsymlink(ctx, openFile, metaHandle); converted {
-				logger.Debug("CLOSE: converted MFsymlink to symlink", "path", closePath)
-			}
 		}
 	}
 
@@ -785,156 +737,6 @@ func (h *Handler) releaseHandleLeaseRecordOn(ctx context.Context, openFile *Open
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-// checkAndConvertMFsymlink checks if a file is an MFsymlink and converts it to a real symlink.
-//
-// MFsymlinks are 1067-byte files with XSym\n header used by macOS/Windows SMB clients
-// for symlink creation. Steps:
-//  1. Checks file size is exactly 1067 bytes
-//  2. Reads content and verifies MFsymlink format
-//  3. Parses the symlink target
-//  4. Removes the regular file
-//  5. Creates a real symlink with the same name
-//
-// Returns (true, nil) if conversion succeeded, (false, nil) if not an MFsymlink,
-// or (false, error) if conversion failed.
-func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *OpenFile, metaHandle metadata.FileHandle) (bool, error) {
-	// Get metadata store
-	metaSvc := h.Registry.GetMetadataService()
-
-	// Get file metadata to check size
-	file, err := metaSvc.GetFile(ctx.Context, metaHandle)
-	if err != nil {
-		return false, err
-	}
-
-	// Quick check: must be exactly 1067 bytes
-	if file.Size != mfsymlink.Size {
-		return false, nil
-	}
-
-	// Must be a regular file (not already a symlink)
-	if file.Type != metadata.FileTypeRegular {
-		return false, nil
-	}
-
-	// Read content to verify MFsymlink format
-	content, err := h.readMFsymlinkContent(ctx, openFile, metaHandle)
-	if err != nil {
-		logger.Debug("CLOSE: failed to read MFsymlink content", "path", openFile.Name().Path, "error", err)
-		return false, nil // Not fatal, just don't convert
-	}
-
-	// Verify it's actually an MFsymlink
-	if !mfsymlink.IsMFsymlink(content) {
-		return false, nil
-	}
-
-	// Parse the symlink target
-	target, err := mfsymlink.Decode(content)
-	if err != nil {
-		logger.Debug("CLOSE: invalid MFsymlink format", "path", openFile.Name().Path, "error", err)
-		return false, nil // Don't convert invalid MFsymlinks
-	}
-
-	// Convert to real symlink
-	err = h.convertToRealSymlink(ctx, openFile, metaHandle, target)
-	if err != nil {
-		logger.Warn("CLOSE: failed to convert MFsymlink to symlink",
-			"path", openFile.Name().Path,
-			"target", target,
-			"error", err)
-		return false, err
-	}
-
-	return true, nil
-}
-
-// readMFsymlinkContent reads the content of a potential MFsymlink file.
-// It reads from the block store which uses local cache internally.
-func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFile, metaHandle metadata.FileHandle) ([]byte, error) {
-	blockStore, err := common.ResolveForRead(ctx.Context, h.Registry, metaHandle)
-	if err != nil {
-		return nil, fmt.Errorf("block store not available: %w", err)
-	}
-
-	// Read the MFsymlink content (always 1067 bytes).
-	// Routed through common.ReadFromBlockStore so any future []ChunkRef
-	// plumbing lands in one place (see common/doc.go).
-	// The bytes are copied into a caller-owned slice because the MFsymlink
-	// parse path retains them past Release().
-	result, err := common.ReadFromBlockStore(ctx.Context, blockStore, openFile.GetPayloadID(), 0, uint32(mfsymlink.Size))
-	if err != nil {
-		return nil, err
-	}
-	defer result.Release()
-
-	out := make([]byte, len(result.Data))
-	copy(out, result.Data)
-	return out, nil
-}
-
-// convertToRealSymlink removes the regular file and creates a symlink in its place.
-func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFile, metaHandle metadata.FileHandle, target string) error {
-	// Validate required fields
-	name := openFile.Name()
-	if len(name.ParentHandle) == 0 || name.FileName == "" {
-		return fmt.Errorf("missing parent handle or filename for MFsymlink conversion")
-	}
-
-	// Close, the only path in, primed ctx from this handle's session and so
-	// already refused a handle the requester does not own. ctx.User is set,
-	// so BuildAuthContext will not take the ctx.User==nil arm and synthesise
-	// UID-0 (root) over the RemoveFile + CreateSymlink below (#619, same class
-	// as #603).
-	authCtx, err := BuildAuthContext(ctx)
-	if err != nil {
-		return err
-	}
-
-	// Reject targets that escape the share root (absolute or `..`-traversal).
-	// MFsymlink content is fully client-controlled, so an unsanitized target
-	// could otherwise point an NFS client outside the share.
-	if err := metadata.ValidateMFsymlinkTarget(target); err != nil {
-		return fmt.Errorf("MFsymlink target rejected: %w", err)
-	}
-
-	// Get the parent handle and filename for removal and creation
-	parentHandle := name.ParentHandle
-	fileName := name.FileName
-
-	// Remove the regular file
-	metaSvc := h.Registry.GetMetadataService()
-	removed, _, err := metaSvc.RemoveFile(authCtx, parentHandle, fileName)
-	if err != nil {
-		return fmt.Errorf("failed to remove MFsymlink file: %w", err)
-	}
-
-	// Delete content from block store (best-effort). RemoveFile returns an
-	// empty PayloadID when content must survive (hard link / recycle).
-	var removedPayloadID metadata.PayloadID
-	if removed != nil {
-		removedPayloadID = removed.PayloadID
-	}
-	h.purgeBlockStorePayload(ctx.Context, metaHandle, removedPayloadID, name.Path, "CLOSE")
-
-	// Create the real symlink, carrying the MFsymlink file's owner across.
-	// authCtx is the caller's, so an empty FileAttr would re-home the symlink to
-	// whoever opened it — the conversion replaces the same object, it does not
-	// create a new one. Mode is the symlink default; carriedAttr's ExactAttrs
-	// suppresses the automatic default, so it has to be named here.
-	symlinkAttr := carriedAttr(removed, &metadata.FileAttr{Mode: 0o777})
-	_, _, err = metaSvc.CreateSymlink(authCtx, parentHandle, fileName, target, symlinkAttr)
-	if err != nil {
-		return fmt.Errorf("failed to create symlink: %w", err)
-	}
-
-	logger.Debug("CLOSE: converted MFsymlink",
-		"path", name.Path,
-		"target", target)
-
-	return nil
-}
 
 // cascadeDeleteADSStreams removes all alternate data streams belonging to a
 // base file that was just deleted. ADS streams are stored as sibling entries

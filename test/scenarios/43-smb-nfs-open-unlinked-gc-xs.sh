@@ -11,14 +11,12 @@ head -c 32M /dev/urandom >/tmp/f
 rclone size --json s3:dittofs/test | tee /tmp/base.json
 smbclient //127.0.0.1/test -c 'lcd /tmp; put f'
 dfsctl system drain-uploads
-dfsctl store block evict --share /test
 mkfifo /tmp/hold
 nfs-hold "nfs://127.0.0.1/test/f$N" </tmp/hold >/tmp/held &
 H=$!
 exec 3>/tmp/hold
 smbclient //127.0.0.1/test -c 'del f'
 dfsctl store block gc /test --grace-period 0 -o json | tee /tmp/gc1.json
-dfsctl store block evict --share /test
 echo >&3
 exec 3>&-
 wait "$H" && echo "read through the open handle: ok" || echo "read through the open handle: FAILED"

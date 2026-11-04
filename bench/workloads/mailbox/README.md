@@ -96,22 +96,6 @@ Start small.
 Extra arguments after the file name are passed to fio, for example
 `./run.sh 02-mail-flow.fio --parse-only` to check syntax only.
 
-### Cold logon
-
-Right after `00-prepare` the data is still in the server's local store, so
-`01-logon-outlook-start` reads it locally and never touches the remote. A real
-logon storm reads from the remote. To test that, upload everything and drop the
-local copy before running `01`:
-
-```sh
-dfsctl system drain-uploads
-dfsctl store block evict --share <share>
-```
-
-Eviction never drops a block that has not been uploaded, and it reclaims whole
-segments, so one pending record keeps its segment local. Repeat the drain until
-`dfsctl store block stats` reports 0 pending remote bytes, then evict.
-
 ### Variables
 
 | Variable | Default | Meaning |
@@ -186,9 +170,8 @@ To compare bucket usage with the live file sizes, set
 `gc.compaction_live_ratio` (for example `0.5`), wait out the grace period, run
 `dfsctl store block gc <share>`, and measure after that.
 
-To skip the wait, stop the scenario, drain the uploads (repeat
-`dfsctl system drain-uploads` until `dfsctl store block stats` reports 0
-pending remote bytes), then run
+To skip the wait, stop the scenario, drain the uploads
+(`dfsctl system drain-uploads`), then run
 `dfsctl store block gc <share> --grace-period 0`. It reaps the orphans
 without waiting out the grace period. Its help describes it as meant for tests
 and one-off cleanups.

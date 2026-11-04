@@ -50,11 +50,9 @@ rclone size --json s3:enc | tee /tmp/enc0.json
 rclone cat s3:enc | grep -a -c PLAINTEXT-MARKER | tee /tmp/marker.count || true
 
 # Cold reads: now, and after a restart with the same passphrase
-dfsctl store block evict --share /enc
 smbclient //127.0.0.1/enc -c 'get m.bin /tmp/back1.bin'
 dfs-server stop
 dfs-server start DITTOFS_ENCRYPTION_PASSPHRASE="$P"
-dfsctl store block evict --share /enc
 smbclient //127.0.0.1/enc -c 'get m.bin /tmp/back2.bin'
 
 # A wrong passphrase: no read, no write, nothing new in the bucket

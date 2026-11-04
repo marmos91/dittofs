@@ -2,127 +2,89 @@ package shares
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
-// newLocalEngineStore builds a real local-only *engine.Store for the RemoveShare
-// teardown tests. It is intentionally minimal (no remote, no coordinator) — the
-// teardown path only needs a live Close.
-func newLocalEngineStore(t *testing.T) *engine.Store {
+// addShareWithSnapshots adds /export bound to a remote and seeds its
+// snapshots directory, returning the directory.
+func addShareWithSnapshots(t *testing.T, svc *Service) string {
 	t.Helper()
-	local := journaltest.New(t)
-	// The in-memory metadata store satisfies EngineFileChunkStore (NewRemoteSync
-	// requires a non-nil one); the teardown path never exercises it.
-	fbs := badgertest.NewInMemory(t)
-	t.Cleanup(func() { _ = fbs.Close() })
-	syncer := engine.NewRemoteSync(local, nil, fbs, engine.DefaultConfig())
-	bs, err := engine.New(engine.BlockStoreConfig{
-		Local:          local,
-		RemoteSync:     syncer,
-		FileChunkStore: fbs,
-	})
-	if err != nil {
-		t.Fatalf("engine.New: %v", err)
+	store := badgertest.NewInMemory(t)
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := &ShareConfig{Name: "/export", MetadataStore: "m", Enabled: true, BlockStoreID: testBlockStoreID}
+	if err := svc.AddShare(context.Background(), cfg, fixedStoreProvider{store: store},
+		metadata.New(), memBlockStoreProvider{}, journalDefaults(t, svc)); err != nil {
+		t.Fatalf("AddShare: %v", err)
 	}
-	if err := bs.Start(context.Background()); err != nil {
-		t.Fatalf("engine.Start: %v", err)
+	svc.mu.RLock()
+	dir := svc.registry["/export"].localStoreDir
+	svc.mu.RUnlock()
+	if dir == "" {
+		t.Fatal("share has no state directory")
 	}
-	return bs
-}
-
-// TestRemoveShare_OrderedTeardown_ClosesStoreAndWipesSnapshots verifies the
-// REVIEW M4 ordered teardown: the registry entry is dropped, the snapshots
-// dir is removed, and the block store is Closed (drain-safe) — all in one
-// RemoveShare call returning nil on the happy path.
-func TestRemoveShare_OrderedTeardown_ClosesStoreAndWipesSnapshots(t *testing.T) {
-	svc := New()
-	bs := newLocalEngineStore(t)
-
-	localDir := t.TempDir()
-	snapsDir := filepath.Join(localDir, "snapshots")
-	if err := os.MkdirAll(filepath.Join(snapsDir, "snap-1"), 0o755); err != nil {
+	snaps := filepath.Join(dir, "snapshots")
+	if err := os.MkdirAll(filepath.Join(snaps, "snap-1"), 0o755); err != nil {
 		t.Fatalf("seed snapshots dir: %v", err)
 	}
+	return snaps
+}
 
-	svc.InjectShareForTesting(&Share{
-		Name:          "/export",
-		BlockStore:    bs,
-		localStoreDir: localDir,
-	})
+func remotesHeld(svc *Service) int {
+	svc.mu.RLock()
+	defer svc.mu.RUnlock()
+	return len(svc.remoteStores)
+}
+
+// TestRemoveShare_WipesSnapshotsAndReleasesRemote: RemoveShare drops the
+// registry entry, removes <stateDir>/snapshots and releases the remote.
+func TestRemoveShare_WipesSnapshotsAndReleasesRemote(t *testing.T) {
+	svc := New()
+	snaps := addShareWithSnapshots(t, svc)
 
 	if err := svc.RemoveShare("/export"); err != nil {
-		t.Fatalf("RemoveShare returned error on happy path: %v", err)
+		t.Fatalf("RemoveShare: %v", err)
 	}
-
-	// Registry entry gone.
 	if _, err := svc.GetShare("/export"); err == nil {
-		t.Fatal("share still present in registry after RemoveShare")
+		t.Fatal("share still registered after RemoveShare")
 	}
-	// Snapshots dir wiped.
-	if _, err := os.Stat(snapsDir); !os.IsNotExist(err) {
+	if _, err := os.Stat(snaps); !os.IsNotExist(err) {
 		t.Fatalf("snapshots dir still present after RemoveShare (stat err=%v)", err)
 	}
-	// Block store closed (drain-safe Close ran): a subsequent op must fail
-	// fast with ErrStoreClosed rather than panic.
-	if _, err := bs.GetSize(context.Background(), "any"); !errors.Is(err, engine.ErrStoreClosed) {
-		t.Fatalf("block store not closed by RemoveShare; GetSize err=%v", err)
+	if n := remotesHeld(svc); n != 0 {
+		t.Fatalf("%d remote(s) still held after RemoveShare", n)
 	}
 }
 
-// TestRemoveShare_ContinuesPastSnapshotError_AggregatesAndClosesStore verifies
-// M4's "best-effort, continue past an individual error, aggregate" property:
-// when the snapshots-dir removal fails, RemoveShare still Closes the block
-// store and returns a non-nil aggregated error (rather than early-returning
-// and leaking the store).
-func TestRemoveShare_ContinuesPastSnapshotError_AggregatesAndClosesStore(t *testing.T) {
+// TestRemoveShare_ContinuesPastSnapshotError: a snapshots directory that
+// cannot be removed fails RemoveShare, but the share is still unregistered
+// and its remote still released.
+func TestRemoveShare_ContinuesPastSnapshotError(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("chmod 0o555 does not block os.RemoveAll on Windows (dir mode bits are not enforced); RemoveAll-failure injection only bites on Unix")
+		t.Skip("directory mode bits do not block os.RemoveAll on Windows")
 	}
 	if os.Geteuid() == 0 {
-		t.Skip("chmod-based RemoveAll-failure injection does not bite as root")
+		t.Skip("chmod does not block os.RemoveAll as root")
 	}
 	svc := New()
-	bs := newLocalEngineStore(t)
-
-	localDir := t.TempDir()
-	snapsDir := filepath.Join(localDir, "snapshots")
-	// Create snapshots/<child> then make the snapshots dir itself read+exec
-	// only (no write): RemoveAll cannot unlink the child, so it errors.
-	if err := os.MkdirAll(filepath.Join(snapsDir, "snap-1"), 0o755); err != nil {
-		t.Fatalf("seed snapshots dir: %v", err)
-	}
-	if err := os.Chmod(snapsDir, 0o555); err != nil {
+	snaps := addShareWithSnapshots(t, svc)
+	if err := os.Chmod(snaps, 0o555); err != nil {
 		t.Fatalf("chmod snapshots dir: %v", err)
 	}
-	// Restore perms so t.TempDir cleanup can remove the tree.
-	t.Cleanup(func() { _ = os.Chmod(snapsDir, 0o755) })
+	t.Cleanup(func() { _ = os.Chmod(snaps, 0o755) })
 
-	svc.InjectShareForTesting(&Share{
-		Name:          "/export",
-		BlockStore:    bs,
-		localStoreDir: localDir,
-	})
-
-	err := svc.RemoveShare("/export")
-	if err == nil {
-		t.Fatal("expected aggregated error from RemoveShare when snapshots removal fails")
+	if err := svc.RemoveShare("/export"); err == nil {
+		t.Fatal("RemoveShare succeeded with an unremovable snapshots dir, want its error")
 	}
-
-	// Registry entry still dropped.
-	if _, gerr := svc.GetShare("/export"); gerr == nil {
-		t.Fatal("share still present in registry after RemoveShare")
+	if _, err := svc.GetShare("/export"); err == nil {
+		t.Fatal("share still registered after RemoveShare")
 	}
-	// Critically: the block store was still Closed despite the snapshot error
-	// (teardown did NOT early-return). This is the M4 fix.
-	if _, gerr := bs.GetSize(context.Background(), "any"); !errors.Is(gerr, engine.ErrStoreClosed) {
-		t.Fatalf("block store NOT closed after snapshot-removal error (early return regression); GetSize err=%v", gerr)
+	if n := remotesHeld(svc); n != 0 {
+		t.Fatalf("%d remote(s) still held after a failed snapshots removal", n)
 	}
 }
