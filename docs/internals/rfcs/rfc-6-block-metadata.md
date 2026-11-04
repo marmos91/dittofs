@@ -1001,7 +1001,9 @@ The rules:
   ([RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)), so clients resend.
 - **Truncate, deallocate, release and clone are synchronous in their first
   phase**: each commits the file's pending existence and its own existence change
-  in one transaction before it returns; dropping its refs follows in batches
+  in one transaction before it returns; a release still short of it at its
+  deadline is left pending and answered later
+  ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)); dropping its refs follows in batches
   ([§6.2](#6.2%20Truncation%20and%20deallocation)). A clone is answered later still, once its batches are done
   ([§6.6](#6.6%20Clone%20and%20server-side%20copy)).
 - **`applied` only moves forward.** Every write of it is `applied = max(applied,
@@ -2095,7 +2097,8 @@ Until the clone's removal is done, the destination extent **MUST NOT** be served
 in the file or in any snapshot taken after the clone's `cut`: a read of it waits
 for the clone or fails at its deadline, rather than reading a half-copied extent.
 Unfinished clones resume at startup: the source is served once its
-registration and open are rebuilt; the destination file is not served until
+registration is rebuilt, and its open too once phase 1 has written it; the
+destination file is not served until
 the clone's phase 1 has committed, and its extent not until the clone is done
 ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 4). A reservation for the missing copies refused for space
 waits and does not hold up start; meanwhile what the source's writers and the

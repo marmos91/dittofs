@@ -584,9 +584,32 @@ the next start's grace, and a recall in flight is neither forced nor revoked.
 **Stop.** Stops the timers. It closes nothing it was handed: the node closes
 the engine, then stops open state (`Table.Stop`), then closes the store, after
 it. A `Sink.Closed` that reaches a stopped filesystem — a clone batch's
-`CloneClose` the engine's stop joins, or a timer firing before `Table.Stop` — is
-dropped: the release it would run is a pending release, written with the
-unlink, which the next start's recovery runs (§5.3).
+`CloneClose` the engine's stop joins, the serving a `CloneClose` left to run
+after its clone was answered, which `Table.Stop` joins, or a timer firing
+before `Table.Stop` — is dropped. A release it would run is a pending release,
+written with the unlink,
+which the next start's recovery runs (§5.3), and so is one a background wait
+still holds: from `Drain` on, the filesystem runs no release again, and `Stop`
+ends each wait on a retry channel without its `done`, so no waiter outlives it
+(V33) or waits on a channel only the engine's later `Close` answers. A
+deferred unlink it would run is
+lost with the process: its delete pending is volatile by then, since a durable
+one's `DeleteRecord` is deleted by the close that leaves the file no persistent
+open ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)), and a
+volatile one is lost
+([RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring)).
+
+> decision: a source's delete-on-close, set through a volatile or a persistent
+> open, is lost when the clone's hold is the file's last open and the clone is
+> not done before the filesystem stops: a
+> `CloneClose` whose `Sink.Closed` reaches the stopped filesystem is dropped,
+> and a clone the engine's stop cancels resumes after the restart with the mark
+> gone, as a volatile delete-on-close is at any crash
+> ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)): the file
+> keeps its name, which a client may delete again. It costs only a clone in
+> flight at a clean stop over a delete-pending source. Write the mark durably
+> once a clone's hold is the file's last open, and have `ServeShard` install it
+> with the clone's source open, if a client is found to rely on that delete.
 
 **The filesystem keeps no event queue.** It hands each event to the sink as it
 builds it, and the sink's contract is that it never blocks (§3.3): the sink
@@ -1373,7 +1396,7 @@ const (
 	DelayRecall    DelayCause = iota // a caching grant is being recalled (§3.2)
 	DelayClone                       // a running clone or copy chunk holds the extent past the call's hold (§5.9)
 	DelayConflict                    // a metadata conflict still unresolved at the call's deadline (RFC 0 §9.2), or an open-state owner's own numbered request in flight (RFC 14 §2.8)
-	DelayFrozen                      // the share is quiesced, frozen for a move, or moved away; or an open-state shard not yet served here (RFC 14 §11.3)
+	DelayFrozen                      // the share is quiesced, frozen for a move, or moved away; or a share not attached here (RFC 8 §12.1), or an open-state shard not yet served here (RFC 14 §11.3)
 	DelayCapacity                    // the journal's capacity or a share's journal limit (RFC 8 §10.2)
 	DelayCommit                      // a metadata commit is not landing: a stalled store, the version limit's raise, or (cluster) quota slack spent (RFC 8 §11.2, §5.6); or a stable write's sync may have lost it (§5.8)
 	DelayResources                   // a node memory pool is spent: the share cap or the open-state pool; an adapter builds the same for a reply reservation past its deadline (RFC 24 §4.2)
@@ -1664,13 +1687,16 @@ admits. The table's own entry mutex is a leaf inside one table call or one
 timer step, and is never held when a call returns. Timer-driven table changes
 take the entry mutex alone, so one can land between a `CheckIO` and the write it
 admits; each only removes or relaxes state, which no admitted write depends on.
-Wherever the table may grant or revoke on a file the call does not name —
-serving a file's waiters in the timer's steps, and after `AckRecall`,
-`FreeState`, `Clients.Connect`, `Expire`, `Revoke`, `Disconnect` and
-`Locks.ReleaseLockOwner` — it takes that file's admission lock itself, through
-the `order` function the node hands the table at `Start`
-([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)), so the service calls
-those holding no admission lock. Every table
+Wherever the table may grant or revoke on a file the call does not name
+(serving a file's waiters in the timer's steps, and after `AckRecall`,
+`FreeState`, `Clients.Connect`, `Expire`, `Revoke`, `Disconnect`,
+`Locks.ReleaseLockOwner` and the engine's `CloneClose`), it takes that file's
+admission lock itself, through the `order` function the node hands the table
+at `Start` ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)), so the
+service calls those holding no admission lock; after `CloneClose` it serves
+the freed file once the clone is answered, off the clone's batch, and the
+engine makes its `CloneOpen` and `CloneClose` holding none
+([RFC 14 §11](rfc-14-open-state.md#11.%20Interface)). Every table
 call in the sketches below passes `c.Who()`: the `Call`'s client and
 protocol, the mapped principal, and whether `Call.Session` is set, as RFC 14's `Caller`, and names a file by `keyOf`: its
 share, shard and ID, as RFC 14's `FileKey`. An open is authorised as `c.ForOpen(backup)`: `c`, but privileged only for a
@@ -1682,11 +1708,9 @@ chunk (§5.9) releases its accept lock, every open-state step it took and its
 quota reservation for the length of the hold, and when the hold ends re-runs
 §5.1's steps 3–6 from the start, re-checking grace, open state and step 5's
 flags as if it had just arrived. Holding them, a write held in a cloning source
-extent would keep the source's open-state step while the clone's last batch
-waits on that step to delete its clone-kind open; the two would wait on each
-other until the write's deadline, and every open, close, lock and break
-acknowledgement on the file with them, long enough for a lease break to run out
-and be revoked.
+extent would keep the source's open-state step for the length of the hold, and
+every open, close, lock and break acknowledgement on the file would wait with
+it, long enough for a lease break to run out and be revoked.
 
 ### 5.1 Write
 
@@ -1758,7 +1782,7 @@ func (s *Filesystem) writeOnce(ctx context.Context, c Caller, ref OpenRef, f Fil
 		wr.WCC.Before = s.captureBefore(ctx, f) // nil where it cannot be taken (§5.7)
 		// The reservation travels with the staged bytes: the existence commit that
 		// records their charge releases it (step 7), never this function's return.
-		wr.Verifier, err = s.engine.Write(ctx, f, off, src, opts(ref, st, res))
+		wr.Verifier, err = s.engine.Write(ctx, f.Share, f.ID, off, src, opts(ref, st, res))
 		wr.WCC.After = s.overlaid(ctx, f) // same hold, once staged
 	})
 	if retry || err != nil {
@@ -1767,7 +1791,7 @@ func (s *Filesystem) writeOnce(ctx context.Context, c Caller, ref OpenRef, f Fil
 	}
 	if stable(ref, st) {
 		var v Verifier
-		v, _, err = s.engine.Commit(ctx, f, off, int64(len(src))) // step 7: RFC 8 §5.1
+		v, _, err = s.engine.Commit(ctx, f.Share, f.ID, off, int64(len(src))) // step 7: RFC 8 §5.1
 		if err == nil && v != wr.Verifier { // a loss between staging and the sync may have taken it (§5.8)
 			err = &Delay{Cause: DelayCommit}
 		}
@@ -1829,9 +1853,13 @@ func (s *Filesystem) openAt(ctx context.Context, c Caller, r OpenRequest) (OpenR
 		return s.reconnect(ctx, c, r)
 	}
 	for {
-		seen, _ := s.lookup(ctx, c, r.Parent, r.Name)          // unlocked: learns which steps to take
-		unlock := s.order.OpenState(fileOf(r.Parent), seen.ID) // §5.0: parent and file, in file-ID order
-		res, again, err := s.openLocked(ctx, c, r, seen)
+		seen, _ := s.lookup(ctx, c, r.Parent, r.Name) // unlocked: learns which steps to take
+		id := seen.ID
+		if id.IsZero() {
+			id = NewFileID() // a create's file: drawn before its locks, so they keep §5.0's order
+		}
+		unlock := s.order.OpenState(fileOf(r.Parent), id) // §5.0: parent and file, in file-ID order
+		res, again, err := s.openLocked(ctx, c, r, seen, id)
 		unlock()
 		if !again {
 			return res, err
@@ -1841,7 +1869,7 @@ func (s *Filesystem) openAt(ctx context.Context, c Caller, r OpenRequest) (OpenR
 
 // openLocked runs holding the parent's and the named file's open-state steps;
 // again is set when the name no longer names seen, and the steps are re-taken.
-func (s *Filesystem) openLocked(ctx context.Context, c Caller, r OpenRequest, seen File) (OpenResult, bool, error) {
+func (s *Filesystem) openLocked(ctx context.Context, c Caller, r OpenRequest, seen File, id FileID) (OpenResult, bool, error) {
 	f, exists := s.lookup(ctx, c, r.Parent, r.Name)
 	if f.ID != seen.ID {
 		return OpenResult{}, true, nil
@@ -1853,8 +1881,9 @@ func (s *Filesystem) openLocked(ctx context.Context, c Caller, r OpenRequest, se
 		}
 		// §5.10's create, in its order: add-file on the parent, then its delete
 		// pending (§5.4), then one inode charged to the new file's owner (§5.6).
-		// The new file's own step is taken last: no other call can name it yet.
-		cr, err := s.createLocked(ctx, c, r.Parent, r.Name, r.Create)
+		// The new file's step is held already, under the ID it is created with:
+		// once the name commits, another call can name it.
+		cr, err := s.createLocked(ctx, c, r.Parent, r.Name, r.Create, id)
 		if err != nil {
 			return OpenResult{}, false, err
 		}
@@ -1872,7 +1901,7 @@ func (s *Filesystem) openLocked(ctx context.Context, c Caller, r OpenRequest, se
 		return OpenResult{}, false, err
 	}
 	req := toOpenState(r, f)                                       // Name, Stream, Owner, Via, Seqs and the rest of RFC 14's OpenRequest
-	req.Loss = s.engine.LossSeq(f.ID)                              // RFC 14 §8.1: what a flush through this open compares with
+	req.Loss = s.engine.LossSeq(f.Share, f.ID)                     // RFC 14 §8.1: what a flush through this open compares with
 	o, err := s.opens.Open(ctx, c.Who(), keyOf(f), req)            // keyOf: share, shard and file. RFC 14 §6: deny modes; a handle-caching grant over a
 	if err != nil {                                                  //   conflict is broken first, ErrDelay(DelayRecall): no worker waits (§3.2)
 		return OpenResult{}, false, err
@@ -1929,6 +1958,23 @@ none yet — and marks the file through `Opens.Releasing`, which fails if an ope
 exists; it reports the release's outcome to the `done` that returns, so an
 aborted release clears the mark
 ([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)).
+An unlink or a rename whose name is gone succeeds whatever `Delete` answers:
+the change has committed, and a retry-later for it would send the client's
+retry to `ErrNotFound`. A `Delete` that fails within the call is logged, and
+the release's `F‖id‖rel` record is left for the next start's recovery; one
+that did not abort keeps the mark, calling no `done`
+([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches), step 1).
+A release that cannot finish within its call answers a retry channel, not an
+error ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)):
+the call that ran it is answered as if the release were done, and the service
+waits on the channel in the
+background, never inside `Sink.Closed`, keeping the mark meanwhile. The outcome
+decides the rest: committed or aborted, it goes to `done`; `ErrDelay`
+(`DelayClone`), which comes before the journal's `Delete` has dropped anything,
+to `done(false)`, and the service then runs the release again, marking the file
+anew through `Opens.Releasing`; `ErrUnavailable`, it is logged, and the
+release's `F‖id‖rel` record is left for the next start's recovery, or goes with
+the share after a `Drop`.
 The release transaction re-checks its holders itself
 ([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)),
 so a release begun on a stale view aborts and loses nothing.
@@ -1989,7 +2035,13 @@ func (s *Filesystem) unlinkLocked(ctx context.Context, c Caller, dir Target, nam
 		r.Dir.After = s.overlaid(ctx, dir.H)
 	}, fileOf(dir.H), f.ID)
 	if err == nil && orphan.File != 0 {
-		err = s.engine.Delete(ctx, orphan.File) // aborts while an open holds it (RFC 7 §4.5); the last close releases (§5.3)
+		retry, derr := s.engine.Delete(ctx, f.Share, orphan.File) // aborts while an open holds it (RFC 7 §4.5); the last close releases (§5.3)
+		switch {
+		case retry != nil:
+			go s.awaitRelease(f.Share, orphan.File, retry) // the release's outcome is waited on here, retried or logged until Stop (§2.5, §5.3)
+		case derr != nil:
+			s.log.Warn("release failed", "err", derr) // the name is gone, so the unlink succeeds; F‖id‖rel stays for the next start (§5.3)
+		}
 	}
 	return r, false, err // the chunks it referenced are dropped by the engine's batches and GC (RFC 8 §8.1)
 }
@@ -2052,7 +2104,13 @@ func (s *Filesystem) renameAt(ctx context.Context, c Caller, from Target, fromNa
 		}
 	}
 	if err == nil && orphan.File != 0 {
-		err = s.engine.Delete(ctx, orphan.File) // the replaced target; aborts while an open holds it (RFC 7 §4.5)
+		retry, derr := s.engine.Delete(ctx, dst.Share, orphan.File) // the replaced target; aborts while an open holds it (RFC 7 §4.5)
+		switch { // as unlink's: the rename succeeds
+		case retry != nil:
+			go s.awaitRelease(dst.Share, orphan.File, retry)
+		case derr != nil:
+			s.log.Warn("release failed", "err", derr)
+		}
 	}
 	return r, err
 }
@@ -2143,10 +2201,11 @@ func (q *Quota) Reserve(ctx context.Context, c Caller, owner Owner, f File, byte
 // where it does not change; scopes are QuotaUser for a new owner and
 // QuotaGroup for a new group. bytes is the file's Charged plus one inode.
 func (q *Quota) Rehome(ctx context.Context, c Caller, owner Owner, f File, bytes int64, scopes ...Scope) (*Reservation, error) {
-	q.mu.Lock() // the tracker's own mutex, which every Done takes too: no Done lands between the read, the check and the move
+	used := q.used(ctx, owner, f, scopes) // the scopes' limits, committed totals and unfolded deltas, read before q.mu: no store read holds it, so no Done waits on one
+	q.mu.Lock()                           // the tracker's own mutex, which every Done takes too: no Done lands between the read of byFile, the check and the move
 	defer q.mu.Unlock()
 	writes := q.byFile[f.ID] // step 4's reservations of f not yet Done
-	if err := q.check(ctx, owner, f, bytes+sum(writes), scopes); err != nil { // Reserve's check
+	if err := q.checkUsed(used, owner, f, bytes+sum(writes), scopes); err != nil { // Reserve's check, in memory
 		return nil, err
 	}
 	q.move(writes, owner, scopes)              // each still released once, by its write's Done, from wherever it then is
@@ -2261,7 +2320,7 @@ carved refs adopted, all resolved at one point in the source's history.
   client continues. A copychunk's chunks are one call's `Extents`, run in
   order, and the count is the bytes copied across them, so the adapter derives
   chunks and bytes written from it. A chunk refused after others are done
-  answers the same short count; only a refusal of the first chunk returns its error. Between
+  answers the same short count; only a refusal of the first chunk returns its error. **(cluster)** Between
   shards the destination's filesystem copies the bytes itself, reading at the
   source's primary in bounded chunks, so no adapter composes a copy
   (§4.1). A copy is always synchronous, as copychunk and NFSv4.2 `COPY` are
@@ -2299,7 +2358,10 @@ A call that waits past its `max`, or its deadline, is answered `ErrDelay` with
 metadata store, a remote outage or a restart's wait for space
 ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing),
 step 4), when it is answered with that cause (`DelayCommit`, `ErrUnavailable` or
-`DelayCapacity`). An open of a destination a restart has not yet served answers
+`DelayCapacity`). A release held there is not answered `ErrDelay`: past its
+hold it answers its retry channel
+([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)),
+and the call that ran it succeeds (§5.3). An open of a destination a restart has not yet served answers
 `ErrDelay`, with `DelayCapacity` while its clone waits for space and
 `DelayClone` otherwise. Answering at once by default would cost an NFSv3 client
 its fixed retry-later pause, several seconds, for a chunk that ends far sooner;
@@ -2308,8 +2370,11 @@ once per session or connection, is its count, not the service's
 ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)). The service counts
 nothing about holds.
 
-The clone holds the source open, so a last close or unlink does not release it
-mid-clone. A source run the engine reads as Lost — a source ref whose chunk
+The clone's registration holds the source from admission, and its open from
+`Hold`, so a last close or unlink does not release it mid-clone: a release
+before `Hold` is pending, and one from `Hold` on is refused by the clone's open
+and deferred until the clone is done
+([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)). A source run the engine reads as Lost — a source ref whose chunk
 record is gone included — is carried to the destination as Lost, never as zeros.
 A clone that is refused leaves the destination's prior content; once begun it is
 not undone but resumed after a crash from its durable spec, and is answered only
@@ -2364,15 +2429,17 @@ same steps under the steps it holds:
 
 ```go
 func (s *Filesystem) createAt(ctx context.Context, c Caller, dir Handle, name []byte, a CreateArgs) (CreateResult, error) {
-	unlock := s.order.OpenState(fileOf(dir))
+	id := NewFileID() // drawn before the locks, so the new file's are taken in §5.0's order
+	unlock := s.order.OpenState(fileOf(dir), id)
 	defer unlock()
-	return s.createLocked(ctx, c, dir, name, a)
+	return s.createLocked(ctx, c, dir, name, a, id)
 }
 
-// createLocked runs holding the parent's open-state step; Open calls it too (§5.3).
+// createLocked runs holding the parent's and the new file's open-state steps, id
+// being the ID the file is created with; Open calls it too (§5.3).
 // A new file placed in another shard is created by RFC 15 §4.2's two-primary
 // path, with this filesystem as coordinator.
-func (s *Filesystem) createLocked(ctx context.Context, c Caller, dir Handle, name []byte, a CreateArgs) (CreateResult, error) {
+func (s *Filesystem) createLocked(ctx context.Context, c Caller, dir Handle, name []byte, a CreateArgs, id FileID) (CreateResult, error) {
 	// add-file or add-subdirectory on the parent (RFC 7 §7.7)
 	if err := s.authz.Check(ctx, c, dir, Handle{}, addRight(a.Kind)); err != nil {
 		return CreateResult{}, err
@@ -2389,16 +2456,17 @@ func (s *Filesystem) createLocked(ctx context.Context, c Caller, dir Handle, nam
 		return CreateResult{}, err
 	}
 	var r CreateResult
-	s.order.Accept(func(v Versions) { // the parent's accept lock; v holds its version and the new file's
+	s.order.Accept(func(v Versions) { // the parent's and the new file's accept locks; draws both versions (RFC 7 §9.4)
 		r.Dir.Before = s.captureBefore(ctx, dir)
 		// One transaction: the name validated (RFC 7 §3.2, §3.8: ErrNameTooLong,
 		// ErrInvalid); owner and group from the resolved caller after squashing; the
 		// inherited ACL; a case-fold collision is ErrExist under the share's case rule
 		// (RFC 7 §3.3); an exclusive create stores the verifier, and a retry whose
-		// verifier matches returns the file, any other ErrExist (RFC 7 §2.10).
-		r.Handle, r.File, err = s.meta.Namespace.Create(ctx, c.Resolved(), v, dir, name, attrsOf(c, a))
+		// verifier matches returns the file, any other ErrExist (RFC 7 §2.10). The
+		// file takes id, which the store refuses ErrExist if a file already has.
+		r.Handle, r.File, err = s.meta.Namespace.Create(ctx, c.Resolved(), v, dir, name, id, attrsOf(c, a))
 		r.Dir.After = s.overlaid(ctx, dir)
-	}, fileOf(dir), NewFile)
+	}, fileOf(dir), id)
 	if err != nil {
 		res.Release()
 	} else {
@@ -2483,11 +2551,11 @@ Every test runs in §8's integration tier unless it names another tier. A row is
 | V25 | `Write` samples the verifier before staging and `Commit` after its sync; an SMB flush across a loss fails once with `ErrLost`. | A `Commit` that waits on a failed sync window returns a verifier other than its writes', and a stable write whose `Commit` does so answers `ErrDelay` (`DelayCommit`), and its `Write`'s verifier when the two agree; the verifier changes after an unstable write is dropped as lost in the same process and epoch, and when a shard is handed away and back, and not across a shard-epoch raise that moves nothing; an SMB flush through each of two opens of such a file fails once, then succeeds. |
 | V26 | Copy and clone refuse overlap, a clone over `clone_max_len`, a namespace or (cluster) shard crossing and an `Incomplete` source, each changing nothing; a copy across shards is the service's; a Lost source run is copied as Lost; a clone is atomic, a copy may be short. | Each refusal returns its error and leaves the destination unchanged and readable; a `COPY` whose deadline passes partway answers a short count and the destination holds exactly that many bytes; a clone of a source with a Lost run reads Lost there at the destination. |
 | V28 | A create — an `Open` that creates included —, link or rename into a directory marked delete on close is refused, over every protocol. | With a directory marked over SMB, a create, a creating `Open`, a link and a rename into it, over SMB and over NFS, are each refused. |
-| V29 | Every call takes open-state steps, then fold admission, then accept locks, each in file-ID order; a held call holds none of them and re-runs §5.1's steps 3–6. | An open of an existing child and an unlink of it race 10⁴ times, with the child's ID below its parent's and above it: neither waits for its deadline; a write and an unlink of the file's last name race 10⁴ times with a deny-delete open: neither waits for its deadline and no deny-delete is granted between the unlink's check and its commit; a 1 GiB clone of a VM disk under writes, with a lease break pending: each held write gives up its open-state step and accept lock, the break's acknowledgement and a new open proceed during the clone, and each held write completes after re-running its checks. |
+| V29 | Every call takes open-state steps, then fold admission, then accept locks, each in file-ID order; a held call holds none of them and re-runs §5.1's steps 3–6. | An open of an existing child and an unlink of it race 10⁴ times, with the child's ID below its parent's and above it, and so do a creating open of a new name and an unlink of that name: neither waits for its deadline; a write and an unlink of the file's last name race 10⁴ times with a deny-delete open: neither waits for its deadline and no deny-delete is granted between the unlink's check and its commit; a 1 GiB clone of a VM disk under writes, with a lease break pending: each held write gives up its open-state step and accept lock, the break's acknowledgement and a new open proceed during the clone, and each held write completes after re-running its checks. |
 | V30 | The service waits inside a call only behind a running clone or copy chunk, and at most the call's `WithHold`. | An NFSv3 write into a cloning extent with `WithHold(10s)` is held and completes when the clone ends; with `WithHold(0)` it returns `DelayClone` at once. |
 | V31 | Every mutating call returns the `WCC` of each object it changed, from one hold of its accept lock. | For each mutating method, a concurrent write between the call and a later `GetAttr` does not appear in the returned `WCC`; a directory's `Before` is nil over NFSv3. |
 | V32 | The service imports no adapter and no network code; the gateway and `Serve` call no store, engine, open state or identity and hold the filesystem only as a `vfs.Service`; the engine imports no open state, reaching it only through its `CloneHold`; `Authorize` and `Granted` are called only from `authz`. | §8's architecture check, which must report each of its seeded violations. |
-| V33 | `Start` is all or nothing, `New` starts nothing, and `Stop` leaves no goroutine and closes nothing it was handed. | Fail each start step in turn: `Start` returns the error and the goroutine count is back to the built state's; after `Stop`, none of the service's goroutines remain and the store, engine and open state still serve a direct call. |
+| V33 | `Start` is all or nothing, `New` starts nothing, and `Stop` leaves no goroutine and closes nothing it was handed. | Fail each start step in turn: `Start` returns the error and the goroutine count is back to the built state's; after `Stop`, none of the service's goroutines remain and the store, engine and open state still serve a direct call. Leave a release pending behind a clone across `Drain` and `Stop`: after `Stop` no waiter remains, and the engine's `Close` then joins every loop within its bound. |
 | V34 | `Drain` joins every admitted call and admits none after. | With 64 writes in flight, `Drain` returns only once each has answered; a call made after `Drain` begins returns `ErrUnavailable`; a lease break pending at `Drain` is neither forced nor revoked. |
 | V35 | After `Start`, a call that needs or conflicts with reclaimable state answers `ErrGrace` until the shard's grace ends, and pending releases run only after it. | Restart with a pending release and a reclaimable lock: a conflicting lock answers `ErrGrace` and the file's content is still held; advancing the fake clock past grace grants the lock and runs the release. |
 | V36 | An SMB break reaches only a session holding one of the lease's opens, or one signed in as an opener, and never any other session of the client; only an opener joins or answers the lease, and a change by any other principal of the client breaks it. | mallory sends alice-pc's `ClientGuid` and signs in as herself, through this node and through a second one; build01 then writes `report.docx`, which alice-pc holds under an RWH lease on an open that shares delete: the break reaches alice's session and none of mallory's, with alice's open connected and with it disconnected, and mallory's `AckRecall` on the lease is `NotYours`. Then disconnect alice's open and end alice's session: the next break reaches no session, mallory's included, and runs to its deadline. mallory opens `report.docx` on her own connection presenting alice's lease key: the open succeeds with no lease, and she is not an opener; bob, signed in on alice-pc's connection, presenting the same key joins the lease. alice signs in again and takes a fresh, acknowledged RWH lease on an open that shares write and delete; mallory writes through her no-lease open: the break reaches alice's session and none of mallory's. alice takes another fresh, acknowledged RWH lease the same way; mallory renames another file over `report.docx`: the break reaches alice's session and none of mallory's. A `NEGOTIATE` alone, or a null or guest session, registers nothing, and a guest's open is offered no lease. Across nodes: the file's primary and mallory's session are on node A, alice-pc's only session on node B. alice's open is disconnected and she signs in again on B without reconnecting it; build01 writes: the break reaches alice's session on B and none of mallory's. alice takes a fresh RWH lease the same way and her open is disconnected again; she signs in on B and re-authenticates that session as guest; build01 writes: nothing is sent on either node, and the break runs to its deadline. |
