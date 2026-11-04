@@ -397,7 +397,8 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
     passes what recovery proved (D9). Every caller holds no segment reference when it calls, and
     one that holds the record's file append domain sets `Corruption.DomainHeld`;
   - `Generation() uint64` and `Stats() Part`, the fields of R62 for E8's `Stats` aggregation;
-  - the account function of D16, which `Durability` takes when it is built;
+  - the account function of D16 and the file append domain's table, which `Durability` takes
+    when it is built (D16);
   - `Stop()`, which wakes every `WaitDurable` with `ErrClosed`, lets each per-stream worker run
     the losses already handed to it, so their records reach disk, and then joins the workers, the
     timers and the probe before E5's segments close (RFC 1 §8.7).
@@ -458,7 +459,10 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
   corrupt record's drop change held and dirty bytes, the per-share figures and the dirty-file
   list, which epic 8 keeps as maintained counters (RFC 1 §3.7). `Durability` takes, when it is
   built, the account function epic 8's constructor passes (`datapath.Account`, epic 8's D16), and
-  every index change it makes is passed to it with epic 4's change (R86). This epic's tests
+  every index change it makes is passed to it with epic 4's change (R86). The file append
+  domain's table is passed the same way: epic 8's `datapath` owns it (its D15) and imports this
+  package, so this package declares the small interface it needs (lock a file's domain, get its
+  release) and epic 8's constructor passes the table, which satisfies it. This epic's tests
   record the changes the function receives; epic 8's `Stats` tests check the counters they move,
   at the layer that consumes them.
 - **D7, per-directory state outlives the journal in the process.** The loss generation and the
@@ -497,7 +501,13 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
   stream's worker, which re-appends it to a healthy segment through T6.5's per-record re-append
   and repoints the index again, and the failed segment is not announced resolved until that has
   happened, so a resolved failed segment again backs only records synced before its failure (RFC
-  1 §5.3) and epic 9's repack needs no exception. In a read-only journal the copy stays where it
+  1 §5.3) and epic 9's repack needs no exception. A copy can be used from a segment already
+  announced resolved: `Corrupt` then marks the segment unresolved again, under the file index
+  domain in the step that repoints the index to the copy, and the worker announces it resolved
+  once the re-append lands. Whoever hands an ended segment to epic 5's `Retire`, and epic 9's
+  repack before it carries the segment's records, re-checks the resolved state under the file
+  index domain, so a segment a read has just started serving a copy from is neither retired nor
+  carried as resolved. In a read-only journal the copy stays where it
   is: retirement and repack are stopped (R89, R30), so the failed segment stays. `Durability`
   holds the read-only check as a function, false until T6.6 installs the state, as T6.3's
   read-only entry is installed, so T6.2, T6.5 and T6.7 branch on it without depending on T6.6. A
@@ -1040,7 +1050,11 @@ pkg/block/journalv2/
   resolution of the same file (R87). At read time it decides whether the record was synced under
   the stream's leaf mutex, in the same step that takes the record out of the ledger or out of a
   pending failed window (T6.3), so neither a sync nor a failed window resolved on the worker
-  meanwhile can make the answer stale: a record still in a pending window is unsynced, and taking
+  meanwhile can make the answer stale. A record the stream's synced-through value already covers
+  is synced even when the worker has not yet applied that completion: `Corrupt` then leaves its
+  ledger entry for the worker, which lifts what the record superseded when it applies the
+  completion, so that content is never left retained for good; `Corrupt` takes an entry out of
+  the ledger only on the unsynced branch, where it re-holds that content itself (R91). a record still in a pending window is unsynced, and taking
   it out of the window means the worker neither re-appends nor fails it, so in that same step
   `Corrupt` sets the file's mark of an unreported failure, naming the file, as T6.4 does for a
   record it fails (R17, R44), and the file's next `Sync` reports the window even when that record
@@ -1074,6 +1088,9 @@ pkg/block/journalv2/
     the handler returns its location, the index names it, no loss record is appended, the read
     appends nothing, and the corrupt copy's segment is reported damaged when that copy was synced;
     the same holds in a read-only journal. Outside one, the record is handed to the worker.
+  - v5 synced, v10 over it covered by the stream's synced-through value before the worker has
+    applied that completion, v10 found corrupt: v10 gets a synced loss record, and once the worker
+    applies the completion no retained v5 remains.
   - A sync that completes between a read finding the record corrupt and `Corrupt` deciding is
     seen: the record gets a synced loss record and nothing it superseded is re-held.
   - v5 synced, v10 written over it and unsynced, v10 corrupt: a read serves v5, v10's entry has
@@ -1092,6 +1109,9 @@ pkg/block/journalv2/
     again nor releases it.
   - A copy whose bytes match the checksum read back with them but not the one kept at write time
     is not used.
+  - A copy used from a failed segment already announced resolved marks it unresolved until the
+    worker's re-append lands, and a retirement that re-checks the state meanwhile does not retire
+    it.
   - The segment is counted damaged while it backs an extent it cannot produce, and a repack-ready
     signal is given once none remains.
   - A read that fails with `EIO` drops nothing and reports no loss.

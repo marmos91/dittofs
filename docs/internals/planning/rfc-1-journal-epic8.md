@@ -87,7 +87,8 @@ format, no recovery and no reclamation.
   ring and generation, the read-only state and its probe, and the rule for a record that does
   not verify when it is read: epic 6. This epic calls the rule from `ReadAt` (T8.2), consults
   the read-only state before every appending call (T8.5), and passes epic 6 the account function
-  through which its index changes reach this epic's counters (D16). Registering each appended
+  through which its index changes reach this epic's counters (D16) and the file append domain's
+  table (D15), which this package owns. Registering each appended
   record with epic 6 is epic 5's `Append` (its R88), for every path here.
 - Byte layouts and checksums: epic 3. Segments, the spare pool, streams, the descriptor cache
   and the read drain, the footprint ledger: epic 5. The index's own structures, bounds and
@@ -576,7 +577,8 @@ pkg/block/journalv2/
 - **Covers:** R1, R15, R17–R26, R95, R104, R108.
 - **Deliverables:**
   - `core.go`: `datapath.New(deps, state)` (D2), which assembles E4's index, E5's stream and
-    ledger, builds epic 6's `Durability` over them with `Account` as its account function (D16),
+    ledger, builds epic 6's `Durability` over them with `Account` as its account function (D16) and the
+    file append domain's table (D15), which satisfies the interface epic 6 declares,
     and returns the core; one share is registered by the test helper until T8.3, with the tag it
     names. T8.5 adds the wrapping of the storage seam by T6.6's `Observe`.
   - `account.go`: `Account(index.Change)` (D16), called by the write's publish and by epic 6.
