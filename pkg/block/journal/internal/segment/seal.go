@@ -1,6 +1,7 @@
 package segment
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +30,14 @@ var (
 	// ErrNoSegment is the refusal of a seal on a stream that has not taken
 	// a segment: there is nothing to close.
 	ErrNoSegment = errors.New("segment: the stream has no segment to seal")
+
+	// ErrLedgerDisagrees is the refusal of a ledger call that runs past
+	// the seal's second step, with the marker, footer and trailer already
+	// durable: the segment is sealed on disk but the ledger would not
+	// carry it. It never claims the segment is ended — the disk says
+	// otherwise — and it names a caller whose own sequencing should not
+	// have reached it.
+	ErrLedgerDisagrees = errors.New("segment: the ledger refused a durable seal")
 )
 
 // SealResult is what a seal left.
@@ -81,16 +90,15 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 	}
 
 	// Step 2: the marker, the footer and the trailer, written then durable.
-	// footer holds the entry bytes alone, for the trailer's CRC;
-	// markerAndFooter holds the marker followed by them, the bytes that run
-	// from the marker's own offset.
+	// markerAndFooter holds the marker followed by the entries, the bytes
+	// that run from the marker's own offset; footer names its entry bytes
+	// alone, for the trailer's CRC.
 	footerOff := marker + format.SealMarkerSize
 	markerAndFooter := format.AppendSealMarker(nil, identity, format.SealMarker{Segment: id, Offset: marker})
-	var footer []byte
 	for _, e := range entries {
-		footer = format.AppendCatalogEntry(footer, e)
-		markerAndFooter = append(markerAndFooter, footer[len(footer)-format.CatalogEntrySize:]...)
+		markerAndFooter = format.AppendCatalogEntry(markerAndFooter, e)
 	}
+	footer := markerAndFooter[format.SealMarkerSize:]
 
 	if err := writeSealSteps(ref, markerAndFooter, footer, marker, footerOff, early, set.cap); err != nil {
 		if unerr := set.End(id); unerr != nil {
@@ -107,8 +115,14 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 
 	// The seal is complete: the segment is sealed in the ledger from here,
 	// and the steps below are already refusals a second seal would answer.
+	// A refusal here — the ledger refusing a transition its own caller
+	// sequence should never ask for — happens with the seal already
+	// durable on disk, so it is not an ended segment and never carries
+	// ErrSegmentEnded: the caller is handed the refusal itself, which is
+	// the only honest word for a state the stream and the ledger now
+	// disagree on.
 	if err := set.Seal(id, !early); err != nil {
-		return SealResult{}, fmt.Errorf("%w: sealing the segment in the ledger: %w", ErrSegmentEnded, err)
+		return SealResult{}, fmt.Errorf("%w: %w", ErrLedgerDisagrees, err)
 	}
 
 	if !early {
@@ -124,18 +138,23 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 	// marker and catalog are durable already, and leaves it accounted at its
 	// cap" — the successor the roll may take is not to wait on a cut the
 	// bytes the seal names are free of. Overturned by a caller that must
-	// refuse the successor until the tail is returned.
+	// refuse the successor until the tail is returned. The Shrink below is
+	// the same rule's ledger half: it runs only once the cut is durable,
+	// and its refusal is a sealed segment's too, not an ended one's.
 	tailErr := func() error {
 		if err := ref.Truncate(size); err != nil {
 			return err
 		}
-		return ref.Sync()
+		if err := ref.Sync(); err != nil {
+			return err
+		}
+		if err := set.Shrink(id, size); err != nil {
+			return fmt.Errorf("%w: %w", ErrLedgerDisagrees, err)
+		}
+		return nil
 	}()
 	if tailErr != nil {
 		return SealResult{Marker: marker, Size: set.cap, TailErr: tailErr}, nil
-	}
-	if err := set.Shrink(id, size); err != nil {
-		return SealResult{}, err
 	}
 	return SealResult{Marker: marker, Size: size}, nil
 }
@@ -226,11 +245,11 @@ func writeWhole(ref Ref, p []byte, off int64) error {
 	return nil
 }
 
-// SortSealEntries sorts a seal's entries by RecordOffset, the order the
+// sortSealEntries sorts a seal's entries by RecordOffset, the order the
 // footer's reader requires. The stream keeps its entries in completion
-// order; sorting is the seal's own step, here so the recovery path shares it.
-func SortSealEntries(entries []format.CatalogEntry) {
+// order, so sorting is its own step before it hands them to the writer.
+func sortSealEntries(entries []format.CatalogEntry) {
 	slices.SortFunc(entries, func(a, b format.CatalogEntry) int {
-		return int(a.RecordOffset - b.RecordOffset)
+		return cmp.Compare(a.RecordOffset, b.RecordOffset)
 	})
 }

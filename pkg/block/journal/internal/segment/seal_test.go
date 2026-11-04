@@ -1613,3 +1613,310 @@ func TestSealCloseWaitsForAnInFlightSeal(t *testing.T) {
 		t.Fatalf("the ledger after the raced close: %v", err)
 	}
 }
+
+// TestSealRefusesAnAppendWhileItRuns checks the sealing half of R85's gate:
+// once a seal has taken the segment — while it waits the drain of the
+// appends reserved before it, and while its own steps run — the segment is
+// closed to new reservations, so an Append arriving now answers
+// ErrSegmentFull, reserves nothing and writes nothing. It catches a seal
+// whose marker an in-flight append can overwrite, or an acknowledged record
+// the footer never lists.
+func TestSealRefusesAnAppendWhileItRuns(t *testing.T) {
+	// While the seal park itself inside WriteSeal's first sync: the
+	// marker is chosen and the writes are under way.
+	t.Run("inside its own first sync", func(t *testing.T) {
+		prof.Watch(t, prof.Options{})
+
+		seg := streamSegName(1)
+		e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
+		defer func() { _ = e.s.Close() }()
+
+		placed := sealAppended(t, e)
+		wantMarker := pEnd(placed[len(placed)-1])
+
+		h := e.seam.HoldFirst(t, journaltest.OpSync, seg)
+		sealed := make(chan sealRace, 1)
+		go func() {
+			r, err := e.s.Seal(false)
+			sealed <- sealRace{r: r, err: err}
+		}()
+		<-h.Reached()
+
+		payload := streamTestBody(64, 0x77)
+		hh, body := streamWriteHeader(streamFileID(9), 512, payload, 7, core.Version{Counter: 99})
+		writes := e.seam.CallsFor(journaltest.OpWrite, seg)
+		if _, err := e.s.Append(hh, body); !errors.Is(err, segment.ErrSegmentFull) {
+			t.Fatalf("the append while the seal ran in its own steps = %v, want ErrSegmentFull: the segment is closed to reservations", err)
+		}
+		if got := e.seam.CallsFor(journaltest.OpWrite, seg); got != writes {
+			t.Fatalf("the refused append made %d writes, want none: nothing is written past a seal", got-writes)
+		}
+
+		h.Release()
+		race := <-sealed
+		if race.err != nil {
+			t.Fatalf("the Seal: %v", race.err)
+		}
+		if race.r.Marker != wantMarker {
+			t.Fatalf("the seal's marker is at %d, want the last pre-seal record's end %d: the refused append moved the position", race.r.Marker, wantMarker)
+		}
+		size := sealFileSize(t, e, 1)
+		rd := sealReaderOf(t, e, 1)
+		defer func() { _ = rd.Close() }()
+		footer, err := format.ReadFooter(rd, size, streamIdentity, 1)
+		if err != nil {
+			t.Fatalf("the footer does not verify: %v", err)
+		}
+		if len(footer.Entries) != len(placed) {
+			t.Fatalf("the footer holds %d entries, want the %d records appended before the seal, nobody after it", len(footer.Entries), len(placed))
+		}
+	})
+
+	// While the seal waits the drain of a parked append: the segment is
+	// closed the moment the seal takes it, so a fresh Append is refused
+	// even though the seal has not chosen its marker yet.
+	t.Run("while it waits the drain", func(t *testing.T) {
+		prof.Watch(t, prof.Options{})
+
+		seg := streamSegName(1)
+		e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
+		defer func() { _ = e.s.Close() }()
+
+		warm := streamTestBody(64, 0x5a)
+		wh, wbody := streamWriteHeader(streamFileID(1), 0, warm, 7, core.Version{Counter: 1})
+		warmPlaced := streamAppendWrite(t, e, wh, wbody)
+
+		// Park a record write the seal must wait out, then start the
+		// seal: it takes the segment and parks on the drain.
+		h := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
+		heldDone := make(chan segment.Placed, 1)
+		go func() {
+			payload := streamTestBody(64, 0x3c)
+			hh, body := streamWriteHeader(streamFileID(2), 64, payload, 7, core.Version{Counter: 2})
+			p, err := e.s.Append(hh, body)
+			if err != nil {
+				t.Errorf("the held append: %v", err)
+			}
+			heldDone <- p
+		}()
+		<-h.Reached()
+		sealed := make(chan sealRace, 1)
+		go func() {
+			r, err := e.s.Seal(false)
+			sealed <- sealRace{r: r, err: err}
+		}()
+		time.Sleep(50 * time.Millisecond) // the seal has taken the segment and parked on the drain
+
+		payload := streamTestBody(64, 0x77)
+		hh, body := streamWriteHeader(streamFileID(9), 128, payload, 7, core.Version{Counter: 99})
+		if _, err := e.s.Append(hh, body); !errors.Is(err, segment.ErrSegmentFull) {
+			t.Fatalf("the append while the seal waited the drain = %v, want ErrSegmentFull: the segment is closed from the seal's take", err)
+		}
+
+		// The seal then places its marker at the held record's end and
+		// lists it — the one that was already reserved, never the one
+		// refused above.
+		h.Release()
+		held := <-heldDone
+		race := <-sealed
+		if race.err != nil {
+			t.Fatalf("the Seal: %v", race.err)
+		}
+		if want := held.Loc.Off + held.Loc.Len; race.r.Marker != want {
+			t.Fatalf("the seal's marker is at %d, want the held record's end %d", race.r.Marker, want)
+		}
+		size := sealFileSize(t, e, 1)
+		rd := sealReaderOf(t, e, 1)
+		defer func() { _ = rd.Close() }()
+		footer, err := format.ReadFooter(rd, size, streamIdentity, 1)
+		if err != nil {
+			t.Fatalf("the footer does not verify: %v", err)
+		}
+		if len(footer.Entries) != 2 {
+			t.Fatalf("the footer holds %d entries, want the warm and the held records alone", len(footer.Entries))
+		}
+		_ = warmPlaced
+	})
+}
+
+// TestSealADrainedSyncFailureEndsTheSegment checks the drain's other half:
+// a Stream.Sync that started before the seal is waited out, so its failure
+// reaches the seal's ended-check and the segment is never sealed over a
+// failed sync window. It catches a seal whose own step-1 sync can succeed
+// over pages a concurrent stream sync failed to write (RFC 1 §5.3).
+func TestSealADrainedSyncFailureEndsTheSegment(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seg := streamSegName(1)
+	e := sealCrashBuilt(t, streamOver(t, streamCap, func(streamEnv) {}))
+	defer func() { _ = e.s.Close() }()
+
+	sealAppended(t, e)
+
+	// Park a stream Sync inside its fsync, then start the seal: with the
+	// sync in flight, the seal parks in its drain, never reaching its own
+	// steps — the window the drain must close. The one-shot EIO fails the
+	// held Sync; the drain then empties, the seal's ended-check sees the
+	// failure, and the segment is ended before anything is written.
+	h := e.seam.HoldFirst(t, journaltest.OpSync, seg)
+	syncErr := make(chan error, 1)
+	go func() { syncErr <- e.s.Sync() }()
+	<-h.Reached()
+
+	sealed := make(chan sealRace, 1)
+	go func() {
+		r, err := e.s.Seal(false)
+		sealed <- sealRace{r: r, err: err}
+	}()
+	time.Sleep(50 * time.Millisecond) // the seal is parked in its drain
+	writes := e.seam.CallsFor(journaltest.OpWrite, seg)
+
+	e.seam.SetFault(&sealNthFault{seg: seg, op: journaltest.OpSync, n: 1, err: syscall.EIO})
+	h.Release()
+	if err := <-syncErr; !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the parked Sync = %v, want the fault's EIO", err)
+	}
+
+	race := <-sealed
+	if race.err == nil || !errors.Is(race.err, segment.ErrSegmentEnded) {
+		t.Fatalf("the Seal over a failed sync window = %+v, %v, want ErrSegmentEnded: the segment is ended, never sealed", race.r, race.err)
+	}
+	if got := e.seam.CallsFor(journaltest.OpWrite, seg); got != writes {
+		t.Fatalf("the refused Seal made %d writes, want none: nothing is written over a failed sync window", got-writes)
+	}
+	if state, err := e.set.State(1); err != nil || state != segment.Ended {
+		t.Fatalf("the segment's state after the drained failure is %v, %v, want Ended", state, err)
+	}
+	if c := e.set.Counters(); c.Sealed != 0 {
+		t.Fatalf("the ledger counts %d sealed segments, want none", c.Sealed)
+	}
+	payload := streamTestBody(64, 0x77)
+	hh, body := streamWriteHeader(streamFileID(9), 512, payload, 7, core.Version{Counter: 99})
+	if _, err := e.s.Append(hh, body); !errors.Is(err, segment.ErrSegmentFull) {
+		t.Fatalf("the append after the ended segment = %v, want ErrSegmentFull", err)
+	}
+	if err := e.s.Sync(); !errors.Is(err, segment.ErrSegmentEnded) {
+		t.Fatalf("the Sync after the ended segment = %v, want ErrSegmentEnded", err)
+	}
+}
+
+// TestSealASyncOnItParksUntilItCompletes checks what a Stream.Sync does
+// when a seal is in flight: it may not race its own fsync against the
+// seal's — the platform reports a writeback error once per file, so a
+// concurrent sync could eat the failure the seal's check or its own steps
+// needed — and when the seal completes, the records are durable by its
+// first step, so the Sync answers nil without an fsync of its own.
+func TestSealASyncOnItParksUntilItCompletes(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seg := streamSegName(1)
+	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
+	defer func() { _ = e.s.Close() }()
+
+	sealAppended(t, e)
+
+	// Park the seal inside its first sync, then start a Sync: it must not
+	// reach the seam while the seal runs.
+	h := e.seam.HoldFirst(t, journaltest.OpSync, seg)
+	sealed := make(chan sealRace, 1)
+	go func() {
+		r, err := e.s.Seal(true)
+		sealed <- sealRace{r: r, err: err}
+	}()
+	<-h.Reached()
+	syncsAtPark := e.seam.CallsFor(journaltest.OpSync, seg)
+
+	syncErr := make(chan error, 1)
+	go func() { syncErr <- e.s.Sync() }()
+	time.Sleep(50 * time.Millisecond)
+	if got := e.seam.CallsFor(journaltest.OpSync, seg); got != syncsAtPark {
+		t.Fatalf("a Sync racing the seal issued %d syncs of its own, want none: its fsync must not run beside the seal's", got-syncsAtPark)
+	}
+
+	// The seal completes — and with its two remaining syncs alone, the
+	// whole early seal shows its three, no more — and the parked Sync
+	// answers nil, for the records are durable by the seal's first step.
+	h.Release()
+	race := <-sealed
+	if race.err != nil {
+		t.Fatalf("the early Seal under the parked Sync: %v", race.err)
+	}
+	if err := <-syncErr; err != nil {
+		t.Fatalf("the parked Sync after the seal = %v, want nil: the seal's first step made the records durable", err)
+	}
+	if got := e.seam.CallsFor(journaltest.OpSync, seg); got != syncsAtPark+2 {
+		t.Fatalf("the whole early seal plus the parked Sync issued %d syncs past the held one, want the seal's two alone", got-syncsAtPark)
+	}
+}
+
+// TestSealAFullSealThatFillsTheSegmentWritesOnce checks the one-write branch
+// of the full seal: a segment whose records end exactly where the trailer
+// must begin writes the marker, the footer and the trailer as a single
+// write — the two ranges meet — and the footer still verifies. It catches a
+// gap left between the footer and the trailer that the ordinary two-write
+// path would paper over.
+func TestSealAFullSealThatFillsTheSegmentWritesOnce(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// A cap of 3072 and ten records of a 113-byte payload fill the segment
+	// exactly: each record takes 224 bytes (a 96-byte header, the 8-byte
+	// modification time and the payload, padded to 8), so the last record
+	// ends at 48 + 10*224 = 2296, and the seal of ten entries takes 32 +
+	// 10*72 + 32 = 784 more, which is the cap exactly.
+	const cap = int64(3072)
+	const records = 10
+	seg := streamSegName(1)
+	e := streamOver(t, cap, func(streamEnv) {}).built(t)
+	defer func() { _ = e.s.Close() }()
+
+	var placed []segment.Placed
+	for i := range records {
+		payload := streamTestBody(113, byte(i))
+		h, body := streamWriteHeader(streamFileID(i+1), 0, payload, 7, core.Version{Counter: uint64(i + 1)})
+		p, err := e.s.Append(h, body)
+		if err != nil {
+			t.Fatalf("the filling append %d: %v (the cap must hold the sealed whole)", i, err)
+		}
+		placed = append(placed, p)
+	}
+	wantEnd := format.SegmentHeaderSize + int64(records)*224
+	if got := pEnd(placed[len(placed)-1]); got != wantEnd {
+		t.Fatalf("the last record ends at %d, want the computed fill %d", got, wantEnd)
+	}
+	if room := cap - wantEnd; room != format.SealMarkerSize+int64(records)*format.CatalogEntrySize+format.TrailerSize {
+		t.Fatalf("the fill leaves %d bytes of room, want the seal's %d: the trailer must begin where the footer ends", room, format.SealMarkerSize+records*format.CatalogEntrySize+format.TrailerSize)
+	}
+
+	syncs := e.seam.CallsFor(journaltest.OpSync, seg)
+	writes := e.seam.CallsFor(journaltest.OpWrite, seg)
+	if _, err := e.s.Seal(false); err != nil {
+		t.Fatalf("the full Seal of a filled segment: %v", err)
+	}
+	if got := e.seam.CallsFor(journaltest.OpSync, seg) - syncs; got != 2 {
+		t.Fatalf("the full seal issued %d syncs, want the two of its floor", got)
+	}
+	if got := e.seam.CallsFor(journaltest.OpWrite, seg) - writes; got != 1 {
+		t.Fatalf("the full seal of a filled segment issued %d writes, want the one its contiguous ranges allow", got)
+	}
+
+	// The file keeps its cap and the footer verifies with every record.
+	size := sealFileSize(t, e, 1)
+	if size != cap {
+		t.Fatalf("the filled segment's file is %d bytes, want the cap %d", size, cap)
+	}
+	rd := sealReaderOf(t, e, 1)
+	defer func() { _ = rd.Close() }()
+	footer, err := format.ReadFooter(rd, size, streamIdentity, 1)
+	if err != nil {
+		t.Fatalf("the filled segment's footer does not verify: %v", err)
+	}
+	if len(footer.Entries) != len(placed) {
+		t.Fatalf("the footer holds %d entries, want the %d records filling the segment", len(footer.Entries), len(placed))
+	}
+	entries := sealEntriesOf(t, e, placed)
+	for i := range entries {
+		if footer.Entries[i] != entries[i] {
+			t.Fatalf("entry %d is %+v, want %+v", i, footer.Entries[i], entries[i])
+		}
+	}
+}

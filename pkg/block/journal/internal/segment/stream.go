@@ -277,14 +277,16 @@ type Stream struct {
 	// sealState names where the stream's seal stands. The zero value is
 	// sealOpen: the stream is appending.
 	sealState sealState
-	// pending is the appends of the active segment between their
-	// reservation and their final exit, so a seal can wait for every one
-	// reserved below it (R85).
+	// pending is the appends and the stream syncs of the active segment
+	// between their reservation and their final exit, so a seal can wait
+	// for every one that started before it or alongside it (R85, RFC 1
+	// §5.3): an append, so the marker lands past every record and every
+	// entry is charged, and a sync, so a failure of its window reaches the
+	// seal's ended-check before the seal writes anything.
 	pending int
-	// drained wakes the seal when pending reaches zero.
+	// drained wakes the seal when pending reaches zero, and wakes the
+	// stream syncs that parked while the seal ran when it settles.
 	drained *sync.Cond
-	// sealRes is what the first seal returned, for the callers after it.
-	sealRes SealResult
 }
 
 // sealState is where a stream's seal stands: open, closing, closed for good,
@@ -429,13 +431,17 @@ func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, 
 		s.appendMu.Unlock()
 		return Placed{}, ErrStreamClosed
 	}
-	// The seal states refuse before anything is reserved (R1, R85): a
-	// sealed segment takes no append, an ended one neither — the refusal
-	// reserves nothing, writes nothing and charges nothing.
+	// The seal states refuse before anything is reserved (R1, R85): once a
+	// seal has taken the segment — while it drains the reservations below
+	// it, and while its own steps run — and once it has completed or the
+	// segment has ended, no append is taken. The refusal reserves nothing,
+	// writes nothing and charges nothing, so the marker a seal chose and
+	// the bytes its footer names cannot be placed under. sealOpen, the
+	// stream that is still appending, alone falls through.
 	switch s.sealState {
-	case sealSealed:
+	case sealSealing, sealSealed:
 		s.appendMu.Unlock()
-		return Placed{}, fmt.Errorf("%w: the segment is sealed", ErrSegmentFull)
+		return Placed{}, fmt.Errorf("%w: a seal closed the segment", ErrSegmentFull)
 	case sealEnded:
 		s.appendMu.Unlock()
 		return Placed{}, fmt.Errorf("%w: %w", ErrSegmentFull, ErrSegmentEnded)
@@ -655,10 +661,27 @@ func (s *Stream) Sync() error {
 	}
 	// A sealed segment's every record is durable by the seal's first step,
 	// so a Sync here needs no fsync of its own; an ended segment takes no
-	// sync that could claim its bytes durable. A seal in flight keeps the
-	// ordinary path, for the seal's own syncs run through the ref, never
-	// through the stream's Sync.
+	// sync that could claim its bytes durable. A sealing segment is waited
+	// out instead: the platform reports a writeback error once per file, so
+	// an fsync racing the seal's own could consume the error the seal's
+	// steps or their checks needed, and the records are durable by the
+	// seal's first step anyway — the Sync answers nil once it returns.
+	// sealOpen alone keeps the ordinary path.
 	switch s.sealState {
+	case sealSealing:
+		// Parked on the drain's cond in the same wait group the seal
+		// wakes: it returns with the seal's own terminal state.
+		for s.sealState == sealSealing {
+			s.drained.Wait()
+		}
+		switch s.sealState {
+		case sealSealed:
+			s.appendMu.Unlock()
+			return nil
+		case sealEnded:
+			s.appendMu.Unlock()
+			return ErrSegmentEnded
+		}
 	case sealSealed:
 		s.appendMu.Unlock()
 		return nil
@@ -666,9 +689,22 @@ func (s *Stream) Sync() error {
 		s.appendMu.Unlock()
 		return ErrSegmentEnded
 	}
-	// Counted under the lock Close sets closed under, like Append's.
+	// Counted under the lock Close sets closed under, like Append's, and
+	// counted in the seal's drain: a sync in flight when the seal starts,
+	// or one arriving before the drain has emptied, is part of what the
+	// seal waits out, so its failure reaches the seal's ended-check before
+	// it writes (RFC 1 §5.3).
 	s.inflight.Add(1)
 	defer s.inflight.Done()
+	s.pending++
+	defer func() {
+		s.appendMu.Lock()
+		s.pending--
+		if s.pending == 0 {
+			s.drained.Broadcast()
+		}
+		s.appendMu.Unlock()
+	}()
 
 	through := s.tracker.syncStart()
 	ref := s.ref
@@ -718,6 +754,8 @@ func (s *Stream) Seal(early bool) (SealResult, error) {
 	case sealEnded:
 		s.appendMu.Unlock()
 		return SealResult{}, ErrSegmentEnded
+	case sealOpen:
+		// The one state a seal closes; the count below takes it.
 	}
 	// Counted with the appends and the syncs, so Close waits a seal out
 	// before it releases the segment's ref.
@@ -725,19 +763,31 @@ func (s *Stream) Seal(early bool) (SealResult, error) {
 	defer s.inflight.Done()
 	s.sealState = sealSealing
 
-	// The drain: every append reserved below the seal has left, so every
-	// record the segment holds is complete and charged. The wait holds no
-	// lock, so the appends it waits for can finish.
+	// The drain: every append reserved below the seal has left, and every
+	// sync that started before it or alongside it too, so every record the
+	// segment holds is complete and charged and every failure its writes
+	// and syncs left is already recorded in the tracker. The wait holds no
+	// lock, so the appends and syncs it waits for can finish. A Sync that
+	// arrives while the seal is sealing parks here on the same cond rather
+	// than racing its fsync against the seal's.
 	for s.pending > 0 {
 		s.drained.Wait()
 	}
 
-	// A write or a sync of this segment already failed: the segment is
-	// ended, not sealed, and the seal writes nothing.
+	// A write or a sync of this segment already failed — its own, or one
+	// of the syncs the drain waited out: the segment is ended, not sealed,
+	// and the seal writes nothing.
 	if s.tracker.freeze || s.tracker.syncFailed {
 		s.sealState = sealEnded
+		id := s.id
 		s.appendMu.Unlock()
-		s.set.End(s.id)
+		s.drained.Broadcast() // the Syncs parked on the seal leave with the end
+		if err := s.set.End(id); err != nil {
+			// The end of a segment the ledger may not know is the
+			// stream's own and the seal's refusal above names it; a
+			// ledger that cannot end it carries the failure here.
+			return SealResult{}, errors.Join(ErrSegmentEnded, err)
+		}
 		return SealResult{}, ErrSegmentEnded
 	}
 
@@ -747,7 +797,7 @@ func (s *Stream) Seal(early bool) (SealResult, error) {
 	// completion order.
 	marker := s.next
 	entries := slices.Clone(s.entries)
-	SortSealEntries(entries)
+	sortSealEntries(entries)
 	id, ref := s.id, s.ref
 	s.appendMu.Unlock()
 
@@ -755,15 +805,27 @@ func (s *Stream) Seal(early bool) (SealResult, error) {
 
 	s.appendMu.Lock()
 	if err != nil {
+		if errors.Is(err, ErrLedgerDisagrees) {
+			// The marker, footer and trailer are durable and the file is
+			// cut where the seal named it; only a ledger call refused.
+			// The disk and the caller's contract say sealed, so the
+			// stream reports exactly that, carrying the refusal — never
+			// "ended", which the durable bytes contradict.
+			s.sealState = sealSealed
+			s.drained.Broadcast()
+			s.appendMu.Unlock()
+			return SealResult{}, err
+		}
 		// The seal failed: the segment takes no further append and no
 		// second seal. WriteSeal has ended it in the ledger for the
 		// failures it owns — a failed record sync, a failed write, a
 		// failed step-2 sync — so nothing lands in it again, and its
 		// successor names none (R33). A refusal the writer does not own,
-		// ErrBadCatalog or a ledger refusal, is a bug in this stream's
-		// own catalog: the segment is ended here too, so nothing appends
+		// ErrBadCatalog or a ledger's, is a bug in this stream's own
+		// catalog: the segment is ended here too, so nothing appends
 		// past a refused seal either.
 		s.sealState = sealEnded
+		s.drained.Broadcast() // the Syncs parked on the seal leave with the end
 		if !errors.Is(err, ErrSegmentEnded) {
 			s.appendMu.Unlock()
 			if unerr := s.set.End(id); unerr != nil {
@@ -775,7 +837,7 @@ func (s *Stream) Seal(early bool) (SealResult, error) {
 		return SealResult{}, err
 	}
 	s.sealState = sealSealed
-	s.sealRes = res
+	s.drained.Broadcast() // the Syncs parked on the seal leave with the seal
 	s.appendMu.Unlock()
 	return res, nil
 }
