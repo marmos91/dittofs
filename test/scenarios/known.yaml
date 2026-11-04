@@ -78,3 +78,16 @@
   category: bug
   reason: 'A snapshot taken with S3 down restores content written after it, at the restore comparison.'
   issue: '#2928'
+# decision: 90 and 91 stay known until storage v2, which replaces the upload path both fail on.
+- test: test/scenarios/90-smb-hour-holds-xxl.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'A chunk repeated in a file is uploaded several times while the first upload is in flight, and the extra copies are never freed, at `test "$(jq .bytes /tmp/zeros-end.json)" -eq "$(jq .bytes /tmp/zeros-base.json)"`.'
+  issue: '#3058'
+- test: test/scenarios/91-smb-125gb-file-sync-xxl.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'The upload drain of a 125 GB file stops making progress, at `dfsctl system drain-uploads --timeout 120m`.'
+  issue: '#2910'
