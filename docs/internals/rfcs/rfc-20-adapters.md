@@ -2392,10 +2392,9 @@ func TestWrite3(t *testing.T) {
 
 ### 7.3 The error tables are total
 
-A test enumerates every error an adapter can receive — `vfs.Errors()`: every
-such sentinel and one value of every typed kind, a value only the service and
-the engine exchange, such as `ErrFileOpen`, left out
-([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) — and
+A test takes every error an adapter can receive from `vfs.Errors()`
+([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), every
+such sentinel and one value of every typed kind, and
 asserts each adapter's table has a row, for every operation and version the table distinguishes. A new
 service error fails this test until each protocol says what it means on its
 wire.

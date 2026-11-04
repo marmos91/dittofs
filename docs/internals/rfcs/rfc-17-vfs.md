@@ -581,8 +581,7 @@ them, and a mutation cancelled there may still have applied, as RFC 20 §3.1
 says of an abandoned request. Draining revokes nothing: open state is left to
 the next start's grace, and a recall in flight is neither forced nor revoked.
 
-**Stop.** Stops the timers, and ends and joins the waiters on pending releases'
-retry channels, which call no `done` (§5.3). It closes nothing it was handed: the node closes
+**Stop.** Stops the timers. It closes nothing it was handed: the node closes
 the engine, then stops open state (`Table.Stop`), then closes the store, after
 it. A `Sink.Closed` that reaches a stopped filesystem — a clone batch's
 `CloneClose` the engine's stop joins, the serving a `CloneClose` left to run
@@ -591,7 +590,7 @@ before `Table.Stop` — is dropped. A release it would run is a pending release,
 written with the unlink,
 which the next start's recovery runs (§5.3), and so is one a background wait
 still holds: from `Drain` on, the filesystem runs no release again, and `Stop`
-ends each wait on a retry channel without its `done`, so no waiter outlives it
+ends and joins each wait on a retry channel without its `done`, so no waiter outlives it
 (V33) or waits on a channel only the engine's later `Close` answers. A
 deferred unlink it would run is
 lost with the process: its delete pending is volatile by then, since a durable
@@ -1323,13 +1322,13 @@ cannot split an enum across two packages, so each enum moves whole, values only
 the service returns included. `Extent` moves with them because while
 `vfs.Extent` aliased the engine's, every adapter importing `pkg/vfs` compiled
 the engine. So the engine imports `vfserr` and never `pkg/vfs`, nor open state
-through it, and `pkg/vfs` re-exports every value as an alias. `vfs.Errors()`
-stays in `pkg/vfs` and returns every sentinel an adapter can receive and one
-value of every typed kind, so an adapter's error table can be checked total
+through it, and `pkg/vfs` re-exports every value as an alias but one:
+`ErrFileOpen`, a release a holder aborted, which only the engine's `Delete`
+returns and only the service reads ([§5.3](#5.3%20Open%20and%20close)), so no
+adapter receives it. `vfs.Errors()` stays in `pkg/vfs` and returns every other
+sentinel and one value of every typed kind, so an adapter's error table can be
+checked total
 ([RFC 20 §7.3](rfc-20-adapters.md#7.3%20The%20error%20tables%20are%20total)).
-It omits a value only the service and the engine exchange, which no adapter
-receives and so no table maps: `ErrFileOpen`, the abort a pending release's
-retry channel yields ([§5.3](#5.3%20Open%20and%20close)).
 How each reaches the wire is
 [RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
 [RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors) and the
@@ -1918,7 +1917,8 @@ func (s *Filesystem) openLocked(ctx context.Context, c Caller, r OpenRequest, se
 **An open answered an error is undone.** A failure after open state recorded
 the open, an overwrite's truncate or the file read again, undoes it with
 `Opens.Abandon` under the steps still held, on a context the call's end does
-not cancel; a file it alone held is released, as at a last close.
+not cancel; a file it alone held is released, as at a last close, and a
+deferred unlink it reports runs once the steps are released, as after `Close`.
 
 **A sharing violation is decided after handle caching is broken.** A request
 whose deny-mode check fails against opens that a handle-caching grant covers —
@@ -2188,7 +2188,7 @@ engine refuses a write for quota.
 // kept under, zero for a create's inode before the file exists.
 type Charge struct {
 	Share        ShareID
-	Owner, Group Principal // the file's, or for a create the new file's: the resolved caller after squashing (RFC 7 §7.4), never the parent directory's
+	Owner, Group Principal // the file's, or for a create those RFC 7 §2.4 gives the new file: the resolved caller after squashing (RFC 7 §7.4), never the parent directory's owner, and the caller's group, or the parent's under setgid
 	Project      uint64
 	File         FileID
 }
@@ -2228,7 +2228,7 @@ func (q *Quota) Rehome(ctx context.Context, writer Identity, c Charge, add Usage
 		return nil, err
 	}
 	q.move(writes, c, scopes)          // each still released once, by its write's Done, from wherever it then is
-	return q.add(c, add, scopes), nil // released after the store's commit; on failure, Release takes q.mu, re-reads q.byFile[c.File] and moves back only the writes still there
+	return q.add(c, add, scopes), nil // Release once the store applied the change; on failure Revert, which takes q.mu, moves back each write it moved not yet Done, then releases its own
 }
 ```
 
@@ -2470,7 +2470,7 @@ func (s *Filesystem) createLocked(ctx context.Context, c Caller, dir Handle, nam
 	// exclusive create's retry with the file it made, or ErrExist — reserves
 	// nothing; the parent's locks keep the name from appearing between the
 	// lookup and the create.
-	res, err := s.quota.Reserve(ctx, c.Identity, newCharge(c, a), Usage{Files: 1}) // one inode, charged to the new file's owner and group (§5.6)
+	res, err := s.quota.Reserve(ctx, c.Identity, newCharge(c, dir, a), Usage{Files: 1}) // one inode, charged to the new file's owner and group, the parent's group under setgid (§5.6)
 	if err != nil {
 		return CreateResult{}, err
 	}
