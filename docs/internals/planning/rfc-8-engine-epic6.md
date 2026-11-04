@@ -12,7 +12,7 @@ unsuitable, `Bind`'s attach, stop steps 1 to 5), §2.7, §12.1 (`Start`, `Close`
 §3.1 and §3.4, for the floor and `expect`; [RFC 14](../rfcs/rfc-14-open-state.md) §4.4, for
 what a raised incarnation does to the grace instance.
 **Track:** C.
-**Epic 6 estimate: 10 subtasks, 35.75 man-days.**
+**Epic 6 estimate: 10 subtasks, 36.25 man-days.**
 **Depends on:** sync point **S2, red suite in CI**: E1's surface (`Engine`, `Deps`,
 `Journal`, `Handle`, `Lifecycle`, `Share`, `ShareState`, `Stats`) and E2's fixture and fake
 journal. T6.1 also needs the RFC 8 §2.1 and RFC 16 §3 text that settles #3631 and #3632, and
@@ -78,8 +78,10 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
   out. `Unbind` refuses it.
 - The asynchronous copy `Unbind` cancels (RFC 14 §2.7): RFC 14's, not built in this part.
 - The operator's acknowledgement of a lost journal device, which re-initialises it: the
-  second part. Here the shares stay refused, and a test re-initialises the directory as the
-  operator's step would.
+  second part. Here the shares stay refused, and a test re-initialises the directory and
+  calls `RecordJournal`, which rewrites the shards' primary journal identity (D10), as the
+  operator's step would. The loss sequence of 1 that RFC 8 §5.1 gives each file at a start
+  past an acknowledged loss goes with that step (§9 point 14).
 - The salvage export of a stranded tag and its `Forget` while serving (`salvage.path`): the
   second part. Here a stranded tag stays stranded until the next start.
 - A read-only journal reopened in place (RFC 8 §2.5, E42): it needs RFC 1 §5.4's read-only
@@ -227,7 +229,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | R6 | The share table is read on the request path without a lock; an attach or removal copies the whole table once per change, and no lock shared by more than one share is held across I/O or a wait on a write, read or commit | MUST NOT | §1.1 | T6.2 |
 | R7 | A binding holds the share's handle on each journal one of its shards lives on, and on no other, opened by `Share` at attach, its settings copied from the share record and its state; its handles and state are never stored, and `Start` rebuilds every binding from the share records | invariant | §2.3, RFC 11 §2.1 (one shard, one journal device) | T6.2, T6.3 |
 | R8 | `Bind` validates a share's settings and refuses an invalid one with an error, keeping the binding it had | MUST | §2.4, §2.3 | T6.2 |
-| R9 | `Bind` of a share not served attaches it: reads its version floor and limit, passes the larger to `Share`, writes the share's limit at the journal's as a tracked max-write, raises the shard's incarnation, and only then publishes the binding; a failure undoes these in reverse and publishes nothing | invariant | §2.5 (`Bind`), E29, RFC 1 §3 | T6.2 |
+| R9 | `Bind` of a share not served attaches it: reads its version floor and limit, passes the larger to `Share`, writes the share's limit at the journal's as a tracked max-write, raises the shard's incarnation, puts the incarnation that raise wrote on the binding, where a write samples it for its verifier, and only then publishes the binding; a failure undoes these in reverse and publishes nothing | invariant | §2.5 (`Bind`), §4.1, E29, RFC 1 §3 | T6.2 |
 | R10 | `Bind` of a served share applies a state change, serving to quiesced and back, without restarting the engine or touching another binding | invariant | §2.3 | T6.2 |
 | R11 | A share's full limit never refuses another share's writes on the same journal | test row | §2.3, §15.2 shared journal | T6.2 |
 | R12 | A content call naming a share with no binding answers `ErrDelay` with `DelayFrozen`, a share refused at start or left unattached by a lost journal included; only a share being removed or retired answers `ErrStale` | invariant | §12.1 | T6.2, T6.3, T6.9 |
@@ -263,8 +265,8 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R34 | The trigger is evaluated on every version the engine issues, not on a timer | invariant | §2.7, §15.2 sustained load | T6.7 |
-| R35 | When `Stats` shows fewer versions left than the larger of half a block and the peak version rate times the margin, every served share's limit is raised by a block, and the new limit is passed with `SetVersionLimit` only after every share's raise has committed. The peak is the highest count of versions drawn in any one second of the last 60 s; the margin is 30 s plus the existence age plus 1 s | bound | §2.7 | T6.7 |
-| R36 | `Bind` raises every served share's limit first when the counter it raised leaves fewer versions than the trigger | invariant | §2.5 (`Bind`) | T6.7 |
+| R35 | When the limit last passed with `SetVersionLimit`, less the version just issued, is below the larger of half a block and the peak version rate times the margin (D6), every served share's limit is raised to a block above the larger of that limit and `Stats().NextVersion`, and the new limit is passed with `SetVersionLimit` only after every share's raise has committed. The peak is the highest count of versions drawn in any one second of the last 60 s; the margin is 30 s plus the existence age plus 1 s | bound | §2.7 | T6.7 |
+| R36 | `Bind` raises every served share's limit first when the counter it raised leaves fewer versions than the trigger, itself and to R35's target, under the journal's raise lock, which it holds from its limit write until it publishes (D6) | invariant | §2.5 (`Bind`) | T6.7 |
 | R37 | A write that reaches the limit is refused retry-later, never `ErrNoSpace`, and is served once the raise commits | test row | §2.7, RFC 1 §4.3, §15.1 version limit | T6.7 (the raise), T7.1 (the answer) |
 | R38 | The raise never runs on the request path: a version issued posts the check and never waits for a transaction | MUST NOT | §1.1 | T6.7 |
 
@@ -274,7 +276,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | --- | --- | --- | --- | --- |
 | R39 | `Close` first refuses every call with `ErrUnavailable` | invariant | §2.5 stop step 1 | T6.8 |
 | R40 | `Close` stops the background work that takes journal versions (the removal loop, clone batches): it refuses new dispatch, cancels the batches in flight and joins them, then commits every file's pending existence in a last group commit per journal, within the stop bound | invariant | §2.5 stop step 2 | T6.8 |
-| R41 | `Close` cancels and joins the other loops (the version-limit raise, the retried open) | invariant | §2.5 stop step 3 | T6.8, T6.10 |
+| R41 | `Close` cancels and joins the other loops (each journal's group commit once its last batch has committed, the version-limit raise, the retried open) | invariant | §2.5 stop steps 2 and 3, E13 | T6.8, T6.10 |
 | R42 | `Close` closes what the engine opened (handles, then journals) in the reverse of the order it opened them, and nothing it was handed, only after every join has completed; no component is closed while work that uses it runs | MUST NOT | §2.5 stop step 4, E13, RFC 1 §8.7 | T6.8 |
 | R43 | A join that does not complete within its bound leaves the components it depends on open and reports the failure | MUST | §2.5 stop step 5 | T6.8 |
 | R44 | `Unbind` moves the binding to removing and, in this order: admits no new call, clone or removal batch for the share (but the phase-2 batches of a clone its join waits on); joins every call admitted before, every clone with the share on either side and every batch in flight | MUST | §2.3 | T6.9 |
@@ -293,12 +295,16 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   long `Unbind` never holds up another share's `Bind` (RFC 8 §2.3: a change to one share
   changes one binding). A set of the shares with a lifecycle call in progress, kept under
   the same mutex, answers a second `Bind`, `Unbind` or `Drop` naming one of them with
-  `ErrDelay`, which its caller retries. A binding's state (serving, quiesced, removing) is
-  an atomic in the binding, so a state change swaps nothing; attach and removal copy the
-  table, as RFC 8 §1.1's `decision:` says. Epic 3's T3.1 already declares the table,
-  `atomic.Pointer[bindings]` in `engine.go` read through `bindingOf(share)` in `file.go`,
-  with that `decision:` at the `bindings` type. T6.2 extends it and keeps that marker. No
-  marker of its own.
+  `ErrDelay`, which its caller retries. `Close`'s step 1 sets the engine's closed state
+  (R39) under the same mutex, and every publish, by `Bind` or the late attach, checks it
+  under the mutex and, when it is set, publishes nothing and undoes in reverse; `Close`
+  waits for the set to drain, within the stop bound (D7), before it closes anything, so no
+  handle is published on, or left open over, a journal stop step 4 closes. A binding's state
+  (serving, quiesced, removing) is an atomic in the binding, so a state change swaps
+  nothing; attach and removal copy the table, as RFC 8 §1.1's `decision:` says. Epic 3's
+  T3.1 already declares the table, `atomic.Pointer[bindings]` in `engine.go` read through
+  `bindingOf(share)` in `file.go`, with that `decision:` at the `bindings` type. T6.2
+  extends it and keeps that marker. No marker of its own.
 - **D2, how start learns the removals and the installation's tags.** Start step 1 needs
   each share's removal progress (`SH‖shard‖rm`) to skip a share past its offload step and to
   forget a tag whose removal reads forgotten, and step 5 needs every tag a share record of
@@ -333,7 +339,14 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   other, since the restart lost that shard's open state (RFC 14 §4.4). `kvstore`'s
   `decision:` at `RaiseIncarnations`, as #3606 words it, already gives the start form "the
   first serve of a share's shard this process has not served": T6.1 rewrites that marker for
-  `RaiseAtStart` and adds no second one. Pending the RFC 16 §3 text (§9 point 2).
+  `RaiseAtStart` and adds no second one. Both return the incarnation they wrote for each
+  shard, and the engine puts it on the share's binding before it publishes it, so the first
+  `Write` samples it for its verifier (RFC 8 §4.1) with no read after the raise. The
+  verifier's other inputs from the shard record, the primary's node and node epoch (RFC 16's
+  `Shard.Primary` and `PrimaryEpoch`), are written by nothing until the node record lands
+  (`kvstore`'s `ponytail:` at `RaiseIncarnations`), so the binding carries the incarnation
+  alone, and the process instance tells one start from the next. Pending the RFC 16 §3 text
+  (§9 point 2).
 - **D5, the floor at `Open`.** One number per journal: the largest of every share's version
   floor (`Content.VersionFloor`) and every share's limit (`VersionLimits`) among the shares
   the journal may serve, removed ones included, read through the `ShareID`s `Tags` names
@@ -349,18 +362,27 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   last passed with `SetVersionLimit`, less `v`, with the trigger; past it, it wakes the
   journal's raise goroutine and returns. No `Stats` call on the request path: `Stats`
   returns copies of its per-share maps, a cost that grows with the shares on the journal.
-  The raise reads `Stats().NextVersion` once per raise. One raise runs at a time per
+  The raise reads `Stats().NextVersion` once per raise and raises to a block above the
+  larger of that and the limit last passed: from the limit alone, a `Share` that moved the
+  counter from about 2·10⁶ to 9·10⁸ (T6.2's case) leaves every share on the journal below
+  the counter for about 50 raises, and from the counter alone, a rate term above a block
+  raises nothing while versions are left (§9 point 15). One raise runs at a time per
   journal; one woken during a raise runs again after. The raise holds a per-journal raise
-  lock from its read of the counter to its `SetVersionLimit`, and `Bind`'s limit step takes
-  the same lock and writes the larger of the limit last passed and a pending raise's target:
-  a `Bind` that wrote the journal's old limit between a raise's commit and its
-  `SetVersionLimit` would leave the new share below the limit the journal is then given,
-  against RFC 1 §4.3's "smallest of the durable per-share limits", and a crash would issue
-  those versions again. The lock is the journal's, not the lifecycle mutex (D1), and no
-  content call takes it.
+  lock from its read of the counter to its `SetVersionLimit`, and `Bind` takes the same
+  lock from its limit write until it publishes the binding, its incarnation raise included.
+  Under it, `Bind` runs R36's raise itself when its `Share` left the counter within the
+  trigger, the new share among the shares raised, and otherwise writes the new share's
+  limit at the limit last passed. A lock released at the limit write would let a raise in
+  the gap before the publish lift only the served shares, which do not include the new
+  one yet, and pass a limit above its `S‖id‖vl`, against RFC 1 §4.3's "smallest of the
+  durable per-share limits"; a crash would then issue those versions again. The lock is
+  the journal's, not the lifecycle mutex (D1): the raise goroutine reads the table through
+  its pointer and never takes the mutex, so the two never wait on each other in reverse
+  order, and no content call takes the lock.
 - **D7, the stop bound.** RFC 8 §2.5 names "the stop bound" without a value. It is the
-  sooner of the deadline of the context `Close` is given and a package default, 30 s from
-  the call, so a `Close(context.Background())` over a stuck loop still returns: past it, a
+  deadline of the context `Close` is given and, only when that context has none, a package
+  default, 30 s from the call, so a `Close(context.Background())` over a stuck loop still
+  returns and a caller that gave 120 s keeps them: past it, a
   join is abandoned and reported, and what it depends on, the journal and every handle on
   it, is left open (R43). 30 s matches the server's `shutdown_timeout` default, which the
   node's stop has to fit in. A `decision:` marker at `Close` says so, withdrawn if RFC 8 or
@@ -385,8 +407,16 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   journal only (R7), is refused with that device (R16), counts in that journal's floor only
   (D5), and its `Drop` runs `Forget` there. A share whose shard names the journal of no
   device in `Deps.Devices` is refused by name. The fixture writes the identity where it
-  creates the shard, until the control plane creates shards. A `decision:` marker at the
-  match says so, withdrawn if RFC 8 §2.1 or §12.1 settles another source (§9 point 14).
+  creates the shard, until the control plane creates shards. A re-initialised device has a
+  new identity (D3), while its shards' `Shard.Primary` still names the old one, and RFC 10
+  §2.2 says "A lost device therefore loses the node's place in every shard that journal
+  held". So the operator's step, out of scope here (§1.2) and the fixture's re-init in its
+  place, rewrites the primary journal identity of every shard naming the old identity in
+  `RecordJournal`'s transaction, as a compare-and-swap on each shard record; until then
+  the device's shares are refused by name. A `ponytail:` marker at `RecordJournal` names
+  the ceiling, more shards on one device than `K` in that one transaction, as D8's does for
+  the start transaction. A `decision:` marker at the match says so, withdrawn if RFC 8 §2.1
+  or §12.1 settles another source (§9 point 14).
 
 ## 5. Target tree
 
@@ -443,30 +473,34 @@ test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's is
 - **Track:** C. **Depends on:** S2; the RFC 8 §2.1 and RFC 16 §3 edits that settle #3631
   and #3632, and §9 point 14.
 - **Covers:** R1 to R5.
-- **Deliverables:** `kvstore.Store.Lifecycle()` returning a view with `JournalID(ctx,
-  device string) ([16]byte, error)`, `VersionLimits(ctx, shares)`, `RaiseVersionLimits(ctx,
-  to)` writing at most `K` keys per transaction, each key a tracked max-write over
-  `RaiseVersionLimit`'s rule, except that a share whose record reads being removed or retired
-  is skipped instead of refused with `ErrStale`, since nothing attaches it again and one such
-  share must not fail the raise for every share batched with it; `RaiseAtStart(ctx, shards)`
-  and `RaiseAtAttach(ctx, shard)` (D4), rewriting `kvstore`'s `decision:` at
+- **Deliverables:** `kvstore.Store.Lifecycle()` returning a view with `JournalID(ctx, device
+  string) ([16]byte, error)`, `VersionLimits(ctx, shares)`, `RaiseVersionLimits(ctx, to)`
+  writing at most `K` keys per transaction, each key a tracked max-write over
+  `RaiseVersionLimit`'s rule, except that a share whose record reads being removed or
+  retired is skipped instead of refused with `ErrStale`, since nothing attaches it again and
+  one such share must not fail the raise for every share batched with it; `RaiseAtStart(ctx,
+  shards)` and `RaiseAtAttach(ctx, shard)` (D4), each returning the incarnation it wrote per
+  shard, rewriting `kvstore`'s `decision:` at
   `RaiseIncarnations` for `RaiseAtStart`, and `Tags(ctx)` (D2), its record declared in
   `entity` and carrying the journal identity of each of the share's shards (D10); the
   primary's journal identity added to `entity.Shard` and its codec (D10);
-  `RecordJournal(ctx, device, id)` writing `J‖journal` and deleting any other key
-  naming the device (D3); the engine's `Lifecycle` declaring the six calls. `kv.Counting`
-  gains a count of Updates and the most keys one Update wrote, its first consumer here. In
-  E2's fixture, the real view replaces the stub `Lifecycle` that refuses every call
-  (`unbuiltLifecycle`), and the fixture records
+  `RecordJournal(ctx, device, id)` writing `J‖journal`, deleting any other key naming the
+  device (D3) and rewriting, in the same transaction, the primary journal identity of every
+  shard that names the deleted one (D10), with its `ponytail:`; the engine's `Lifecycle`
+  declaring the six calls. `kv.Counting` gains a count of Updates and the most keys one
+  Update wrote, its first consumer here. In E2's fixture, the real view replaces the stub
+  `Lifecycle` that refuses every call (`unbuiltLifecycle`), and the fixture records
   `Fixture.Journal`, the `JournalID` it kept from `Init`, through `RecordJournal`, so the
   view's `JournalID` answers it for the fixture's directory.
 - **Acceptance criteria:**
   - `JournalID` of a device with no record answers the zero identity, not an error; of a
     device whose journal was re-initialised, the newer identity.
+  - After `RecordJournal` for a re-initialised device, no shard record names its old
+    identity.
   - `RaiseVersionLimits` never lowers a limit, never commits more than `K` keys, and skips a
     share being removed or retired.
   - `RaiseAtAttach` leaves `GraceInstance` as it was; `RaiseAtStart` sets it to the new
-    incarnation.
+    incarnation. Each returns the incarnation the shard record then holds.
   - `Tags` names a share being removed with its `ShareID`, its tag and its `TagState`, and
     a retired share, each with its shards' journal identities.
 - **Tests:** a raise to a lower value leaves the stored one (catches a blind write, R3); two
@@ -474,13 +508,17 @@ test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's is
   the lower one commits, end at the higher (catches an untracked read); 3 × `K` shares raised:
   no `RaiseVersionLimits` Update wrote more than `K` keys, and they took at least 6 Updates
   (catches one transaction over every share, and a batch of `K` shares, R4); an attach raise
-  followed by a read of the shard record: incarnation up, grace instance unchanged (catches
-  the start meaning at attach, R5); `JournalID` after `RecordJournal` for two devices answers
-  each its own (catches a scan that returns the first key); `RecordJournal` twice for one
-  device: `JournalID` answers the second and one `J‖` key names the device (catches a
-  re-initialisation that keeps the old key); a share with two shards, one `rm` row at
-  forgotten and the other at offloaded: `Tags` answers `Offloaded` under its `ShareID`
-  (catches a state taken from one row only, D2); two shares whose shards name two journals:
+  followed by a read of the shard record: incarnation up, grace instance unchanged, and the
+  incarnation returned equal to the one read (catches the start meaning at attach, R5, and a
+  stale incarnation handed to the binding); `JournalID` after `RecordJournal` for two
+  devices answers each its own (catches a scan that returns the first key); `RecordJournal`
+  twice for one device: `JournalID` answers the second and one `J‖` key names the device
+  (catches a re-initialisation that keeps the old key), and the shard record of a share on that device
+  then names the second identity, while a shard on another device keeps its own (catches a
+  stale `Shard.Primary` after a re-initialisation, and a rewrite of every shard, D10); two
+  shares, one whose `rm` row reads forgotten and one at offloaded: `Tags` answers each its
+  own state under its `ShareID` (catches the states swapped or taken from another share,
+  D2); two shares whose shards name two journals:
   `Tags` answers each its own identity, and a shard record written and read back keeps it
   (catches an identity dropped by the codec, D10); over the fixture, `JournalID` of its
   directory equals `Fixture.Journal` (catches an identity not recorded or recorded under
@@ -496,7 +534,8 @@ test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's is
 - **Deliverables:** in `share.go`, epic 3's table extended (D1), its `decision:` kept, and
   the set of shares with a lifecycle call in progress; the binding: `Share`, a handle per
   journal, the state; `Bind` for a share not served (validate, read floor and limit, `Share`
-  at the larger, the limit written at the journal's, the attach raise D4 picks, publish; undo
+  at the larger, the limit written at the journal's, the attach raise D4 picks, the
+  incarnation it returns put on the binding, publish; undo
   in reverse on failure) and for a served one (a state change); the set of shards raised
   since `Start` (D4). Epic 3's unit composition binds through `Bind` from here, and its hook
   goes. E2's fixture gains a second share on its journal.
@@ -508,7 +547,10 @@ test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's is
 - **Tests:** a content call on share A while a `Bind` of share B holds the lifecycle mutex
   answers (catches a table read under the mutex, R6); `-race` with readers and binds;
   the attach raise made to fail: the handle is closed and the table holds no binding
-  (catches a binding published before the raise, R9); a negative limit refused and the
+  (catches a binding published before the raise, R9); a share bound, then written: the
+  incarnation its first `Write` samples equals the one its shard record reads back through
+  `kvstore` (catches a binding published without the raised incarnation, R9), written with
+  T6.2 or epic 4's T4.1, whichever lands last; a negative limit refused and the
   earlier binding kept (R8); a served share bound again `Quiesced`, then `Serving`: the
   table pointer is unchanged, another share's writes are served throughout, and the share's
   state follows each call (catches a state change that copies the table or touches another
@@ -566,9 +608,12 @@ test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's is
   §15.1's "journal gone", adapted: two shares written without offload, the directory
   deleted, `Start` refuses both by name and creates nothing (catches a journal re-created,
   R17); §15.1's
-  "attach after a device loss", adapted: the device destroyed, re-initialised as the
-  operator's step would, the share attached to it: its first version is above its old limit,
-  and a share whose removal reads offloaded is not attached.
+  "attach after a device loss", adapted: the device destroyed and re-initialised, and
+  before `RecordJournal` the share is refused by name (catches a stale `Shard.Primary`
+  matched, D10); then `RecordJournal` as the operator's step would, rewriting the primary
+  journal identity of the device's shards in its transaction (D10), the share attached to
+  it: its first version is above its old limit, and a share whose removal reads offloaded
+  is not attached.
 
 ### T6.4 Start step 2: the start transaction
 
@@ -577,7 +622,8 @@ test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's is
 - **Track:** C. **Depends on:** T6.3; E2's T2.3 (the fault-injecting `kv.KV`).
 - **Covers:** R22.
 - **Deliverables:** `RaiseAtStart` over every served shard in one call, after step 1 and
-  before step 3, so before any `Write` can return a verifier; its failure fails `Start`; the
+  before step 3, so before any `Write` can return a verifier; each shard's new incarnation
+  put on its share's binding before any file is served (D4); its failure fails `Start`; the
   shards raised recorded in D4's set. This is the node's start transaction that RFC 14 has
   the filesystem service read the `GraceInstance` from: once the engine composes with the
   service, it replaces the stand-in raise #3606 puts in the service's `serve` (§9 point 12).
@@ -660,16 +706,18 @@ test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's is
 
 ### T6.7 The version limit while serving
 
-**Subtask T6.7 estimate: 3.5 man-days.**
+**Subtask T6.7 estimate: 3.75 man-days.**
 
 - **Track:** C. **Depends on:** T6.3; epic 3's T3.2 and T3.3; E2's T2.3.
 - **Covers:** R34 to R38, R3, R4, R15, R20.
 - **Deliverables:** in `recover.go` (D6): the per-journal peak-rate buckets,
   `issued(journal, v)` called from `Write` and `Draw` (epics 5 and 8 add their own calls),
-  the raise goroutine: `RaiseVersionLimits` for every served share by a block,
-  `SetVersionLimit` after the last transaction commits, under the journal's raise lock;
-  `Bind`'s limit step under the same lock, at the larger of the limit last passed and a
-  pending raise's target; `Bind`'s raise-all-first (R36); RFC 8 §2.7's headroom `decision:`
+  the raise goroutine: `RaiseVersionLimits` for every served share to a block above the
+  larger of the limit last passed and `Stats().NextVersion`, `SetVersionLimit` after the
+  last transaction commits, under the journal's raise lock; `Bind` holding the same lock
+  from its limit write until it publishes, writing the new share's limit at the limit last
+  passed or, when its `Share` left the counter within the trigger, running that raise
+  itself with the new share among the shares raised (R36); RFC 8 §2.7's headroom `decision:`
   and burst `ponytail:` markers at the trigger; the goroutine pushed on `Start`'s undo stack
   (R13), so a later failing step stops it, and joined by `Close`.
 - **Acceptance criteria:**
@@ -684,53 +732,73 @@ test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's is
   a limit not written before the first version, R20); a raise held by a `kv.KV` wrapper
   between its last commit and `SetVersionLimit`, then a share bound: its `S‖id‖vl` is at
   least the limit the journal ends with (catches a `Bind` that writes the journal's old
-  limit, D6). Over the fake: a rate held
-  below the trigger and raised in one step, the raise due on the next `Draw` with the test
-  clock not advanced (catches a timer, R34); the peak computed from a 60 s history (catches a
-  window of the last second only); with a non-zero `existence_age` E and a steady peak rate
-  r, versions left above half a block and between 31·r and (31 + E)·r make the raise due
-  (catches a margin without the existence age, R35); a `Bind` whose `Share` leaves the
-  journal's counter within the trigger: every served share's limit is raised before the new
-  share's limit is written (R36); 3 × `K` shares: no raise Update wrote more than `K` keys,
-  and a raise took at least 6 Updates by T6.1's count (R4); one share marked removing while a
-  raise is in flight, and every other share's limit still raised and given to the journal
-  (catches one removed share failing the batch).
-  §15.2's sustained-load and burst rows are epic 7's T7.4, over this raise.
+  limit, D6); a `Bind` held by a `kv.KV` wrapper in its incarnation raise, after its limit
+  write, while a write past the trigger wakes the raise: the raise waits for the publish,
+  and the bound share's `S‖id‖vl` is at least the limit the journal ends with (catches a
+  lock released before the publish, R36); a floor several blocks above the journal's limit,
+  then a share bound: its `S‖id‖vl` is above the version its first `WriteAt` returns, and
+  another share's write is served after one raise (catches a raise counted from the old
+  limit, R35). Over the fake: a rate held below the trigger and raised in one step, the
+  raise due on the next `Draw` with the test clock not advanced (catches a timer, R34); the
+  peak computed from a 60 s history (catches a window of the last second only); with a
+  non-zero `existence_age` E and a steady peak rate r, versions left above half a block and
+  between 31·r and (31 + E)·r make the raise due (catches a margin without the existence
+  age, R35); a peak rate whose term is two blocks and versions left between one and two
+  blocks: one raise lifts the limit by a block (catches a target counted from the counter
+  alone, which raises nothing, R35); a `Bind` whose `Share` leaves the journal's counter
+  within the trigger: every served share's limit and the new share's are raised, by `Bind`
+  itself, before `SetVersionLimit` and before the publish (R36); 3 × `K` shares: no raise
+  Update wrote more than `K` keys, and a raise took at least 6 Updates by T6.1's count (R4);
+  one share marked removing while a raise is in flight, and every other share's limit still
+  raised and given to the journal (catches one removed share failing the batch). §15.2's
+  sustained-load and burst rows are epic 7's T7.4, over this raise.
 
 ### T6.8 `Close`
 
-**Subtask T6.8 estimate: 3.75 man-days.**
+**Subtask T6.8 estimate: 4 man-days.**
 
 - **Track:** C. **Depends on:** T6.5, T6.7; epic 4's T4.3; epic 5's T5.3.
 - **Covers:** R39 to R43, R46, R48, R49.
-- **Deliverables:** `Close(ctx)`: refuse every call with `ErrUnavailable`; stop the removal
+- **Deliverables:** `Close(ctx)`: refuse every call with `ErrUnavailable`, the closed state
+  set under the lifecycle mutex (D1), where every publish checks it; stop the removal
   loops and clone batches, refusing new dispatch, cancelling the batches in flight and
   joining them (each pending release's `retry` yielding `ErrUnavailable`, with no
   `done(...)`, its marker left for start); the cancel of every rebuilt
   clone's `Served` wait, through the context epic 8's T8.6 waits under, its clone `Removal`
-  left for start; the last group commit per journal; cancel and join the
-  version-limit raise and the retried open; close every handle, then every journal, in
-  reverse, only after every join; a join past the stop bound (D7), the sooner of the
-  context's deadline and the default, leaving its components open, the journal and every
-  handle on it, and reported in the error.
+  left for start; the last group commit per journal, then each journal's group commit
+  goroutines (epic 4's T4.3) stopped and joined, so no batch runs on a journal step 4
+  closes; cancel and join the version-limit raise and the retried open; wait for D1's set
+  of lifecycle calls in progress to drain; close every handle, then every journal, in
+  reverse, only after every join; a join past the stop bound (D7), the context's deadline
+  or, with none, the default, leaving its components open, the journal and every handle on
+  it, and reported in the error.
 - **Acceptance criteria:**
   - After a clean `Close`, a restart finds no append or hole fill to re-apply.
   - No `Handle.Close` or `Journal.Close` is called while a loop that uses it runs.
+  - No binding is published once `Close` has begun.
   - `Close` never calls `Forget`.
 - **Tests:** over the fake: a removal loop held in a batch past the context's deadline,
-  `Close` returns its error and the journal and every handle on it are still open (catches
-  a close under a live loop, R42, R43); the same with `context.Background()` and the test
+  `Close` returns its error and the journal and every handle on it are still open (catches a
+  close under a live loop, R42, R43); the same with `context.Background()` and the test
   clock advanced past the default: `Close` returns its error (catches a bound taken from
-  `ctx` alone, D7); the fake records the order of every close (catches journals closed before
-  handles); a content call and a `Bind` made once `Close` has begun answer `ErrUnavailable`,
-  and the fake records no version drawn after it (R39); a clean `Close` and restart over the
-  fixture with `Since` yielding nothing above `applied`, the share's tag still in `Stats` and
-  a synced write reading back (catches a `Close` that calls `Forget`, R40, R46); T5.4's
+  `ctx` alone, D7); the same with a 120 s deadline and the clock past 30 s: `Close` still
+  waits (catches the default applied over a deadline, D7); a `Bind` held in `Share`, then
+  `Close` called, then the `Bind` released: nothing is published, the `Bind` answers
+  `ErrUnavailable`, and the fake records its handle closed before the journal (catches a
+  publish not checked under the mutex, and a journal closed under a `Bind`, R39, R42); a
+  group commit batch held in its store commit by a `kv.KV` wrapper when `Close` begins: no
+  handle or journal is closed until the batch returns and its goroutine is joined (catches
+  a journal closed under a running group commit, R41, R42); the fake records the order of
+  every close (catches journals closed before handles); a content
+  call and a `Bind` made once `Close` has begun answer `ErrUnavailable`, and the fake
+  records no version drawn after it (R39); a clean `Close` and restart over the fixture with
+  `Since` yielding nothing above `applied`, the share's tag still in `Stats` and a synced
+  write reading back (catches a `Close` that calls `Forget`, R40, R46); T5.4's
   `ErrUnavailable` outcome: a `Close` while the loop retries a release's phase 1 yields
   `ErrUnavailable` on its channel with no `done(...)`, leaves the marker, and a restart then
-  settles it (R48); a `Served` stub that never returns: `Close` returns within its
-  deadline, the wait's goroutine is gone and the clone `Removal` is still listed at the next
-  start (catches a `Close` hung on a shard never served, R49), written with T6.8 or T8.6,
+  settles it (R48); a `Served` stub that never returns: `Close` returns within its deadline,
+  the wait's goroutine is gone and the clone `Removal` is still listed at the next start
+  (catches a `Close` hung on a shard never served, R49), written with T6.8 or T8.6,
   whichever lands last; `prof.Watch` finds no goroutine left.
 
 ### T6.9 `Unbind` and `Drop`
@@ -792,10 +860,11 @@ test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's is
   place; any other failure, the late attach included, closing in reverse, leaving the shares
   unattached, naming the cause in `journal_unsuitable` and retrying; `Bind`, `Unbind` and
   `Drop` naming its shares answering `ErrDelay` meanwhile; a failed `Start` stopping the
-  retries; `Close` joining them at its step 3; a closing flag set at `Close`'s step 1,
-  checked by the retry before it opens and before it publishes, so a retry inside `Open`
-  when `Close` begins starts no loop after stop step 2 has joined the removal loops and
-  closes what it opened (E13, R42), and no join made under the lifecycle mutex (D1). E2's
+  retries; `Close` joining them at its step 3; the closed state `Close` sets at its step 1
+  under the lifecycle mutex (R39, D1), checked by the retry before it opens and, under the
+  same mutex, before it publishes, so a retry inside `Open` when `Close` begins starts no
+  loop after stop step 2 has joined the removal loops and closes what it opened (E13, R42),
+  and no join made under the lifecycle mutex (D1). E2's
   fixture gains a second device and its journal.
 - **Acceptance criteria:**
   - A retry never opens a directory after `Close` or a failed `Start` returned.
@@ -858,9 +927,9 @@ T6.6: a restart over the fake journal recovers every file.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T6.1, T6.2, T6.3, T6.4 | 13.25 | S2; T3.1, T2.3; the RFC text for #3631 and #3632 and §9 point 14 | the store view, the table, `Bind` and the journals opened: what needs only epic 3's table and E2's `kv.KV` |
-| 2 | T6.7 | 3.5 | PR 1; T3.2, T3.3, T2.3 | the version limit while serving, on the paths that issue versions |
+| 2 | T6.7 | 3.75 | PR 1; T3.2, T3.3, T2.3 | the version limit while serving, on the paths that issue versions |
 | 3 | T6.5, T6.6 | 7.5 | PR 1; T4.3, T5.3, T5.4 | recovery: existence re-applied, removals resumed, tags stranded |
-| 4 | T6.8, T6.9 | 7.75 | PR 2, PR 3; T4.7; T8.6 for the `Served` wait's test | the ends of the engine and of a share: `Close`, `Unbind`, `Drop` |
+| 4 | T6.8, T6.9 | 8 | PR 2, PR 3; T4.7; T8.6 for the `Served` wait's test | the ends of the engine and of a share: `Close`, `Unbind`, `Drop` |
 | 5 | T6.10 | 3.75 | PR 3, PR 4; `ErrUnsuitableStorage` | the retried open and the late attach, which reuse steps 1 to 5 and call `Close` and `Unbind` |
 
 A suggestion only: one pull request per subtask works as well. PR 2 can be open beside PR 3.
@@ -933,4 +1002,20 @@ A suggestion only: one pull request per subtask works as well. PR 2 can be open 
     RFC 16 §3 names a share's device; RFC 16 records it only as the journal identity in
     `Shard.Primary`. RFC 8 §2.1 or §12.1 should name the source: a `Lifecycle` read of the
     shard's journal identity, D10's choice, or a field on `Share`. It changes E1's frozen
-    `Lifecycle`, so T6.1 waits for the RFC text, as for points 1 and 2.
+    `Lifecycle`, so T6.1 waits for the RFC text, as for points 1 and 2. The text should
+    also say who rewrites that identity when a device is re-initialised, since RFC 10 §2.2
+    loses the node's place in every shard the old journal held: D10's choice is the
+    operator's step, rewriting the primary journal identity of the device's shards in
+    `RecordJournal`'s transaction. It should also say how `Start` learns that a loss was
+    acknowledged: RFC 8 §5.1 starts each attached file's loss sequence "at 1 rather than
+    0" "at a start past an acknowledged loss", which epic 4's journal-wide loss floor
+    gives, but a re-initialised journal holds no record of its shares' tags, as does a
+    journal whose shares' records were never written or are all released, so nothing
+    `Start` reads tells the two apart. Until that text, T6.3 sets no loss floor, and the
+    second part's acknowledgement sets it.
+15. **What a raise of the version limit counts from.** RFC 8 §2.7 raises every served
+    share's limit "by a block" and does not say from what. From the limit alone, a `Bind`
+    whose `Share` jumped the counter leaves the journal refusing writes for many raises;
+    from the counter alone, a rate term above a block raises nothing while versions are
+    left. D6 raises to a block above the larger of the two. RFC 8 §2.7, and RFC 1's plan
+    that repeats it, should say so; it changes no interface, so nothing waits for it.
