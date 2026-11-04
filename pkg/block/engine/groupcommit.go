@@ -28,8 +28,10 @@ type groupCommit struct {
 	due      map[entity.FileID]*dueFile
 	inFlight bool          // a batch is between its capture and its return
 	closed   bool          // the engine closed: no batch runs, no file is noted
+	halted   bool          // the journal's device is lost: no batch runs, no file is noted
 	returned chan struct{} // closed, and replaced, each time a batch returns
 	nextAt   time.Time     // when the loop's timer fires; zero, none is set
+	losses   losses
 
 	wake   chan struct{} // a file became due sooner than the timer, or now
 	stop   chan struct{}
@@ -41,6 +43,9 @@ type groupCommit struct {
 // errClosed answers a write after the engine's group commits stopped.
 var errClosed = fmt.Errorf("engine: closed: %w", vfserr.ErrUnavailable)
 
+// errLost is note's answer once the journal's device is lost whole.
+var errLost = fmt.Errorf("engine: journal device lost: %w", vfserr.ErrUnavailable)
+
 // dueFile is a file with uncommitted operations, waiting for a batch.
 type dueFile struct {
 	b         *binding
@@ -50,13 +55,39 @@ type dueFile struct {
 }
 
 // captured is one file of a batch: its share and the operations the capture
-// claimed, which stay in the file's entry until the batch returns.
+// claimed, the entry's first n, which stay there until the batch returns.
 type captured struct {
-	b   *binding
-	f   entity.FileID
-	fe  *fileEntry
-	n   int // the entry's first n operations
-	ops []kvstore.PendingOp
+	b  *binding
+	f  entity.FileID
+	fe *fileEntry
+	n  int
+}
+
+// pending is c's claimed operations as the store commits them, read under the
+// entry's lock after the batch's sync, so a loss the sync's drain marked is
+// committed lost.
+func (e *Engine) pending(c captured) kvstore.PendingExistence {
+	e.files.lock(c.fe)
+	defer c.fe.mu.Unlock()
+	p := kvstore.PendingExistence{Share: c.b.share.ID, File: c.f}
+	for _, op := range c.fe.ops[:c.n] {
+		var mtime time.Time
+		if op.setsMtime {
+			mtime = op.at
+		}
+		kind := kvstore.OpWrite
+		if op.lost {
+			kind = kvstore.OpLost
+		}
+		p.Ops = append(p.Ops, kvstore.PendingOp{
+			Version: entity.JournalVersion(op.version.Bytes()),
+			Kind:    kind,
+			Extent:  entity.Extent{Offset: op.extent.Off, Length: op.extent.Len},
+			Mtime:   mtime,
+			Ctime:   op.at,
+		})
+	}
+	return p
 }
 
 // groupCommitFor is journal j's group commit, started on first use. Once
@@ -116,14 +147,20 @@ func (e *Engine) closeGroupCommits() {
 
 // note puts f on the due set, its oldest uncommitted operation staged at
 // oldest, unless it is there already, waking the loop when f is due before
-// its timer fires. It answers errClosed once the group commit is closed. The
-// caller holds f's entry lock.
+// its timer fires. It answers errClosed once the group commit is closed and
+// errLost once the journal's device is lost. The caller holds f's entry lock,
+// so a write is either noted before lostWhole takes the due set or refused
+// after.
 func (g *groupCommit) note(b *binding, f entity.FileID, oldest time.Time) error {
 	age, _ := g.e.groupSettings()
 	g.mu.Lock()
 	if g.closed {
 		g.mu.Unlock()
 		return errClosed
+	}
+	if g.halted {
+		g.mu.Unlock()
+		return errLost
 	}
 	if g.due[f] == nil {
 		g.due[f] = &dueFile{b: b, oldest: oldest}
@@ -203,7 +240,7 @@ func (g *groupCommit) take() (batch []taken, wait time.Duration) {
 			g.nextAt = now.Add(wait)
 		}
 	}()
-	if g.inFlight || g.closed {
+	if g.inFlight || g.closed || g.halted {
 		return nil, -1
 	}
 	type cand struct {
@@ -330,19 +367,8 @@ func (e *Engine) capture(b *binding, f entity.FileID) (c captured, ok, held bool
 		if op.kind != opWrite {
 			break
 		}
-		var mtime time.Time
-		if op.setsMtime {
-			mtime = op.at
-		}
-		c.ops = append(c.ops, kvstore.PendingOp{
-			Version: entity.JournalVersion(op.version.Bytes()),
-			Kind:    kvstore.OpWrite,
-			Extent:  entity.Extent{Offset: op.extent.Off, Length: op.extent.Len},
-			Mtime:   mtime,
-			Ctime:   op.at,
-		})
+		c.n++
 	}
-	c.n = len(c.ops)
 	if c.n == 0 {
 		return captured{}, false, true
 	}
@@ -364,13 +390,13 @@ func (e *Engine) syncAndCommit(ctx context.Context, batch []captured) (map[entit
 		byShare[c.b] = append(byShare[c.b], fileID(c.f))
 	}
 	for b, ids := range byShare {
-		if err := b.h.Sync(ctx, ids...); err != nil {
+		if err := e.sync(ctx, b, ids...); err != nil {
 			return nil, err
 		}
 	}
 	pending := make([]kvstore.PendingExistence, len(batch))
 	for i, c := range batch {
-		pending[i] = kvstore.PendingExistence{Share: c.b.share.ID, File: c.f, Ops: c.ops}
+		pending[i] = e.pending(c)
 	}
 	ctx, end := e.d.Tracer(ctx, "engine.existence_commit", slog.Int("files", len(batch)))
 	failed, err := e.d.Existence.Commit(ctx, pending)
@@ -437,7 +463,7 @@ func (e *Engine) commitNow(ctx context.Context, b *binding, f entity.FileID) err
 	g := b.gc
 	for {
 		g.mu.Lock()
-		closed, returned := g.closed, g.returned
+		closed, lost, returned := g.closed, g.halted, g.returned
 		g.mu.Unlock()
 		if e.covered(f, target) {
 			g.mu.Lock()
@@ -449,6 +475,9 @@ func (e *Engine) commitNow(ctx context.Context, b *binding, f entity.FileID) err
 		}
 		if closed {
 			return errClosed
+		}
+		if lost {
+			return errLost
 		}
 		g.mu.Lock()
 		d := g.due[f]

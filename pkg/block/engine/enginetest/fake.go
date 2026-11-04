@@ -182,7 +182,28 @@ func (j *FakeJournal) Lose(id journal.FileID, e journal.Extent, why journal.Loss
 	if why == journal.LossCorrupt || why == journal.LossFailedWindow {
 		j.gen++
 	}
-	j.losses = append(j.losses, journal.LossEvent{SeqNum: uint64(len(j.losses)) + 1, Share: f.tag, File: id, Extent: e, Version: v, Reason: why})
+	j.losses = append(j.losses, journal.LossEvent{SeqNum: j.nextSeq(), Share: f.tag, File: id, Extent: e, Version: v, Reason: why})
+}
+
+// Report puts ev in the loss ring as the journal reports a loss whose
+// content it already dropped, raising the loss generation: ev's SeqNum, when
+// set, skips the events between, as a ring that overflowed would; zero is the
+// next one.
+func (j *FakeJournal) Report(ev journal.LossEvent) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if ev.SeqNum == 0 {
+		ev.SeqNum = j.nextSeq()
+	}
+	j.gen++
+	j.losses = append(j.losses, ev)
+}
+
+func (j *FakeJournal) nextSeq() uint64 {
+	if len(j.losses) == 0 {
+		return 1
+	}
+	return j.losses[len(j.losses)-1].SeqNum + 1
 }
 
 // Forget drops tag whole: every file of the tag and the bytes it holds. It is

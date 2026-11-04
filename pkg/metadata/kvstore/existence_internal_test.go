@@ -381,3 +381,20 @@ func TestExistenceCommitSuspendedModify(t *testing.T) {
 		t.Errorf("modify %v, change %v; want modify %v from the first write, change %v from the suspended one", got.Modify, got.Change, first.Mtime, suspended.Ctime)
 	}
 }
+
+// A lost write exists as a write does, uncarved past the old size, and
+// charges nothing.
+func TestExistenceCommitLost(t *testing.T) {
+	f := newContentFix(t, nil)
+	file := f.file(0)
+	lost := write(2, mib, mib)
+	lost.Kind = OpLost
+	f.exist(file, write(1, 0, mib), lost)
+	got := f.get(file)
+	if got.Size != 2*mib || got.Charged != mib {
+		t.Errorf("size %d, charged %d; want size %d, charged %d for the first write alone", got.Size, got.Charged, 2*mib, mib)
+	}
+	if l := f.layout(file); l != "uncarved[0,2)" {
+		t.Errorf("layout %s, want uncarved[0,2)", l)
+	}
+}

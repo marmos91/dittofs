@@ -271,3 +271,18 @@ func (e *Engine) Due(j Journal, f entity.FileID) bool {
 	defer g.mu.Unlock()
 	return g.due[f] != nil
 }
+
+// LostWhole is lostWhole on journal j.
+func (e *Engine) LostWhole(j Journal) { e.lostWhole(j) }
+
+// OnDrain runs f in each drain that read new losses, before it marks writes.
+func (e *Engine) OnDrain(f func()) { e.hooks.drained.Store(&f) }
+
+// SyncFile syncs file f of share s through the engine's one sync function.
+func (e *Engine) SyncFile(ctx context.Context, s entity.ShareID, f entity.FileID) error {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return err
+	}
+	return e.sync(ctx, b, fileID(f))
+}

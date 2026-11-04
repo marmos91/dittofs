@@ -44,7 +44,14 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	}
 	fe := e.files.lockFor(f)
 	if len(fe.ops) == 0 {
-		if err := b.gc.note(b, f, now); err != nil {
+		if err := b.gc.note(b, f, now); errors.Is(err, errLost) {
+			// The journal's device was lost: what it staged is gone, uncommitted.
+			e.files.unlock(f, fe)
+			if o.Done != nil {
+				o.Done()
+			}
+			return v, nil
+		} else if err != nil {
 			e.files.unlock(f, fe)
 			return vfserr.Verifier{}, err
 		}

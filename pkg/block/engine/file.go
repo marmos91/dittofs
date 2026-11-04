@@ -29,6 +29,7 @@ type pendingOp struct {
 	extent    journal.Extent // a truncate's Off is the size it sets, its Len zero
 	at        time.Time      // the clock's time when staged: the file's change time
 	setsMtime bool           // the operation moves the file's modification time
+	lost      bool           // the journal dropped it after its sync: its existence commits lost
 	done      func()         // the write's WriteOpts.Done, called once its existence commits or it is dropped
 }
 
