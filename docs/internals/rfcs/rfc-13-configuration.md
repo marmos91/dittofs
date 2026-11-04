@@ -280,7 +280,8 @@ control plane, and the record then says it came from the file.
 start.** The step mints the installation ID once and passes the same ID to the
 store's `Init` ([RFC 16 §3.2](rfc-16-metadata-store.md#3.2%20How%20it%20is%20assembled)), which writes it into the Installation record
 beside the store format record ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)), and to each journal's `Init`, which writes it into the journal's `format`
-file ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). A start opens what exists and creates neither: one that
+file ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)); the step then records each journal's identity, node and
+device in the store with `RecordJournal` ([RFC 16 §3.2](rfc-16-metadata-store.md#3.2%20How%20it%20is%20assembled)). A start opens what exists and creates neither: one that
 finds journals naming an installation and no metadata store reports **metadata
 store lost**, and one that finds a store whose journals are missing, or name
 another installation, reports the journal missing or foreign; both wait for an

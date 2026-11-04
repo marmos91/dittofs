@@ -1675,7 +1675,9 @@ sets both to 9, so a reference minted under 7 is then stale.
 of its primary, a failover, a handover whose old primary is lost before the new
 one holds the table — opens a new **grace instance**: the transaction that
 starts serving after the loss copies the incarnation the new primary serves
-under into the shard record's `GraceInstance`, and only such a loss does. A
+under into the shard record's `GraceInstance`, and only such a loss does,
+besides the first raise of a shard no client holds state under yet, a new,
+cloned or restored one ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)). A
 handover that ships the table raises the incarnation and keeps `GraceInstance`;
 one whose table never arrived has no start or takeover transaction to copy it,
 so the new primary, already named, writes `GraceInstance` = its incarnation by
