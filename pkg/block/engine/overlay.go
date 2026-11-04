@@ -34,7 +34,12 @@ func (e *Engine) Overlay(ctx context.Context, s entity.ShareID, f entity.FileID)
 // restart cannot rebuild it. Overturned once the journal records a change
 // time beside the modification time.
 func replay(ops []pendingOp) (o Overlay, pending bool) {
+	live := 0
 	for _, op := range ops {
+		if op.dropped {
+			continue
+		}
+		live++
 		switch op.kind {
 		case opTruncate:
 			o.Size, o.SizeSet = op.extent.Off, true
@@ -47,5 +52,5 @@ func replay(ops []pendingOp) (o Overlay, pending bool) {
 		}
 		o.Version = entity.JournalVersion(op.version.Bytes())
 	}
-	return o, len(ops) > 0
+	return o, live > 0
 }

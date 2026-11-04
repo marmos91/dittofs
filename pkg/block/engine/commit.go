@@ -75,7 +75,7 @@ func (e *Engine) pendingIn(f entity.FileID, off, n int64) (journal.Version, []en
 	through := fe.ops[len(fe.ops)-1].version
 	var runs []entity.Extent
 	for _, op := range fe.ops {
-		if op.kind != opWrite {
+		if op.kind != opWrite || op.dropped {
 			continue
 		}
 		x := entity.Extent{Offset: op.extent.Off, Length: op.extent.Len}

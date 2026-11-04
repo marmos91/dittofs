@@ -142,7 +142,7 @@ func (fs *files) opsAt(f entity.FileID, asOf journal.Version) []pendingOp {
 	}
 	var ops []pendingOp
 	for _, op := range fe.ops {
-		if op.version.Compare(asOf) <= 0 {
+		if !op.dropped && op.version.Compare(asOf) <= 0 {
 			ops = append(ops, op)
 		}
 	}

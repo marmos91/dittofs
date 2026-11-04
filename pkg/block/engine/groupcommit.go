@@ -95,11 +95,20 @@ type captured struct {
 // pending is c's claimed operations as the store commits them, read under the
 // entry's lock after the batch's sync, so a loss the sync's drain marked is
 // committed lost.
+//
+// decision: a corrupt loss the journal reports after this read and before
+// the store commits the batch is committed as written, charged, and the
+// batch's return drops the mark with the operation: the window is one store
+// call long. Close it with a loss path for committed, unoffloaded content,
+// which records such a loss against the File once its write has committed.
 func (e *Engine) pending(c captured) kvstore.PendingExistence {
 	e.files.lock(c.fe)
 	defer c.fe.mu.Unlock()
 	p := kvstore.PendingExistence{Share: c.b.share.ID, File: c.f}
-	for _, op := range c.fe.ops[:c.n] {
+	for _, op := range c.fe.ops {
+		if !op.claimed || op.dropped {
+			continue
+		}
 		var mtime time.Time
 		if op.setsMtime {
 			mtime = op.at
@@ -459,10 +468,11 @@ func (e *Engine) capture(b *binding, f entity.FileID) (c captured, ok, held bool
 	}
 	defer e.files.unlock(f, fe)
 	c = captured{b: b, f: f, fe: fe}
-	for _, op := range fe.ops {
-		if op.kind != opWrite {
+	for i := range fe.ops {
+		if fe.ops[i].kind != opWrite {
 			break
 		}
+		fe.ops[i].claimed = true
 		c.n++
 	}
 	if c.n == 0 {
@@ -566,23 +576,33 @@ func init() { conflictBound.Store(time.Second) }
 // settle ends c's part in its batch under its entry's lock: a committed file
 // loses the operations the batch claimed, whose Dones it returns, is settled
 // in the journal through the newest of them, and is put back on the due set
-// if it holds others; a failed one keeps them and is
-// retried at retry. The in-batch mark is cleared and its waiters woken; the
-// entry is dropped once it holds nothing.
+// if it holds others; a failed one has its claim released, keeps them and is
+// retried at retry. A claimed write a failed window dropped leaves either way,
+// its Done having run when it was dropped. The in-batch mark is cleared and
+// its waiters woken; the entry is dropped once it holds nothing.
 func (e *Engine) settle(g *groupCommit, c captured, ok bool, retry time.Time) (dones []func()) {
 	fe := c.fe
 	e.files.lock(fe)
 	var through journal.Version
-	if ok {
-		through = fe.ops[c.n-1].version
-		for _, op := range fe.ops[:c.n] {
+	kept := fe.ops[:0]
+	for _, op := range fe.ops {
+		switch {
+		case !op.claimed:
+			kept = append(kept, op)
+		case op.dropped: // a failed window took it out of the batch; its Done ran then
+		case ok:
+			through = op.version // the claimed are in version order: the last is the newest
 			if op.done != nil {
 				dones = append(dones, op.done)
 			}
+			e.pendingApplied.Add(1)
+		default: // the claim is released for the retry
+			op.claimed = false
+			kept = append(kept, op)
 		}
-		fe.ops = slices.Delete(fe.ops, 0, c.n)
-		e.pendingApplied.Add(int64(c.n))
 	}
+	clear(fe.ops[len(kept):])
+	fe.ops = kept
 	fe.inBatch = false
 	close(fe.batchDone)
 	fe.batchDone = nil
@@ -601,7 +621,7 @@ func (e *Engine) settle(g *groupCommit, c captured, ok bool, retry time.Time) (d
 		g.mu.Unlock()
 	}
 	e.files.unlock(c.f, fe)
-	if ok {
+	if ok && through != (journal.Version{}) {
 		// The journal may drop what it keeps for recovery of f's existence
 		// through the version the store now holds.
 		c.b.h.Settle(fileID(c.f), through)

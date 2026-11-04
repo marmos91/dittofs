@@ -4,8 +4,10 @@ import (
 	"context"
 	"sync"
 
+	"errors"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"slices"
 )
 
 // losses is one journal's loss sequences: a journal-wide floor and an entry
@@ -22,6 +24,10 @@ type losses struct {
 	files map[entity.FileID]uint64
 	gen   uint64 // the journal's loss generation the drain last applied
 	seq   uint64 // the newest loss event the drain read
+	// windows are the files a failed-window event raised whose failed sync
+	// has not yet reached a Sync of theirs: that Sync's SyncError raises them
+	// no further.
+	windows map[entity.FileID]bool
 }
 
 // seqOf is f's loss sequence. The caller holds mu.
@@ -54,6 +60,13 @@ func (l *losses) raiseAll() {
 // call of b.h.Sync elsewhere breaks that; revisit only if the journal ever
 // reports its losses with its Sync's answer.
 //
+// A failed sync window, the journal's SyncError, is not an error of the sync:
+// the drain drops the window's pending writes, each file the error names that
+// no failed-window event already raised has its loss sequence raised, so the
+// next Commit of each answers the raised sequence and the verifier the raised
+// loss generation gives, never an I/O error, and the files are synced again,
+// as many times as a window fails.
+//
 // A journal whose device was lost whole is synced no more: the sync answers
 // the journal closed, so no Commit answers a verifier past the loss.
 func (e *Engine) sync(ctx context.Context, b *binding, ids ...journal.FileID) error {
@@ -63,29 +76,60 @@ func (e *Engine) sync(ctx context.Context, b *binding, ids ...journal.FileID) er
 	if lost {
 		return journal.ErrClosed
 	}
-	err := b.h.Sync(ctx, ids...)
-	e.drain(b)
-	return err
+	for {
+		err := b.h.Sync(ctx, ids...)
+		e.drain(b)
+		var failed *journal.SyncError
+		if !errors.As(err, &failed) {
+			return err
+		}
+		// decision: a file the SyncError names that no failed-window event
+		// covers, as when the loss ring overflowed, keeps its pending writes
+		// and commits them as data, since the engine cannot tell which of
+		// them the window held. Overturned once the journal names the
+		// failed versions with its SyncError.
+		l := &b.gc.losses
+		l.mu.Lock()
+		for _, id := range failed.Files {
+			if f := entity.FileID(id.Bytes()); l.windows[f] {
+				delete(l.windows, f)
+			} else {
+				l.raise(f)
+			}
+		}
+		l.mu.Unlock()
+		// The journal promises nothing durable past a failed window, the
+		// other files' writes and later ones included: sync again.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 }
 
 // drain applies the loss events the journal reported since the last drain,
 // once its loss generation moved: each corrupt or failed-window loss of an
 // unoffloaded write raises its file's sequence, a gap in the ring raises
-// every file's, and a corrupt loss of a write still pending marks that write
-// lost, so its existence commit records it lost and charges nothing.
+// every file's, a corrupt loss of a write still pending marks that write
+// lost, so its existence commit records it lost and charges nothing, and a
+// failed window's loss drops its pending write, calling its Done, charging
+// nothing, and records its file as raised by its window.
 //
 // The drain holds the journal's loss lock until every write it marks is
 // marked, so a drain that finds the generation already applied finds its
 // writes marked too.
 //
 // decision: a corrupt loss of a pending write is taken as of a synced write
-// and committed lost, since the journal's loss event says why but not whether
-// the write was synced. A failed window's loss raises the sequence only: its
-// pending write is not dropped here, and is still committed as written until
-// the drop of a failed window's writes, uncharged and with their Done, is
-// built. Revisit both when the event says whether the write was synced.
+// and committed lost, and a failed window's as of an unsynced one, dropped,
+// since the journal's loss event says why but not whether the write was
+// synced. Revisit when the event says it.
 func (e *Engine) drain(b *binding) {
 	l := &b.gc.losses
+	var dones []func()
+	defer func() {
+		for _, d := range dones {
+			d()
+		}
+	}()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if b.j.Stats().LossGeneration == l.gen {
@@ -104,9 +148,14 @@ func (e *Engine) drain(b *binding) {
 		if ev.Offloaded || ev.Reason == journal.LossStale {
 			continue
 		}
-		l.raise(entity.FileID(ev.File.Bytes()))
-		if ev.Reason == journal.LossCorrupt {
-			lost = append(lost, ev)
+		f := entity.FileID(ev.File.Bytes())
+		l.raise(f)
+		lost = append(lost, ev)
+		if ev.Reason == journal.LossFailedWindow {
+			if l.windows == nil {
+				l.windows = map[entity.FileID]bool{}
+			}
+			l.windows[f] = true
 		}
 	}
 	l.gen = st.LossGeneration
@@ -114,25 +163,43 @@ func (e *Engine) drain(b *binding) {
 		(*h)()
 	}
 	for _, ev := range lost {
-		e.markLost(entity.FileID(ev.File.Bytes()), ev)
+		dones = append(dones, e.markLost(entity.FileID(ev.File.Bytes()), ev)...)
 	}
 }
 
-// markLost marks lost the pending write of f whose record ev dropped: the
-// one at ev's version. The caller holds the journal's loss lock, which is
-// taken before an entry's.
-func (e *Engine) markLost(f entity.FileID, ev journal.LossEvent) {
+// markLost applies ev to the pending write of f whose record it dropped, the
+// one at ev's version: a corrupt loss marks it lost; a failed window's drops
+// it, out of the entry, or, when a batch claimed it, out of that batch, which
+// neither commits it nor calls its Done. It answers the Done of a dropped
+// write, which the caller runs once its locks are released. The caller holds
+// the journal's loss lock, which is taken before an entry's.
+func (e *Engine) markLost(f entity.FileID, ev journal.LossEvent) (dones []func()) {
 	fe := e.files.lockOf(f)
 	if fe == nil {
-		return
+		return nil
 	}
 	defer e.files.unlock(f, fe)
-	for i := range fe.ops {
+	for i := 0; i < len(fe.ops); i++ {
 		op := &fe.ops[i]
-		if op.kind == opWrite && op.version == ev.Version && overlaps(op.extent, ev.Extent) {
-			op.lost = true
+		if op.kind != opWrite || op.dropped || op.version != ev.Version || !overlaps(op.extent, ev.Extent) {
+			continue
 		}
+		if ev.Reason != journal.LossFailedWindow {
+			op.lost = true
+			continue
+		}
+		if op.done != nil {
+			dones = append(dones, op.done)
+			op.done = nil
+		}
+		if op.claimed {
+			op.dropped = true
+			continue
+		}
+		fe.ops = slices.Delete(fe.ops, i, i+1)
+		i--
 	}
+	return dones
 }
 
 // LossSeq is the file's loss sequence now, with no sync; 0 for a share with
