@@ -591,13 +591,19 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		}
 
 		// The one refusal the roll cannot answer, checked before anything
-		// is taken: a record whose own size exceeds the room an entire
-		// segment holds — the segment header aside, with the seal's
-		// reserve for one entry — cannot be served by any roll, and
-		// reserve-side discovery, after a take, would consume one spare
-		// after another for a record that fits nowhere. The refusal
-		// reserves nothing, so it leaves the stream exactly where it was.
-		if h.Size()+sealRoom(1) > s.set.cap-format.SegmentHeaderSize {
+		// is taken: a record that cannot place even one payload byte — or
+		// any byte at all, for a kind with no payload — anywhere in an
+		// empty segment, the largest room a stream hands out. A write or
+		// fill whose payload alone exceeds a segment is not refused but
+		// split, piece by piece, segment after segment (RFC 28 §2.2); the
+		// refusal is for the record whose own overhead leaves the room no
+		// piece at all, and reserve-side discovery, after a take, would
+		// consume one spare after another for a record that fits nowhere.
+		// The refusal reserves nothing, so it leaves the stream exactly
+		// where it was.
+		emptyRoom := ((s.set.cap - format.SegmentHeaderSize - sealRoom(1)) &^ 7) -
+			(int64(format.RecordHeaderSize) + format.RecordHeader{Kind: h.Kind}.BodySize())
+		if emptyRoom < 1 {
 			s.appendMu.Unlock()
 			return Placed{}, ErrSegmentFull
 		}
@@ -804,6 +810,16 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	// sealing segment would name a segment whose footer the seal was still
 	// writing, and one installed beside it would be overwritten by the
 	// seal's settled state the moment the seal returned.
+	//
+	// decision: this wait is defense in depth over the loop's own park on
+	// a sealing state, and no test can force it. The window it closes is
+	// the length of the pool's take, between the roll's caller releasing
+	// appendMu and this read, and it holds no seam call a hold could park;
+	// every seal the loop can see is parked there, so a seal this read
+	// still finds must have started inside those microseconds, and this
+	// wait alone keeps the predecessor off a footer still being written.
+	// Withdrawn only by a hold the roll can be parked on, which the seam
+	// would have to grow.
 	s.appendMu.Lock()
 	old, oldRef := s.id, s.ref
 	state := s.sealState

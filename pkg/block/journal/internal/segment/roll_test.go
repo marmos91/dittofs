@@ -1793,3 +1793,75 @@ func TestRollAStreamClosedAtItsSuccessorsHeaderIsRefusedAndTheSpareEnded(t *test
 		t.Fatalf("the pool holds %d ready spares after the closed install, want the two the takes never reached", c.Spares)
 	}
 }
+
+// TestRollAWriteLargerThanASegmentIsSplitAndItsRestRolls checks the split at
+// the scale of a whole segment (R2): a write whose payload exceeds even an
+// empty segment's room is not refused but split — this call places the
+// largest piece an empty segment holds, and the caller's next call for the
+// rest rolls onto a new segment naming the first. It catches a too-large
+// guard that refuses the record instead of splitting it.
+func TestRollAWriteLargerThanASegmentIsSplitAndItsRestRolls(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := rollPin(t, 4096, segment.Targets{Content: 4}, nil).withStream(t, 1)
+	awaitCounters(t, "the content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares >= 3 })
+	se := e.stream(t)
+
+	// The first segment's piece: the largest an empty segment of this cap
+	// holds is the room past the header and the seal's reserve, less the
+	// record's own overhead.
+	overhead := int64(format.RecordHeaderSize) + 8
+	wantPiece := ((4096 - format.SegmentHeaderSize -
+		(format.SealMarkerSize + format.CatalogEntrySize + format.TrailerSize)) &^ 7) - overhead
+
+	payload := streamTestBody(9000, 0xa5)
+	h, body := streamWriteHeader(streamFileID(1), 0, payload, 7, core.Version{Counter: 9})
+	p1, err := e.s.AppendRoll(h, body, segment.Roll{})
+	if err != nil {
+		t.Fatalf("the write larger than a segment: %v, want its largest piece placed", err)
+	}
+	if p1.N != wantPiece {
+		t.Fatalf("the piece placed %d bytes, want the largest an empty segment holds %d", p1.N, wantPiece)
+	}
+	if p1.N <= 0 || p1.N >= int64(len(payload)) {
+		t.Fatalf("the piece placed %d of %d, want a part", p1.N, len(payload))
+	}
+	seg1 := p1.Loc.Segment
+
+	// The piece carries the write's own file offset and the bytes it
+	// claims, at the taken segment's first slot.
+	h1, b1 := streamReadRecord(t, se, p1.Loc)
+	if h1.Extent.Off != 0 {
+		t.Fatalf("the piece's file offset is %d, want 0", h1.Extent.Off)
+	}
+	if h1.Extent.Len != p1.N || !bytes.Equal(b1.Payload, payload[:p1.N]) {
+		t.Fatalf("the piece's decoded record does not match the bytes it placed")
+	}
+	if p1.Loc.Off != format.SegmentHeaderSize {
+		t.Fatalf("the piece landed at %d, want the first slot", p1.Loc.Off)
+	}
+
+	// The rest rolls: it lands in a new segment naming the first, as one
+	// record split across two (R2) — and its own piece is what the new
+	// segment holds, with the caller continuing likewise.
+	rest := payload[p1.N:]
+	h2, b2 := streamWriteHeader(streamFileID(1), p1.N, rest, 7, core.Version{Counter: 9})
+	p2, err := e.s.AppendRoll(h2, b2, segment.Roll{})
+	if err != nil {
+		t.Fatalf("the rest of the over-large write: %v", err)
+	}
+	if p2.N <= 0 || p2.N >= int64(len(rest)) {
+		t.Fatalf("the rest placed %d of %d, want a part itself: the split continues across segments", p2.N, len(rest))
+	}
+	seg2 := p2.Loc.Segment
+	if seg2 == seg1 {
+		t.Fatalf("the rest landed in segment %d, want a rolled-to new one", seg2)
+	}
+	if hdr := rollHeader(t, e, seg2); hdr.Predecessor != seg1 {
+		t.Fatalf("the second piece's segment names predecessor %d, want the first's %d", hdr.Predecessor, seg1)
+	}
+	if state, err := e.set.State(seg1); err != nil || state != segment.Sealed {
+		t.Fatalf("the first segment's state after the split = %v, %v, want Sealed", state, err)
+	}
+}
