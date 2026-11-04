@@ -116,7 +116,7 @@ func (fs *Filesystem) charges(ctx context.Context, f vfs.File, off, n int64) (in
 	end := min(off+n, f.Size)
 	add := max(0, off+n-max(off, f.Size))
 	for at := off; at < end; {
-		sp, err := fs.engine.Allocation(ctx, f.ID, at)
+		sp, err := fs.engine.Allocation(ctx, f.Share, f.ID, at)
 		if err != nil {
 			return 0, storeErr(err)
 		}

@@ -162,7 +162,7 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 	// caller's COMMIT could not, so it grants nothing. Overturned if an
 	// existence commit is ever found to be visible to a client.
 	if ch.Mask&(entity.AttrOwner|entity.AttrGroup) != 0 {
-		if err := fs.engine.CommitExistence(ctx, fileOf(t.H)); err != nil {
+		if err := fs.engine.CommitExistence(ctx, t.H.Share(), fileOf(t.H)); err != nil {
 			return vfs.WCC{}, storeErr(err)
 		}
 	}
