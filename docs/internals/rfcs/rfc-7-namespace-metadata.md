@@ -2199,7 +2199,7 @@ that moves backward, or repeats, keeps a stale cache alive.
   raised ahead of use; every write of it — at start, at attach and at each
   raise — is a tracked max-write, so journals serving different shards of one
   share never lower one another's limit. When it is raised, and the rule, are
-  stated once, in [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), and the attach rule raises the counter
+  stated once, in [RFC 8 §2.7](rfc-8-engine.md#2.7%20The%20version%20limit), and the attach rule raises the counter
   above the limit as well as the floor. A crash then
   skips the rest of a block, and never repeats a version any client saw.
 - **Every stored `Version` is in the floor.** A change that draws a `Version`
@@ -2394,7 +2394,7 @@ type Namespace interface {
 	// File's, from the journal of the primary that will serve it (§9.4).
 	// A call whose stored Version is at or above the one drawn for it is
 	// refused with ErrVersionBehind, and the service re-draws (§9.4).
-	Create(ctx context.Context, id Identity, v Versions, dir Handle, name []byte, a Attrs) (Handle, File, error) // guards dir (§3.6)
+	Create(ctx context.Context, id Identity, v Versions, dir Handle, name []byte, file FileID, a Attrs) (Handle, File, error) // guards dir (§3.6); a new File takes file, which the caller drew with NewFileID before its locks (RFC 17 §5.10); ErrExist if a File already has it
 	Link(ctx context.Context, id Identity, v Versions, dir Handle, name []byte, target Handle) error // refuses a target with Nlink zero (§4.5)
 	// Unlink and Rename report a file whose last entry they removed; its
 	// pending release is already written (§4.3), and the filesystem service
@@ -2542,7 +2542,7 @@ here. Each adapter maps every row through its one error table
 | Error | Returned when |
 | --- | --- |
 | `ErrNotFound` | a name resolves to no entry; a create, link or rename into a directory that has lost its last entry ([§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on)) |
-| `ErrExist` | the name a create, link or rename asks for is taken, or folds onto a taken one ([§3.3](#3.3%20Case)); an exclusive create whose verifier differs ([§2.10](#2.10%20Exclusive%20create)) |
+| `ErrExist` | the name a create, link or rename asks for is taken, or folds onto a taken one ([§3.3](#3.3%20Case)); an exclusive create whose verifier differs ([§2.10](#2.10%20Exclusive%20create)); a create naming a `FileID` a file already has ([§11.1](#11.1%20Interface)) |
 | `ErrNotEmpty` | removing a directory, or renaming over one, that holds an entry; `SetProject` on a directory that holds one |
 | `ErrNotDir`, `ErrIsDir` | a directory operation on a non-directory, or the reverse; a rename pairing a directory with a non-directory ([§5.4](#5.4%20Rename%20over%20an%20existing%20entry)) |
 | `ErrAccess` | the share grant, the mode or the ACL refuses the caller ([§7](#7.%20Permissions)); the read-only marker refuses a write or a delete ([§7.9](#7.9%20The%20read-only%20marker%20refuses%20writes%20and%20deletes)), with its cause `ReadOnly` on a delete |
