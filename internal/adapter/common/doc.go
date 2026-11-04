@@ -28,4 +28,10 @@
 // (`dfsctl store block gc --reconcile`) reaps only the rows of a payload whose
 // inode is gone, so it does not reclaim these; nothing reads them meanwhile,
 // since every read answers ErrNoContentStore.
+//
+// After the cutover they would be read: a file shrunk during the cut and
+// extended later would read the stranded rows back as data instead of zeros,
+// and wiring the engine's truncate reaps none of the rows already stranded.
+// The cutover therefore needs an explicit step that reaps every FileChunk row
+// past its file's EOF before the first read is served.
 package common
