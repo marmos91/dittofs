@@ -305,7 +305,7 @@ func TestAWriteClearsSetIDBeforeItIsStaged(t *testing.T) {
 		var w vfs.WCC
 		if c.dea {
 			s.engine.writing = nil
-			_, err = s.engine.Write(ctx, fileOf(h), 0, []byte("data"), WriteOpts{})
+			_, err = s.engine.Write(ctx, h.Share(), fileOf(h), 0, []byte("data"), WriteOpts{})
 			s.must(t, err)
 			s.engine.dealloc = stage
 			w, err = s.Deallocate(ctx, proven(c.who, inLab), vfs.Anonymous(h), 0, 2)
@@ -388,14 +388,14 @@ func TestADataChangesWCCIsReadInOneHold(t *testing.T) {
 			w, err = change(h)
 		}()
 		time.Sleep(20 * time.Millisecond)
-		_, _ = s.engine.Write(ctx, id, 0, []byte("staged while held"), WriteOpts{})
+		_, _ = s.engine.Write(ctx, h.Share(), id, 0, []byte("staged while held"), WriteOpts{})
 		unlock()
 		<-answered
 		s.must(t, err)
 		if w.Before == nil || w.Before.Size != 17 || w.After.Size < 17 {
 			t.Errorf("%s: WCC %+v, want a Before and an After both after the held write", name, w)
 		}
-		_, _ = s.engine.Write(ctx, id, 18, []byte("later"), WriteOpts{})
+		_, _ = s.engine.Write(ctx, h.Share(), id, 18, []byte("later"), WriteOpts{})
 		if got, _ := s.GetAttr(ctx, admin, h); got.Size == w.After.Size {
 			t.Errorf("%s: a later write did not move GetAttr past the WCC", name)
 		}

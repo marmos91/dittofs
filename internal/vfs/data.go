@@ -34,7 +34,7 @@ func (fs *Filesystem) Read(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off
 	}
 	defer release()
 	defer unlock()
-	n, err := fs.engine.Read(ctx, f.ID, off, dst)
+	n, err := fs.engine.Read(ctx, f.Share, f.ID, off, dst)
 	return n, err == nil && off+int64(n) >= f.Size, storeErr(err)
 }
 
@@ -68,7 +68,7 @@ func (fs *Filesystem) Write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, of
 		Done: func() {},
 	}
 	wr.WCC, err = fs.stage(ctx, c, a, ref.Handle, f, off, func() (err error) {
-		wr.Verifier, err = fs.engine.Write(ctx, f.ID, off, src, opts)
+		wr.Verifier, err = fs.engine.Write(ctx, f.Share, f.ID, off, src, opts)
 		return err
 	})
 	unlock()
@@ -77,7 +77,7 @@ func (fs *Filesystem) Write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, of
 	}
 	if stable(a, ref, st) {
 		var v vfs.Verifier
-		if v, _, err = fs.engine.Commit(ctx, f.ID, off, int64(len(src))); err == nil && v != wr.Verifier {
+		if v, _, err = fs.engine.Commit(ctx, f.Share, f.ID, off, int64(len(src))); err == nil && v != wr.Verifier {
 			return vfs.WriteResult{}, &vfs.Delay{Cause: vfs.DelayCommit}
 		}
 	}
@@ -131,7 +131,7 @@ func (fs *Filesystem) Commit(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 	if err != nil {
 		return vfs.Verifier{}, err
 	}
-	v, loss, err := fs.engine.Commit(ctx, f.ID, off, length)
+	v, loss, err := fs.engine.Commit(ctx, f.Share, f.ID, off, length)
 	if err != nil {
 		return vfs.Verifier{}, storeErr(err)
 	}
@@ -163,7 +163,7 @@ func (fs *Filesystem) Deallocate(ctx context.Context, c vfs.Call, ref vfs.OpenRe
 	defer release()
 	defer unlock()
 	return fs.stage(ctx, c, a, ref.Handle, f, off, func() error {
-		return fs.engine.Deallocate(ctx, f.ID, off, length)
+		return fs.engine.Deallocate(ctx, f.Share, f.ID, off, length)
 	})
 }
 
@@ -188,7 +188,7 @@ func (fs *Filesystem) Seek(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off
 		return 0, vfs.ErrPastEnd
 	}
 	for off < f.Size {
-		sp, err := fs.engine.Allocation(ctx, f.ID, off)
+		sp, err := fs.engine.Allocation(ctx, f.Share, f.ID, off)
 		if err != nil {
 			return 0, storeErr(err)
 		}
