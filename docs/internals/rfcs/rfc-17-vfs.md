@@ -1915,6 +1915,11 @@ func (s *Filesystem) openLocked(ctx context.Context, c Caller, r OpenRequest, se
 }
 ```
 
+**An open answered an error is undone.** A failure after open state recorded
+the open, an overwrite's truncate or the file read again, undoes it with
+`Opens.Abandon` under the steps still held, on a context the call's end does
+not cancel; a file it alone held is released, as at a last close.
+
 **A sharing violation is decided after handle caching is broken.** A request
 whose deny-mode check fails against opens that a handle-caching grant covers —
 an SMB lease with handle caching keeps handles open that its client has already
@@ -1947,8 +1952,8 @@ it.
 **The service runs every release.** It calls the engine's `Delete`
 ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches))
 at the file's primary, at four moments: when `Unlink` or `Rename` reports a file
-left with no entry and no open holds it; when open state's `Close` reports the
-last close of a file with no entry, having deleted its durable open record
+left with no entry and no open holds it; when open state's `Close` or `Abandon` reports
+the last close of a file with no entry, having deleted its durable open record
 ([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)),
 or reports through `Sink.Closed` a close the table made itself — a timeout,
 grace's end, an expiry or revoke, a `Disconnect`, a clone's `CloneClose` ([RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring));
