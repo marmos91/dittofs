@@ -266,12 +266,12 @@ type Stream struct {
 	count    int64 // records reserved in the active segment
 	// entries are the catalog entries of the segment's records, kept in
 	// completion order for the seal, which sorts them by offset.
-	entries []format.CatalogEntry
-	tracker tracker
-	id      core.SegmentID // 0 until a take installs its segment
-	ref     Ref
-	taking  chan struct{} // armed while one caller runs the take for all
-	closed  bool
+	entries  []format.CatalogEntry
+	tracker  tracker
+	id       core.SegmentID // 0 until a take installs its segment
+	ref      Ref
+	taking   chan struct{} // armed while one caller runs the take for all
+	closed   bool
 	inflight sync.WaitGroup // the appends, syncs and seals Close waits for, added to under the lock
 
 	// sealState names where the stream's seal stands. The zero value is
