@@ -1356,7 +1356,7 @@ func TestPoolRefusedHoldRetriesDoNotAccumulateDemand(t *testing.T) {
 	// Park the worker's next create, so the refusals below land while nothing
 	// can make: every shortfall is recorded before any spare arrives, the
 	// exact window a retrying engine widens.
-	park := seam.Hold(t, journalv2test.OpCreate, "*")
+	park := seam.Hold(t, journaltest.OpCreate, "*")
 
 	// The same hold is refused ten times — the ask is 3 over a pool holding
 	// 2, short one spare each time.
@@ -1370,14 +1370,14 @@ func TestPoolRefusedHoldRetriesDoNotAccumulateDemand(t *testing.T) {
 	park.Release()
 	awaitCounters(t, "the one-spare shortfall made", p,
 		func(c segment.PoolCounters) bool { return c.Spares == 3 })
-	made := seam.Calls(journalv2test.OpCreate)
+	made := seam.Calls(journaltest.OpCreate)
 	if made != 3 {
 		t.Fatalf("after the shortfall the pool made %d files, want 3: two of the fill and one spare of demand, not one per refusal", made)
 	}
 	// The settle: a refill that accumulated the demand would draw its next
 	// make here, one fsync chain at a time, and the count would move.
 	for range 1 << 16 {
-		if got := seam.Calls(journalv2test.OpCreate); got != made {
+		if got := seam.Calls(journaltest.OpCreate); got != made {
 			t.Fatalf("with the demand level settled the worker began another make (%d files, want still %d): refusals accumulated as demand", got, made)
 		}
 		runtime.Gosched()
@@ -1420,7 +1420,7 @@ func TestPoolAHoldClosedDuringAMakeLeavesTheTarget(t *testing.T) {
 
 	// The hold is served; the refill, now wanting the target plus what the
 	// hold demands, starts its make and parks at the create.
-	park := seam.Hold(t, journalv2test.OpCreate, "*")
+	park := seam.Hold(t, journaltest.OpCreate, "*")
 	h, err := p.Hold(1)
 	if err != nil {
 		t.Fatalf("Hold(1) over two ready spares: %v", err)
