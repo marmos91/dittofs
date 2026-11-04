@@ -129,6 +129,8 @@ The hook checks `gofmt -s` on staged Go files, then runs `go vet ./...` and `gol
 
 `test/harness/bin/dt hooks install --container` runs the same hooks in the dtc Linux container instead, so the machine needs no Go toolchain, and `dt hooks uninstall` goes back to `.githooks`. Both set `core.hooksPath` without keeping a custom value you had, and `make check-hooks` accepts only `.githooks`, so it fails in container mode.
 
+On a branch stacked on another branch, set `DITTOFS_PREPUSH_BASE=origin/<epic>` for the pre-push hook and pass `dt run --base origin/<epic>`.
+
 ### Linting and Formatting
 
 ```bash
