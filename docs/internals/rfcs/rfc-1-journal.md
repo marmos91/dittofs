@@ -1625,8 +1625,8 @@ what removals, releases and these calls added since; content writes stay refused
 is bounded too: once the count stands an eighth of `ExtentLimit` above it, a
 release, deallocate or clone target that would split a held extent is refused
 with the same named refusal, counted in `index_refusals`, which the engine
-answers retry-later while it offloads, releases, syncs
-and repacks ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)); a removal that splits nothing, a truncate, a delete and a
+answers as [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table does
+([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)); a removal that splits nothing, a truncate, a delete and a
 `Forget` are never refused by it, since none splits a held extent: each adds at
 most its one removal marker, and drops the held extents it covers. A report,
 `MarkOffloaded` and `Unmark` are never refused by it either, though each can
@@ -1642,8 +1642,10 @@ succeed, and `WriteAt` and `Fill` are refused until the count drops below the
 bound. The engine gets out of the refusal as out
 of a capacity one: it offloads and releases dirty content of the files holding
 the most entries, syncs the files with unsynced overwrites, which drops their
-retained extents no snapshot hold keeps ([§3.8](#3.8%20Loss%20events)), and repacks
-to coalesce what stays.
+retained extents no snapshot hold keeps ([§3.8](#3.8%20Loss%20events)), stamps
+those overwrites' existence commits, which drops the existence-committed
+versions they superseded that no snapshot hold keeps
+([§3.11](#3.11%20Snapshot%20holds)), and repacks to coalesce what stays.
 
 This index is never stored, so [RFC 0 §9.1](rfc-0-data-lifecycle.md#9.1%20Records%20and%20their%20reclamation) (I7) does not reach it; its failure is
 exhaustion, which the bound reports. The one stored artifact besides records, a
@@ -1745,8 +1747,8 @@ exhaust it before the self-fence would ([RFC 8 §2.7](rfc-8-engine.md#2.7%20The%
 `WriteAt`, `Draw` or header-only record that draws a new version — a truncate,
 deallocate, delete or clone target — that would reach it fails with
 `ErrNoSpace` naming the limit, which the engine answers as `ErrDelay`
-(retry-later), like the headroom's refusal ([§6](#6.%20Capacity),
-[RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)).
+(retry-later) until the raise commits, as
+[RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table does.
 
 Because precedence is decided by the two numbers and not by position, **recovery
 MAY process segments in any order, including concurrently.** An implementation

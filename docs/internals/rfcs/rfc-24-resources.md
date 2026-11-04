@@ -102,9 +102,10 @@ the same state.
 - The memory the pools may hold adds up to at most three quarters of *L* —
   and, during grace only, one sixteenth more for reclaims (§4.6) — whatever the
   number of shares, clients, connections or journals.
-- Every pool says what happens at its ceiling, and it is one of four things: a
+- Every pool says what happens at its ceiling, and it is one of five things: a
   reader stops reading, a call waits within its deadline, a call is refused
-  retry-later with a named cause, or a cache evicts.
+  retry-later with a named cause, a cache evicts, or, for the journal index, its
+  refusal is answered as [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table does (§7.1).
 - No client, connection or share can be granted more than three quarters of a
   request pool while another is waiting for it, and the next free buffer goes round in
   turns.
