@@ -489,9 +489,10 @@ func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, 
 // is then reserved in the new segment. A write or fill whose whole record
 // still does not fit is split at the cap: this call returns the largest piece
 // that fits and N below the payload's length, and the caller's next call
-// rolls. A record that fits nowhere at all — not even one payload byte, or a
-// kind with no payload whose record is larger than an empty segment's room —
-// answers ErrSegmentFull with nothing reserved and nothing written.
+// rolls. A record that fits nowhere at all — one whose payload it cannot
+// place a single byte of, or whose own size exceeds an empty segment's room,
+// the largest a stream hands out — answers ErrSegmentFull with nothing
+// reserved and nothing written.
 func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Roll) (Placed, error) {
 	// The caller bugs the format would panic on mid-append are answered
 	// here, before the lock: a panic with appendMu held would strand every
