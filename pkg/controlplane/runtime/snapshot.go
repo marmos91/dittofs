@@ -92,186 +92,30 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 	return "", fmt.Errorf("snapshot create %q: %w", shareName, block.ErrNoContentStore)
 }
 
-// WaitForSnapshot blocks until the snapshot's orchestration goroutine
-// completes (the per-snap result chan is signalled-and-closed by
-// runSnapshotOrchestration) or ctx is cancelled, then returns the final
-// snapshot record fetched via GetSnapshot.
-//
-// Return values:
-//   - In-flight snapshot, orchestration succeeded: blocks until the
-//     goroutine sends snapResult{err: nil} + close(doneCh), then returns
-//     the final row (state=ready) with nil error.
-//   - In-flight snapshot, orchestration failed: blocks until the
-//     goroutine sends snapResult{err: wrappedSentinel} + close(doneCh),
-//     then returns the row (state=failed) PLUS the wrapped error so
-//     callers can errors.Is against the typed sentinels (e.g.
-//     models.ErrSnapshotVerifyFailed).
-//   - Already-complete snapshot (chan drained or removed from registry):
-//     no chan is present, so the row is the only outcome available. A
-//     state=failed row is rebuilt into the same wrapped sentinel via
-//     models.SnapshotFailureError, so the caller sees the failure whether
-//     or not it won the race against the goroutine's teardown.
-//   - ctx cancel during wait: returns nil, ctx.Err() without consulting
-//     GetSnapshot.
-//   - Unknown snapshot id: GetSnapshot returns
-//     models.ErrSnapshotNotFound which propagates unchanged.
-//
-// Concurrency: the per-snap chan is buffered with cap 1 and closed after
-// the single send (see runSnapshotOrchestration's deferred cleanup), so
-// reads after the close yield the zero-value snapResult{}. That drained
-// read and a missing registry entry are the same case, and both recover
-// the error from the row instead of reporting success — the outcome does
-// not depend on which of the caller and the goroutine ran first.
+// WaitForSnapshot returns the snapshot record. No orchestration runs while no
+// content store is wired, so the row is the only outcome: a state=failed row
+// is rebuilt into its wrapped sentinel via models.SnapshotFailureError, so a
+// caller can errors.Is against the typed sentinels. An unknown snapshot id
+// answers models.ErrSnapshotNotFound unchanged.
 func (r *Runtime) WaitForSnapshot(ctx context.Context, shareName, snapID string) (*models.Snapshot, error) {
 	if r == nil || r.store == nil {
 		return nil, errors.New("runtime: nil store")
 	}
-
-	// Snapshot the per-snap done chan under the registry lock so the
-	// goroutine cleanup (unregisterSnap) cannot race the lookup. If no
-	// share entry or no per-snap chan exists, the orchestration is either
-	// already-complete or the snapID was never in-flight in this process
-	// — both cases fall through to a direct GetSnapshot.
-	var (
-		doneCh chan snapResult
-		hasCh  bool
-	)
-	r.snapInFlightMu.Lock()
-	if entry, ok := r.snapInFlight[shareName]; ok {
-		entry.mu.Lock()
-		doneCh, hasCh = entry.done[snapID]
-		entry.mu.Unlock()
+	snap, err := r.store.GetSnapshot(ctx, shareName, snapID)
+	if err != nil {
+		return nil, err
 	}
-	r.snapInFlightMu.Unlock()
-
-	var orchErr error
-	if hasCh {
-		select {
-		case res := <-doneCh:
-			// nil err on success or the wrapped sentinel on failure.
-			// Closed-then-drained chans yield the zero-value
-			// snapResult{}, leaving orchErr nil; the row check below
-			// recovers the failure for those late subscribers.
-			orchErr = res.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+	if snap.State == models.StateFailed {
+		return snap, models.SnapshotFailureError(snap)
 	}
-
-	snap, gerr := r.store.GetSnapshot(ctx, shareName, snapID)
-	if gerr != nil {
-		// ErrSnapshotNotFound propagates as-is (errors.Is works through
-		// the underlying wrap).
-		return nil, gerr
-	}
-	if orchErr == nil && snap.State == models.StateFailed {
-		// The goroutine's error was never observed: it finished and tore
-		// down its chan before this call looked, another waiter drained
-		// the single-send chan, or the orchestration ran in an earlier
-		// process. The row is authoritative, so rebuild the error from it
-		// rather than returning a failed snapshot with nil error.
-		orchErr = models.SnapshotFailureError(snap)
-	}
-	return snap, orchErr
+	return snap, nil
 }
 
-// isSnapInFlight reports whether an orchestration goroutine for
-// (shareName, snapID) is currently registered (create or retry in
-// progress). Used by DeleteSnapshot to fence the delete against a running
-// orchestration. Honors the registry lock ordering: registry mutex
-// outermost, per-entry mutex inside.
-func (r *Runtime) isSnapInFlight(shareName, snapID string) bool {
-	r.snapInFlightMu.Lock()
-	defer r.snapInFlightMu.Unlock()
-	entry, ok := r.snapInFlight[shareName]
-	if !ok {
-		return false
-	}
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
-	_, inFlight := entry.done[snapID]
-	return inFlight
-}
-
-// cancelAndWaitInFlightSnaps cancels every in-flight snapshot orchestration
-// goroutine for the given share and blocks until they all complete. Safe to
-// call when no entry exists for the share (no-op). Called from
-// Runtime.RemoveShare BEFORE delegating to sharesSvc.RemoveShare so the
-// goroutines do not race the per-share snapshots/ tree wipe or any
-// in-flight metadata-store I/O.
-//
-// Lock discipline: snapInFlightMu is held only long enough to snapshot the
-// cancel funcs + take a reference to the WaitGroup, then released BEFORE the
-// wg.Wait, so the registry mutex is never held across a blocking wait.
-func (r *Runtime) cancelAndWaitInFlightSnaps(shareName string) {
-	r.snapInFlightMu.Lock()
-	entry, ok := r.snapInFlight[shareName]
-	if !ok {
-		r.snapInFlightMu.Unlock()
-		return
-	}
-	// Keep the entry visible in the registry while we wait so a concurrent
-	// WaitForSnapshot observes the per-snap doneCh and blocks on it,
-	// rather than falling through to GetSnapshot and reporting a row in
-	// state='creating' with nil orchestration error. Flip draining=true
-	// so registerSnapInFlight (if a new CreateSnapshot races in despite
-	// the RemoveShare caller's contract) allocates a fresh entry that
-	// replaces the map slot — our local entry pointer keeps the wg.Wait
-	// pinned to the goroutines actually being drained.
-	entry.mu.Lock()
-	entry.draining = true
-	cancels := make([]context.CancelFunc, 0, len(entry.cancels))
-	for _, c := range entry.cancels {
-		cancels = append(cancels, c)
-	}
-	entry.mu.Unlock()
-	r.snapInFlightMu.Unlock()
-
-	logger.Info("snapshot lifecycle: cancelling in-flight snapshots",
-		"share", shareName,
-		"count", len(cancels),
-	)
-	for _, cancel := range cancels {
-		cancel()
-	}
-
-	// Wait OUTSIDE the lock — goroutines need to acquire entry.mu inside
-	// their cleanup path (unregisterSnap) to delete their done-chan entry.
-	entry.wg.Wait()
-
-	// Now delete the entry — but only if the map slot still references
-	// THIS entry. If a new CreateSnapshot raced in and replaced the slot
-	// (registerSnapInFlight saw draining=true), we must not clobber the
-	// replacement.
-	r.snapInFlightMu.Lock()
-	if cur, ok := r.snapInFlight[shareName]; ok && cur == entry {
-		delete(r.snapInFlight, shareName)
-	}
-	r.snapInFlightMu.Unlock()
-
-	logger.Info("snapshot lifecycle: in-flight snapshots drained",
-		"share", shareName,
-	)
-}
-
-// shutdownSnapshots cancels all in-flight snapshot goroutines across all
-// shares and waits (bounded by ctx) for them to drain. Called before the
-// adapters stop and the stores close, so snapshot orchestration cannot
-// use-after-close the metadata stores or control-plane DB.
-//
-// Step 1 cancels runtimeCtx, which propagates to every child ctx derived in
-// registerSnapInFlight — every orchestration goroutine then notices the
-// cancellation at its next ctx-aware call (WriteSnapshot, DrainAllUploads,
-// VerifyRemoteDurability, UpdateSnapshotState). The failSnap helper uses
-// context.Background, so the state=failed flip still completes even with
-// runtimeCtx cancelled.
-//
-// If ctx fires before all goroutines exit, this function logs a warning and
-// returns. Orphan goroutines will still exit on their own (runtimeCancel
-// already fired) — they just may not have finished by the time the caller
-// moves on to StopAllAdapters / CloseMetadataStores. Callers wanting a hard
-// upper bound should pass context.WithTimeout(...); callers passing
-// context.Background block until full drain.
+// shutdownSnapshots joins the snapshot scheduler (bounded by ctx) and cancels
+// runtimeCtx. Called before the adapters stop and the stores close, so a
+// scheduler tick cannot use-after-close the control-plane DB. No snapshot
+// orchestration goroutine runs while no content store is wired, so there is
+// none to drain.
 func (r *Runtime) shutdownSnapshots(ctx context.Context) {
 	// Step 0: stop the scheduler that creates the work, and wait for a tick
 	// already in flight. It reads and writes snapshot policies through the
@@ -288,75 +132,20 @@ func (r *Runtime) shutdownSnapshots(ctx context.Context) {
 	// this must not do is claim the guarantee on that path, so it says which
 	// one happened. Withdraw the bound if a tick ever performs a write whose
 	// partial application outlives the process.
-	//
-	// decision: the scheduler join gets a budget of its own rather than sharing
-	// ctx with the goroutine drain below. Sharing one window means a tick stuck
-	// in a store call that ignores cancellation spends all of it, and the drain
-	// then sees an already-expired context and returns without waiting at all —
-	// so the hardest shutdown is the one that skips the drain entirely. Half the
-	// caller's remaining time, so the two joins together still respect the
-	// deadline the caller chose. Withdraw the split if the drain ever needs the
-	// whole window more than the scheduler needs any of it.
+
 	r.mu.RLock()
 	ss := r.snapSchedSvc
 	r.mu.RUnlock()
 	if ss != nil {
-		schedCtx := ctx
-		if deadline, ok := ctx.Deadline(); ok {
-			if remaining := time.Until(deadline); remaining > 0 {
-				var cancel context.CancelFunc
-				schedCtx, cancel = context.WithTimeout(ctx, remaining/2)
-				defer cancel()
-			}
-		}
-		if !ss.StopContext(schedCtx) {
+		if !ss.StopContext(ctx) {
 			logger.Warn("snapshot drain: scheduler was not joined before the stores close; " +
 				"a tick may still be running against them")
 		}
 	}
 
-	// Step 1: cancel every child ctx derived from runtimeCtx. Idempotent:
-	// second call is a no-op.
+	// Cancel every child ctx derived from runtimeCtx. Idempotent.
 	if r.runtimeCancel != nil {
 		r.runtimeCancel()
-	}
-
-	// Step 2: snapshot the per-share entries under the registry mutex,
-	// then clear the map (lock-protected registry pattern).
-	r.snapInFlightMu.Lock()
-	entries := make([]*snapInFlight, 0, len(r.snapInFlight))
-	for _, e := range r.snapInFlight {
-		entries = append(entries, e)
-	}
-	r.snapInFlight = make(map[string]*snapInFlight)
-	r.snapInFlightMu.Unlock()
-
-	if len(entries) == 0 {
-		logger.Info("snapshot lifecycle: no in-flight snapshots at shutdown")
-		return
-	}
-
-	// Step 3: drain on a side goroutine so we can race ctx.Done.
-	done := make(chan struct{})
-	go func() {
-		for _, e := range entries {
-			e.wg.Wait()
-		}
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		logger.Info("snapshot lifecycle: all snapshots drained",
-			"share_count", len(entries),
-		)
-	case <-ctx.Done():
-		logger.Warn("snapshot lifecycle: shutdownSnapshots ctx cancelled before all goroutines drained",
-			"share_count", len(entries),
-			"error", ctx.Err(),
-		)
-		// Do not block further; runtimeCancel already fired so the
-		// remaining goroutines will exit on their own.
 	}
 }
 
@@ -707,16 +496,6 @@ func (r *Runtime) DeleteSnapshot(ctx context.Context, share, snapID string) (err
 	release.Lock()
 	defer release.Unlock()
 
-	// Fence against an in-flight create/retry orchestration for the same
-	// snapID: deleting the row + dir out from under a running goroutine
-	// would leave it writing dump/manifest into a wiped directory or flip
-	// the state of a row that no longer exists. Refuse with a 409-mapped
-	// sentinel so the caller retries once the orchestration is terminal.
-	if r.isSnapInFlight(share, snapID) {
-		return fmt.Errorf("delete snapshot %q on share %q: %w",
-			snapID, share, models.ErrSnapshotInFlight)
-	}
-
 	// Fence against the per-share restore marker. While a restore is in
 	// flight (or crash-interrupted and awaiting startup rollback), the marker
 	// names the pre-restore safety snapshot — the SOLE rollback primitive —
@@ -724,11 +503,7 @@ func (r *Runtime) DeleteSnapshot(ctx context.Context, share, snapID string) (err
 	// under the restore destroys the only recoverable pre-restore state and
 	// permanently wedges the share (the next boot's recoverInterruptedRestores
 	// cannot find the safety snap, so the marker re-fails every reboot).
-	//
-	// isSnapInFlight covers only create/retry orchestration; the safety snap
-	// reaches StateReady and deregisters from that tracker BEFORE the marker
-	// is written, so it is not in-flight by that measure. Consult the durable
-	// marker explicitly. Runs under the already-held snapshotDeleteLock.
+	// Runs under the already-held snapshotDeleteLock.
 	if marker, merr := r.store.GetRestoreMarker(ctx, share); merr == nil && marker != nil {
 		if snapID == marker.SafetySnapshotID || snapID == marker.TargetSnapshotID {
 			return fmt.Errorf("delete snapshot %q on share %q: %w",

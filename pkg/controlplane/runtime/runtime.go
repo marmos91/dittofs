@@ -162,13 +162,6 @@ type Runtime struct {
 	// common no-SMB case is a single nil-check instead of a locked map access.
 	oplockBreaker atomic.Value
 
-	// snapInFlight tracks per-share in-flight snapshot orchestration
-	// goroutines so RemoveShare and the shutdown drain can
-	// cancel + wait before tearing down state. Keyed by share name.
-	// See pkg/controlplane/runtime/snapshot.go.
-	snapInFlight   map[string]*snapInFlight
-	snapInFlightMu sync.Mutex
-
 	// snapDeleteLocks is the shared registry of per-share RWMutexes that
 	// serialize the snapshot GC mark phase (HeldHashes, RLock) against
 	// the snapshot-delete write path (AcquireDeleteLock, Lock). The
@@ -239,7 +232,6 @@ func New(s store.Store) *Runtime {
 		mountTracker:     NewMountTracker(),
 		clientRegistry:   NewClientRegistry(),
 		adapterProviders: make(map[string]any),
-		snapInFlight:     make(map[string]*snapInFlight),
 		storesSvc:        stores.New(),
 		sharesSvc:        shares.New(),
 		lifecycleSvc:     lifecycle.New(DefaultShutdownTimeout),
@@ -622,20 +614,15 @@ func (r *Runtime) RegisterShareForTesting(name string) {
 	r.sharesSvc.RegisterShareForTesting(name)
 }
 
-// RemoveShare removes a share. Snapshot orchestration goroutines for the
-// share are cancelled and drained BEFORE the per-share snapshots/ tree is
-// wiped (hook inside sharesSvc.RemoveShare) — without this
-// ordering a still-running snap goroutine could write into the
-// about-to-be-deleted directory.
+// RemoveShare removes a share. No snapshot orchestration runs while no
+// content store is wired (CreateSnapshot refuses), so nothing writes into the
+// per-share snapshots/ tree that sharesSvc.RemoveShare wipes.
 //
 // Per the invariant in shares/service.go ("DB row is the source of
-// truth"), snapshot DB rows are NOT cascade-deleted: the cancelled
-// goroutine has already flipped its row to state=failed (or the
-// startup-recovery sweep will), and that orphan row
-// is harmless because the on-disk manifest is wiped and the hold filter
+// truth"), snapshot DB rows are NOT cascade-deleted: an orphan row is
+// harmless because the on-disk manifest is wiped and the hold filter
 // returns false once the snapshots/ tree is gone.
 func (r *Runtime) RemoveShare(name string) error {
-	r.cancelAndWaitInFlightSnaps(name) // drain BEFORE tree wipe
 	// sharesSvc.RemoveShare now performs ordered best-effort teardown and may
 	// return an aggregated error (REVIEW M4). We must NOT early-return on it:
 	// the metadata deregistration below is what prevents the unbounded
@@ -1467,37 +1454,4 @@ func (r *Runtime) GetAdapterProvider(key string) any {
 	r.adapterProvidersMu.RLock()
 	defer r.adapterProvidersMu.RUnlock()
 	return r.adapterProviders[key]
-}
-
-// snapInFlight tracks the per-share orchestration goroutines launched
-// by Runtime.CreateSnapshot. See pkg/controlplane/runtime/snapshot.go
-// for the registration + cleanup helpers.
-//
-// The done map keys are snapshot IDs; each chan is buffered (cap 1) and
-// receives exactly one snapResult before the goroutine closes it, so
-// WaitForSnapshot can surface the orchestration error via
-// errors.Is without consulting the DB.
-type snapInFlight struct {
-	wg sync.WaitGroup
-	// cancels is keyed by snapshot ID so completed snapshots can release
-	// their cancel func (and the derived ctx attached to runtimeCtx) at
-	// unregisterSnap time instead of leaking for the share's lifetime.
-	cancels map[string]context.CancelFunc
-	done    map[string]chan snapResult
-	mu      sync.Mutex
-	// draining is set true by cancelAndWaitInFlightSnaps after it has
-	// cancelled the per-snap ctxs but BEFORE wg.Wait, so concurrent
-	// WaitForSnapshot callers continue to observe the per-snap doneCh
-	// (instead of falling through to GetSnapshot and reporting a row
-	// still in state='creating'). A registerSnapInFlight observing a
-	// draining entry replaces the map slot with a fresh entry — the
-	// original entry pointer is still held locally by the draining
-	// caller, so its wg.Wait remains valid.
-	draining bool
-}
-
-// snapResult is sent exactly once on a snap's done channel, immediately
-// before close. nil err == success; non-nil err is wrapped.
-type snapResult struct {
-	err error
 }
