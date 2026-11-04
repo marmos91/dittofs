@@ -661,7 +661,7 @@ tag counter above that journal's tags ([RFC 26 §2.3](rfc-26-catalog-backups.md#
    and removals whose metadata step a crash cut off
    ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)). A clone marker — `CloneTarget`'s, yielded as `Change.Clone` —
    is a clone, never a plain removal: the engine rebuilds the clone from the spec — source extent
-   registration and open reference before the source is served, then copies,
+   registration before the source is served, then copies,
    sync and phase 1, before the destination is served
    ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally), step 4 below); applied as a removal it would leave the destination
    reading zeros. A synced loss record above `applied`, which `Since` also
@@ -2448,8 +2448,9 @@ which calls the journal's `Delete`, never its `Release`, which evicts
 
 - A removal holds the file's guard ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow)) across its journal step and its
   first metadata transaction, and returns once that transaction commits; a
-  release left pending (below) returns its retry channel first, and keeps the
-  guard until its retried phase 1 commits or it ends.
+  release left pending once its journal `Delete` is done (below) returns its
+  retry channel first, and keeps the guard until its retried phase 1 commits
+  or it ends.
 - Its first transaction commits the file's pending existence with it, and syncs
   the file first ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)). It is admitted through the share's cut gate: behind a
   closed gate it waits for the gate to reopen, so no removal commits existence
@@ -2683,7 +2684,8 @@ metadata alone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20
 - **The source cannot be released mid-clone.** From admission the clone's
   registration holds it: a release of the source is answered pending before
   the journal's `Delete`, so nothing is dropped, and its channel yields
-  `ErrDelay` (`DelayClone`) when the registration drops ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)).
+  `ErrDelay` (`DelayClone`) when the registration drops, once the clone's open
+  is closed (step 6) ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)).
   From `Hold` ([§2.6](#2.6%20Dependencies%20and%20wiring)), between phase 1 and
   phase 2, the clone's open is in the source's open table at its primary, so a
   last close or an unlink defers the source's release
@@ -2698,7 +2700,7 @@ metadata alone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20
   and the destination's clone `Removal` it names, the source's open-table
   entry and its extent registration before it serves the source; only the
   clone's last batch removes it. Between admission and phase 1 a crash
-  leaves only the journal's clone marker, and start rebuilds the open from it
+  leaves only the journal's clone marker, and start rebuilds the registration from it
   before either file is served ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); so the source has a holder its release
   sees at every point of the clone, whichever shard the source is in.
 - **Journal-held source bytes are copied and synced before phase 1.** Every
@@ -2783,8 +2785,8 @@ refusal of the first chunk returns the error.
 
 1. **Admit.** Refuse an overlapping same-file clone, an over-length `CLONE`, a
    cross-namespace request, one from an `Incomplete` source and **(cluster)** a
-   cross-shard one. Register the source extent, take an open reference on
-   the source, sync the source and commit its pending existence, read `asOf`, and
+   cross-shard one. Register the source extent, sync the source and commit its
+   pending existence, read `asOf`, and
    reserve the capacity for the source bytes the journal holds newer than any
    ref over them, with the destination journal's `Reserve(n, writes)` — their
    bytes, footer entries, index entries and versions ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)) — so the
@@ -2813,7 +2815,7 @@ refusal of the first chunk returns the error.
    `MaxSpan` to the extent's length, the longest hole a batch can write
    there, joined holes included. Release the guard and
    `Settle(dst, v)`.
-5. **Phase 2**, batches within the key budget `K` through `Resume`, metadata only:
+5. **Phase 2**, once `Hold` has taken over the source's open ([§2.6](#2.6%20Dependencies%20and%20wiring)), batches within the key budget `K` through `Resume`, metadata only:
    each resolves its source extent by the covering lookup ([RFC 6 §8.1](rfc-6-block-metadata.md#8.1%20Covering%20lookup)).
    - **Carved:** drop the destination's refs below *v* there, write the source's
      ref re-versioned at *v*, and count its chunk, resurrecting a retired chunk's
@@ -2831,8 +2833,10 @@ refusal of the first chunk returns the error.
      joins the extent's edge holes and raises `MaxSpan`
      ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)): no other batch writes the File. Usage therefore reads
      high only while the clone runs.
-6. The last batch sets the removal done; drop the registration and the open
-   reference, serve the destination extent, and answer.
+6. The last batch sets the removal done; close the source's open reference
+   (`Release`, [§2.6](#2.6%20Dependencies%20and%20wiring)), then drop the
+   registration, so a release answered pending runs again with no clone open to
+   refuse it; serve the destination extent, and answer.
 
 > decision: a clone copies the source's unoffloaded bytes through the journal
 > rather than offloading them first, so a clone never waits on the remote tier;
@@ -3262,7 +3266,7 @@ func (e *Engine) LossSeq(s ShareID, f FileID) uint64                            
 func (e *Engine) Read(ctx context.Context, s ShareID, f FileID, off int64, dst []byte) (int, error)                    // n verified bytes, then the error
 func (e *Engine) Truncate(ctx context.Context, s ShareID, f FileID, size int64) error
 func (e *Engine) Deallocate(ctx context.Context, s ShareID, f FileID, off, n int64) error
-func (e *Engine) Delete(ctx context.Context, s ShareID, f FileID) (retry <-chan error, err error) // the file's release (RFC 7 §4.5), never the journal's Release, which evicts; retry non-nil only when the release is pending: it yields the release's outcome once, or ErrUnavailable at Close or Drop (§8.1)
+func (e *Engine) Delete(ctx context.Context, s ShareID, f FileID) (retry <-chan error, err error) // the file's release (RFC 7 §4.5), never the journal's Release, which evicts; retry non-nil only when the release is pending: it yields the release's outcome once, ErrDelay (DelayClone) to run it again, or ErrUnavailable at Close or Drop or when a read-only journal undoes it (§8.1)
 func (e *Engine) Clone(ctx context.Context, srcShare ShareID, src FileID, dstShare ShareID, dst FileID, x Extent) error            // atomic, answered when done, at most clone_max_len; the shares differ for a clone between two shares of one namespace (§9.1)
 func (e *Engine) Copy(ctx context.Context, srcShare ShareID, src FileID, dstShare ShareID, dst FileID, xs []Extent) (int64, error) // in order, as bounded clones; short count at the deadline; the shares as for Clone
 func (e *Engine) Overlay(ctx context.Context, s ShareID, f FileID) (o Overlay, pending bool, err error) // journal only; no metadata read; pending false: the File record alone answers
