@@ -82,6 +82,9 @@ var (
 	// ErrMismatch is what Check reports once the accounted footprint and the
 	// sum the set's sizes make of it differ.
 	ErrMismatch = errors.New("segment: accounted footprint does not match the set")
+	// ErrClaimed is the refusal of a retirement of a segment another
+	// retirement or a repack holds the claim of.
+	ErrClaimed = errors.New("segment: claimed by another retirement")
 )
 
 // Counters are the ledger's counters, read without a walk: the writing side
@@ -484,6 +487,54 @@ func (s *Set) Release(id core.SegmentID) {
 	if e, ok := s.segs[id]; ok {
 		e.claimed = false
 	}
+}
+
+// ClaimRetirement checks a segment can be retired and takes its claim as one
+// step, under the ledger's own mutex with no I/O, so two retirements of one
+// segment serialise here rather than racing each other's steps. It answers
+// the segment's state and the seal's own full word — the only fact a later
+// recycle can trust — once the claim is held.
+//
+// The refusals follow the ledger's own table: an id out of the set counts a
+// double retire and logs at Warn like a Retire that subtracted nothing; a
+// spare and an Active segment are refused ErrWrongState uncounted, for the
+// same reason Retire refuses both; a segment whose claim another path holds
+// is refused ErrClaimed, uncounted.
+//
+// decision: the claim is refused while it is held at all, whichever path
+// holds it — a second retirement, or a repack's mid-move claim — rather than
+// only when it is another retirement's, because the ledger cannot tell the
+// two apart and a retirement that ran beside a repack would unname storage
+// the repack was still moving. The claim dies with the segment a Retire or a
+// Recycle removes, so nothing releases it and R57 holds: a release after the
+// retirement finds no entry. A refused retirement that does not retire the
+// segment releases the claim itself, so a retry can take it again — allowed
+// by the same rule, because the segment was not retired. Overturned if epic
+// 9 ever needs to retire a segment while holding its own claim, which would
+// need a claim token passed in rather than a flag flipped here.
+func (s *Set) ClaimRetirement(id core.SegmentID) (st State, full bool, err error) {
+	s.mu.Lock()
+	e, ok := s.segs[id]
+	if !ok {
+		if _, spare := s.spares[id]; spare {
+			s.mu.Unlock()
+			return 0, false, ErrWrongState
+		}
+		s.c.DoubleRetires++
+		s.mu.Unlock()
+		s.log.Warn(absentMessage, "segment", uint64(id), "op", "retire")
+		return 0, false, ErrNotInSet
+	}
+	defer s.mu.Unlock()
+
+	if e.state == Active {
+		return 0, false, ErrWrongState
+	}
+	if e.claimed {
+		return 0, false, ErrClaimed
+	}
+	e.claimed = true
+	return e.state, e.full, nil
 }
 
 // DropSpare returns a spare's cap after the spare's unlink has happened: like
