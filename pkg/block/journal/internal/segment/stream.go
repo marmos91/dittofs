@@ -652,21 +652,14 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 					}
 					h.Extent.Len = fit
 					size, placed = h.Size(), fit
-				} else if s.count > 0 {
+				} else {
 					// Not even one payload byte places, or the kind carries
 					// no payload and does not fit: the record has no piece
-					// here, and the segment holds records already, so the
-					// roll takes the next one for it.
+					// here, and the roll takes the next segment for it. A
+					// record no segment could hold at all was refused by
+					// the empty-room guard above, before anything rolled,
+					// so the roll never loops on the record.
 					roll = true
-				} else {
-					// A segment that holds no record yet cannot hold this
-					// one at all, and no roll would serve it — an empty
-					// segment is the largest room a stream hands out:
-					// the record is larger than the cap allows, and the
-					// refusal reserves nothing, so no roll ever loops on
-					// it.
-					s.appendMu.Unlock()
-					return Placed{}, ErrSegmentFull
 				}
 			}
 		}
