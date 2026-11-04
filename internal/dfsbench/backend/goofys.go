@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"github.com/marmos91/dittofs/internal/dfsbench/exec"
+	"github.com/cubbit/dittofs/internal/dfsbench/exec"
 )
 
 // goofys is a read-optimized S3 FUSE filesystem with NO local cache: it

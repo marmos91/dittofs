@@ -1,6 +1,6 @@
 package handlers
 
-import "github.com/marmos91/dittofs/internal/adapter/smb/types"
+import "github.com/cubbit/dittofs/internal/adapter/smb/types"
 
 // SMBResponseBase is the common status/release envelope embedded in every SMB2
 // response struct. It lives in the types package so response types declared

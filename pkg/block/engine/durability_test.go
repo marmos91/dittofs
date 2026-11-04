@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 )
 
 // TestEngine_Flush_DurableLocalDefault_NoSyncRemote proves the #1621 fix: on a

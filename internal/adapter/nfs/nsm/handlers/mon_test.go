@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nsm/types"
 )
 
 // TestCallbackHostFromSource exercises the SM_MON callback-host derivation

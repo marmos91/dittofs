@@ -3,7 +3,7 @@ package handlers
 import (
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // SMB delayed-write timestamp semantics

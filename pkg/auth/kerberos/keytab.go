@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // keytabPollInterval is the interval at which the keytab file is polled for changes.

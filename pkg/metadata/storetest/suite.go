@@ -3,7 +3,7 @@ package storetest
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // childFullPath derives the full share-relative path for a child entry,

@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // fakeProvider serves a single canned ShareInfo (or an error) for the share

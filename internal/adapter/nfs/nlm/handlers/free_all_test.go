@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/blocking"
 )
 
 // encodeFreeAllWire builds the XDR wire form of an NLM4_FREE_ALL request:

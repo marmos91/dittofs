@@ -1,8 +1,8 @@
 package v3
 
 import (
-	nfs "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	nfs "github.com/cubbit/dittofs/internal/adapter/nfs/v3/handlers"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 )
 
 // ============================================================================

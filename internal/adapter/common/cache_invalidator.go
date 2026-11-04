@@ -1,8 +1,8 @@
 package common
 
 import (
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // CacheInvalidator is the minimal cache-surface adapter helpers depend on for

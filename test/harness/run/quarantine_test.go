@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/registry"
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // soon is a date the quarantine list takes as an expiry: a month ahead.

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
 )
 
 // TestHandleRPCCall_NFSv4UnknownProcedure_SingleReply verifies that an NFSv4

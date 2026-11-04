@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/auth/sid"
+	"github.com/cubbit/dittofs/pkg/auth/sid"
 )
 
 // mockResolver is a test IdentityResolver that returns preset names.

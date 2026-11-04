@@ -11,7 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/marmos91/dittofs/test/harness/known"
+	"github.com/cubbit/dittofs/test/harness/known"
 )
 
 // version is the newest registry format this package reads.

@@ -14,7 +14,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // reclaimLeaseImpl validates grace period and restores a persisted lease.

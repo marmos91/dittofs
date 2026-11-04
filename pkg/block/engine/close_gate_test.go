@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // TestStore_CloseDrainsInFlightWriteAt is the area-7 H-A reproducer: a client

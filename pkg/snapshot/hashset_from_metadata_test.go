@@ -5,11 +5,11 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/metadata"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
-	"github.com/marmos91/dittofs/pkg/snapshot"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/snapshot"
 )
 
 // fbHash returns a deterministic ContentHash seeded by seed so tests get

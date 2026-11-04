@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	smbrpc "github.com/marmos91/dittofs/internal/adapter/smb/rpc"
-	"github.com/marmos91/dittofs/pkg/identity"
+	smbrpc "github.com/cubbit/dittofs/internal/adapter/smb/rpc"
+	"github.com/cubbit/dittofs/pkg/identity"
 )
 
 // identityForeignSIDResolver bridges the centralized identity.Resolver to the

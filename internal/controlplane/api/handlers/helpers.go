@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // detachFromRequest builds a context for a long-running handler that must

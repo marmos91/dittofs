@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // ClientRecoveryStoreProvider is implemented by metadata stores that expose a

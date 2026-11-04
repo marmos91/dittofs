@@ -8,8 +8,8 @@ package adapter
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/health"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // Adapter represents a protocol-specific server adapter that can be managed by DittoServer.

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // A manifest row whose ID carries no parseable offset cannot be placed in the

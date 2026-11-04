@@ -49,7 +49,7 @@ graph LR
 
 ```bash
 # Clone the repository (the kustomize bases live in the source tree)
-git clone https://github.com/marmos91/dittofs.git
+git clone https://github.com/cubbit/dittofs.git
 cd dittofs/k8s/dittofs-operator
 
 # Render and apply the operator (CRD, RBAC, and Deployment)
@@ -73,7 +73,7 @@ fresh clone without any extra steps.
 
 ```bash
 # Clone the repository
-git clone https://github.com/marmos91/dittofs.git
+git clone https://github.com/cubbit/dittofs.git
 cd dittofs/k8s/dittofs-operator
 
 # Install with default values
@@ -421,7 +421,7 @@ kubectl logs -n percona-system deployment/percona-postgresql-operator
 
 - [CRD Reference](CRD_REFERENCE.md) - Complete API documentation
 - [Percona Integration](PERCONA.md) - Set up managed PostgreSQL
-- [DittoFS Documentation](https://github.com/marmos91/dittofs) - Main project docs
+- [DittoFS Documentation](https://github.com/cubbit/dittofs) - Main project docs
 
 ## See Also
 

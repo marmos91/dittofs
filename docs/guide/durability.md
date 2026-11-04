@@ -214,7 +214,7 @@ primary store:
   block store, so coupling verification to the durability choice is the better fit
   and preserves the fast read path for shares that asked for it.
 - A **background scrubber** (tracked separately as
-  [#1490](https://github.com/marmos91/dittofs/issues/1490)) is a *complement*, not
+  [#1490](https://github.com/cubbit/dittofs/issues/1490)) is a *complement*, not
   a substitute — Ceph pairs per-read verify with deep-scrub, and so do we
   (per-read self-heal now, periodic scrub later).
 

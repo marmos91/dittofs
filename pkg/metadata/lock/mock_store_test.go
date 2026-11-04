@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/errors"
 )
 
 // mockLockStore implements LockStore for testing.

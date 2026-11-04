@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
-	nlm_xdr "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/xdr"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/types"
+	nlm_xdr "github.com/cubbit/dittofs/internal/adapter/nfs/nlm/xdr"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // ShareRequest represents an NLM_SHARE request.

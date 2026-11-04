@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/needs"
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/needs"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // fakeDFS writes a dfs into a new bin directory that never answers, as a

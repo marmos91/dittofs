@@ -3,8 +3,8 @@ package common
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // WithFilePayloadScope keeps a file's content operation and metadata update in

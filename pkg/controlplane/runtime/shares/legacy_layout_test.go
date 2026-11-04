@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 func journalConfigForTest() journal.Config { return journal.Config{} }

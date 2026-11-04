@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/test/e2e/framework"
+	"github.com/cubbit/dittofs/test/e2e/framework"
 )
 
 // ServerProcess manages a DittoFS server subprocess for E2E testing.

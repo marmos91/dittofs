@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/chunker"
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/block/chunker"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // putProbe counts concurrent PutBlock calls reaching the remote.

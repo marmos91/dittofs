@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 func benchListStore(tb testing.TB, children int) (*BadgerMetadataStore, metadata.FileHandle) {

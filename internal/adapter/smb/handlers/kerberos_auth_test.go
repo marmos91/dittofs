@@ -7,8 +7,8 @@ import (
 	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/jcmturner/gokrb5/v8/spnego"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
-	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
+	"github.com/cubbit/dittofs/internal/adapter/smb/auth"
+	kerbauth "github.com/cubbit/dittofs/internal/auth/kerberos"
 )
 
 // =============================================================================

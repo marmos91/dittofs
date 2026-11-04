@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // TestRestoreCrashRecovery_AcrossRealReopen proves #810 startup recovery rolls

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/xdr"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/portmap/xdr"
 )
 
 // fakeSysreg stands in for the host rpcbind. It records the ordered sequence of

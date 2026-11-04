@@ -10,8 +10,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
 )
 
 // fakeAuditRuntime is a recording stand-in for handlers.BlockAuditRuntime.

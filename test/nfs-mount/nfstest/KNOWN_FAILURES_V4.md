@@ -6,7 +6,7 @@ CI grades nfstest with [`known.yaml`](known.yaml). This table is the knfsd basel
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| delegation/recall*: CB_RECALL should be sent to the client after a conflicting * is received from a second client | bug | no recall when a second client chmods, renames or removes the delegated file; a conflicting OPEN is recalled | [#3098](https://github.com/marmos91/dittofs/issues/3098) |
+| delegation/recall*: CB_RECALL should be sent to the client after a conflicting * is received from a second client | bug | no recall when a second client chmods, renames or removes the delegated file; a conflicting OPEN is recalled | [#3098](https://github.com/cubbit/dittofs/issues/3098) |
 | delegation/recall*: CB_RECALL should recall * delegation granted to client | env | a Linux 7.0 client (`7.0.0-1017-azure`) holds a delegation on the test's directory under `v4.1-noac`, and DittoFS recalls it when the second client removes or renames a file there; nfstest takes that CB_RECALL for the file's, whose own recall is the row above; 6.17 runners hold none and pass | - |
 | delegation/recall*: DELEGRETURN should be sent with the stateid of * delegation being recalled | env | as the CB_RECALL should recall row | - |
 | delegation/recall*: LOCK should be sent before returning the * delegation | env | as the CB_RECALL should recall row | - |

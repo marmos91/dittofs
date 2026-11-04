@@ -33,11 +33,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/pkg/apiclient"
-	"github.com/marmos91/dittofs/test/e2e/framework"
-	"github.com/marmos91/dittofs/test/e2e/helpers"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/portmap/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/test/e2e/framework"
+	"github.com/cubbit/dittofs/test/e2e/helpers"
 	"github.com/stretchr/testify/require"
 )
 

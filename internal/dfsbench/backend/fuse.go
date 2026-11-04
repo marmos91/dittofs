@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/dfsbench/exec"
+	"github.com/cubbit/dittofs/internal/dfsbench/exec"
 )
 
 // FUSE competitors: each mounts its own S3-backed FUSE filesystem at srcDir,

@@ -11,8 +11,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/trash"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/trash"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // fakeTrashService is a minimal trashService test double. It records the share

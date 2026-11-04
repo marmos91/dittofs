@@ -7,10 +7,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
-	"github.com/marmos91/dittofs/pkg/metadata/storetest"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger"
+	"github.com/cubbit/dittofs/pkg/metadata/storetest"
 )
 
 // openRelaxed opens a relaxed-durability badger store at dbPath. Reusable so a

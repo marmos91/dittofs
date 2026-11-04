@@ -3,7 +3,7 @@ package handlers
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // TestOplockLevelRank_Ordering pins the strength ordering used by the

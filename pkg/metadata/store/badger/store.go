@@ -14,11 +14,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/oklog/ulid/v2"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/gencache"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata/store/basestore"
+	"github.com/cubbit/dittofs/pkg/metadata/store/internal/gencache"
+	"github.com/cubbit/dittofs/pkg/metadata/store/internal/sharecache"
 )
 
 // BadgerMetadataStore implements metadata.Store using BadgerDB for persistence.

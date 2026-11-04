@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/errors"
 )
 
 // isLockNotFound reports whether err is a store "lock not found" error. Used by

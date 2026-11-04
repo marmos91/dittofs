@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // summary is the summary.json a run in dir/name holds.

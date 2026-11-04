@@ -3,7 +3,7 @@ package common
 import (
 	goerrors "errors"
 
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 )
 
 // normalizeBlockStoreError converts a raw block-store error into a

@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/marmos91/dittofs/internal/cli/output"
-	"github.com/marmos91/dittofs/internal/sysinfo"
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/internal/cli/output"
+	"github.com/cubbit/dittofs/internal/sysinfo"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/config"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )

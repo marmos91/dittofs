@@ -9,7 +9,7 @@
 package runtime
 
 import (
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
 )
 
 // Type aliases re-exported for backward compatibility.

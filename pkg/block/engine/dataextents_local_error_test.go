@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // failingExtentsLocal answers every DataExtents call with an error and

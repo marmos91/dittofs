@@ -8,9 +8,9 @@ import (
 
 	"lukechampine.com/blake3"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/remote"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/remote"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // Post-#1493 seeding helpers: fixtures that model remote-durable chunks must

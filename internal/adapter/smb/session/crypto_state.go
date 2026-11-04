@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/encryption"
-	"github.com/marmos91/dittofs/internal/adapter/smb/kdf"
-	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/encryption"
+	"github.com/cubbit/dittofs/internal/adapter/smb/kdf"
+	"github.com/cubbit/dittofs/internal/adapter/smb/signing"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // SessionCryptoState holds per-session cryptographic state for all SMB dialects.

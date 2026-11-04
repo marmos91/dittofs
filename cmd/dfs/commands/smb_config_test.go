@@ -3,8 +3,8 @@ package commands
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/adapter/smb"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/adapter/smb"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 func TestApplyParsedSMBConfig_ReadsEncryptionMode(t *testing.T) {

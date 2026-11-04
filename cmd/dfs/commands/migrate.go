@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/config"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
 	"github.com/spf13/cobra"
 )
 

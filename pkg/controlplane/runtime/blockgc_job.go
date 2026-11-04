@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
+	"github.com/cubbit/dittofs/internal/logger"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
 )
 
 // Block-GC job states.

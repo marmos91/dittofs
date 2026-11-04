@@ -8,12 +8,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata/store/basestore"
+	"github.com/cubbit/dittofs/pkg/metadata/store/internal/txretry"
 	badgerdb "github.com/dgraph-io/badger/v4"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/txretry"
 )
 
 // ============================================================================

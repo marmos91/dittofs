@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
 )
 
 // TestOpen_HandlerRefusalConsumesSeqid covers RFC 7530 Section 9.1.7: an OPEN

@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/dfsbench/exec"
+	"github.com/cubbit/dittofs/internal/dfsbench/exec"
 )
 
 // zerofs is the one competitor that isn't a FUSE-over-knfsd hack: like DittoFS

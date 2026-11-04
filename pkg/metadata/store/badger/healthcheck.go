@@ -6,7 +6,7 @@ import (
 
 	badgerdb "github.com/dgraph-io/badger/v4"
 
-	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/health"
 )
 
 // Healthcheck verifies the BadgerDB-backed store is operational and

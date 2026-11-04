@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/sysreg"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/xdr"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/portmap"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/portmap/sysreg"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/portmap/xdr"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // isPortmapperEnabled returns whether the embedded portmapper should be started.

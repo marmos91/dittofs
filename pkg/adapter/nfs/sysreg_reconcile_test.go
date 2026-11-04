@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/adapter/sidecar"
+	"github.com/cubbit/dittofs/pkg/adapter/sidecar"
 )
 
 // newSysregAdapter returns an adapter whose sysreg sidecar talks to addr, with

@@ -3,7 +3,7 @@ package share
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 // rowValue returns the value column for field, or "" when the row is absent.

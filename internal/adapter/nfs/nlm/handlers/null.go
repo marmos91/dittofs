@@ -3,8 +3,8 @@ package handlers
 import (
 	"bytes"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
-	nlm_xdr "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/xdr"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/types"
+	nlm_xdr "github.com/cubbit/dittofs/internal/adapter/nfs/nlm/xdr"
 )
 
 // NullRequest represents an NLM_NULL request.

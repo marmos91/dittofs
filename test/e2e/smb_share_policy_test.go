@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/test/e2e/helpers"
+	"github.com/cubbit/dittofs/test/e2e/helpers"
 )
 
 // TestSMBSharePolicy applies the share's access policy over the SMB wire. Every

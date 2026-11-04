@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
+	identity "github.com/cubbit/dittofs/pkg/adapter/nfs/identity"
+	"github.com/cubbit/dittofs/pkg/metadata"
 	"github.com/jcmturner/gokrb5/v8/gssapi"
 	"github.com/jcmturner/gokrb5/v8/types"
-	identity "github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // mockVerifier implements Verifier for testing without a real KDC.

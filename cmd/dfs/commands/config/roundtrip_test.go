@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/cli/output"
+	dfsconfig "github.com/cubbit/dittofs/pkg/config"
 	"github.com/invopop/jsonschema"
-	"github.com/marmos91/dittofs/internal/cli/output"
-	dfsconfig "github.com/marmos91/dittofs/pkg/config"
 )
 
 // expectedTopLevelYAMLKeys mirrors the yaml/mapstructure tags on the top-level

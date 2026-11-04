@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestAddShare_RequiresBlockStore pins the durability invariant: a share's

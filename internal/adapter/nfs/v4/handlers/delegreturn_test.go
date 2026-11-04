@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/pseudofs"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/state"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
 )
 
 // ============================================================================

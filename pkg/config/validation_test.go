@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
 )
 
 func TestValidate_ValidConfig(t *testing.T) {

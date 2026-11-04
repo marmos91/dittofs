@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // TestCreateSnapshot_EmptyManifestOnNonEmptyShareFails covers the C3

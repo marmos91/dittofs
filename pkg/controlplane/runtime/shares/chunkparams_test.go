@@ -3,7 +3,7 @@ package shares
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/chunker"
+	"github.com/cubbit/dittofs/pkg/block/chunker"
 )
 
 // journalChunkParams degrades rather than failing: a chunk size that is missing

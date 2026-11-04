@@ -4,9 +4,9 @@ package handlers
 import (
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
+	v41handlers "github.com/cubbit/dittofs/internal/adapter/nfs/v4/v41/handlers"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // registerV41Ops registers the 19 NFSv4.1 operations (op numbers 40-58) into

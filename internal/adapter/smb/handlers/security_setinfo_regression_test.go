@@ -19,9 +19,9 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
-	"github.com/marmos91/dittofs/pkg/auth/sid"
-	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	"github.com/cubbit/dittofs/internal/adapter/smb/smbenc"
+	"github.com/cubbit/dittofs/pkg/auth/sid"
+	"github.com/cubbit/dittofs/pkg/metadata/acl"
 )
 
 // buildSID returns the binary encoding of a SID built from authority + subauths.

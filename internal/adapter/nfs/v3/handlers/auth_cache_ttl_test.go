@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/identity"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // TestAuthCacheDefaultTTL confirms an unset TTL falls back to the pkg/identity

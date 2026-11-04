@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/adapter/pool"
-	"github.com/marmos91/dittofs/internal/tlsconfig"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/adapter/pool"
+	"github.com/cubbit/dittofs/internal/tlsconfig"
 )
 
 type tlsTestCert struct {

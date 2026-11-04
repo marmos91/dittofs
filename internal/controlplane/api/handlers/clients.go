@@ -3,8 +3,8 @@ package handlers
 import (
 	"net/http"
 
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 	"github.com/go-chi/chi/v5"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // ClientHandler handles unified client management API endpoints.

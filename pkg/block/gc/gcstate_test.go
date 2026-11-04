@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // hashSeed returns a deterministic non-zero ContentHash from a seed integer.

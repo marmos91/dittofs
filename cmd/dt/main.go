@@ -19,9 +19,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/marmos91/dittofs/test/harness/plan"
-	"github.com/marmos91/dittofs/test/harness/registry"
-	"github.com/marmos91/dittofs/test/harness/run"
+	"github.com/cubbit/dittofs/test/harness/plan"
+	"github.com/cubbit/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/run"
 )
 
 // exitUsage is the status for a usage or registry error.

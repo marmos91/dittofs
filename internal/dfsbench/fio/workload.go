@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strconv"
 
-	"github.com/marmos91/dittofs/bench/workloads"
+	"github.com/cubbit/dittofs/bench/workloads"
 )
 
 // SizeBytes parses an fio size string ("64k", "1m", "1g", "512M", or plain

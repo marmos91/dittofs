@@ -3,7 +3,7 @@ package mount
 import (
 	"testing"
 
-	mount "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
+	mount "github.com/cubbit/dittofs/internal/adapter/nfs/mount/handlers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

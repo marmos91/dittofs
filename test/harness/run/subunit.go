@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // subunitLine matches a line of smbtorture's output that starts a test or

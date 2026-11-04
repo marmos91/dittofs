@@ -10,7 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/marmos91/dittofs/test/harness/needs"
+	"github.com/cubbit/dittofs/test/harness/needs"
 )
 
 // Every need the registry accepts says how to meet it, for dt doctor.

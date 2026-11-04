@@ -76,7 +76,7 @@ func TestNoForeignImports(t *testing.T) {
 // path.
 func importAllowed(path string) bool {
 	switch path {
-	case "lukechampine.com/blake3", "github.com/marmos91/dittofs/pkg/block":
+	case "lukechampine.com/blake3", "github.com/cubbit/dittofs/pkg/block":
 		return true
 	}
 	first, _, _ := strings.Cut(path, "/")

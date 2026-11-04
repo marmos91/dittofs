@@ -5,9 +5,9 @@ import (
 	"math/rand"
 	"testing"
 
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestColdReadAtCarveSeam_PunchedRangeStaysZero drives the overlapping-row

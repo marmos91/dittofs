@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/health"
 )
 
 // Healthcheck overrides [adapter.BaseAdapter.Healthcheck] to layer the

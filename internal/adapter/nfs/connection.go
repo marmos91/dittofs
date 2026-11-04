@@ -11,11 +11,11 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
-	"github.com/marmos91/dittofs/internal/adapter/pool"
-	"github.com/marmos91/dittofs/internal/bytesize"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/state"
+	"github.com/cubbit/dittofs/internal/adapter/pool"
+	"github.com/cubbit/dittofs/internal/bytesize"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // MaxFragmentSize is the maximum allowed RPC fragment size.

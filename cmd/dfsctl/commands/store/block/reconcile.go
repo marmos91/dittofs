@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/marmos91/dittofs/internal/cli/output"
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/cubbit/dittofs/internal/cli/output"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
 )
 
 // reconcileCmd reports orphaned block storage across all remote-backed shares

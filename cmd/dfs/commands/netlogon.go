@@ -4,9 +4,9 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/marmos91/dittofs/internal/auth/netlogon"
-	"github.com/marmos91/dittofs/pkg/config"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/internal/auth/netlogon"
+	"github.com/cubbit/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
 )
 
 // machineSecretKey is the control-plane settings key under which the online-join

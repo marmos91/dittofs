@@ -7,10 +7,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	badgerstore "github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	badgerstore "github.com/cubbit/dittofs/pkg/metadata/store/badger"
 )
 
 // buildReconcileFixture creates n regular files nested four directories deep,

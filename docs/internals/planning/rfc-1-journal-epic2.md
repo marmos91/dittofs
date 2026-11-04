@@ -168,7 +168,7 @@ reads and grades it (`test/harness/known`). A second matcher would drift from it
   epic expected to turn it green, and `message:` naming the failure it is expected to
   fail with (D4).
 - *`message:` is a `dt` change, not this epic's.* Today an entry matches by name only, so a
-  listed test failing for any reason is graded `known`. [#3391](https://github.com/marmos91/dittofs/issues/3391)
+  listed test failing for any reason is graded `known`. [#3391](https://github.com/cubbit/dittofs/issues/3391)
   adds an optional `message:` to an entry, in RFC 29 §4.7 and `test/harness/known`: a
   failure counts as expected only if its message contains that text, and is graded new
   otherwise. Until it lands, entries carry no `message:` and D4's limit stands; the change
