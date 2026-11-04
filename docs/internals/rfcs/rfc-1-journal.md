@@ -3057,7 +3057,8 @@ The open questions of the on-disk format and of recovery are
    step's sync needs nothing new: `Sync` ([§3.1](#3.1%20Write)) takes any set of files,
    so a share's scope is the files its `Files` ([§3.7](#3.7%20State%20introspection)) yields.
 6. **Unreclaimed bytes per segment.** The same step waits while the scope's
-   sealed segments hold unreclaimed bytes, but the per-segment accounting of
+   sealed segments, and failed ones whose window is unresolved ([§5.3](#5.3%20A%20failed%20sync)), hold
+   unreclaimed bytes, but the per-segment accounting of
    [§4.4](#4.4%20Inspection) reports allocated and held bytes only, and `UnreclaimedBytes`
    ([§3.7](#3.7%20State%20introspection)) counts active segments too. This RFC owes unreclaimed bytes in
    §4.4's breakdown.
