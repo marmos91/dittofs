@@ -127,9 +127,9 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
    in `unit`, which keeps no known list.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1, enforced by
    the engine's one import test, a walk over every package of `pkg/block/engine` with
-   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/engine`,
-   `pkg/block/journal`, `pkg/block/syncer`, `pkg/block/carver`, `pkg/block/remote` or the
-   v1 metadata service `pkg/metadata`. The walk checks every package on its own, so its
+   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/syncer`,
+   `pkg/block/carver`, `pkg/block/remote` or the v1 metadata service `pkg/metadata`; v1's
+   engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
    allowlist names each package an exception applies to, test packages included. v1 is not
    touched: it is deleted at the cutover.
 8. **Real dependencies for properties of those dependencies.** No fake stands in for a
@@ -328,7 +328,7 @@ pkg/block/engine/
   unbuilt.go        T3.2–T3.6  each built method leaves it
   conformance/
     rfc8_write_test.go  T3.2  mtime read back through Since over the real journal
-test/engine/known.yaml  T3.2  its entry
+test/engine/known.yaml    T3.2  its entry
 ```
 
 ## 6. Subtasks

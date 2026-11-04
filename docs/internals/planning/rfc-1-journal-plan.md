@@ -6,7 +6,7 @@ release-1 parts of [RFC 15 — topology](../rfcs/rfc-15-topology.md). The test f
 follow [RFC 29 — test harness](../rfcs/rfc-29-test-harness.md).
 **Team:** three people. **Track A** (storage) is @viquitorreis, **track B** (model and
 operations) is @didimelli, and @simonebaracchi coordinates (§3.4).
-**Naming:** **v1** was the journal before this plan (`pkg/block/journal` until #3645 deleted it, one journal per
+**Naming:** **v1** was the journal before this plan (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`, one journal per
 share). **v2** is the journal RFC 1 describes (one journal per disk, shared by every share
 placed on that disk).
 
@@ -89,7 +89,7 @@ Epic 1 is **interfaces only**. Its output is code that compiles and does nothing
 - The kept tests pass: the import rule, the RFC signature compile check, typed errors
   matching their sentinels, and `Version`'s byte order (§1.5, rule 10).
 - The import test passes, allowing stdlib only (plus `golang.org/x/sys` in
-  `internal/platform`, epic 1 D6) and forbidding `pkg/block/journal`.
+  `internal/platform`, epic 1 D6) and, while v1 existed, forbidding v1's `pkg/block/journal`.
 - Every symbol carries a doc comment stating its contract in terms of the code.
   `CLAUDE.md` keeps RFC section numbers out of source comments, so the map from each
   symbol to its RFC section lives in the epic's planning file instead.
@@ -397,7 +397,7 @@ code lives. Each package is created with its first symbol by the epic named on i
 never as a placeholder (§1.5, rule 12).
 
 ```text
-pkg/block/journal/              package journal — public API (RFC 1 §3)
+pkg/block/journal/                package journal — public API (RFC 1 §3)
   doc.go  journal.go  handle.go  reservation.go
   types.go  errors.go  stats.go  trace.go  inspect.go
   options.go                      injection points; Clock is aliased from internal/core
@@ -414,12 +414,12 @@ pkg/block/journal/              package journal — public API (RFC 1 §3)
   internal/recovery/              open/rebuild/scan/verify                       (E7)
   internal/reclaim/               repack, retirement                             (E9)
   conformance/                    component e2e: RFC 1 §9.4, RFC 28 §4.2         (E2)
-  journaltest/                  crash seam, reference model, profiler, fixtures (E2)
+  journaltest/                    crash seam, reference model, profiler, fixtures (E2)
 pkg/sim/                          TestClock, Fault, Schedule; node-wide (RFC 8 §2.1) (E2)
 pkg/clock/                        Clock + System, with its first caller (stage-3 composition root, E11)
-test/journal/known.yaml         known failures, graded by dt (RFC 29 §4.7)     (E2)
-test/journal/trace.yaml         RFC row → test or owner, checked by trace_test.go (E2)
-test/e2e/journal_*_test.go      system e2e with kernel clients        (E10 and E11 tests)
+test/journal/known.yaml           known failures, graded by dt (RFC 29 §4.7)     (E2)
+test/journal/trace.yaml           RFC row → test or owner, checked by trace_test.go (E2)
+test/e2e/journal_*_test.go        system e2e with kernel clients        (E10 and E11 tests)
 ```
 
 The package was named `journalv2` while v1 existed; #3645 deleted v1 and renamed it

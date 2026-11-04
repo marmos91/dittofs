@@ -32,7 +32,7 @@ journal v2 team, Davide (`didimelli`) and Vitor (`viquitorreis`), coordinated by
 v2 team (§6, point 1). Stage 3 replaces nothing that a later stage deletes: today's engine
 keeps serving `develop` until the cutover (stage 7), and this part is composed by no root
 before stage 4.
-**Naming:** **v1** was the engine before this plan, `pkg/block/engine` until #3645 deleted it, over one journal per
+**Naming:** **v1** was the engine before this plan, `pkg/block/engine` until #3645 deleted it on `feat/storage-v2`, over one journal per
 share and payload-keyed chunk rows. **v2** is the engine RFC 8 describes, built here, first as
 `pkg/block/enginev2`, as #3543 agreed (point 7). #3645 deleted v1 and
 renamed `enginev2` and `journalv2` to `engine` and `journal`; the suffix was only ever in Go
@@ -339,9 +339,9 @@ harness (`journaltest/prof`) wired to the fixture.
    in `unit`, which keeps no known list.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1, enforced by
    the engine's one import test, a walk over every package of `pkg/block/engine` with
-   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/engine`,
-   `pkg/block/journal`, `pkg/block/syncer`, `pkg/block/carver`, `pkg/block/remote` or the
-   v1 metadata service `pkg/metadata`. The walk checks every package on its own, so its
+   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/syncer`,
+   `pkg/block/carver`, `pkg/block/remote` or the v1 metadata service `pkg/metadata`; v1's
+   engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
    allowlist names each package an exception applies to, test packages included. v1 is not
    touched: it is deleted at the cutover.
 8. **Real dependencies for properties of those dependencies.** No fake stands in for a
@@ -531,13 +531,13 @@ pkg/block/engine/                      E1: the package (pkg/block/enginev2 until
   clone.go                             E8: Clone, Copy
   imports_test.go                      E1: the import walk (rule 7)
   arch_test.go                         E2: declared interfaces, no assertions
-  enginetest/                        E2: the fixture and the fake journal
+  enginetest/                          E2: the fixture and the fake journal
   conformance/                         E2: the rows, build tag engine_conformance
 pkg/vfs/vfserr/                        stage 2 (#3533): the errors, DelayCause, CrossKind, Extent
 pkg/metadata/kv/kvtest/fault.go        E2: the fault-injecting kv.KV
 pkg/metadata/kvstore/lifecycle.go      E6: the Lifecycle view
 internal/vfs/                          E9: aliases of WriteOpts and Overlay; the integration tier
-test/engine/known.yaml               E2
+test/engine/known.yaml                 E2
 test/suites.yaml                       E2: engine-conformance, group engine
 ```
 
@@ -749,7 +749,7 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   journal's `Delete` has dropped the bytes: the service keeps the mark, and the engine hands
   the retry of phase 1 to T5.3's loop, with no goroutine of its own, and returns as `retry`
   a channel buffered by one that yields the retry's outcome once: nil once committed, the
-  abort's `ErrFileOpen`, or `ErrUnavailable` when `Close` or `Drop` ends the loop mid-retry, which leaves the marker for start
+  abort's `ErrFileOpen`, or `ErrUnavailable` when `Close` or `Drop` ends the loop mid-retry, or when a journal that turned read-only undoes the `Delete` (RFC 8 §8.1; untested until the journal has a read-only state), which leaves the marker for start
   step 3 and needs no `done(...)`. A retry that keeps failing raises `removal_stalled` for
   the file after five failures, as a phase 2 batch does, and a commit or an abort clears
   it. Into an extent a clone registered (T8.1): pending too, answered before the journal's

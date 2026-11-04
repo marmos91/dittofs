@@ -105,7 +105,7 @@ is named with the reason.
 6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   v1's journal (`pkg/block/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
+   v1's journal (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
    checks only whether v1 state exists, to refuse it at start (E10), and never reads
    v1's format.
@@ -393,7 +393,7 @@ pkg/sim/                         TestClock, Fault, FaultAction, Schedule        
   clock.go  fault.go  schedule.go  *_test.go
 pkg/block/journal/
   internal/core/settings.go      unexported segment-cap field, SetSegmentCap    (2.5a, D8)
-  journaltest/                 test components, inside the journal's tree
+  journaltest/                   test components, inside the journal's tree
     seam.go  hold.go             crash-simulating seam, holds                    (2.1, 2.2)
     prof.go                      profiler                                        (2.3)
     model/                       reference model                                 (2.4)
@@ -1060,10 +1060,10 @@ or eleven to twenty checks, **L** more than twenty checks or a systematic sweep.
 
 ```text
 pkg/sim        ──► standard library
-journaltest  ──► journal, internal/core, internal/storage, pkg/sim
+journaltest    ──► journal, internal/core, internal/storage, pkg/sim
 conformance    ──► journal, journaltest, journaltest/model, journaltest/raw,
                    pkg/sim (fault rules only; the clock through the fixture, D10)
-test/journal ──► standard library, gopkg.in/yaml.v3 (reads trace.yaml, the RFCs and
+test/journal   ──► standard library, gopkg.in/yaml.v3 (reads trace.yaml, the RFCs and
                    the conformance sources)
 ```
 

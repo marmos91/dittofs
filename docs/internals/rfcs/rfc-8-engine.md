@@ -1040,7 +1040,7 @@ pkg/block/engine/            the engine (this RFC)
 pkg/sched/                   the shared work scheduler (§6.1.1), used by the engine and GC
 ```
 
-**The engine is `pkg/block/engine`**, as the journal is `pkg/block/journal`.
+**On `feat/storage-v2` the engine is `pkg/block/engine`**, as the journal is `pkg/block/journal`.
 While v1 existed they were `pkg/block/enginev2` and `pkg/block/journalv2`; the
 suffix was in Go package and import paths only, and metric, span and log names
 say `engine` and `journal` from the start.

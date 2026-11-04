@@ -89,7 +89,7 @@ is named with the reason.
 6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   v1's journal (`pkg/block/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
+   v1's journal (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
    checks only whether v1 state exists, to refuse it at start (E10), and never reads
    v1's format.
@@ -148,7 +148,7 @@ The PR that deleted v1 (#3645) renamed `journalv2` to `journal`, and `enginev2` 
   touches only import paths inside this repository. Names users see are not. Metric
   names, span names, log fields and dashboard queries are built into users' dashboards
   and alerts, and dropping a suffix from them later breaks those.
-- *The rule:* every name visible outside the Go code says `journal`, never `journal`.
+- *The rule:* every name visible outside the Go code says `journal`, never `journalv2`.
   This covers metric names and labels, span and event names, `slog` attribute keys, and
   dashboard titles, UIDs and queries. There is no `version` label either: v1 and v2 never
   share a binary, so it would always read `v2`.
@@ -333,7 +333,7 @@ rule, not where the rule came from.
     - `pkg/clock` and `pkg/sim`, in the test packages `journaltest` and `conformance`
       only.
 
-    It forbids `pkg/block/journal` everywhere.
+    It forbade v1's `pkg/block/journal` everywhere, until #3645 deleted v1.
 - **Done when:**
   - the import test fails on a planted `pkg/block/journal` import, on a planted
     third-party import in a non-platform package, and on a planted x/sys import outside
@@ -701,12 +701,12 @@ The first block is what epic 1 creates; the second is the rule the packages of e
 follow when they land.
 
 ```text
-journal     ──► internal/core, internal/storage
+journal       ──► internal/core, internal/storage
 core          ──► storage                          (Config holds the storage.FS)
-journaltest ──► journal, internal/storage, pkg/clock, pkg/sim (epic 2)
+journaltest   ──► journal, internal/storage, pkg/clock, pkg/sim (epic 2)
 conformance   ──► journal, journaltest, pkg/sim               (epic 2)
 
-journal  ──► internal/{format, index, segment, durability, recovery, reclaim}
+journal    ──► internal/{format, index, segment, durability, recovery, reclaim}
 reclaim    ──► index, segment, durability, core
 recovery   ──► format, storage, core          (lands records through Sink, not into index directly)
 durability ──► segment, core
