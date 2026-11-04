@@ -30,9 +30,10 @@ var errUnbuilt = fmt.Errorf("engine: not built: %w", vfserr.ErrUnavailable)
 type Engine struct {
 	d        Deps
 	settings atomic.Pointer[Settings]
-	shares   atomic.Pointer[bindings] // the share table; swapped whole, read without a lock
-	files    *files                   // per-file state
-	sample   func() vfserr.Verifier   // samples a write's verifier, before it is staged
+	shares   atomic.Pointer[bindings]       // the share table; swapped whole, read without a lock
+	files    *files                         // per-file state
+	instance [16]byte                       // the process instance, a verifier input
+	sample   func(*binding) vfserr.Verifier // samples a write's verifier, before it is staged
 	reads    readSeries
 	lost     lostLog
 
@@ -73,13 +74,16 @@ func New(d Deps) (*Engine, error) {
 	}
 	d.Logger = d.Logger.With("component", "engine")
 
-	return &Engine{
-		d:      d,
-		files:  newFiles(d.Clock),
-		sample: zeroVerifier,
-		busy:   map[entity.ShareID]struct{}{},
-		raised: map[entity.ShardID]struct{}{},
-	}, nil
+	e := &Engine{
+		d:        d,
+		files:    newFiles(d.Clock),
+		instance: instanceID(),
+		busy:     map[entity.ShareID]struct{}{},
+		raised:   map[entity.ShardID]struct{}{},
+	}
+	e.sample = e.verifier
+
+	return e, nil
 }
 
 // Apply hands the engine its node-level settings: first before Start, then on

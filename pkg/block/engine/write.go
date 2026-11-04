@@ -26,7 +26,7 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	if err != nil {
 		return vfserr.Verifier{}, err
 	}
-	v := e.sample()
+	v := e.sample(b)
 	if len(p) == 0 {
 		if o.Done != nil {
 			o.Done()
@@ -89,15 +89,6 @@ func (fe *fileEntry) insert(op pendingOp) {
 
 // fileID is f as the journal names it.
 func fileID(f entity.FileID) journal.FileID { return journal.NewFileID(f) }
-
-// zeroVerifier is the verifier every write answers until the verifier's
-// inputs are derived.
-//
-// ponytail: a write's verifier, a stable one's included, means nothing yet:
-// every write answers the same zero verifier, so a client comparing
-// verifiers sees no restart or loss. Derive it from the journal's identity,
-// its loss generation and the version floor once commit is built.
-func zeroVerifier() vfserr.Verifier { return vfserr.Verifier{} }
 
 // journalErr is the content methods' answer for an error the journal
 // returned, so no journal type crosses the content boundary.
