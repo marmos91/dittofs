@@ -97,7 +97,7 @@ func newRun() *cobra.Command {
 	cmd.Flags().IntVar(&parallel, "parallel", 1, "run up to N cells at once; cells that conflict, as two on one fixed port, still run one at a time")
 	cmd.Flags().StringVar(&results, "results", "", "where results go, relative to the checkout's root (default test/harness/results)")
 	cmd.Flags().StringVar(&place, "place", "", "run the cells of the tier that dt plan gives place P, as the dedicated host does; that place's host need is met")
-	cmd.Flags().StringVar(&base, "base", "", "compare the branch with REF wherever a command uses {base}, instead of origin/develop (or DT_BASE)")
+	cmd.Flags().StringVar(&base, "base", "", "compare the branch with REF wherever a command uses {base}, instead of the base dt finds: origin/develop, or in CI the event's")
 	cmd.Flags().StringVar(&in, "in", "", "where the run happens: host, container (dtc) or auto, which moves it to dtc when a cell needs what only the container gives (default auto, host with --ci)")
 	// Each suite's options are flags: dt run smbtorture --kerberos.
 	if _, r, err := load(); err == nil {

@@ -385,7 +385,6 @@ suites:
 // {base} is a pull request's base, the commit before a push, or none for an
 // event with no change to check; locally it's origin/develop.
 func TestBase(t *testing.T) {
-	t.Setenv("DT_BASE", "") // unset is today's behaviour, whatever the developer's shell exports
 	event := filepath.Join(t.TempDir(), "event.json")
 	cases := []struct{ actions, name, baseRef, before, want string }{
 		{"", "", "", "", "origin/develop"},
@@ -413,27 +412,19 @@ func TestBase(t *testing.T) {
 	}
 }
 
-// DT_BASE and --base (Options.Base) name the ref for a branch whose base isn't
-// develop; the flag wins over the variable, and the variable over the event.
+// --base (Options.Base) names the ref for a branch whose base isn't develop,
+// and wins over the event; without it the event's base stands.
 func TestBaseOverride(t *testing.T) {
-	t.Setenv("DT_BASE", "")
-	if got := (Options{}).base(); got != "origin/develop" {
-		t.Errorf("neither set: %q", got)
-	}
-	t.Setenv("DT_BASE", "origin/feat/x")
-	if got := (Options{}).base(); got != "origin/feat/x" {
-		t.Errorf("DT_BASE: %q", got)
-	}
+	t.Setenv("GITHUB_ACTIONS", "")
 	if got := (Options{Base: "origin/y"}).base(); got != "origin/y" {
-		t.Errorf("--base over DT_BASE: %q", got)
+		t.Errorf("--base: %q", got)
 	}
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITHUB_EVENT_NAME", "pull_request")
 	t.Setenv("GITHUB_BASE_REF", "main")
-	if got := (Options{}).base(); got != "origin/feat/x" {
-		t.Errorf("DT_BASE over the event: %q", got)
+	if got := (Options{Base: "origin/y"}).base(); got != "origin/y" {
+		t.Errorf("--base over the event: %q", got)
 	}
-	t.Setenv("DT_BASE", "")
 	if got := (Options{}).base(); got != "origin/main" {
 		t.Errorf("event alone: %q", got)
 	}

@@ -347,6 +347,20 @@ func TestRunReportsWhenTheSummaryFails(t *testing.T) {
 	}
 }
 
+// --base is the ref {base} stands for, here and in CI alike.
+func TestRunBase(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the suite runs test")
+	}
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "test", "suites.yaml"), "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n"+
+		"  compares: { cmd: \"test {base} = origin/feat/stacked\" }\n")
+	t.Chdir(root)
+	if out, err := dt(t, "run", "compares", "--base", "origin/feat/stacked", "--results", t.TempDir()); err != nil {
+		t.Errorf("dt run --base: %v\n%s", err, out)
+	}
+}
+
 // --retry runs a test that failed new again, so one that fails only once
 // passes.
 func TestRunRetry(t *testing.T) {
