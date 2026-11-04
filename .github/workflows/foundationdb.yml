@@ -1,0 +1,70 @@
+name: FoundationDB
+
+# The FoundationDB backend's suites against a one-process server, which the unit
+# tests skip for want of one. The job moved here from the unit tests' workflow
+# when tests.yml took over the unit tests.
+on:
+  push:
+    branches: [develop, feat/storage-v2]
+  pull_request:
+    branches: [develop, main, feat/storage-v2]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  fdb:
+    name: FoundationDB backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The same in-job filter as the unit tests, for the same reason: a job
+      # whose steps are skipped reports success instead of pending forever.
+      - name: Check for metadata store changes
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            kv:
+              - 'pkg/metadata/kv/**'
+              - 'pkg/metadata/kvstore/**'
+              - 'pkg/metadata/entity/**'
+              - 'test/fdb/**'
+              - 'go.mod'
+              - 'go.sum'
+              - '.github/actions/fdb-client/**'
+              - '.github/workflows/foundationdb.yml'
+
+      - name: Set up Go
+        if: github.event_name != 'pull_request' || steps.filter.outputs.kv == 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      - name: Install the FoundationDB client
+        if: github.event_name != 'pull_request' || steps.filter.outputs.kv == 'true'
+        uses: ./.github/actions/fdb-client
+
+      - name: Start a one-process FoundationDB
+        if: github.event_name != 'pull_request' || steps.filter.outputs.kv == 'true'
+        run: test/fdb/cluster.sh up 1
+
+      # The backend's conformance suite and the store's suites, on the cluster
+      # above: what the unit tests skip for want of a server.
+      - name: Run the suites on FoundationDB
+        if: github.event_name != 'pull_request' || steps.filter.outputs.kv == 'true'
+        run: >
+          DITTOFS_FDB_CLUSTER_FILE="$HOME/.cache/dittofs-fdb/data/fdb.cluster"
+          go test -race -count=1 -timeout=20m
+          -run '^(TestConformance|TestNowAcrossNodes|TestUnknownCommitOutcomeNotReapplied|TestSweepClearsOnlyOldMarks|TestOpenIsolatesAndClears|TestStoreConformanceFDB|TestStoreConformanceFDBFrozenClock|FuzzNamespaceFDB)$'
+          ./pkg/metadata/kv/fdbkv/... ./pkg/metadata/kvstore/

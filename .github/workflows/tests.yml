@@ -320,6 +320,11 @@ jobs:
 
       - *download
 
+      # go vet and golangci-lint compile fdbkv, which links libfdb_c on Linux.
+      - &fdb
+        name: Install the FoundationDB client
+        uses: ./.github/actions/fdb-client
+
       - name: Install golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -434,6 +439,8 @@ jobs:
       - *checkout
       - *go
       - *download
+      # The tests compile fdbkv, which links libfdb_c on Linux.
+      - *fdb
       - *build
       - *suite
       - *report
