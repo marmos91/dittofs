@@ -25,9 +25,13 @@ func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 	return errUnbuilt
 }
 
-// Delete is the file's release; never the journal's eviction.
-func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) error {
-	return errUnbuilt
+// Delete is the file's release; never the journal's eviction. retry is
+// non-nil only when the release is pending, and yields its outcome once
+// (RFC 8 §8.1). The send on it never blocks: it has capacity 1, as its
+// receiver may stop listening, abandoned at the filesystem's Stop, which
+// precedes the engine's Close (RFC 17 §2.5).
+func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) (retry <-chan error, err error) {
+	return nil, errUnbuilt
 }
 
 // Clone makes x of dst the content of x of src, atomically, answered when
