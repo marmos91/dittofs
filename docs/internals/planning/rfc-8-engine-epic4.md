@@ -8,6 +8,8 @@ and failed windows; [RFC 6](../rfcs/rfc-6-block-metadata.md) §3.3, §5.2 and §
 overwrite records, the key budget `K` and `Existence`; [RFC 17](../rfcs/rfc-17-vfs.md) §5.6
 and §5.8, for `Done` and the verifier the service hands its clients.
 **Track:** B.
+**Package paths:** `feat/storage-v2`'s, after #3645 renamed `enginev2` to `engine` and
+`journalv2` to `journal`.
 **Epic 4 estimate: 7 subtasks, 21 man-days.**
 **Depends on:** sync point **S2, red suite in CI**: E1's surface (`Commit`, `LossSeq`,
 `WriteOpts.Done`, `Settings`, `Deps.Existence`) and E2's fake journal; epic 3, built:
@@ -89,7 +91,7 @@ the engine test package's `newUnitOver`.
 
 ### 1.3 Names used here
 
-- **E1**, epic 1, interfaces: `pkg/block/enginev2`'s exported surface, `Deps` and its
+- **E1**, epic 1, interfaces: `pkg/block/engine`'s exported surface, `Deps` and its
   interfaces, frozen at S1.
 - **E2**, epic 2, red e2e suite and test foundations: `engine-conformance` with its
   `known.yaml`, the fixture over the real journal and `kvstore`, the fault-injecting
@@ -129,7 +131,7 @@ the engine test package's `newUnitOver`.
    health source exist on neither branch, so the engine exposes its counters and
    conditions as `Stats` fields, and the root that composes it adapts them. Counters are
    named for RFC 8 §14's metrics, under the `engine_` prefix (RFC 25 §2.1), never
-   `enginev2_`, with no share label on a per-operation series. Spans are RFC 8 §14's
+   `engine_`, with no share label on a per-operation series. Spans are RFC 8 §14's
    proposals, `engine.sync` and `engine.existence_commit`, and a removal batch opens a root
    span. Each epic names the counters, conditions and spans it owns; the units, labels and
    logging rules are RFC 25's, applied as written.
@@ -143,15 +145,15 @@ the engine test package's `newUnitOver`.
    passes to the journal or the store is asserted where they read it, over the real journal
    and `kvstore`, not where the engine builds it.
 6. **Known failures shrink.** An e2e test that turns green leaves the suite's `known.yaml`
-   (`test/enginev2/known.yaml`) in the same change: `dt` fails the run if a listed test
+   (`test/engine/known.yaml`) in the same change: `dt` fails the run if a listed test
    passes, so the change that turns it green removes it, a journal pull request included. A
    test over the real journal that starts red sits in that suite behind its build tag, never
    in `unit`, which keeps no known list.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1, enforced by
-   the engine's one import test, a walk over every package of `pkg/block/enginev2` with
-   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/engine`,
-   `pkg/block/journal`, `pkg/block/syncer`, `pkg/block/carver`, `pkg/block/remote` or the
-   v1 metadata service `pkg/metadata`. The walk checks every package on its own, so its
+   the engine's one import test, a walk over every package of `pkg/block/engine` with
+   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/syncer`,
+   `pkg/block/carver`, `pkg/block/remote` or the v1 metadata service `pkg/metadata`; v1's
+   engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
    allowlist names each package an exception applies to, test packages included. v1 is not
    touched: it is deleted at the cutover.
 8. **Real dependencies for properties of those dependencies.** No fake stands in for a
@@ -174,7 +176,7 @@ the engine test package's `newUnitOver`.
     stays a review rule.
 11. **A symbol is exported only if the RFC's interface uses it.** Everything exported is
     frozen at S1. Helpers the engine's own files need stay unexported or move to an
-    `internal/` package of `enginev2`.
+    `internal/` package of `engine`.
 12. **Each subtask creates only what it declares.** No empty package and no stub without a
     caller. A package, an option or a test helper lands with its first consumer.
 
@@ -188,12 +190,12 @@ the engine test package's `newUnitOver`.
 | 3 Observability | T4.2, T4.3, T4.4 | T4.2 counts `engine_stability_points_total` and opens `engine.sync`; T4.3 records `engine_pending_existence_ops` (the operations one commit applied) and opens `engine.existence_commit`; T4.4 counts `engine_group_commit_splits_total` and raises `existence_commit_failing` naming the file, logged at `Warn` on entering and leaving. Counters in unexported fields epic 7's `Stats` exposes; none labelled by share |
 | 4 Profiling | all | the unit composition calls `prof.Watch`; T4.3's timer and its batch goroutine are joined by `closeGroupCommits`, which the tests call as epic 6's `Close` will, so a leak fails the test that composes the engine |
 | 5 Public and internal | all | the split (T4.4) and the claim (T4.7) tested internally; `Commit` and `LossSeq` through `*Engine`; `-race` in T4.3, T4.4 and T4.7. What the commit writes, the split times and the loss op's charge included, is asserted over the real `kvstore` (T4.3, T4.5), and the verifier where the service reads it, by `Commit`'s answer against `Write`'s (T4.1) |
-| 6 Known failures | T4.1, T4.2, T4.3, T4.4, T4.6 | `TestRFC8A_Verifier` and `TestRFC8A_StableWriteLazyExistence` are already listed, naming epic 6, whose start they also need; T4.1 and T4.2 add their engine assertions and leave those entries. The new rows, verifier inputs (T4.1), overwrite waits for existence and stalled store (T4.2), sync before existence (T4.3), group commit (T4.4), and failed window with verifier after a loss (T4.6), enter `test/enginev2/known.yaml` naming this epic's issue, red until the journal's `Init`, `Sync`, crash seam and loss events exist; a row an epic-4 change turns green leaves it in that change |
+| 6 Known failures | T4.1, T4.2, T4.3, T4.4, T4.6 | `TestRFC8A_Verifier` and `TestRFC8A_StableWriteLazyExistence` are already listed, naming epic 6, whose start they also need; T4.1 and T4.2 add their engine assertions and leave those entries. The new rows, verifier inputs (T4.1), overwrite waits for existence and stalled store (T4.2), sync before existence (T4.3), group commit (T4.4), and failed window with verifier after a loss (T4.6), enter `test/engine/known.yaml` naming this epic's issue, red until the journal's `Init`, `Sync`, crash seam and loss events exist; a row an epic-4 change turns green leaves it in that change |
 | 7 v2 ignores v1 | none | no new import |
 | 8 Real dependencies | T4.1, T4.2, T4.3, T4.4, T4.6 | every conformance row runs over the real journal and `kvstore`; the fake journal is for the unit tests of the engine's logic only, none of which stands in for a row |
 | 9 Comments | all | the markers of §4 at their code sites, and three of RFC 8 §5.1's: the loss sequence's floor (`ponytail:`, T4.5), the lazy existence of appends (`decision:`, T4.2) and the stable-overwrite cost (`ponytail:`, T4.2) |
 | 10 Tests can fail | all | each test below names the change it catches |
-| 11 Exports | all | nothing new is exported from `enginev2`; the test hooks live in `export_test.go`, the reservation counter in `enginev2test`. `kvstore.PendingOp`'s new fields and `OpLost` are `kvstore`'s own, used by its caller |
+| 11 Exports | all | nothing new is exported from `engine`; the test hooks live in `export_test.go`, the reservation counter in `enginetest`. `kvstore.PendingOp`'s new fields and `OpLost` are `kvstore`'s own, used by its caller |
 | 12 Creates only what it declares | all | the per-file commit lands in T4.3 with its first consumer, `Commit` (T4.2); the sync function lands in T4.5 with its first consumer, the drain |
 
 ## 3. Requirements and invariants
@@ -339,7 +341,7 @@ subtasks and tests can cite them.
   `LossStale` events, which drop content older than offloaded content. A
   `LossFailedWindow` event raises the file's sequence (R27); dropping the matching pending
   write, its `Done` charging nothing (R38), is T4.6's. A `LossCorrupt` event of a pending
-  write commits it from the event as `OpLost` (R32). A `decision:` marker names the cases, since `journalv2`'s `LossEvent` carries no synced flag
+  write commits it from the event as `OpLost` (R32). A `decision:` marker names the cases, since `journal`'s `LossEvent` carries no synced flag
   (§9, point 2).
 - **D9, the one sync function.** Every `Sync` the engine makes goes through one function:
   the group commit's, `Commit`'s, epic 5's phase 1, epic 6's recovery, epic 7's capacity
@@ -372,7 +374,7 @@ subtasks and tests can cite them.
   uncommitted write of every file on that journal, removes it from its entry and calls its
   `Done` charging nothing, under each entry's lock. A snapshot of the due set would miss a
   write staged meanwhile, so the journal is first marked halted, and `Write` refuses under
-  the entry's lock a write to a halted journal, answered as D12 says. Nothing in `journalv2` reports the state yet, so `lostWhole` is called
+  the entry's lock a write to a halted journal, answered as D12 says. Nothing in `journal` reports the state yet, so `lostWhole` is called
   from a test hook (§9, point 3); a `decision:` marker says so.
 - **D12, a write refused on a halted journal.** `Write` answers a write to a journal
   `lostWhole` halted with `ErrUnavailable` and calls no `Done`: the write was never
@@ -390,7 +392,7 @@ subtasks and tests can cite them.
 ## 5. Target tree
 
 ```text
-pkg/block/enginev2/
+pkg/block/engine/
   commit.go         T4.1  the verifier's five inputs and the derivation (D1, D2)
                     T4.2  Commit
   groupcommit.go    T4.3  the group commit per journal: due set, batch, in-batch mark, commitNow, commitThrough, commitAll, closeGroupCommits, dropShare (D4, D5, D10)
@@ -401,14 +403,14 @@ pkg/block/enginev2/
   write.go          T4.1  the `sample` field set to D1's derivation in place of `zeroVerifier`
   unbuilt.go        T4.2, T4.5  Commit and LossSeq leave it
   export_test.go    T4.1–T4.7  the binding's inputs, the batch hook, the loss hook
-  enginev2test/
+  enginetest/
     reservations.go T4.7  the reservation counter, for this epic's tests and epics 5, 6 and 8
   conformance/
     rfc8_commit_test.go  T4.1–T4.4, T4.6  the rows of rule 6
 pkg/metadata/kvstore/
   existence.go      T4.3  PendingOp's Mtime and Ctime (D6)
                     T4.5  OpLost (D6)
-test/enginev2/known.yaml  T4.1–T4.4, T4.6  their entries
+test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
 ```
 
 ## 6. Subtasks
@@ -636,7 +638,7 @@ test/enginev2/known.yaml  T4.1–T4.4, T4.6  their entries
 - **Track:** B. **Depends on:** T4.6.
 - **Covers:** R36–R39.
 - **Deliverables:** the claim's release on a failed commit, over T4.6's marks;
-  `enginev2test/reservations.go`: the reservation counter, a `Done` wrapper incremented by
+  `enginetest/reservations.go`: the reservation counter, a `Done` wrapper incremented by
   each accepted `Write` and decremented by its `Done`, failing the test on a second call,
   which epics 5, 6 and 8 reuse.
 - **Acceptance criteria:**
@@ -692,11 +694,11 @@ A suggestion only: one pull request per subtask works as well.
    This epic builds the join (`commitNow`, D10) for its own and other epics' use; RFC 8 §12.1
    should say which call the service makes: `Commit` committing all pending existence when
    asked, or a method of its own.
-2. **`journalv2`'s `LossEvent` has no synced flag.** RFC 1 §3.8's loss record names whether
+2. **`journal`'s `LossEvent` has no synced flag.** RFC 1 §3.8's loss record names whether
    the write was synced, which decides whether it is committed from the record or dropped.
-   D8 decides by the reason instead; RFC 1 or `journalv2` should carry the flag.
+   D8 decides by the reason instead; RFC 1 or `journal` should carry the flag.
 3. **A device lost whole under the running process has no signal.** RFC 8 §5.1 raises every
-   attached file's sequence at the loss, but `journalv2` reports no such state, and RFC 1
+   attached file's sequence at the loss, but `journal` reports no such state, and RFC 1
    §5.4's read-only state is not built either. T4.5 builds the engine's half (D11) behind a
    test hook; the trigger waits on the journal.
 4. **The version a sync reached** (D3): RFC 1's `Sync` could return it.

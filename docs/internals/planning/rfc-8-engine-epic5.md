@@ -11,6 +11,8 @@ and phase 2; [RFC 7](../rfcs/rfc-7-namespace-metadata.md) §4.5 and
 [RFC 17](../rfcs/rfc-17-vfs.md) §5.3, for the release's retry channel as the service waits
 on it.
 **Track:** B.
+**Package paths:** `feat/storage-v2`'s, after #3645 renamed `enginev2` to `engine` and
+`journalv2` to `journal`.
 **Epic 5 estimate: 5 subtasks, 15.25 man-days.**
 The plan had 12.5: T5.1 gains the guard's
 capture skip, the in-batch wait and the claim below *v* (+1.5), T5.4 lands `Delete`'s retry
@@ -26,7 +28,7 @@ with, and the reservation counter); epic 8's T8.1a (admission and registrations)
 registrations T5.1's entry-lock section checks; epic 8's T8.1b (the removal checks) lands
 with T5.1. Neither `Delete`'s retry channel nor
 `vfserr.ErrFileOpen` is on `feat/storage-v2` or #3609: T5.4 lands them, from the code on
-`feat/enginev2-delete-retry`. Open state's `Releasing`, merged with the stage 1 follow-up,
+`feat/engine-delete-retry`. Open state's `Releasing`, merged with the stage 1 follow-up,
 for one test of T5.4, through E2's fixture.
 **Blocks:** epic 6, whose start step 3 reuses T5.4's abort routine, whose step 4 hands
 unfinished removals to T5.3's loop, and whose `Close` and `Drop` end the loop's retries with
@@ -74,7 +76,7 @@ contract with the service, its retry channel and the abort routine; the series
 - The shared work scheduler and its `offload.retry_min`/`retry_max`: the second part. This
   epic's loop is a FIFO with a fixed backoff (D5).
 - A journal turned read-only that undoes a `Delete` (RFC 8 §8.1 step 1's exception, RFC 1
-  §5.4): `journalv2` has no read-only state (§9, point 2).
+  §5.4): `journal` has no read-only state (§9, point 2).
 - Rebuilding a removal from the journal's marker or the store's unfinished removals at
   start, and the abort found at start: epic 6, which reuses T5.3's loop and T5.4's routine.
 - Testing `Close` and `Drop` ending a pending release with `ErrUnavailable`: built here
@@ -87,7 +89,7 @@ contract with the service, its retry channel and the abort routine; the series
 
 ### 1.3 Names used here
 
-- **E1**, epic 1, interfaces: `pkg/block/enginev2`'s exported surface, `Deps` and its
+- **E1**, epic 1, interfaces: `pkg/block/engine`'s exported surface, `Deps` and its
   interfaces, frozen at S1.
 - **E2**, epic 2, red e2e suite and test foundations: `engine-conformance` with its
   `known.yaml`, the fixture over the real journal and `kvstore`, the fault-injecting
@@ -124,7 +126,7 @@ contract with the service, its retry channel and the abort routine; the series
    health source exist on neither branch, so the engine exposes its counters and
    conditions as `Stats` fields, and the root that composes it adapts them. Counters are
    named for RFC 8 §14's metrics, under the `engine_` prefix (RFC 25 §2.1), never
-   `enginev2_`, with no share label on a per-operation series. Spans are RFC 8 §14's
+   `engine_`, with no share label on a per-operation series. Spans are RFC 8 §14's
    proposals, `engine.sync` and `engine.existence_commit`, and a removal batch opens a root
    span. Each epic names the counters, conditions and spans it owns; the units, labels and
    logging rules are RFC 25's, applied as written.
@@ -138,15 +140,15 @@ contract with the service, its retry channel and the abort routine; the series
    passes to the journal or the store is asserted where they read it, over the real journal
    and `kvstore`, not where the engine builds it.
 6. **Known failures shrink.** An e2e test that turns green leaves the suite's `known.yaml`
-   (`test/enginev2/known.yaml`) in the same change: `dt` fails the run if a listed test
+   (`test/engine/known.yaml`) in the same change: `dt` fails the run if a listed test
    passes, so the change that turns it green removes it, a journal pull request included. A
    test over the real journal that starts red sits in that suite behind its build tag, never
    in `unit`, which keeps no known list.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1, enforced by
-   the engine's one import test, a walk over every package of `pkg/block/enginev2` with
-   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/engine`,
-   `pkg/block/journal`, `pkg/block/syncer`, `pkg/block/carver`, `pkg/block/remote` or the
-   v1 metadata service `pkg/metadata`. The walk checks every package on its own, so its
+   the engine's one import test, a walk over every package of `pkg/block/engine` with
+   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/syncer`,
+   `pkg/block/carver`, `pkg/block/remote` or the v1 metadata service `pkg/metadata`; v1's
+   engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
    allowlist names each package an exception applies to, test packages included. v1 is not
    touched: it is deleted at the cutover.
 8. **Real dependencies for properties of those dependencies.** No fake stands in for a
@@ -169,7 +171,7 @@ contract with the service, its retry channel and the abort routine; the series
     stays a review rule.
 11. **A symbol is exported only if the RFC's interface uses it.** Everything exported is
     frozen at S1. Helpers the engine's own files need stay unexported or move to an
-    `internal/` package of `enginev2`.
+    `internal/` package of `engine`.
 12. **Each subtask creates only what it declares.** No empty package and no stub without a
     caller. A package, an option or a test helper lands with its first consumer.
 
@@ -183,7 +185,7 @@ contract with the service, its retry channel and the abort routine; the series
 | 3 Observability | T5.1, T5.3 | `engine_removals_pending` and `engine_removals_oldest_seconds`, per share under RFC 25 §2.5's worst-n rule, and `engine_removal_batches_total{result}` with `ok`, `conflict` or `error`, in unexported fields epic 7's `Stats` exposes; `removal_stalled` naming the file and the removal's kind, logged at `Warn` on entering and leaving; each batch a root span through `Deps.Tracer` (T5.3). A wait on a file's guard or its in-batch mark is a span event (T5.1) |
 | 4 Profiling | all | the unit composition calls `prof.Watch`; the loop's goroutine per journal is joined at `Close`, and a pending release's channel is buffered by one, so no sender is left blocked on it |
 | 5 Public and internal | all | the loop's stall count tested internally (T5.3); the removals through `*Engine`; `-race` in T5.1, T5.4 and T5.5. What phase 1 writes (the size, the merged hole, the removal record) is asserted over the real `kvstore` |
-| 6 Known failures | T5.2, T5.3, T5.5 | their rows over the real journal, §8.2 deallocate (T5.2), §8.1 removal wedge (T5.3), and §5.1 sync before existence's truncate half with the truncate-up crash (T5.5), enter `test/enginev2/known.yaml` naming this epic's issue, red until the journal's `Truncate`, `Deallocate`, `Delete`, `Settle` and crash seam exist |
+| 6 Known failures | T5.2, T5.3, T5.5 | their rows over the real journal, §8.2 deallocate (T5.2), §8.1 removal wedge (T5.3), and §5.1 sync before existence's truncate half with the truncate-up crash (T5.5), enter `test/engine/known.yaml` naming this epic's issue, red until the journal's `Truncate`, `Deallocate`, `Delete`, `Settle` and crash seam exist |
 | 7 v2 ignores v1 | none | no new import: T5.4's test over the real open-state table runs through E2's fixture, which composes it |
 | 8 Real dependencies | T5.1–T5.5 | every conformance row runs over the real journal and `kvstore`; the fake journal is for the unit tests, the interleavings and the hooks, none of which stands in for a row |
 | 9 Comments | all | the markers of §4 at their code sites, the removal loop's `ponytail:` among them |
@@ -315,7 +317,7 @@ numbered so that subtasks and tests can cite them.
 ## 5. Target tree
 
 ```text
-pkg/block/enginev2/
+pkg/block/engine/
   remove.go         T5.1  the guard, the in-flight mark, Truncate, the shared phase 1 (D1–D4, D8)
                     T5.2  Deallocate
                     T5.4  Delete, the retry channel, the abort routine (D6, D7)
@@ -333,7 +335,7 @@ pkg/vfs/
   errors.go         T5.4  Errors() omits ErrFileOpen
 pkg/metadata/kvstore/
   existence.go      T5.1  Existence.Size (D4)
-test/enginev2/known.yaml  T5.2, T5.3, T5.5  their entries
+test/engine/known.yaml  T5.2, T5.3, T5.5  their entries
 ```
 
 ## 6. Subtasks
@@ -443,7 +445,7 @@ test/enginev2/known.yaml  T5.2, T5.3, T5.5  their entries
 - **Covers:** R1, R19–R25.
 - **Deliverables:** E1's `Delete` signature changed to `(retry <-chan error, err error)` and
   `vfserr.ErrFileOpen` added, with `vfs.Errors()` omitting it; the code that lands them is
-  on `feat/enginev2-delete-retry` (the engine's signature, `vfserr`, and `internal/vfs`'s
+  on `feat/engine-delete-retry` (the engine's signature, `vfserr`, and `internal/vfs`'s
   wait on the channel), and RFC 17 §4.3's sentence that `Errors()` omits a value only the
   service and the engine exchange lands with the RFC pull request that carries it. In
   `remove.go`: `Delete`: the guard, the journal's `Delete` (never `Release`), phase 1 with
@@ -533,11 +535,11 @@ A suggestion only: one pull request per subtask works as well.
    passing the size, since it holds the File record. RFC 8 §12.1's `Truncate` takes only the
    new size; RFC 8 or RFC 17 §5.5 should say which.
 2. **A journal turned read-only that undoes a `Delete`** (RFC 8 §8.1 step 1, RFC 1 §5.4):
-   `journalv2` has no read-only state, so the release that fails before phase 1, its
+   `journal` has no read-only state, so the release that fails before phase 1, its
    `ErrUnavailable` and the mark kept until the process ends are untested here.
 3. **The loop's backoff** (D5) does not read `offload.retry_min`/`retry_max`, which RFC 8
    §8.1 names; the second part's scheduler brings them.
 4. **`Delete`'s signature changes E1's frozen surface.** The retry channel and
-   `vfserr.ErrFileOpen` are on `feat/enginev2-delete-retry`, pushed with no pull request yet,
+   `vfserr.ErrFileOpen` are on `feat/engine-delete-retry`, pushed with no pull request yet,
    and RFC 17 §4.3's sentence on `Errors()` on a local RFC branch; T5.4 lands the code, and
    the sentence lands with the RFC pull request after #3608.
