@@ -412,6 +412,24 @@ func TestBase(t *testing.T) {
 	}
 }
 
+// --base (Options.Base) names the ref for a branch whose base isn't develop,
+// and wins over the event; without it the event's base stands.
+func TestBaseOverride(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	if got := (Options{Base: "origin/y"}).base(); got != "origin/y" {
+		t.Errorf("--base: %q", got)
+	}
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITHUB_EVENT_NAME", "pull_request")
+	t.Setenv("GITHUB_BASE_REF", "main")
+	if got := (Options{Base: "origin/y"}).base(); got != "origin/y" {
+		t.Errorf("--base over the event: %q", got)
+	}
+	if got := (Options{}).base(); got != "origin/main" {
+		t.Errorf("event alone: %q", got)
+	}
+}
+
 // Without a {base}, the commands that use it are skipped and say so; the cell
 // neither fails nor goes unrun.
 func TestNoBaseSkipsItsCommands(t *testing.T) {
