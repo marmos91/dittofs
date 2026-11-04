@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"syscall"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journal/internal/storage"
@@ -930,6 +931,75 @@ func TestTornAcceptsTheWholeRange(t *testing.T) {
 		if got := onDisk(t, s, "seg"); got != tc.want {
 			t.Fatalf("Crash(Torn(%d)) of a 4-byte write left %q, want %q", tc.n, got, tc.want)
 		}
+	}
+}
+
+// failSync makes the file's next Sync fail with EIO, and returns it to
+// passing calls.
+func failSync(t *testing.T, s *Seam, f storage.File, name string) {
+	t.Helper()
+
+	fault, err := sim.NewSchedule(1, nil,
+		sim.Rule{Op: OpSync, Key: name, Count: 1, Action: sim.FaultAction{Err: syscall.EIO}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetFault(fault)
+	if err := f.Sync(); err == nil {
+		t.Fatal("the Sync the fault was set to fail succeeded")
+	}
+	s.SetFault(nil)
+}
+
+// TestDurableBytesCountsWhatASyncMadeDurable checks the number the
+// mixed-durability check measures a sync's wait with: a Sync raises it by the
+// write bytes it covered, a failed Sync raises it by nothing, the total runs
+// rather than resetting per call, and a name the seam does not hold answers 0.
+// The Sync that follows a failed one takes the replay path, where the changes
+// the failed Sync marked lost stay out of the total while the ones it covers
+// land in it.
+func TestDurableBytesCountsWhatASyncMadeDurable(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+
+	if got := s.DurableBytes("no such file"); got != 0 {
+		t.Fatalf("DurableBytes of a name the seam does not hold = %d, want 0", got)
+	}
+	if got := s.DurableBytes("seg"); got != 0 {
+		t.Fatalf("DurableBytes of a file nothing synced = %d, want 0", got)
+	}
+
+	write(t, f, "aaaa", 0)
+	if got := s.DurableBytes("seg"); got != 0 {
+		t.Fatalf("DurableBytes after a 4-byte write no Sync covered = %d, want 0", got)
+	}
+	syncFile(t, f)
+	if got := s.DurableBytes("seg"); got != 4 {
+		t.Fatalf("DurableBytes after a Sync covered a 4-byte write = %d, want 4", got)
+	}
+
+	write(t, f, "bbbb", 4)
+	syncFile(t, f)
+	if got := s.DurableBytes("seg"); got != 8 {
+		t.Fatalf("DurableBytes after two Syncs covered 8 bytes in all = %d, want the running total 8", got)
+	}
+
+	// The failed Sync's bytes stay readable but never durable, so no Sync's
+	// wait is measured over them.
+	write(t, f, "cccc", 8)
+	failSync(t, s, f, "seg")
+	if got := s.DurableBytes("seg"); got != 8 {
+		t.Fatalf("DurableBytes after a failed Sync = %d, want it raised by nothing, still 8", got)
+	}
+
+	// A Sync that succeeds after a failed one replays the file's changes onto
+	// the durable image, so it covers only the writes it did not lose. The
+	// lost "cccc" bytes are counted nowhere and the new "dddd" bytes once.
+	write(t, f, "dddd", 12)
+	syncFile(t, f)
+	if got := s.DurableBytes("seg"); got != 12 {
+		t.Fatalf("DurableBytes after a Sync that replayed past a lost change = %d, want 8 + 4 = 12", got)
 	}
 }
 

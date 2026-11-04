@@ -106,10 +106,12 @@ func NewWith(tb testing.TB, set func(*journal.Settings)) *Fixture {
 // NewWithSegmentCap is New with segments of segmentCap bytes, for a check
 // whose record must fit whole in one segment beside others: a write larger
 // than what its segment has left is split into records. The journal's
-// maximum stays FixtureMaxBytes.
-func NewWithSegmentCap(tb testing.TB, segmentCap int64) *Fixture {
+// maximum starts at FixtureMaxBytes and whatever set changes it to: set is
+// applied to the settings after the cap, so a check can settle the bounds
+// the cap alone does not reach; nil sets no setting.
+func NewWithSegmentCap(tb testing.TB, segmentCap int64, set func(*journal.Settings)) *Fixture {
 	tb.Helper()
-	return newFixture(tb, nil, true, segmentCap, nil)
+	return newFixture(tb, nil, true, segmentCap, set)
 }
 
 // NewWithOptions is NewWith with opts added to the options the journal is

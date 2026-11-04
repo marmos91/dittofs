@@ -94,6 +94,14 @@ type node struct {
 	// file then holds bytes no Sync will make durable, so undoing the
 	// unsynced changes no longer gives the durable image. Nil otherwise.
 	snap []byte
+
+	// madeDurable is the running total of write bytes its successful Syncs
+	// made durable, whatever name the file carried when they landed: the
+	// counter the mixed-durability check reads through DurableBytes, taken
+	// as a difference around one Sync call so bytes a sync flushed beside
+	// the caller's own — another writer's appends landing in the segment
+	// while the call was in flight — are counted as the caller's wait.
+	madeDurable int64
 }
 
 type changeKind int
@@ -658,6 +666,24 @@ func (s *Seam) StaleReads(name string) {
 	if n, ok := s.names[name]; ok {
 		n.stale = true
 	}
+}
+
+// DurableBytes returns the running total of write bytes the file's successful
+// Syncs have made durable, and 0 for a name the seam does not hold. A change
+// a failed Sync covered never counts: no later Sync makes it durable, so a
+// caller measuring what one Sync flushed reads none of those bytes in it. A
+// synced write of the same bytes again counts again: the total runs over the
+// syncs, not the bytes. The seam's Unsynced is the count of writes a crash's
+// draw may still keep, a different measure, taken from the undo logs.
+func (s *Seam) DurableBytes(name string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n, ok := s.names[name]
+	if !ok {
+		return 0
+	}
+	return n.madeDurable
 }
 
 // Durable returns the bytes a crash now would leave in the file name, and an

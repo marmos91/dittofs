@@ -26,55 +26,57 @@ rfc1 / 9.4 / A / "partial release keeps the record whole":
 rfc1 / 9.4 / A / "release frees nothing inside a segment":
   tests: [TestRFC1A_ReleaseFreesNothingInsideSegment]
 rfc1 / 9.4 / A / "repack copies the live part":
-  pending: 2.8
+  tests: [TestRFC1A_RepackCopiesLivePart]
 rfc1 / 9.4 / A / "crash mid-repack":
-  pending: 2.8
+  tests: [TestRFC1A_CrashMidRepack]
 rfc1 / 9.4 / A / "unlink under read":
   tests: [TestRFC1A_UnlinkUnderRead]
 rfc1 / 9.4 / A / "repack under read":
-  pending: 2.8
+  tests: [TestRFC1A_RepackUnderRead]
 rfc1 / 9.4 / A / "removals survive to `Since`":
   tests: [TestRFC1A_RemovalsSurviveToSince]
 rfc1 / 9.4 / A / "no resurrection":
   tests: [TestRFC1A_NoResurrection]
 rfc1 / 9.4 / A / "removal outlives its segment":
-  pending: 2.8
+  tests: [TestRFC1A_RemovalOutlivesItsSegment]
+  owner: '#3678'
+  reason: 'the settled delete''s drop gate — the marker dropped only once its unlinks are durable — needs a seam that can crash while a call is still running, so the moment the delete may be dropped is not checked there'
 rfc1 / 9.4 / A / "removal during offload":
   tests: [TestRFC1A_RemovalDuringOffload]
 rfc1 / 9.4 / A / "neighbours are frozen":
   tests: [TestRFC1A_NeighboursAreFrozen]
 rfc1 / 9.4 / A / "removal records carried forward":
-  pending: 2.8
+  tests: [TestRFC1A_RemovalRecordsCarriedForward]
 rfc1 / 9.4 / A / "copy loses to a newer write":
-  pending: 2.8
+  tests: [TestRFC1A_CopyLosesToNewerWrite]
 rfc1 / 9.4 / A / "loss raises the loss generation":
-  pending: 2.8
+  tests: [TestRFC1A_LossRaisesLossGeneration]
 rfc1 / 9.4 / A / "a recycled segment keeps its new records":
-  pending: 2.8
+  tests: [TestRFC1A_RecycledSegmentKeepsNewRecords]
 rfc1 / 9.4 / A / "failed sync window":
-  pending: 2.8
+  tests: [TestRFC1A_FailedSyncWindow]
 rfc1 / 9.4 / A / "offered bytes verified":
   tests: [TestRFC1A_OfferedBytesVerified]
 rfc1 / 9.4 / A / "repack verifies the whole source":
-  pending: 2.8
+  tests: [TestRFC1A_RepackVerifiesWholeSource]
 rfc1 / 9.4 / A / "retained extents survive repack":
-  pending: 2.8
+  tests: [TestRFC1A_RetainedExtentsSurviveRepack]
 rfc1 / 9.4 / A / "removal dropped by version":
-  pending: 2.8
+  tests: [TestRFC1A_RemovalDroppedByVersion]
 rfc1 / 9.4 / A / "drops decided after the pass's copies":
-  pending: 2.8
+  tests: [TestRFC1A_DropsDecidedAfterCopies]
 rfc1 / 9.4 / A / "carried release keeps its sequence":
-  pending: 2.8
+  tests: [TestRFC1A_CarriedReleaseKeepsItsSequence]
 rfc1 / 9.4 / A / "re-append trusts no page cache":
-  pending: 2.8
+  tests: [TestRFC1A_ReappendTrustsNoPageCache]
 rfc1 / 9.4 / A / "loss by exact record":
-  pending: 2.8
+  tests: [TestRFC1A_LossByExactRecord]
 rfc1 / 9.4 / A / "a synced loss masks what it superseded":
-  pending: 2.8
+  tests: [TestRFC1A_SyncedLossMasksSuperseded]
 rfc1 / 9.4 / A / "a failed window is reported once":
-  pending: 2.8
+  tests: [TestRFC1A_FailedWindowReportedOnce]
 rfc1 / 9.4 / A / "a re-append keeps its numbers":
-  pending: 2.8
+  tests: [TestRFC1A_ReappendKeepsItsNumbers]
 rfc1 / 9.4 / A / "no pin on a segment under repack":
   tests: [TestRFC1A_NoPinOnSegmentUnderRepack]
 rfc1 / 9.4 / B / "reservation":
@@ -310,9 +312,11 @@ rfc28 / 4.1 / "Opening":
   reason: 'the older-format leg reaches only an unrecognised version, which TestEdge_OpenUnrecognisedFormatVersion covers; no version other than 1 exists, so a recognised older or newer format is tested once a second version lands'
 
 rfc1 / 9.7 / "syncs per write":
-  pending: 2.8
+  tests: [TestCounted_SyncsPerWrite]
 rfc1 / 9.7 / "mixed durability":
-  pending: 2.8
+  tests: [TestCounted_MixedDurability, TestCounted_MixedChoreography]
+  owner: '#3639'
+  reason: 'the check cannot tell a small-writer sync that waits on the stream''s backlog from one that parks a second time, because no backlog above one interval exists inside a window; a seam that grows one mid-window is tracked there'
 rfc1 / 9.7 / "index cost":
   owner: epic 4
   reason: 'the index''s comparison counters'
