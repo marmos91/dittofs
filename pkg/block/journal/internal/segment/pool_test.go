@@ -1402,3 +1402,52 @@ func TestPoolRefusedHoldRetriesDoNotAccumulateDemand(t *testing.T) {
 		func(c segment.PoolCounters) bool { return c.Spares == 2 && c.Held == 0 })
 	p.Stop()
 }
+
+// TestPoolAHoldClosedDuringAMakeLeavesTheTarget: a hold closed while a make
+// it drew is still in flight must not drag the demand level below zero. The
+// make was drawn by the hold's demand, the close returns that demand, and
+// the spare it lands sits above the target's need: the level pays for
+// nothing there, and the pool settles at its target rather than one spare
+// below it. It catches a negative level that makes the pool under-fill for
+// as long as nothing else touches the level.
+func TestPoolAHoldClosedDuringAMakeLeavesTheTarget(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 2}, noMax, 0, nil)
+	p.Start()
+	awaitCounters(t, "the target's two spares ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	// The hold is served; the refill, now wanting the target plus what the
+	// hold demands, starts its make and parks at the create.
+	park := seam.Hold(t, journalv2test.OpCreate, "*")
+	h, err := p.Hold(1)
+	if err != nil {
+		t.Fatalf("Hold(1) over two ready spares: %v", err)
+	}
+	for park.Waiting() == 0 {
+		runtime.Gosched()
+
+	}
+
+	// The hold closes before the make lands, returning its demand.
+	h.Close()
+
+	// Freed, the make lands: three ready over a target of two with no holds
+	// open — one spare above what the pool needs. The level clamps at zero
+	// rather than paying for a demand that closed.
+	park.Release()
+	awaitCounters(t, "the in-flight make landed above the target", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 3 })
+
+	// Two takes spend the ready spares; the refill must still see the target
+	// of two it owes and fill back to it, not sit one short of it forever.
+	for i := 1; i <= 2; i++ {
+		if id, err := p.Take(segment.Content); err != nil || id == 0 {
+			t.Fatalf("the unreserved take %d: (%d, %v)", i, id, err)
+		}
+	}
+	awaitCounters(t, "the pool back at its target", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+	p.Stop()
+}

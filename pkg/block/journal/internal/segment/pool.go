@@ -554,12 +554,14 @@ func (p *Pool) refill() bool {
 			return true
 		}
 		p.ready[c] = append(p.ready[c], id)
-		if c == Content && len(p.ready[Content]) > p.t.Content+p.held {
-			// A content spare above the target and every hold's demand pays
-			// the demand level down by one. The level reaches zero exactly as
-			// ready reaches target+held+pending, so the pass's own condition
-			// ends it here: the level never runs negative, because the only
-			// makes that reach this line are the ones the level itself drew.
+		// The level is clamped at zero: a spare above the target and every
+		// open hold's demand pays the level down by one, but only while a
+		// level stands. A make the level drew lands after the hold that
+		// raised it closed — Close lowering held under it — and that spare
+		// is the target's own need, not spent demand; paying the level for
+		// it would run the level negative and leave the pool filling one
+		// spare below its target until something else touched the level.
+		if c == Content && p.pending > 0 && len(p.ready[Content]) > p.t.Content+p.held {
 			p.pending--
 		}
 		p.deviceFull = false
