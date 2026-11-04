@@ -212,7 +212,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | R4 | A refusal naming the spare pool answers `ErrDelay` with `DelayCapacity` and is never waited for inside the journal; a spare that cannot be made because the device is full is a full device | MUST | §10.2 table, RFC 1 §6, RFC 28 §2.2 | T7.1a |
 | R5 | A full device (`ENOSPC`) answers `ErrNoSpace` at once | MUST | §10.2 table, second row, RFC 1 §6 | T7.1a |
 | R6 | A refusal naming the index bound answers `ErrDelay` with `DelayCapacity` for as long as a repack, a sync or the group commit's stamp can lower the count, and `ErrNoSpace` at once when nothing can | MUST | §10.2 table, RFC 1 §4.2 (#3665) | T7.1a, T7.1b |
-| R7 | A refusal naming the headroom is answered as the journal's capacity: retry-later while repack can return space | MUST | RFC 1 §6 | T7.1a, T7.1b |
+| R7 | A refusal naming the headroom is answered as the journal's capacity: retry-later while repack can return space | MUST | RFC 1 §6, §10.2 | T7.1a, T7.1b |
 | R8 | The deadline ends the wait, never the cause's class: an `ErrDelay` standing at the caller's deadline stays `ErrDelay`, and a refusal that would outlast the deadline returns `ErrDelay` at once instead of waiting. With no estimate of a wait's length in this part, a refusal outlasts the deadline when the deadline has already passed: it answers `ErrDelay` at once, with no repack and no wait on the raise; every other wait runs under the caller's context and answers `ErrDelay` when it ends | MUST | §10.2, RFC 0 §10.3 | T7.1a, T7.1b |
 | R9 | A refused write changes nothing: no version kept, no pending operation, no `Done` | invariant | §4.1, RFC 1 §6 | T7.1a, T7.1b |
 | R10 | A refused write logs at `Warn`, rate-limited, and counts in `engine_write_refusals_total` | invariant | §14 | T7.1a |
@@ -403,7 +403,7 @@ test/enginev2/known.yaml  T7.1a to T7.4  each new red row, naming this epic's is
 **Subtask T7.1a estimate: 2.5 man-days.**
 
 - **Track:** A. **Depends on:** S2; epic 3's T3.2 and T3.3; epic 6's T6.7; the RFC 8 text
-  that settles D1 (§9 point 5) and #3656's headroom rows (R7).
+  that settles D1 (§9 point 5).
 - **Covers:** R1 to R10.
 - **Deliverables:** the refusal table as D1, table-driven over every limit `journalv2`
   names (`LimitShare`, `LimitJournal`, `LimitIndex`, `LimitHeadroom`, `LimitVersion`,
@@ -522,7 +522,7 @@ test/enginev2/known.yaml  T7.1a to T7.4  each new red row, naming this epic's is
   the wrapped views directly; its §15.2 rows, and every test below that needs another
   epic's owner, sit in the conformance suite, red in `known.yaml` (rule 6) until the write
   transactions of epic 4's T4.3, epic 5's T5.3 and epic 6's T6.2 and T6.7 land; the RFC text
-  D6 follows (#3656) and D7's (#3654).
+  D6 and D7 follow (#3654).
 - **Covers:** R20 to R26.
 - **Deliverables:** `fence.go`: the recorder of D5 wrapping `Existence`, `Content` and
   `Lifecycle` at `New`; D6's evaluation at the gate of `Write`, `Commit` and every
@@ -616,7 +616,7 @@ flowchart TD
   T7_1a --> T7_1b["T7.1b Repack and the last step"]
   ep4(["epic 4: T4.6 failed-window report"]):::sync -.-> T7_1b
   J(["journalv2: Repack seals, unreclaimed figure in Stats"]):::sync -.-> T7_1b
-  rfc(["RFC text: D1, #3651, #3653, #3654, #3656, #3665"]):::sync -.-> T7_1a & T7_1b & T7_2
+  rfc(["RFC text: D1, #3651, #3653, #3654, #3665"]):::sync -.-> T7_1a & T7_1b & T7_2
   S2 --> T7_2["T7.2 Self-fence"]
   tx(["red rows: T4.3, T5.3, T6.2, T6.7 write transactions"]):::sync -.-> T7_2
   T7_2 --> T7_3["T7.3 Stats and conditions"]
@@ -639,8 +639,8 @@ retry-later and no space as §10.2's table says.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T7.2 | 2.5 | S2; T2.3; #3656, #3654 | the fence and its recorder, which every later write transaction goes through; its tests call the wrapped views directly, and its §15.2 rows wait red in `known.yaml` for T4.3, T5.3, T6.2 and T6.7 |
-| 2 | T7.1a | 2.5 | T3.2, T3.3, T6.7; the RFC 8 text for D1, #3656 | the refusal table on the write path, replacing epic 3's interim answer |
+| 1 | T7.2 | 2.5 | S2; T2.3; #3654 | the fence and its recorder, which every later write transaction goes through; its tests call the wrapped views directly, and its §15.2 rows wait red in `known.yaml` for T4.3, T5.3, T6.2 and T6.7 |
+| 2 | T7.1a | 2.5 | T3.2, T3.3, T6.7; the RFC 8 text for D1 | the refusal table on the write path, replacing epic 3's interim answer |
 | 3 | T7.1b | 4.5 | PR 2; T4.6; #3665, #3653, #3651 | repack and the last step, its fixture rows red until the journal seals |
 | 4 | T7.3, T7.4 | 5 | PR 1, PR 2; T4.4, T5.3, T6.3, T6.7, T6.10, T8.3 | what an operator sees, and the version limit's checks against the fence |
 
@@ -654,12 +654,11 @@ A suggestion only: one pull request per subtask works as well.
    document raises `journal_full` from the engine meanwhile. `journal_sync_failed` and
    `stranded_export_failed` are left to the RFCs: the first needs a clear rule the RFCs do
    not give, and the second is the salvage export of the second part. Pending #3651.
-2. **The fence's clock** (D6). RFC 8 §11.2 records "the store time of the last write
-   transaction"; RFC 8 §2.1's `Clock` sizes every wait on `Elapsed`, and no view of RFC 16 §3
-   returns a transaction's `Now`. This document follows §2.1. RFC 8 §11.2 and RFC 0 §1.4
-   read either way on when the 30 s start; this document starts them when a transaction
-   becomes outstanding or failing on a node with none, as the plan's "after 30 s with one
-   outstanding or failing" does (D6). Pending #3652 and #3654.
+2. **The fence's clock** (D6). RFC 8 §11.2 now records the `Clock.Elapsed` of the last
+   commit (#3656). RFC 8 §11.2 and RFC 0 §1.4 still read either way on when the 30 s start;
+   this document starts them when a transaction becomes outstanding or failing on a node
+   with none, as the plan's "after 30 s with one outstanding or failing" does (D6). Pending
+   #3654.
 3. **A failed window and the last step** (D4). RFC 8 §10.2 waits while the scope's
    **sealed** segments hold unreclaimed bytes; RFC 28 §2.2 says a segment left by a failed
    sync "is never sealed while the journal runs". Read literally, a refusal while that
@@ -694,9 +693,8 @@ A suggestion only: one pull request per subtask works as well.
    zero scope too, for the journal's own limits, as RFC 8 §10.2 step 4 words it; its answer
    must cover both. T7.1b's sequencing is tested over the fake until then; its rows over the
    fixture stay red in `known.yaml`.
-8. **The headroom row.** RFC 8 §10.2's table names no row for a refusal by the headroom;
-   RFC 1 §6 says the engine answers it as the journal's capacity. This document follows
-   RFC 1 (R7). A sentence in §10.2's first row would settle it. Pending #3655.
+8. **The headroom row.** Settled: RFC 8 §10.2's capacity rows now name the headroom
+   (#3656), as RFC 1 §6 answers it as the journal's capacity, and R7 follows both.
 9. **The index row and the sync** (D2, D3). RFC 8 §10.2's index row and RFC 1 §4.2 name
    offload, eviction and repack as what lowers the index's count; RFC 1 §3.8 and §4.2 count
    a retained extent in `ExtentCount` until the record that superseded it is synced, so a
