@@ -818,6 +818,10 @@ func (e *Engine) commitNow(ctx context.Context, b *binding, f entity.FileID) err
 	if fe == nil {
 		return nil
 	}
+	if len(fe.ops) == 0 { // alive for an admitted write or a registration only
+		e.files.unlock(f, fe)
+		return nil
+	}
 	target := fe.ops[len(fe.ops)-1].version
 	e.files.unlock(f, fe)
 	return e.commitThrough(ctx, b, f, target)

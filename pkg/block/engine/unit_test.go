@@ -112,7 +112,10 @@ func newUnitWith(t *testing.T, c unitConfig) *unit {
 	if err := e.Apply(engine.Settings{ExistenceAge: 24 * time.Hour, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(e.CloseGroupCommits)
+	// The cleanup drops its reference once run, so the profiler's heap check,
+	// which runs last, does not count what the engine still held.
+	held := e
+	t.Cleanup(func() { held.CloseGroupCommits(); held = nil })
 
 	u.e = e
 	e.SetJournalsForTest(u.rec)

@@ -303,3 +303,50 @@ func (e *Engine) Failing(j Journal, f entity.FileID) bool {
 
 // SetConflictBound sets how long one existence commit may run.
 func SetConflictBound(d time.Duration) { conflictBound.Store(d) }
+
+// SetAfterRegister makes h run once each clone's registrations are
+// installed, before the clone's next step.
+func (e *Engine) SetAfterRegister(h func()) { e.afterRegister = h }
+
+// Registrations is the count of f's source and destination registrations.
+func (e *Engine) Registrations(f entity.FileID) (src, dst int) {
+	fe := e.files.lockOf(f)
+	if fe == nil {
+		return 0, 0
+	}
+	defer e.files.unlock(f, fe)
+	for _, r := range fe.regs {
+		if r.dst {
+			dst++
+		} else {
+			src++
+		}
+	}
+	return src, dst
+}
+
+// Admitted is the count of f's writes admitted and not yet in its entry.
+func (e *Engine) Admitted(f entity.FileID) int {
+	fe := e.files.lockOf(f)
+	if fe == nil {
+		return 0
+	}
+	defer e.files.unlock(f, fe)
+	return len(fe.writing)
+}
+
+// PendingWrites is the count of f's pending writes overlapping [off, end).
+func (e *Engine) PendingWrites(f entity.FileID, off, end int64) int {
+	fe := e.files.lockOf(f)
+	if fe == nil {
+		return 0
+	}
+	defer e.files.unlock(f, fe)
+	n := 0
+	for _, op := range fe.ops {
+		if op.kind == opWrite && op.extent.Off < end && off < op.extent.Off+op.extent.Len {
+			n++
+		}
+	}
+	return n
+}
