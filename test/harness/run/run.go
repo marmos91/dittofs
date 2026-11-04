@@ -69,6 +69,7 @@ type Options struct {
 	Retry    int       // --retry: how many times a new failure's test runs again
 	Place    string    // --place: the place the run is on, which meets that place's host need, recorded in its results
 	Parallel int       // --parallel: how many cells run at once; below 2, one after another
+	Base     string    // --base: the ref {base} stands for; empty leaves it to DT_BASE and the event (see base)
 }
 
 // minute is a variable so the tests can shorten a cell's limit.
@@ -357,7 +358,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		return didntRun(why)
 	}
 	out := filepath.Join(dir, report.Slug(c.Name))
-	vals := map[string]string{"base": base(), "out": out, "test": ""}
+	vals := map[string]string{"base": o.base(), "out": out, "test": ""}
 	maps.Copy(vals, matrix)
 	lists := map[string][]string{"args": strings.Fields(c.Unit.Args[c.Tier]), "names": strings.Fields(c.Unit.Names)}
 	if c.Unit.Tests.File != "" {
@@ -1235,12 +1236,25 @@ func unsupported(u *registry.Suite, goos string) string {
 	return ""
 }
 
-// base is the ref a change is compared against: the base branch of the pull
-// request being checked, a merge group's base commit, the commit before the
-// push being checked, or origin/develop when dt checks no event. It's "" when
+// base is the ref {base} stands for in a run: o.Base (--base) when given, else
+// what the environment says (see base).
+func (o Options) base() string {
+	if o.Base != "" {
+		return o.Base
+	}
+	return base()
+}
+
+// base is the ref a change is compared against: DT_BASE when it is set, as a
+// local run for a branch whose base isn't develop does; else the base branch of
+// the pull request being checked, a merge group's base commit, the commit before
+// the push being checked, or origin/develop when dt checks no event. It's "" when
 // the event has no change to check: a schedule, a dispatch, or a push without
-// a previous commit.
+// a previous commit. Nothing sets DT_BASE in CI, so CI is unchanged.
 func base() string {
+	if b := os.Getenv("DT_BASE"); b != "" {
+		return b
+	}
 	if os.Getenv("GITHUB_ACTIONS") != "true" {
 		return "origin/develop"
 	}

@@ -27,7 +27,7 @@ type exitStatus int
 func (e exitStatus) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
 
 func newRun() *cobra.Command {
-	var tier, results, place, in string
+	var tier, results, place, in, base string
 	var only, skip []string
 	var ci bool
 	var retry, parallel int
@@ -86,7 +86,7 @@ func newRun() *cobra.Command {
 				}
 				return dtc(cmd, root, again(cmd, args))
 			}
-			return runCells(cmd, root, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier, Retry: retry, Place: place, Parallel: parallel})
+			return runCells(cmd, root, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier, Retry: retry, Place: place, Parallel: parallel, Base: base})
 		},
 	}
 	cmd.Flags().StringVar(&tier, "tier", "pr", "run at tier T, or at a suite's own tier when wider: it sets args, env and select")
@@ -97,6 +97,7 @@ func newRun() *cobra.Command {
 	cmd.Flags().IntVar(&parallel, "parallel", 1, "run up to N cells at once; cells that conflict, as two on one fixed port, still run one at a time")
 	cmd.Flags().StringVar(&results, "results", "", "where results go, relative to the checkout's root (default test/harness/results)")
 	cmd.Flags().StringVar(&place, "place", "", "run the cells of the tier that dt plan gives place P, as the dedicated host does; that place's host need is met")
+	cmd.Flags().StringVar(&base, "base", "", "compare the branch with REF wherever a command uses {base}, instead of origin/develop (or DT_BASE)")
 	cmd.Flags().StringVar(&in, "in", "", "where the run happens: host, container (dtc) or auto, which moves it to dtc when a cell needs what only the container gives (default auto, host with --ci)")
 	// Each suite's options are flags: dt run smbtorture --kerberos.
 	if _, r, err := load(); err == nil {
