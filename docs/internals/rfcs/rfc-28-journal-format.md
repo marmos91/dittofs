@@ -875,9 +875,10 @@ the journal closed and is retried ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20jour
 
 **The version floor.** The journal is opened with a floor supplied by its
 caller: the highest content version recorded in metadata for any file the journal
-may serve, across all its shares ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). It is one number, not one per file,
-and not a dependency. The next content version assigned **MUST** exceed both the
-floor and every one on disk ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)); without it a restored directory would
+may serve, across all its shares, or every such share's version limit if larger
+([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [§2.7](rfc-8-engine.md#2.7%20The%20version%20limit)): one number, the largest of them, not one per
+file or share, and not a dependency. The next content version assigned
+**MUST** exceed both the floor and every one on disk ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)); without it a restored directory would
 reissue versions already recorded for other content, and a reseed would mark new
 writes offloaded. The journal does not compare the floor with what it holds —
 released content leaves nothing on disk — and a restored directory shows up at

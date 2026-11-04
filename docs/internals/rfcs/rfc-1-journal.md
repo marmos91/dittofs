@@ -544,8 +544,9 @@ that does not exist: it fails on one as on a directory that holds no journal
 ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)).
 
 **A share attached after open raises the counter first.** `Share`'s `floor` is
-the share's own version floor: the highest content version recorded for any file
-of the share, imported records included. A share this journal did not serve when
+the larger of the share's own version floor (the highest content version recorded
+for any file of the share, imported records included) and its version limit
+([§4.3](#4.3%20Versions), [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). A share this journal did not serve when
 it opened — moved here, recovered onto this device, cloned or restored into it —
 can carry versions from another journal far above this one's counter. `Share`
 **MUST** raise the journal's version counter above that floor before it returns

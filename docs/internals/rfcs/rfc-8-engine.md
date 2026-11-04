@@ -609,9 +609,9 @@ and is retried; `journal_unsuitable` then names that cause. A recovery import
 whose adopted journal is refused publishes nothing, since it cannot raise the
 tag counter above that journal's tags ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)).
 
-1. **Open the journal.** Read the version floor for every share the device
-   journal may serve ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)), and the journal identity the metadata store
-   records for the device ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), and open the journal with both
+1. **Open the journal.** Read the version floor and the version limit for
+   every share the device journal may serve ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)), and the journal identity the metadata store
+   records for the device ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), and open the journal with the floor and the identity
    ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding), [§3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)). The engine opens each journal itself, through
    `Deps.Open`, reading the floor and the identity from the store; the root
    opens none. A share whose removal has reached its
@@ -644,8 +644,8 @@ tag counter above that journal's tags ([RFC 26 §2.3](rfc-26-catalog-backups.md#
    does not wait for an operator: it rejoins from its replicas
    ([RFC 10](rfc-10-journal-replication.md)), and only one that has lost every replica is gated.
 
-   The floor the journal opens with is, per share, the larger of the version
-   floor and the share's version limit, and before any version is issued the
+   The floor the journal opens with is one number: the largest of every served
+   share's version floor and version limit. Before any version is issued the
    engine writes every served share's version limit ([§2.7](#2.7%20The%20version%20limit)).
 2. **Raise incarnations.** One transaction — the start transaction — raises the
    incarnation of every shard the node will serve as primary, before any
@@ -972,8 +972,8 @@ primary of the file's shard.
 
 ### 2.7 The version limit
 
-The floor the journal opens with is, per share, the larger of the version
-floor and the share's **version limit** `S‖id‖vl` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), so the
+The floor the journal opens with is one number, the largest of every served
+share's version floor and **version limit** `S‖id‖vl` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), so the
 counter restarts above every version a crash may have lost
 ([RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)). At start ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1), before any version is issued, the engine writes
 every served share's limit at the journal's next version, as `Stats`
