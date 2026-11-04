@@ -502,11 +502,12 @@ func (s *Set) Release(id core.SegmentID) {
 // is refused ErrClaimed, uncounted.
 //
 // decision: the claim is refused while it is held at all, whichever path
-// holds it — a second retirement, or a repack's mid-move claim — rather than
-// only when it is another retirement's, because the ledger cannot tell the
-// two apart and a retirement that ran beside a repack would unname storage
-// the repack was still moving. The claim dies with the segment a Retire or a
-// Recycle removes, so nothing releases it and R57 holds: a release after the
+// holds it — the plan's word is "refused … a segment with a live claim": a
+// second retirement, or a repack's mid-move claim — rather than only when
+// it is another retirement's, because the ledger cannot tell the two apart
+// and a retirement that ran beside a repack would unname storage the repack
+// was still moving. The claim dies with the segment a Retire or a Recycle
+// removes, so nothing releases it and R57 holds: a release after the
 // retirement finds no entry. A refused retirement that does not retire the
 // segment releases the claim itself, so a retry can take it again — allowed
 // by the same rule, because the segment was not retired. Overturned if epic
