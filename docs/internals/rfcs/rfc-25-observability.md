@@ -624,7 +624,7 @@ listener clients are sent to is down.
 | serving | yes | yes | from its conditions |
 | in grace after a restart | yes | yes — clients must reach it to reclaim | from its conditions; grace is information |
 | self-fenced: no write transaction committed for 30 s ([RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)) | yes | yes — reads continue | unhealthy, `node_fenced` |
-| some shares refused: a journal device lost, a share's store denied | yes | yes | unhealthy for those shares |
+| some shares refused: a journal device lost, a journal directory refused as unsuitable storage, a share's store denied | yes | yes | unhealthy for those shares |
 | started from a copied image the platform reports | yes | yes — reads of offloaded content continue | unhealthy, `copied_image`; each namespace also raises `namespace_unclaimed` (copy) until its copy is accepted |
 | a namespace's claim answered copy, foreign or pending, or could not be read ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) | yes | yes — the node's other shares serve, and a copy's serve reads | unhealthy for that namespace's shares, `namespace_unclaimed` naming it and the answer |
 | metadata store lost: no share served until a recovery import | yes | no | unhealthy, `metadata_store_lost` |
@@ -704,6 +704,7 @@ row.
 | `removal_stalled` | [RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches) | share, naming the FileID and the removal's kind | degraded; unhealthy for a clone, whose destination's writes are held | ticket at 1 h; page at 15 min for a clone |
 | `journal_full` | [RFC 1 §6](rfc-1-journal.md#6.%20Capacity) | journal | unhealthy: writes held or refused at capacity | page at 5 min |
 | `journal_sync_failed` | [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync) | journal | unhealthy: acknowledged writes lost | page at once |
+| `journal_unsuitable` | [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | journal, naming the directory and what refused the latest open or late attach, the rule or another cause | unhealthy: the journal's shares are not served until the mount or the directory is fixed and the late attach serves; a retried open that finds the journal missing or foreign raises `journal_lost` instead | page at once |
 | `journal_lost` | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | journal | unhealthy; waits for an operator | page at once |
 | `journal_read_only` | [RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write) | journal | unhealthy: writes refused, reads served while the journal is open, until a spare is made, the storage checks pass and the reopen succeeds | page at once |
 | `stranded_export_failed` | [RFC 1 §3](rfc-1-journal.md#3.%20Interface), [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | node | degraded | ticket |
