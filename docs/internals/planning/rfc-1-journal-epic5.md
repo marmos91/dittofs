@@ -5,7 +5,7 @@
 §5.3, §6 (allocation, spares, refusals), §7.1, §7.3, §7.4 and §8.2–§8.7; the descriptor and
 stream settings of [RFC 13](../rfcs/rfc-13-configuration.md) Appendix B.
 **Track:** A.
-**Epic 5 estimate: 11 subtasks, 34.5 man-days.**
+**Epic 5 estimate: 11 subtasks, 34.75 man-days.**
 **Depends on:** sync point **S2, red suite in CI**; epic 1's `core` types and settings, and its
 storage seam (`storage.FS`, `storage.File`); epic 2's crash-simulating seam, fixture and
 profiler; epic 3's segment header and names, record, seal marker, catalog entry and trailer
@@ -100,7 +100,7 @@ durability policy (epic 6), no recovery (epic 7) and no index (epic 4).
   end event, epic 6's `Sync`, failed-window resolution and corruption handler, which need them,
   and E8's `WriteAt`, `ReadAt`, `Share` and minimal `Open`, so the first conformance tests turn
   green.
-  **T5.1, T5.2, T5.4a, T5.4b, T5.5, T5.6, T5.7 and T5.10 are this epic's half, 26.75 man-days.**
+  **T5.1, T5.2, T5.4a, T5.4b, T5.5, T5.6, T5.7 and T5.10 are this epic's half, 27 man-days.**
 - **S4**, core complete: E3–E9 done.
 
 ## 2. General rules for each epic
@@ -263,7 +263,7 @@ below or in §1.2.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R48 | A failed append ends its segment, fresh or recycled: no further append, not even a seal marker. The stream continues in a new segment naming no predecessor, and the segment is never sealed | MUST | RFC 28 §2.2, RFC 1 §5.1, §5.3 | T5.10 |
-| R49 | The records written to the ended segment since its last successful sync go to the failed-window resolution (re-append or fail: epic 6). This epic hands over the end event, naming the segment and its failed slot, and epic 6 reads the window's records from the ledger `Append` filled (R88), so there is one list of them. This epic decides nothing about them | MUST | RFC 28 §2.2, RFC 1 §5.3 | T5.10 |
+| R49 | The records written to the ended segment since its last successful sync go to the failed-window resolution (re-append or fail: epic 6). This epic hands over the end event, naming the segment and its failed slot, and epic 6 reads the window's records from the ledger `Append` filled (R88), so there is one list of them. The event is handed over only once every slot reserved before the failed one has finished and registered its record (R88), as a seal waits for them (R85), so the window the consumer takes holds every record written since the last successful sync; the wait is on the hand-off, off the appenders' locks. This epic decides nothing about them | MUST | RFC 28 §2.2, RFC 1 §5.3 | T5.10 |
 | R50 | An ended segment stays accounted at its cap to the journal until it is unlinked | MUST | RFC 1 §5.3, §7.3 | T5.1, T5.10 |
 
 **Accounting**
@@ -761,7 +761,7 @@ pkg/block/journalv2/internal/
 
 ### T5.10 Ending a segment after a failed append
 
-**Subtask T5.10 estimate: 2.5 man-days.**
+**Subtask T5.10 estimate: 2.75 man-days.**
 
 - **Track:** A. **Depends on:** T5.6.
 - **Covers:** R1, R10, R43, R48–R50, R72, R77.
@@ -771,7 +771,9 @@ pkg/block/journalv2/internal/
   seal, the stream's next roll takes a spare whose header names no predecessor, the
   synced-through value stays below the failed slot, and the end event, naming the segment and the
   failed slot, is handed to a registered consumer, which epic 6 fills in and which reads the
-  window's records from its own ledger (R49, R88). The ledger keeps
+  window's records from its own ledger (R49, R88), once every slot reserved before the failed one
+  has completed and registered its record: the hand-off waits for them on its own goroutine, never
+  under an appender's lock, so a record still being written when the sync fails is in the window. The ledger keeps
   the segment at its cap, and T5.9 treats it as never recyclable. The ended state itself is
   T5.1's, and T5.7 already sets it on a failed seal sync: this subtask adds the
   append-failure trigger, the predecessor-free next segment and the hand-off.
@@ -781,10 +783,14 @@ pkg/block/journalv2/internal/
   - The next append goes to a new segment whose predecessor is zero.
   - Every record reserved after the failed slot carries a synced-through value below it.
   - The end event reaches the consumer exactly once, naming the segment and the failed slot.
+  - A slot reserved before the failed one and still writing when the failure happens has
+    registered its record before the event is handed over.
   - An ended segment that was itself recycled from the pool behaves the same.
 - **Tests:** three concurrent appends, the middle one failed at the seam and a third completed
   (the RFC 28 zero-slot row, write half, R77); the fourth append's segment and predecessor; a
-  recycled segment's failed append; the end event handed over once; the footprint of the
+  recycled segment's failed append; an earlier slot held at the seam across the failure of a later
+  one, asserting the event waits for its `Track` and no appender waits on another's write under a
+  lock (catches a record that registers after the window was taken); the end event handed over once; the footprint of the
   ended segment at its cap until its unlink.
 
 ### T5.11 Refill from retirements, and closing the set
@@ -817,7 +823,7 @@ After T5.1 and T5.2, which can run side by side, `Make` (T5.4a) comes first, and
 stream (T5.4b) needs all three. From there two lanes run side by side. The **stream lane**:
 T5.7, T5.6, T5.8, T5.10. The **pool lane**: T5.5, then T5.9 once the seal exists. They meet at
 T5.6, which needs the pool, and at T5.11, which needs the retirement and the idle worker. The
-S3 skeleton needs T5.1, T5.2, T5.4a, T5.4b, T5.5, T5.6, T5.7 and T5.10, 26.75 man-days: epic 6's
+S3 skeleton needs T5.1, T5.2, T5.4a, T5.4b, T5.5, T5.6, T5.7 and T5.10, 27 man-days: epic 6's
 `Sync` needs the seal's sync (T5.7), its loss records the headroom (T5.6), and its failed-sync
 handling the end event (T5.10).
 
@@ -873,7 +879,7 @@ Checkpoints:
 | 2 | T5.4a, T5.4b | 7 | PR 1, E3 `Allocate`, E3 records | making a segment and the stream on it |
 | 3 | T5.5 | 2.5 | PR 2 | the spare pool, which can be open beside PR 4 |
 | 4 | T5.7 | 4.25 | PR 2, E3 seal and catalog | the seal and its crash matrix |
-| 5 | T5.6, T5.8, T5.10 | 8.75 | PR 3, PR 4 | the roll, the idle seal and the end of a segment, which share the stream's next-segment path; with PR 1 to PR 4, this epic's S3 half |
+| 5 | T5.6, T5.8, T5.10 | 9 | PR 3, PR 4 | the roll, the idle seal and the end of a segment, which share the stream's next-segment path; with PR 1 to PR 4, this epic's S3 half |
 | 6 | T5.9, T5.11 | 6.25 | PR 1, PR 3, PR 4, PR 5 | retirement, the refill from it and the close: the loop that returns space |
 
 A suggestion only: one pull request per subtask works as well.

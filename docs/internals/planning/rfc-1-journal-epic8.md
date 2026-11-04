@@ -3,7 +3,8 @@
 **Sources:** [RFC 1](../rfcs/rfc-1-journal.md) §2, §3 (the shares and handles, and "a file is its
 share's"), §3.1, §3.2, §3.4, §3.6, §3.7, §3.9 (the counters this epic increments), §3.10, §4.3
 (`Draw`, `SetVersionLimit`, the version a share's floor raises), §6, §8, and the checks of §9.2,
-§9.3, §9.4 and §9.7 that name this area; [RFC 28](../rfcs/rfc-28-journal-format.md) §2.2–§2.4 (the
+§9.3, §9.4 and §9.7 that name this area; [RFC 28](../rfcs/rfc-28-journal-format.md) §2.1 and §3.4 (the
+`format` file and `Open` with `expect` zero refused, which T8.15 implements), §2.2–§2.4 (the
 parts the write and read paths touch: serialised appends, the record's fields, the whole-payload
 check, the header checked against its catalog entry).
 **Track:** B.
@@ -165,7 +166,7 @@ format, no recovery and no reclamation.
 6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   `pkg/block/journal`. The import test enforces it. v1 code is neither ported nor
+   v1's journal (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
    checks only whether v1 state exists, to refuse it at start (E10), and never reads
    v1's format.
@@ -200,8 +201,8 @@ format, no recovery and no reclamation.
 | 3 Metrics and tracing | T8.1, T8.4, T8.5, T8.6, T8.7, T8.13 | `written_bytes` (T8.1), `TagConflicts` (T8.4), `reservation_refused` and `index_refusals` (T8.5), `headroom_draws` (T8.6), `filled_bytes` and `fill_refused` (T8.7) are incremented at the event with an atomic add and served by `Stats` (T8.13), never from a walk. Spans through E1's `Tracer`: `fill` (T8.7) and `reserve_refused` (T8.5). Open and recovery, sync, offload and repack are other epics' |
 | 4 Profiling | all | every test runs under E2's profiler. T8.14 asserts allocations per call for `WriteAt`, `ReadAt` and `Stats`, outside `-race` (R101), once for all three. T8.12 is where goroutines could leak: it checks that none outlives `Close` |
 | 5 Public and internals, `-race` | T8.1 to T8.13, T8.15 | each subtask tests its internal package and the public `Handle` behaviour it enables, at the layer that consumes the value: a version is checked where `ReadAt` returns it, a refusal where the caller sees its `ErrNoSpace`. `-race` runs with two files on two streams and two shares, as RFC 1 §9.3 requires |
-| 6 Known failures | T8.15 and every later subtask | once T8.15's `Open` exists, every subtask removes from `test/journalv2/known.yaml` the conformance tests it turns green, in the same change; the runner fails on a listed test that passes. Tests that reopen a journal holding segments stay listed until epic 7. No subtask adds an entry |
-| 7 v2 ignores v1 | all | enforced by the import test. Nothing of `pkg/block/journal` is read |
+| 6 Known failures | T8.15 and every later subtask | once T8.15's `Open` exists, every subtask removes from `test/journal/known.yaml` the conformance tests it turns green, in the same change; the runner fails on a listed test that passes. Tests that reopen a journal holding segments stay listed until epic 7. No subtask adds an entry |
+| 7 v2 ignores v1 | all | enforced by the import test. Nothing of v1's journal is read |
 | 8 Real storage | T8.1, T8.2, T8.5 to T8.10, T8.12, T8.15 | every test of a record write, a read of stored bytes, a refusal that performs no I/O, a close, or an `Init` and `Open` runs on a real directory through E2's seam. T8.4's conflict logic, T8.12's context checks and T8.11's recorder are pure logic and test in memory |
 | 9 Comment markers | T8.1, T8.2, T8.5, T8.6, T8.11 | see §4: each decision names its marker and where it goes. The RFC's `ponytail:` and `decision:` notes on headroom (half rule, default `journal.headroom_records`) go at the admission table in T8.6, the one on counting pieces as interleaved at the reservation in T8.10, the one on the version limit at the draw in T8.3, and the one on checking the tag per file at the claim in T8.4 |
 | 10 A test can fail | all | each test in §6 names the bug it catches |
@@ -531,7 +532,7 @@ the rule that a persisted index is not authoritative (E3, E5, epic 7).
 ## 5. Target tree
 
 ```text
-pkg/block/journalv2/
+pkg/block/journal/
   journal.go, handle.go, reservation.go   T8.1, T8.3, T8.10   bodies replaced: they delegate to datapath
   internal/
     datapath/
