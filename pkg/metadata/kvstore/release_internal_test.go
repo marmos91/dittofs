@@ -295,3 +295,21 @@ func TestPendingReleasesIndex(t *testing.T) {
 		t.Errorf("pending releases in shard 3 %v", got)
 	}
 }
+
+// RFC 8 §8.1 step 3: a release a holder refuses commits none of the
+// file's pending writes it was handed: size, charge and applied stay as
+// they were.
+func TestAnAbortedReleaseCommitsNoPendingWrite(t *testing.T) {
+	f := newContentFix(t, nil)
+	file := f.file(0) // linked: its entry holds it
+	f.exist(file, write(1, 0, mib))
+	before := f.get(file)
+	err := f.s.Existence().Remove(context.Background(), f.share, file, 0, release(3), []PendingOp{write(2, mib, mib)})
+	if !errors.Is(err, ErrHeld) {
+		t.Fatalf("release of a held file: %v, want ErrHeld", err)
+	}
+	if got := f.get(file); got.Size != before.Size || got.Charged != before.Charged || got.Applied != before.Applied {
+		t.Errorf("after the aborted release: size %d charged %d applied %v; before %d, %d, %v",
+			got.Size, got.Charged, got.Applied, before.Size, before.Charged, before.Applied)
+	}
+}

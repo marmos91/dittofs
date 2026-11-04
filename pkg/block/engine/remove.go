@@ -177,6 +177,102 @@ func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 	return e.phase1(ctx, r, kvstore.RemoveOp{Kind: entity.RemoveDeallocate, Extent: entity.Extent{Offset: off, Length: n}})
 }
 
+// Delete is file f's release, never the journal's eviction: the guard, the
+// journal's Delete, then phase 1, which re-checks the file's holders. It
+// reads and writes no open state: the filesystem service marked the file
+// releasing before calling it. A phase 1 that commits within the call
+// answers a nil channel and nil. One a holder aborts answers
+// vfserr.ErrFileOpen. One the call cannot commit, the journal's Delete done,
+// is pending: it answers a channel and nil, the loop retries it keeping the
+// guard, and the channel yields its outcome once: nil once it commits,
+// vfserr.ErrFileOpen if a holder aborts it, vfserr.ErrUnavailable if the loop
+// ends first.
+//
+// decision: a release holds no lock across the journal's Delete and stages
+// no pending operation, unlike a truncate: the filesystem service marks the
+// file releasing through open state before it calls Delete, and no write,
+// read or open reaches a file so marked. Give it a staged operation if a
+// call can ever reach the engine past that mark.
+//
+// decision: a release is pending, not failed, from the moment the journal's
+// Delete returns, as the journal no longer holds the file's bytes and only
+// its marker brings them back; before that, the context's end is a refusal
+// that changed nothing. Withdraw it only with a journal Delete that can be
+// undone.
+func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) (retry <-chan error, err error) {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return nil, err
+	}
+	r, err := e.guard(ctx, b, f, entity.RemoveRelease, extent{0, entity.EndOfFile})
+	if err != nil {
+		return nil, err
+	}
+	if err := e.waitBatch(ctx, f); err != nil {
+		e.release(r, false)
+		return nil, err
+	}
+	v, err := b.h.Delete(ctx, fileID(f))
+	if err != nil {
+		e.release(r, false)
+		return nil, e.journalErr(err)
+	}
+	r.v = v
+	e.staged()
+	op := kvstore.RemoveOp{Kind: entity.RemoveRelease, Extent: entity.ExtentOf(0, entity.EndOfFile),
+		Version: entity.JournalVersion(v.Bytes()), Time: r.at}
+	switch err := e.tryPhase1(ctx, r, op); {
+	case err == nil:
+		return nil, nil
+	case errors.Is(err, kvstore.ErrHeld):
+		return nil, e.abort(r)
+	case terminal(err):
+		e.unstage(r, err)
+		return nil, e.storeErr(err)
+	}
+	ch := make(chan error, 1) // buffered: the loop never blocks on a caller gone
+	e.retryLater(r, op, func(err error) { ch <- err })
+	return ch, nil
+}
+
+// abort ends release r that a holder refused: the file's pending writes
+// below it are dropped, their Dones run, the journal is settled without the removal, the
+// loss is raised on the file's sequence and logged naming it, and the guard
+// is released. It answers vfserr.ErrFileOpen, which the service tells from
+// ErrUnavailable: it clears the file's releasing mark for one and keeps it
+// for the other.
+//
+// decision: the store's ErrHeld crosses as vfserr.ErrFileOpen, which only
+// the engine and the filesystem service exchange, so the service's release
+// clears its mark for an abort and keeps it for an outage. Withdraw it if a
+// release's outcomes ever reach an adapter.
+func (e *Engine) abort(r *removal) error {
+	fe := e.files.lockFor(r.f)
+	var dones []func()
+	kept := fe.ops[:0]
+	for _, op := range fe.ops {
+		switch {
+		case op.version.Compare(r.v) >= 0:
+			kept = append(kept, op)
+		case !op.dropped && op.done != nil:
+			dones = append(dones, op.done)
+		}
+	}
+	clear(fe.ops[len(kept):])
+	fe.ops = kept
+	e.files.unlock(r.f, fe)
+	l := &r.b.gc.losses
+	l.mu.Lock()
+	l.raise(r.f)
+	l.mu.Unlock()
+	e.d.Logger.Error("a release was aborted by a holder: the file's content is lost", "file", r.f)
+	e.release(r, true)
+	for _, d := range dones {
+		d()
+	}
+	return vfserr.ErrFileOpen
+}
+
 // stage runs the journal's removal j under f's entry lock and inserts its
 // pending operation before the lock is released, answering whether grow,
 // asked under the same lock, made it a grow rather than a removal.
