@@ -13,10 +13,10 @@ admits before the call and how it holds a call behind a clone;
 the clone `Removal` record and the two phases `kvstore`'s `Existence.Clone` and
 `Content.Resume` already implement.
 **Track:** A.
-**Epic 8 estimate: 6 subtasks, 19.5 man-days.**
+**Epic 8 estimate: 7 subtasks, 19.5 man-days.**
 **Depends on:** epic 3, built: T3.1's per-file entries, T3.2's `Write`, T3.4's replay and
 T3.5's read resolution, which a clone copies through and resolves its source with; epic 4's
-per-file existence commit (T4.3), which commits the source's pending existence before
+per-file existence commit (T4.3) and the one sync function (T4.5), which commits the source's pending existence before
 `asOf` is read; epic 5's guard, the three removals' entry points (T5.1), the removal loop
 (T5.3) that runs phase 2, and a release's retry channel (T5.4), whose `ErrDelay` branch is
 built here; epic 6's `Close` and `Unbind` (T6.8, T6.9), which join clones, and start step 3's
@@ -24,7 +24,7 @@ clone markers and step 4's unfinished removals (T6.5, T6.6), from which a clone 
 #3608 and #3609, which put the share on every content call and give `Clone` and `Copy` a
 source and a destination share (D1). Open state's `Releasing`, the stage 1 follow-up, for
 one test of T8.3.
-**Blocks:** the integration epic, through S3; stage 2's piece 11, Copy and clone, which
+**Blocks:** epic 5's T5.1, which checks T8.1a's registrations; the integration epic, through S3; stage 2's piece 11, Copy and clone, which
 calls `Clone` and `Copy` once S3 is reached.
 
 ---
@@ -182,13 +182,13 @@ a clone rebuilt at start; `Unbind`'s and `Close`'s join of clones; the fake jour
 | 2 Fuzz | none | no parser. RFC 8 §15's `ponytail:` names `Copy`'s extents among the parts its tables check; T8.5's table test is that check, and the marker already stands at the read-resolution table, so no second one |
 | 3 Observability | T8.2, T8.3, T8.6 | no new counter and no new condition: a clone's phase 2 is a removal of kind clone, counted in epic 5's `engine_removal_batches_total`, `engine_removals_pending` and `engine_removals_oldest_seconds`, and its `removal_stalled` condition is unhealthy, not degraded (RFC 8 §8.1). T8.3 opens each clone's `Resume` as the removal loop's root span, its kind an attribute. RFC 8 §14's span events for a wait on a registration are not recorded: the `Tracer` declares no event, and a call never waits on one here (D3). T8.2 logs a phase-1 refusal met after the journal step at `Error` (D8); T8.3 a failed `Hold` at `Error`; T8.6 a rebuilt clone at `Info`, naming both files, and reports a rebuilt clone whose source's shard is not served after five backoffs as `removal_stalled` for its clone `Removal` (D11) |
 | 4 Profiling | all | the unit composition's `prof.Watch` covers every test, a clone's detached goroutine (D6) included: one leaked past `Close` fails it |
-| 5 Public and internal | all | internal tests of admission (T8.1), the replay of a clone operation (T8.2) and `Copy`'s chunking (T8.5); `Clone` and `Copy` tested through `*Engine`; `-race` in T8.1, T8.4 and T8.5. The spec handed `CloneTarget` is asserted where the journal yields it back, from `Since` over the real journal (T8.6); the `CloneOp` handed `Existence.Clone` where `kvstore` reads it, by the destination's `Covering` and the source's open record after phase 1 (T8.2); `CloneSrc` where open state matches it, by `CloneOpen` over the real table (T8.3) |
+| 5 Public and internal | all | internal tests of admission (T8.1a), the replay of a clone operation (T8.2) and `Copy`'s chunking (T8.5); `Clone` and `Copy` tested through `*Engine`; `-race` in T8.1, T8.4 and T8.5. The spec handed `CloneTarget` is asserted where the journal yields it back, from `Since` over the real journal (T8.6); the `CloneOp` handed `Existence.Clone` where `kvstore` reads it, by the destination's `Covering` and the source's open record after phase 1 (T8.2); `CloneSrc` where open state matches it, by `CloneOpen` over the real table (T8.3) |
 | 6 Known failures | T8.2, T8.3, T8.4, T8.6 | the rows of R33 to R40 are E2's, red in `known.yaml`; a row this epic turns green over the real journal leaves it in that change. T8.3's tests over the open-state table enter `known.yaml` naming this epic's issue until `Releasing` and the journal's `CloneTarget` and `Reserve` exist |
 | 7 v2 ignores v1 | all | the import walk stays as it is: nothing new is imported. The engine still imports no `pkg/openstate`: `Deps.Holds` is the engine's own `CloneHold` |
 | 8 Real dependencies | T8.2, T8.3, T8.6 | the store's answers come from the real `kvstore`; the open record and its matching from the real open-state table in E2's fixture; recovery from a clone marker over the real journal and its crash seam |
 | 9 Comments | all | the markers of §4, each at its code site, and RFC 8 §9.1's two: the copy chunk's `decision:` at `Copy` (T8.5) and the copy-through-the-journal `decision:` at the copy step (T8.2) |
 | 10 Tests can fail | all | each test below names the change it catches |
-| 11 Exports | T8.1 | one field: `Share.Namespace`, which RFC 8 §12.1's `Share` declares (D2). `Clone`, `Copy`, `CloneHold` and `CloneSrc` are E1's; test hooks live in `export_test.go` |
+| 11 Exports | T8.1a | one field: `Share.Namespace`, which RFC 8 §12.1's `Share` declares (D2). `Clone`, `Copy`, `CloneHold` and `CloneSrc` are E1's; test hooks live in `export_test.go` |
 | 12 Creates only what it declares | all | the fake's clone calls land in T8.2, their first consumer; the pending-operation kind for a clone in T8.2, which replays it; the done-clone memory (D7) in T8.4, which reads it |
 
 ## 3. Requirements and invariants
@@ -200,19 +200,19 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | A clone whose source and destination are one file and whose extents overlap is refused `ErrInvalid`; a clone between disjoint extents of one file is allowed; a `Copy` any of whose extents overlap in one file is refused the same way | MUST | §9.1, RFC 17 §5.9 step 2 | T8.1, T8.5 |
-| R2 | A `Clone` longer than `clone_max_len` is refused `ErrInvalid`, all or nothing; `Copy` is not bounded by it | MUST | §9.1, RFC 17 §5.9 | T8.1 |
-| R3 | A clone or copy whose destination's share does not list every namespace the source's share lists is refused `ErrCross` (`CrossNamespace`) | MUST | §9.1, RFC 6 §6.6 | T8.1 |
-| R4 | Every refusal (overlap, length, namespace, an extent under a running clone, a source extent past the source's end, the capacity reservation) comes before the journal step and leaves the destination's prior content; a refused reservation also undoes the registration | MUST | §9.1 step 1, E28 | T8.1, T8.2 |
-| R5 | A share with no binding answers `ErrDelay` (`DelayFrozen`) whichever side it is on, and touches no journal | MUST | §12.1 | T8.1 |
+| R1 | A clone whose source and destination are one file and whose extents overlap is refused `ErrInvalid`; a clone between disjoint extents of one file is allowed; a `Copy` any of whose extents overlap in one file is refused the same way | MUST | §9.1, RFC 17 §5.9 step 2 | T8.1a, T8.5 |
+| R2 | A `Clone` longer than `clone_max_len` is refused `ErrInvalid`, all or nothing; `Copy` is not bounded by it | MUST | §9.1, RFC 17 §5.9 | T8.1a |
+| R3 | A clone or copy whose destination's share does not list every namespace the source's share lists is refused `ErrCross` (`CrossNamespace`) | MUST | §9.1, RFC 6 §6.6 | T8.1a |
+| R4 | Every refusal (overlap, length, namespace, an extent under a running clone, a source extent past the source's end, the capacity reservation) comes before the journal step and leaves the destination's prior content; a refused reservation also undoes the registration | MUST | §9.1 step 1, E28 | T8.1a, T8.2 |
+| R5 | A share with no binding answers `ErrDelay` (`DelayFrozen`) whichever side it is on, and touches no journal | MUST | §12.1 | T8.1a |
 
 **The registration**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R6 | Until the clone is done, a write, truncate, deallocate or clone into the registered source extent answers `ErrDelay`, so every step reads the source as it was at `asOf` | MUST | §9.1 | T8.1 |
-| R7 | The registration waits for writes already admitted to the source extent to stage before `asOf` is read, and for a removal of it in flight | MUST | §9.1 | T8.1 |
-| R8 | The source is frozen by the registration, never by its guard, and a same-file clone registers its source extent once and takes no guard twice | MUST NOT | §9.1, E6 | T8.1 |
+| R6 | Until the clone is done, a write, truncate, deallocate or clone into the registered source extent answers `ErrDelay`, so every step reads the source as it was at `asOf` | MUST | §9.1 | T8.1a, T8.1b |
+| R7 | The registration waits for writes already admitted to the source extent to stage before `asOf` is read, and for a removal of it in flight | MUST | §9.1 | T8.1a, T8.1b |
+| R8 | The source is frozen by the registration, never by its guard, and a same-file clone registers its source extent once and takes no guard twice | MUST NOT | §9.1, E6 | T8.1b |
 | R9 | The registration is memory, rebuilt at start before the source is served: from the clone's `Removal` record once phase 1 wrote it, from the journal's clone marker before | invariant | §9.1, §2.5 step 4 | T8.6 |
 | R10 | A release of the source while it is registered, or of the destination while its clone runs, answers pending through `Delete`'s retry channel before the journal's `Delete`, so nothing is dropped; the channel yields `ErrDelay` (`DelayClone`) once the clone is done, or `ErrUnavailable` at `Close` or `Drop` | MUST | §8.1, §9.1 | T8.2, T8.4 |
 
@@ -241,7 +241,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R22 | The destination extent is not served until the clone is done: a read of it or a write into it does not run | MUST NOT | §9.1 | T8.1, T8.4 |
+| R22 | The destination extent is not served until the clone is done: a read of it or a write into it does not run | MUST NOT | §9.1 | T8.1a, T8.4 |
 | R23 | Nothing removes from the destination while its clone runs: a truncate, deallocate or clone of the destination file, and its release, are held until it is done | MUST | §9.1 | T8.4 |
 | R24 | A clone removes exactly the destination extent: a write to the destination outside it, acknowledged at any point during the clone, survives | MUST | §9.1 | T8.2, T8.4 |
 
@@ -273,12 +273,12 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | # | Row | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R33 | Clone keeps writes outside its extent, adapted: the stalls before phase 1, between the phases and between two batches; the offload and eviction half is the second part's | test row | §15.1 | T8.2, T8.4 |
-| R34 | Overlapping clone: `ErrInvalid`, the file unchanged | test row | §15.1 | T8.1 |
+| R34 | Overlapping clone: `ErrInvalid`, the file unchanged | test row | §15.1 | T8.1a |
 | R35 | Failure leaves the destination, adapted: a refused reservation leaves the prior content; crashes after the journal step, the copies, phase 1 and between two batches each finish from the spec, the source written at each restart answering `ErrDelay`; the source part dirty and part a hole or uncarved, not carved | test row | §15.1 | T8.2, T8.6 |
 | R36 | Removals of a cloning destination: a punch, a truncate, a clone onto it and an unlink held until done, then applied; the release's prune keeps the clone `Removal`; the last batch deletes the source's clone-kind open | test row | §15.1 | T8.3, T8.4 |
 | R37 | Source registration rebuilt: stopped between two batches with the files in two shares, the source's registration is rebuilt before it is served (D10) | test row | §15.1 | T8.6 |
-| R38 | Clone never waits, adapted: no remote is composed; writes into either extent answer `ErrDelay` until done; power cut after the answer, the destination reads the source | test row | §15.1 | T8.1, T8.2, T8.6 |
-| R39 | Refusals, adapted: two namespaces `ErrCross`; one byte over `clone_max_len` `ErrInvalid`; a `Copy` of 1 GiB with a writer of the source answered within one chunk's time once the service retries, and a deadline mid-copy answering a short count a continued copy completes. The NFSv3 client's view is the integration epic's | test row | §15.1 | T8.1, T8.5 |
+| R38 | Clone never waits, adapted: no remote is composed; writes into either extent answer `ErrDelay` until done; power cut after the answer, the destination reads the source | test row | §15.1 | T8.1a, T8.2, T8.6 |
+| R39 | Refusals, adapted: two namespaces `ErrCross`; one byte over `clone_max_len` `ErrInvalid`; a `Copy` of 1 GiB with a writer of the source answered within one chunk's time once the service retries, and a deadline mid-copy answering a short count a continued copy completes. The NFSv3 client's view is the integration epic's | test row | §15.1 | T8.1a, T8.5 |
 | R40 | Clone resumed at a full limit, adapted: crash after the copies synced, before phase 1, on a share at its journal limit; restart re-makes no copy, reserves nothing, serves every other file and finishes the clone. The remote outage is the second part's | test row | §15.1 | T8.6 |
 
 ## 4. Decisions this epic takes
@@ -297,7 +297,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   and a source extent past the source's end at `asOf`, which T8.2's sizing pass finds (D5)
   and `kvstore`'s phase 1 also refuses, so it would otherwise be met after the journal step. The namespace check compares
   the two shares' write namespaces, `Share.Namespace`, a field RFC 8 §12.1's `Share`
-  declares and T8.1 adds; `Bind` gives it. A `decision:` marker says a share listing more than
+  declares and T8.1a adds; `Bind` gives it. A `decision:` marker says a share listing more than
   one namespace, a re-home of RFC 27, needs the whole list, which `kvstore`'s phase 1
   compares as a backstop, and is withdrawn when re-homes are built. An incomplete source is
   the filesystem service's (RFC 17 §5.9 step 2): the File record is RFC 7's, the store keeps
@@ -428,25 +428,25 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 
 ```text
 pkg/block/enginev2/
-  types.go          T8.1  Share.Namespace (D2)
-  clone.go          T8.1  admission, the registrations and their checks (D2, D3, D4)
+  types.go          T8.1a Share.Namespace (D2)
+  clone.go          T8.1a admission, the registrations and their checks (D2, D3, D4)
                     T8.2  sizing, Reserve, CloneTarget, the copies, the sync, phase 1 (D5, D6, D8, D13, D15)
                     T8.3  Hold, the post to the removal loop, Release, the done signal (D9, D14)
                     T8.4  the running-clone map, the wait and its deadline, the done memory (D6, D7)
                     T8.5  Copy (D12)
-  file.go           T8.1  registrations and the admitted-write count on the entry
+  file.go           T8.1a registrations and the admitted-write count on the entry
                     T8.2  the clone pending-operation kind
-  write.go          T8.1  the admitted count and the registration check in Write
-  read.go           T8.1  the destination extent refused in Read
-  allocation.go     T8.1  and in Allocation
-  remove.go         T8.1  the check before the journal step of Truncate and Deallocate
+  write.go          T8.1a the admitted count and the registration check in Write
+  read.go           T8.1a the destination extent refused in Read
+  allocation.go     T8.1a and in Allocation
+  remove.go         T8.1b the check before the journal step of Truncate and Deallocate
                     T8.2  Delete into a registered extent answered pending (T5.4's channel)
   overlay.go        T8.2  the clone operation in the replay
   removals.go       T8.3  the clone item in the removal loop: Hold, Resume, Release
   share.go          T8.4  Unbind's join of clones
   engine.go         T8.4  Close's cancel and join of clones
   start.go          T8.6  a clone rebuilt from its marker or its Removal record (D10), its Served wait (D11)
-  export_test.go    T8.1  hooks: the registrations, the admitted count; T8.2 the faked done signal; T8.4 the done memory
+  export_test.go    T8.1a hooks: the registrations, the admitted count; T8.2 the faked done signal; T8.4 the done memory
   enginev2test/
     fake.go         T8.2  CloneTarget, Reserve, Reservation, Since's clone marker
 pkg/metadata/kvstore/
@@ -455,21 +455,19 @@ pkg/metadata/kvstore/
 
 ## 6. Subtasks
 
-### T8.1 Admission and the registrations
+### T8.1a Admission and the registrations
 
-**Subtask T8.1 estimate: 3.5 man-days.**
+**Subtask T8.1a estimate: 2.5 man-days.**
 
-- **Track:** A. **Depends on:** epic 3 (T3.1, T3.2, T3.5); epic 5's T5.1 for the removal half,
-  the guard and the entry points of `Truncate` and `Deallocate`. The admission checks start
-  right after epic 3, while track A waits on epic 5.
-- **Covers:** R1, R2, R3, R4, R5, R6, R7, R8, R22, R34, R38, R39.
+- **Track:** A. **Depends on:** epic 3 (T3.1, T3.2, T3.5). It needs nothing of epic 5, so it
+  starts right after epic 3, and epic 5's T5.1 checks its registrations.
+- **Covers:** R1, R2, R3, R4, R5, R6 (writes and clones), R7 (admitted writes), R22, R34, R38, R39.
 - **Deliverables:** `clone.go`'s admission: both bindings (D1, its marker), a zero length,
   overlap within one file, `clone_max_len` for `Clone`, the write namespaces (D2, its
   marker), each answered before any journal or store call; the registration type and its
   install on both files (D4), and its removal, which T8.3 calls; the check in `Write`,
-  `Read`, `Allocation`, `Truncate`, `Deallocate` and a clone's own admission, answering
-  `DelayClone` at once (D3, its marker); `Share.Namespace` in `types.go`; the hooks in
-  `export_test.go`.
+  `Read`, `Allocation` and a clone's own admission, answering `DelayClone` at once (D3, its
+  marker); `Share.Namespace` in `types.go`; the hooks in `export_test.go`.
 - **Acceptance criteria:**
   - A refused clone makes no journal call, changes no store key, and leaves no
     registration.
@@ -486,21 +484,36 @@ pkg/metadata/kvstore/
   held between `entryFor` and `WriteAt` by a hook, then a clone's registration: the
   registration returns only after the write staged (catches registering without waiting,
   R7, which yields a source written after `asOf`); after it, writes into the source extent,
-  into the destination extent, a truncate into the source extent, a deallocate inside it
-  and a clone into it each answer `ErrDelay` with `DelayClone`, while a write one byte past
+  into the destination extent and a clone into it each answer `ErrDelay` with `DelayClone`, while a write one byte past
   each extent is served (catches a registration of the whole file, or none, R6, R22); a
-  read and an `Allocation` of the destination extent answer `DelayClone`; a deallocate
+  read and an `Allocation` of the destination extent answer `DelayClone`; `-race` with 32 writers on the source file while a clone registers.
+
+### T8.1b The removal checks
+
+**Subtask T8.1b estimate: 1 man-days.**
+
+- **Track:** A. **Depends on:** T8.1a; epic 5's T5.1, the guard, the in-flight mark and the
+  entry points of `Truncate` and `Deallocate`; it lands with T5.1, in its entry-lock section.
+- **Covers:** R6 (truncates and deallocates), R7 (a removal in flight), R8.
+- **Deliverables:** in `remove.go`, the registration check before the journal step of
+  `Truncate` and `Deallocate`, answering `DelayClone` at once (D3); the registration's wait
+  for a removal of its extent in flight, on T5.1's mark (D4).
+- **Acceptance criteria:** a truncate into a registered source extent and a deallocate inside
+  it answer `ErrDelay` (`DelayClone`) with no journal call; a registration returns only
+  after a removal of its extent already past its journal step ends.
+- **Tests:** a truncate into the source extent and a deallocate inside it each answer
+  `DelayClone` with zero journal calls, while one a byte past it is served (R6); a deallocate
   inside the source extent held by a hook between its journal step and phase 1: the
   registration returns only after it ends (catches a removal in flight not waited out, R7);
   a deallocate outside the source extent held the same way, so it holds the file's guard: a
   same-file clone's registration returns meanwhile, with one source registration on the
-  entry (catches the source's guard taken, or its extent registered twice, R8); `-race` with 32 writers on the source file while a clone registers.
+  entry (catches the source's guard taken, or its extent registered twice, R8).
 
 ### T8.2 Reservation, journal step, copies and phase 1
 
 **Subtask T8.2 estimate: 5 man-days.**
 
-- **Track:** A. **Depends on:** T8.1; epic 4's T4.3 (the per-file existence commit and
+- **Track:** A. **Depends on:** T8.1a, T8.1b; epic 4's T4.3 (the per-file existence commit and
   `waitBatch`) and T4.5 (the one sync function); epic 5's T5.1 (the guard, phase 1's order)
   and T5.4 (the retry channel).
 - **Covers:** R4, R10, R11, R12, R13, R14, R15, R16, R17, R24, R26, R33, R35, R38.
@@ -716,9 +729,12 @@ pkg/metadata/kvstore/
 
 ```mermaid
 flowchart TD
-  E3(["epic 3 built: Write, Read, the entries"]):::sync --> T8_1["T8.1 Admission and registrations"]
-  E5(["epic 5: guard, removals, loop, retry channel"]):::sync -.-> T8_1
-  T8_1 --> T8_2["T8.2 Reservation, copies, phase 1"]
+  E3(["epic 3 built: Write, Read, the entries"]):::sync --> T8_1a["T8.1a Admission and registrations"]
+  T8_1a --> T5_1(["epic 5: T5.1 guard and removals"]):::sync
+  T5_1 --> T8_1b["T8.1b Removal checks"]
+  T8_1a --> T8_1b
+  E5(["epic 5: loop, retry channel"]):::sync -.-> T8_2
+  T8_1b --> T8_2["T8.2 Reservation, copies, phase 1"]
   E4(["epic 4: per-file existence commit"]):::sync -.-> T8_2
   T8_2 --> T8_3["T8.3 Clone-kind open and phase 2"]
   T8_3 --> T8_4["T8.4 Destination held, answer, joins"]
@@ -729,8 +745,8 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-T8.1's admission checks need only epic 3 and fill track A's wait for epic 5; its removal
-half lands once T5.1 does. T8.2 is the riskiest, for the guard held across the copies and
+T8.1a needs only epic 3 and fills track A's wait for epic 5; epic 5's T5.1 checks its
+registrations, and T8.1b lands with T5.1, so the two epics form no cycle. T8.2 is the riskiest, for the guard held across the copies and
 phase 1's order against the group commit. Checkpoint after T8.3: a clone runs end to end
 over the fake journal. T8.4 and T8.6 can run in parallel once T8.3 and epic 6 have landed.
 
@@ -738,7 +754,7 @@ over the fake journal. T8.4 and T8.6 can run in parallel once T8.3 and epic 6 ha
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T8.1, T8.2 | 8.5 | epic 3; epic 5's T5.1 and T5.4; epic 4's T4.3 | the clone up to phase 1, with the registrations it rests on and the fake's clone calls |
+| 1 | T8.1a, T8.1b, T8.2 | 8.5 | epic 3; epic 5's T5.1 and T5.4; epic 4's T4.3 and T4.5 | the clone up to phase 1, with the registrations it rests on and the fake's clone calls |
 | 2 | T8.3, T8.4 | 6.5 | PR 1; T5.3, T6.8, T6.9 | phase 2 and the clone's answer: the hold, the join, the deadline |
 | 3 | T8.5, T8.6 | 4.5 | PR 2; T6.5, T6.6 | `Copy` and the restart, each a consumer of the finished clone |
 
@@ -779,7 +795,15 @@ A suggestion only: one pull request per subtask works as well.
    the clone is the second part's, but its registration half (writes into the source extent
    `ErrDelay` between two batches, the destination equal to the source at the clone's start,
    a same-file disjoint clone completing, the source released only after the clone) runs in
-   this part. T8.1, T8.3 and T8.4 test each piece; E2's catalogue could carry it adapted.
+   this part. T8.1a, T8.3 and T8.4 test each piece; E2's catalogue could carry it adapted.
 8. **No row over the real journal turns green in this epic.** `journalv2`'s `CloneTarget`,
    `Reserve` and `Reservation` answer `ErrNotImplemented`, and E2's fixture composes the
    engine through `Start`. R33 to R40 leave `known.yaml` once the journal builds them.
+9. **Phase 1 runs as two transactions.** `kvstore`'s `Clone` commits the destination's pending
+   existence below *v* through `Commit`, in its own transactions, and runs `clonePhase1` in
+   another; RFC 8 §9.1 step 4 and RFC 6 §6.6 call phase 1 one transaction. Accepted: the
+   first is a group commit run early under the destination's guard, which RFC 8 §5 allows at
+   any time, and a crash between the two leaves what a group commit followed by a crash
+   would, from which start rebuilds the clone (T8.6). D15's operations above *v* go in
+   `clonePhase1`'s transaction, never the first. A `decision:` marker at `Clone` says so;
+   RFC 8 §9.1 step 4 should say "phase 1's clone record and what follows it" if it is kept.

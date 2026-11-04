@@ -12,14 +12,19 @@ and phase 2; [RFC 7](../rfcs/rfc-7-namespace-metadata.md) §4.5 and
 on it.
 **Track:** B.
 **Epic 5 estimate: 5 subtasks, 15.25 man-days.**
+The plan had 12.5: T5.1 gains the guard's
+capture skip, the in-batch wait and the claim below *v* (+1.5), T5.4 lands `Delete`'s retry
+channel and `ErrFileOpen`, which the plan took as on the base (+1), and T5.5 the held-batch
+case (+0.25).
 **Depends on:** sync point **S2, red suite in CI**: E1's surface (`Truncate`, `Deallocate`,
 `Delete`, `Deps.Existence.Remove`, `Deps.Content.Resume` and `PruneRemovals`) and E2's fake
 journal; epic 3, built: T3.1's per-file entries, whose pending-operation kinds for truncate
 and deallocate T3.4 to T3.6 already replay; epic 4's T4.3 (the capture this epic's guard
 makes skip a file, the in-batch mark phase 1 waits out, and `dropShare`), T4.5 (the one sync
 function phase 1 syncs through) and T4.7 (the claim phase 1 takes a file's pending writes
-with, and the reservation counter); epic 8's T8.1 admission half, built, whose
-registrations T5.1's entry-lock section checks. Neither `Delete`'s retry channel nor
+with, and the reservation counter); epic 8's T8.1a (admission and registrations), built, whose
+registrations T5.1's entry-lock section checks; epic 8's T8.1b (the removal checks) lands
+with T5.1. Neither `Delete`'s retry channel nor
 `vfserr.ErrFileOpen` is on `feat/storage-v2` or #3609: T5.4 lands them, from the code on
 `feat/enginev2-delete-retry`. Open state's `Releasing`, merged with the stage 1 follow-up,
 for one test of T5.4, through E2's fixture.
@@ -69,7 +74,7 @@ contract with the service, its retry channel and the abort routine; the series
 - The shared work scheduler and its `offload.retry_min`/`retry_max`: the second part. This
   epic's loop is a FIFO with a fixed backoff (D5).
 - A journal turned read-only that undoes a `Delete` (RFC 8 §8.1 step 1's exception, RFC 1
-  §5.4): `journalv2` has no read-only state (§9, point 3).
+  §5.4): `journalv2` has no read-only state (§9, point 2).
 - Rebuilding a removal from the journal's marker or the store's unfinished removals at
   start, and the abort found at start: epic 6, which reuses T5.3's loop and T5.4's routine.
 - Testing `Close` and `Drop` ending a pending release with `ErrUnavailable`: built here
@@ -113,7 +118,7 @@ contract with the service, its retry channel and the abort routine; the series
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
    read resolution and the group commit's split, by its tables, not by fuzz, and says so in a
    `ponytail:` marker, so no fuzz target is built for them.
-3. **Observability follows RFC 25, through what exists.** `Deps` carries a `*slog.Logger`
+2. **Observability follows RFC 25, through what exists.** `Deps` carries a `*slog.Logger`
    narrowed with `With("component", "engine")` and a `Tracer`, a function type the engine
    declares over standard-library types only. RFC 25's metrics registry, watchdog and
    health source exist on neither branch, so the engine exposes its counters and
@@ -123,11 +128,11 @@ contract with the service, its retry channel and the abort routine; the series
    proposals, `engine.sync` and `engine.existence_commit`, and a removal batch opens a root
    span. Each epic names the counters, conditions and spans it owns; the units, labels and
    logging rules are RFC 25's, applied as written.
-4. **Profiling.** Tests and benchmarks run under E2's profiling harness and fail on
+3. **Profiling.** Tests and benchmarks run under E2's profiling harness and fail on
    goroutine, descriptor or memory leaks and on anomalous resource growth. No
    allocations-per-op assertion: RFC 8 §15.4 defers its engine-cost benchmark until a
    profile shows engine time on the request path.
-5. **Public interface and internals.** Tests cover both the internal package API and the
+4. **Public interface and internals.** Tests cover both the internal package API and the
    public behaviour the epic enables, including concurrency under `-race`. Test at the
    layer that **consumes** a value (see `CLAUDE.md`, "Verifying a change"): a field the engine
    passes to the journal or the store is asserted where they read it, over the real journal
@@ -173,7 +178,7 @@ contract with the service, its retry channel and the abort routine; the series
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| 1 Unit tests | all | every subtask tests over E2's fake journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition; the wedge's unit test puts E2's fault-injecting `kv.KV` under `kvstore` |
+| 1 Unit tests | all | every subtask tests over E2's fake journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition; the wedge's unit test puts a failing `kv.KV` wrapper under `kvstore` through epic 4's `newUnitOver` (T4.4), since E2's fault-injecting `kv.KV` (T2.3) is not built |
 | 2 Fuzz | none | no parser: the engine hands typed removals to the journal and the store |
 | 3 Observability | T5.1, T5.3 | `engine_removals_pending` and `engine_removals_oldest_seconds`, per share under RFC 25 §2.5's worst-n rule, and `engine_removal_batches_total{result}` with `ok`, `conflict` or `error`, in unexported fields epic 7's `Stats` exposes; `removal_stalled` naming the file and the removal's kind, logged at `Warn` on entering and leaving; each batch a root span through `Deps.Tracer` (T5.3). A wait on a file's guard or its in-batch mark is a span event (T5.1) |
 | 4 Profiling | all | the unit composition calls `prof.Watch`; the loop's goroutine per journal is joined at `Close`, and a pending release's channel is buffered by one, so no sender is left blocked on it |
@@ -262,7 +267,7 @@ numbered so that subtasks and tests can cite them.
   removal's version before it stops holding the extent. `Deallocate` holds it the same way
   (T5.2), under the same marker.
 - **D3, the in-flight mark.** The same entry-lock section checks the file's registrations
-  (epic 8's T8.1), answering `DelayClone` for a truncate or deallocate overlapping a source
+  (epic 8's T8.1b), answering `DelayClone` for a truncate or deallocate overlapping a source
   registration's extent and for any truncate or deallocate of a file holding a destination
   registration, and marks the removal in flight in the entry. The mark is cleared when phase
   1 commits or fails, or, for a pending release, when its retried phase 1 commits or ends
@@ -337,7 +342,7 @@ test/enginev2/known.yaml  T5.2, T5.3, T5.5  their entries
 
 **Subtask T5.1 estimate: 4 man-days.**
 
-- **Track:** B. **Depends on:** epic 4's T4.3, T4.5 and T4.7; epic 8's T8.1 admission half.
+- **Track:** B. **Depends on:** epic 4's T4.3, T4.5 and T4.7; epic 8's T8.1a; T8.1b lands with it.
 - **Covers:** R2–R10.
 - **Deliverables:** `remove.go`: the guard (D1) and the capture's skip in `groupcommit.go`;
   the entry-lock section with the registration check and the in-flight mark (D3);
@@ -422,12 +427,12 @@ test/enginev2/known.yaml  T5.2, T5.3, T5.5  their entries
   - another file's removal in the same journal completes while the first is backed off.
 - **Tests:** over the fake's clock: five failures raise the condition and four do not
   (catches an off-by-one or a count across files); a retry-uncounted answer leaves the count
-  where it was (catches epic 8's hold retries counted); with the fault-injecting `kv.KV`
-  failing one file's batches, the other file's removal completes and the stalled one
+  where it was (catches epic 8's hold retries counted); with a `kv.KV` wrapper through
+  `newUnitOver` failing one file's batches, the other file's removal completes and the stalled one
   finishes once the fault clears (catches a loop that waits on a failing item, R17). Over
   the real `kvstore`: no ref under the removal's mask after the loop, the record pruned
   (catches a prune skipped). The §8.1 removal wedge row (adapted), a conformance row over the
-  real journal and the fault-injecting `kv.KV`, red until the journal's `Truncate` and
+  real journal and E2's fault-injecting `kv.KV` (T2.3), red until the journal's `Truncate` and
   `Settle` exist.
 
 ### T5.4 A release's contract with the service
@@ -495,7 +500,7 @@ test/enginev2/known.yaml  T5.2, T5.3, T5.5  their entries
 ```mermaid
 flowchart TD
   E4(["epic 4: T4.3 group commit, T4.5 sync function, T4.7 claim"]):::sync --> T5_1["T5.1 Removals through phase 1"]
-  E8(["epic 8: T8.1 registrations"]):::sync --> T5_1
+  E8(["epic 8: T8.1a registrations"]):::sync --> T5_1
   T5_1 --> T5_2["T5.2 Deallocate"]
   T5_1 --> T5_3["T5.3 Removal loop"]
   T5_1 --> C1(["after T5.1: the guard and phase 1, epic 8's T8.2 can start"]):::sync
@@ -523,21 +528,16 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-1. **T5.1 depends on epic 8's T8.1.** The registration check sits in T5.1's entry-lock
-   section, so T5.1 reads the registrations T8.1 installs, while epic 8 lists epic 5 among
-   its dependencies. T8.1's admission half needs nothing of epic 5 and is built first; its
-   removal half (the checks in `Truncate` and `Deallocate`) is this section. Epic 8's
-   document should say T8.1's removal half lands with T5.1.
-2. **Truncate up reads the committed size** (D4): one store read per truncate, and a method
+1. **Truncate up reads the committed size** (D4): one store read per truncate, and a method
    added to E1's frozen `Deps.Existence`, which the filesystem service could spare by
    passing the size, since it holds the File record. RFC 8 §12.1's `Truncate` takes only the
    new size; RFC 8 or RFC 17 §5.5 should say which.
-3. **A journal turned read-only that undoes a `Delete`** (RFC 8 §8.1 step 1, RFC 1 §5.4):
+2. **A journal turned read-only that undoes a `Delete`** (RFC 8 §8.1 step 1, RFC 1 §5.4):
    `journalv2` has no read-only state, so the release that fails before phase 1, its
    `ErrUnavailable` and the mark kept until the process ends are untested here.
-4. **The loop's backoff** (D5) does not read `offload.retry_min`/`retry_max`, which RFC 8
+3. **The loop's backoff** (D5) does not read `offload.retry_min`/`retry_max`, which RFC 8
    §8.1 names; the second part's scheduler brings them.
-5. **`Delete`'s signature changes E1's frozen surface.** The retry channel and
+4. **`Delete`'s signature changes E1's frozen surface.** The retry channel and
    `vfserr.ErrFileOpen` are on `feat/enginev2-delete-retry`, pushed with no pull request yet,
    and RFC 17 §4.3's sentence on `Errors()` on a local RFC branch; T5.4 lands the code, and
    the sentence lands with the RFC pull request after #3608.

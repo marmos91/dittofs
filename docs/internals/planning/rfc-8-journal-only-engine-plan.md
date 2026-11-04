@@ -379,14 +379,14 @@ harness (`journalv2test/prof`) wired to the fixture.
 | 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 15.25 | B | 6, 8 |
 | 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 9 | 24.75 | C | 7, 8 |
 | 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 4 | 12.5 | C | 9 |
-| 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 6 | 19.5 | A | 9 |
+| 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 7 | 19.5 | A | 9 |
 | 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over stage 2's fake and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
 | 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 4 | 12.5 | team | the second part |
 | | **Total** | | **60** | **166.5** | | |
 
-**Plan estimate: 60 subtasks, 166.5 man-days.**
+**Plan estimate: 61 subtasks, 166.5 man-days.**
 
-RFC 8 is 3,574 lines, which gives N = 8. This part covers about half of it, and its cohesive
+RFC 8 is 3,627 lines, which gives N = 8. This part covers about half of it, and its cohesive
 areas are six: the data path, the stability point, removals, the lifecycle, capacity and
 health, and clone.
 
@@ -417,7 +417,7 @@ flowchart TD
   E5 -. "removal loop, for start step 4" .-> E6
   E4 -. "commit times, for the self-fence" .-> E7
   E5 -. "guard and removal marker" .-> E8
-  E8 -. "T8.1's registrations, for T5.1's check" .-> E5
+  E8 -. "T8.1a's registrations, for T5.1's check" .-> E5
   E6 -. "clone markers at start" .-> E8
   E7 & E8 --> S3(["S3 engine complete over the fake journal"]):::sync
   S3 --> E9["E9 Integration"]
@@ -498,10 +498,11 @@ flowchart TD
   epic 4's group commit and epic 5's loop exist.
 - **Where the team converges:** epics 1 and 2 before S2; epic 9 and epic 10 after S3.
 - **Where the tracks wait on each other:** the graph's cross-track edges are E3 to E4, E4
-  to E6 and E7, E5 to E6, and E5 and E6 to E8. Track B starts epic 4 on the verifier, which
+  to E6 and E7, E5 to E6, E5 and E6 to E8, and E8 to E5. Track B starts epic 4 on the verifier, which
   replaces T3.2's stand-in, and the group commit, on epic 3's per-file state; the loss
-  sequence and the split build on the group commit. Epic 5's T5.1 also reads T8.1's
-  registrations, whose admission half needs nothing of epic 5 and lands first. Track C's recovery waits on epics 4 and 5, and the store
+  sequence and the split build on the group commit. Epic 5's T5.1 also reads T8.1a's
+  registrations; T8.1a needs nothing of epic 5 and lands first, and T8.1b, the removal
+  checks, lands with T5.1, so the edge both ways is no cycle. Track C's recovery waits on epics 4 and 5, and the store
   view, the share table, start step 1 and the version limit fill that wait; epic 7 comes
   after epic 6, so the E4 edge is met by then. Track A has the one long wait: with one
   engineer per track, epic 8 waits on epic 5 for about 20 man-days after epic 3. Epic 3's
@@ -919,7 +920,7 @@ Sections owned: RFC 8 §10 (the two measures, as far as repack goes), §10.2, §
 
 ### Epic 8 — Clone and copy, journal-held
 
-**Epic 8 estimate: 6 subtasks, 19.5 man-days.**
+**Epic 8 estimate: 7 subtasks, 19.5 man-days.**
 
 A clone whose source bytes are all journal-held or uncarved: copied into the destination
 above the removal's version and synced before phase 1, with phase 2 adopting nothing. A
@@ -927,12 +928,14 @@ source run uncarved and not held is carried as uncarved and reads **Lost**. Sect
 RFC 8 §9.1 (all but adoption and the snapshot cases), §5.1's clone in a pre-cut commit
 excluded. Spans: a clone's batches as root spans.
 
-- T8.1 Admission: overlap, `clone_max_len`, namespace (an incomplete source is the
+- T8.1a Admission: overlap, `clone_max_len`, namespace (an incomplete source is the
   service's, RFC 17 §5.9); the source extent's registration, waiting for writes already
-  admitted and a removal in flight, and `ErrDelay` for writes and removals into it.
+  admitted, and `ErrDelay` for writes and clones into it.
+- T8.1b The removal checks, with epic 5's T5.1: `ErrDelay` for truncates and deallocates
+  into a registered extent, and the registration's wait for a removal in flight.
 - T8.2 `Reserve` for the bytes to copy, `CloneTarget`, the copies through the reservation,
   the sync, phase 1 through `Existence.Clone`, which writes the source's clone-kind open
-  record; the uncarved carry. Until the clone is done, T8.1's registration holds the
+  record; the uncarved carry. Until the clone is done, T8.1a's registration holds the
   source: its release is a removal into the registered extent, answered pending before
   the journal's `Delete`, so nothing is dropped, with T5.4's channel, which yields
   `ErrDelay` with `DelayClone` when the registration drops (T8.3); the service answers `done(false)` and runs the release

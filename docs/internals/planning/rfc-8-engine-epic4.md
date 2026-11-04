@@ -49,7 +49,7 @@ acknowledged write may have been lost.
 
 ### 1.1 In scope
 
-The verifier and its six inputs; `Commit` and `LossSeq`; the group commit per journal, its
+The verifier and its five inputs; `Commit` and `LossSeq`; the group commit per journal, its
 due set, its batches, its in-batch mark, its split and its backoff; the per-file commit
 other epics call and the wait on a batch in flight; the
 loss sequence, the journal-wide floor and the drain of the journal's loss ring; the failed
@@ -205,7 +205,7 @@ subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | The verifier is derived from the primary's node and node epoch, the process instance ID drawn at random when the process starts, the shard's incarnation and the loss generation of the journal holding the file, with the journal's lost-whole count as a sixth input, so a device lost whole changes the verifier though it raises no loss generation (D11); never from the clock alone | MUST, MUST NOT | RFC 8 §4.1 | T4.1, T4.5 |
+| R1 | The verifier is derived from the primary's node and node epoch, the process instance ID drawn at random when the process starts, the shard's incarnation and the loss generation of the journal holding the file; never from the clock alone. A device lost whole raises no loss generation, so the sync function answers `ErrUnavailable` on the journal it halted (D11), and no `Commit` answers a verifier for it until a new attach raises the incarnation | MUST, MUST NOT | RFC 8 §4.1 | T4.1, T4.5 |
 | R2 | `Write` samples the inputs before it stages; `Commit` after its sync and every wait it makes | MUST | §4.1 | T4.1, T4.2 |
 | R3 | Every call between two changes of the inputs returns one verifier | MUST | §4.1 | T4.1 |
 | R4 | The loss generation is monotonic for the life of the process: a journal closed and opened again in the process continues from the value it had, so no verifier repeats one already given. The journal guarantees it (`Stats().LossGeneration`); the engine only reads it, and the conformance row checks it | invariant | §4.1, RFC 1 §3.8 | the journal; T4.1's row |
@@ -236,6 +236,8 @@ subtasks and tests can cite them.
 | R19 | A file's existence commits are serialised, a removal's phase 1 and a clone's among them: none starts on a file while a batch that captured it has not returned, so no commit at a higher version lands first and leaves the captured operations at or below `applied`, skipped | invariant | §5.1 step 4, RFC 6 §3.4 | T4.3 |
 | R20 | An entry dropped once its operations commit never orphans a write: a write that found the entry before the drop lands in a live entry, and the next commit commits it | invariant | §5.1, E15 | T4.3 |
 | R21 | §5.1 sync before existence, the write and `Commit` half: every committed `size` is backed by synced records | test row | §15.1 | T4.3 |
+| R21a | A commit is reported only once durable: no `Commit` answers, and no `Settle` covers a version, before the existence commit holding it has returned | MUST | §5.1 | T4.2, T4.3 |
+| R21b | A stability point never waits for an offload. Nothing in this part offloads, so it holds by construction; the second part's offload commit carries its test | MUST NOT | §5.1 | none here |
 
 **The split and conflicts**
 
@@ -245,7 +247,7 @@ subtasks and tests can cite them.
 | R23 | A file that still fails alone is backed off by itself and raises `existence_commit_failing` naming it; its stability points answer `ErrDelay` meanwhile, and no other file waits on it | MUST | §5.2, §11.1 | T4.4 |
 | R24 | A metadata conflict is retried under the caller's deadline and never reaches a client as an I/O error; one unresolved at the deadline answers `ErrDelay` with `DelayConflict` | MUST, MUST NOT | §11.3 | T4.4 |
 | R25 | A failed existence commit is retried by the next group commit, and fails a reply only through R11's rule | invariant | §5.1 | T4.4 |
-| R26 | §5.2 group commit: 64 writers flushing while `chmod` hits random files of the journal; one file's File record undecodable | test row | §15.2 | T4.4 |
+| R26 | §5.2 group commit: 64 writers flushing while `chmod` hits random files of the journal; one file's File record undecodable, and another's existence fence | test row | §15.2 | T4.4 |
 
 **Losses**
 
@@ -277,8 +279,7 @@ subtasks and tests can cite them.
   raises the incarnations (RFC 8 §2.5). Until then nothing composes them: a test hook,
   `SetPrimary`, sets them, and they are zero in E2's fixture (§9, point 6). The process instance ID is drawn in `New` from `crypto/rand`. The loss
   generation is the journal's `Stats().LossGeneration`. The verifier is the first 8 bytes of
-  a SHA-256 over the six inputs in a fixed order, the sixth the journal's lost-whole count
-  (D11), so two inputs never cancel. A `decision:`
+  a SHA-256 over the five inputs in a fixed order, so two inputs never cancel. A `decision:`
   marker at the derivation names the order and the hash.
 - **D2, the generation's read.** `Write` and `Commit` each read `Stats()` once. A
   `ponytail:` marker: a write pays one journal `Stats()` call; add a journal call returning
@@ -307,7 +308,10 @@ subtasks and tests can cite them.
   `Existence.Commit`, which splits by `K` itself and returns only once every
   file's transactions are done. Each existence commit runs under its own bound,
   `conflictBound`, 1 s, because `kv.Update` retries a conflict until its context ends; a
-  call cut off by the bound on a conflict is split (T4.4), and only a conflict splits. On return the committed operations leave their entries, the
+  whole-call error splits the batch (T4.4) unless it is store-wide: the bound expiring with
+  no conflict (a stalled store) or the store closed. A file's existence fence or masks that
+  do not decode reach the engine as a whole-call error, so the split is what isolates them
+  (RFC 8 §5.2's "any other per-file failure"). On return the committed operations leave their entries, the
   in-batch mark is cleared and its waiters woken. A batch wakes the waiters on every file it
   took from the due set, whether it captured the file or not, so a `commitNow` on a file it
   could not capture looks again rather than waiting for a batch that never comes. A file
@@ -361,8 +365,10 @@ subtasks and tests can cite them.
   (D3), so it never waits for operations staged after that. `commitAll(ctx, j)` does the
   same for every file of a journal, for epic 6's `Close`. `Commit` (T4.2) calls
   `commitThrough`; epic 6's recovery and epic 8's clone call `commitNow`. No marker: it is the stability point's own join (R10).
-- **D11, a device lost whole.** `lostWhole(j)` raises the journal's floor and its lost-whole
-  count, the verifier's sixth input, so every file's verifier changes (R5), and, for every
+- **D11, a device lost whole.** `lostWhole(j)` raises the journal's floor and halts the
+  journal: the sync function answers `ErrUnavailable` on it, so neither the group commit
+  nor a `Commit` answers past the loss, and the verifier the client sees next comes after
+  a new attach raised the incarnation (R5, RFC 8 §4.1's five inputs unchanged); and, for every
   uncommitted write of every file on that journal, removes it from its entry and calls its
   `Done` charging nothing, under each entry's lock. A snapshot of the due set would miss a
   write staged meanwhile, so the journal is first marked halted, and `Write` refuses under
@@ -385,7 +391,7 @@ subtasks and tests can cite them.
 
 ```text
 pkg/block/enginev2/
-  commit.go         T4.1  the verifier's six inputs and the derivation (D1, D2)
+  commit.go         T4.1  the verifier's five inputs and the derivation (D1, D2)
                     T4.2  Commit
   groupcommit.go    T4.3  the group commit per journal: due set, batch, in-batch mark, commitNow, commitThrough, commitAll, closeGroupCommits, dropShare (D4, D5, D10)
                     T4.4  the split, the failing file's backoff, existence_commit_failing (D7)
@@ -416,9 +422,8 @@ test/enginev2/known.yaml  T4.1–T4.4, T4.6  their entries
 - **Deliverables:** in `commit.go`: the process instance drawn in `New`; the node, epoch and
   incarnation on the binding, which nothing composes before epic 6's `Bind` (§9, point 6):
   until then `export_test.go`'s `SetPrimary` hook sets them, and E2's fixture leaves them
-  zero; the engine's `sample` field set to D1's derivation over the six inputs (the
-  binding's three, the process instance, the journal's generation (D2) and its lost-whole
-  count, which T4.5's `lostWhole` raises), in place of `zeroVerifier`.
+  zero; the engine's `sample` field set to D1's derivation over the five inputs (the
+  binding's three, the process instance and the journal's generation (D2)), in place of `zeroVerifier`.
 - **Acceptance criteria:**
   - two writes in one process and binding answer equal verifiers, however far the clock
     moved between them; a raised incarnation, a new instance or a raised generation answers
@@ -481,7 +486,10 @@ test/enginev2/known.yaml  T4.1–T4.4, T4.6  their entries
   batch's files through each share's handle, replaced by the sync function in T4.5; then,
   under each entry's lock, `PendingExistence` built from the claimed operations with D6's
   times, and `Existence.Commit` inside an `engine.existence_commit` span; on
-  return, each committed file's operations removed from its entry and their `Done`s called,
+  return, each committed file settled in the journal, `Settle(id, v)` at the highest version
+  the commit applied for it, so a truncate up's removal marker (epic 5 D4) and a synced
+  loss committed as `OpLost` are dropped at once rather than at the next start (RFC 1 §3.6,
+  §3.10); its operations removed from its entry and their `Done`s called,
   the in-batch mark cleared and its waiters woken, the entry dropped when empty, marked dead
   under its own lock (epic 3's `unlock`); `engine_pending_existence_ops`; `waitBatch`,
   `commitNow`, `commitThrough` and `commitAll` (D5, D10); `dropShare(s)`, which removes a share's files from
@@ -494,11 +502,14 @@ test/enginev2/known.yaml  T4.1–T4.4, T4.6  their entries
     `⌈64 / G⌉` when it is less;
   - the `Sync` of a batch's files precedes its `Existence.Commit`;
   - a suspended write's commit leaves `Mtime` at the earlier write's and moves `Ctime`;
-  - a file's operations are answered by `Overlay` while their batch is in flight.
+  - a file's operations are answered by `Overlay` while their batch is in flight;
+  - a committed file is settled at the highest version committed for it.
 - **Tests:** over the fake with a call log: `Sync` before `Existence.Commit` for every batch
   (catches a commit before the sync, R17); 64 due files and `G = 16` give four calls
   (catches an unbounded batch); the test clock advanced to `existence_age` commits a lone
-  write (catches no timer). Over the real `kvstore`: a suspended write committed over an
+  write (catches no timer); every committed file's `Settle` logged at the highest version the
+  batch committed for it, and none for a file the store failed (catches no settle, or one
+  past what committed). Over the real `kvstore`: a suspended write committed over an
   earlier write keeps the earlier `Mtime` and carries its own `Ctime` (catches one time for
   both, R18). With a batch held by a hook between its capture and its `Existence.Commit`:
   `Overlay` still answers the captured writes (catches operations moved out of the entry,
@@ -542,9 +553,11 @@ test/enginev2/known.yaml  T4.1–T4.4, T4.6  their entries
   record undecodable: the other files' overwrite `Commit`s succeed, that file's answers `ErrDelay`,
   and the condition names it (catches a whole-batch failure, R22, R23). A conflict held past
   a `Commit`'s deadline answers `DelayConflict`, never `ErrUnavailable` (catches a conflict
-  surfaced as an I/O error, R24); a conflict held past `conflictBound` splits the batch,
-  and any other error does not (catches a split on every error, or a commit left retrying
-  until the caller's deadline); the condition cleared on `dropShare` and on `lostWhole`
+  surfaced as an I/O error, R24); a conflict held past `conflictBound` splits the batch, and so
+  does one file's existence fence or mask key made undecodable over the real `kvstore` (the
+  other files commit, that file fails alone: catches a split on conflicts only, RFC 8
+  §5.2); a store stalled past the bound, or closed, does not split (catches 2G−1 bounded
+  calls on a store-wide failure, or a commit left retrying until the caller's deadline); the condition cleared on `dropShare` and on `lostWhole`
   (catches a condition naming a file nothing will commit). The §5.2 group commit row, a conformance row over the real
   journal and `kvstore`: 64 writers flushing while `chmod` writes random File records, no
   flush waiting beyond the split bound, red until the journal's `Sync` exists.
@@ -580,7 +593,9 @@ test/enginev2/known.yaml  T4.1–T4.4, T4.6  their entries
   leaves the extent uncarved, a `Read` answers `ErrLost`, and `Charged` and the usage
   counters are unchanged (catches a hole committed instead, or an `OpWrite` that charges,
   R32). `lostWhole` under `-race` with writers: every uncommitted write's `Done` once, every
-  file's sequence raised, and a write racing it refused rather than left with no `Done`.
+  file's sequence raised, and a write racing it refused rather than left with no `Done`;
+  after it, a `Commit` on the halted journal answers `ErrUnavailable`, never a verifier
+  (catches a verifier answered past the loss, R5).
 
 ### T4.6 The failed window, per file
 
@@ -700,3 +715,7 @@ A suggestion only: one pull request per subtask works as well.
    - `Close` commits every file's pending existence through `commitAll` (D10), then joins
      the group commits with `closeGroupCommits` before it closes the journals, and calls no
      `Done` for what it committed twice.
+7. **RFC 8 §5.1 step 4 names no `Settle`.** T4.3 settles each committed file at the highest
+   version it committed, as RFC 1 §3.6 and §3.10 need for a truncate up's marker and a
+   synced loss's `OpLost`; RFC 8 §5.1 step 4 should say so, in the RFC pull request after
+   this one.
