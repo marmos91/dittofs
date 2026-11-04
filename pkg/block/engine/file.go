@@ -195,8 +195,8 @@ func (fs *files) lock(fe *fileEntry) {
 // the count is of contended takes.
 //
 // ponytail: a count and a sum, not RFC 8 §14's histogram, so a scrape gives
-// the mean contended wait but no tail. Add the buckets when epic 7 exposes the
-// engine's metrics, which is where an exporter first reads this.
+// the mean contended wait but no tail. Add the buckets when the engine's
+// metrics are exported, which is where an exporter first reads this.
 type lockWaits struct {
 	count   atomic.Int64
 	total   atomic.Int64 // nanoseconds
