@@ -102,9 +102,10 @@ the same state.
 - The memory the pools may hold adds up to at most three quarters of *L* —
   and, during grace only, one sixteenth more for reclaims (§4.6) — whatever the
   number of shares, clients, connections or journals.
-- Every pool says what happens at its ceiling, and it is one of four things: a
+- Every pool says what happens at its ceiling, and it is one of five things: a
   reader stops reading, a call waits within its deadline, a call is refused
-  retry-later with a named cause, or a cache evicts.
+  retry-later with a named cause, a cache evicts, or, for the journal index, its
+  refusal is answered as [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table does (§7.1).
 - No client, connection or share can be granted more than three quarters of a
   request pool while another is waiting for it, and the next free buffer goes round in
   turns.
@@ -302,7 +303,7 @@ sixteenth. It is not reserved by anyone and nothing waits for it.
 | **connection state** | each connection's fixed cost; sessions and their reply caches; security contexts (§4.4, §4.5) | 1/16 | 4 MiB | new connections closed at accept; a new session refused retry-later or granted fewer slots |
 | **open state** | opens, byte-range locks, lock waiters, caching grants, quota reservations; **(cluster)** the routed-request dedup table (§4.6) | 1/16 | 4 MiB | new state refused with `ErrDelay` and `DelayResources`; no caching grant offered; never a close or unlock; a reclaim only past its allowance |
 | **metadata store** | the store's in-process memory: caches, write buffers, compaction (§7.3) | 3/16 | 64 MiB | the store evicts; it never refuses |
-| **journal index** | the placement index of every journal ([RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) (§7.1) | 1/8 | none | the index's own refusal ([RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)), answered retry-later |
+| **journal index** | the placement index of every journal ([RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) (§7.1) | 1/8 | none | the index's own refusal ([RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)), answered as [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table does |
 | **transfers** | both syncer halves and the staging budget ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) (§7.2) | 1/8 | eight workers per half, and the staging they imply | the syncer's own wait or refusal ([RFC 3 §2.3](rfc-3-syncer.md#2.3%20Backpressure%20propagates%3B%20it%20does%20not%20buffer)) |
 | *unpooled* | §2.2 | 1/4 | — | — |
 
@@ -1144,7 +1145,7 @@ the node's journals in proportion to each journal's maximum footprint
   times the entry cost, summed over journals — **MUST** be refused at start,
   naming the journals and the pool.
 
-The index's own refusal, answered retry-later, is its ceiling rule; nothing here
+The index's own refusal, answered as [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table does, is its ceiling rule; nothing here
 adds a second one.
 
 ### 7.2 The syncer and staging
