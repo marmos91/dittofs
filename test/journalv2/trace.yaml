@@ -18,6 +18,9 @@ rfc1 / 9.4 / A / "fill sets the bit":
   tests: [TestRFC1A_FillSetsTheBit]
 rfc1 / 9.4 / A / "refusal":
   tests: [TestRFC1A_Refusal]
+rfc1 / 9.4 / A / "unsuitable storage refused":
+  owner: epic 7
+  reason: 'Init and Open refuse what epic 3''s Appendix A probes reject'
 rfc1 / 9.4 / A / "partial release keeps the record whole":
   tests: [TestRFC1A_PartialReleaseKeepsRecordWhole]
 rfc1 / 9.4 / A / "release frees nothing inside a segment":
