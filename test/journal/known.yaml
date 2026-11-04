@@ -1725,3 +1725,150 @@
   reason: 'No journal yet: the fixture fails at Init. Needs retirement by eviction and by repack.'
   issue: '#3379'
   message: 'fixture:'
+- test: TestCounted_MixedDurability
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path and group commit that waits no more than the sync interval.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestCounted_SyncsPerWrite
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path and group commit of a round of writers.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC1A_CarriedReleaseKeepsItsSequence
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs repack that keeps a carried release record''s sequence, and recovery.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1A_CopyLosesToNewerWrite
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs repack that drops a record superseded mid-copy, and recovery.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1A_CrashMidRepack
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs repack atomic against a crash between its copy and its unlink, and recovery.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1A_DropsDecidedAfterCopies
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs repack ordering its drops after its copies, holds, Settle and recovery.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1A_FailedSyncWindow
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs a Sync that fails or re-appends its lost window, and recovery agreeing with it.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC1A_FailedWindowReportedOnce
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs a failed sync window reported to one Sync only, and the rest unaffected.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC1A_LossByExactRecord
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs a lost window reported by the exact record it lost, not the extent it overlaps.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC1A_LossRaisesLossGeneration
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs loss accounting and failures raising the generation before the Sync returns.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC1A_ReappendKeepsItsNumbers
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs a re-appended window outranked by a later removal, and recovery.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC1A_ReappendTrustsNoPageCache
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs a re-appended window that reads through no page cache, and its failed-window loss.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC1A_RecycledSegmentKeepsNewRecords
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recycled segments serving only new records, a failed append retiring one, and recovery.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1A_RemovalDroppedByVersion
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs holds, repack ordering its drops after removals, Settle and recovery.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1A_RemovalOutlivesItsSegment
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs removal markers carried by a repack out of their segment, Settle and recovery.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1A_RemovalRecordsCarriedForward
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs removal markers carried forward by repack and still reached by Since.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1A_RepackCopiesLivePart
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs repack copying the live part and serving both locations, and recovery.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1A_RepackUnderRead
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs repack beside a reader and the reader guard across the swap.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1A_RepackVerifiesWholeSource
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs repack that verifies a whole source record, takes nothing from a bad one and reports the loss.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1A_RetainedExtentsSurviveRepack
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs retained extents kept by repack and released once their hold goes.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1A_SyncedLossMasksSuperseded
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs a synced corrupt record that no superseded record answers for.'
+  issue: '#3378'
+  message: 'fixture:'
