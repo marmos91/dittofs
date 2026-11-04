@@ -16,6 +16,13 @@
   category: feature
   reason: 'Epic 6: recovery serves size and mtime at start; also Commit and the group commit (epic 4). Fails at the fixture until the journal has Init, Open, WriteAt, Sync and Since.'
   issue: '#3589'
+- test: TestRFC8A_SyncBeforeExistence
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 4: the group commit syncs before it commits existence; also the start (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt, Sync and its crash seam.'
+  issue: '#3587'
 - test: TestRFC8A_Verifier
   message: 'fixture: journal init: journal: not implemented'
   status: fail

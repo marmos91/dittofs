@@ -16,11 +16,11 @@ import (
 
 func write(v uint64, off, n int64) PendingOp {
 	return PendingOp{Version: entity.VersionOf(v), Kind: OpWrite, Extent: entity.Extent{Offset: off, Length: n},
-		Time: time.Unix(int64(1_900_000_000+v), 0)}
+		Mtime: time.Unix(int64(1_900_000_000+v), 0), Ctime: time.Unix(int64(1_900_000_000+v), 0)}
 }
 
 func grow(v uint64, size int64) PendingOp {
-	return PendingOp{Version: entity.VersionOf(v), Kind: OpGrow, Size: size, Time: time.Unix(int64(1_900_000_000+v), 0)}
+	return PendingOp{Version: entity.VersionOf(v), Kind: OpGrow, Size: size, Mtime: time.Unix(int64(1_900_000_000+v), 0), Ctime: time.Unix(int64(1_900_000_000+v), 0)}
 }
 
 func (f *cfix) exist(file entity.FileID, ops ...PendingOp) {
@@ -364,5 +364,20 @@ func TestHoleBornSurvivesCuts(t *testing.T) {
 	}
 	if n != 2 {
 		t.Errorf("%d hole records, want the two split pieces, the second cut at the new size", n)
+	}
+}
+
+// A write whose open suspended the modification time moves the change time
+// alone: the File keeps the modification time an earlier write set.
+func TestExistenceCommitSuspendedModify(t *testing.T) {
+	f := newContentFix(t, nil)
+	file := f.file(0)
+	first := write(1, 0, mib)
+	suspended := write(2, mib, mib)
+	suspended.Mtime = time.Time{}
+	f.exist(file, first, suspended)
+	got := f.get(file)
+	if !got.Modify.Equal(first.Mtime) || !got.Change.Equal(suspended.Ctime) {
+		t.Errorf("modify %v, change %v; want modify %v from the first write, change %v from the suspended one", got.Modify, got.Change, first.Mtime, suspended.Ctime)
 	}
 }
