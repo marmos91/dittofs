@@ -76,8 +76,15 @@ type Fixture struct {
 	// crashed fences the running engine's existence and content views: once
 	// set, by Crash, that engine's closing changes nothing in the store.
 	crashed *atomic.Bool
+	// stalled holds every existence commit until its context ends, as a
+	// store that commits nothing does; Stall sets it.
+	stalled atomic.Bool
 	handles sync.Map // journal.ShareTag → the handle the running engine opened on it
 }
+
+// Stall makes the store commit no existence from now on: each commit waits
+// until its context ends.
+func (f *Fixture) Stall() { f.stalled.Store(true) }
 
 // New creates the journal and the store, then starts a process over them: the
 // open-state table and the engine, the engine started with the share bound.
@@ -288,7 +295,7 @@ func (f *Fixture) start() {
 			}
 			return wrapJournal(j, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }), nil
 		},
-		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed},
+		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed, stalled: &f.stalled},
 		Content:   fencedContent{Content: f.FS.Store.Content(), crashed: f.crashed},
 		Lifecycle: f.FS.Store.Lifecycle(),
 		Holds:     cloneHold{opens: f.Opens.Opens(), recovery: f.Opens.Recovery()},
@@ -401,11 +408,16 @@ var errCrashed = errors.New("fixture: the process crashed: its engine commits no
 type fencedExistence struct {
 	engine.Existence
 	crashed *atomic.Bool
+	stalled *atomic.Bool
 }
 
 func (x fencedExistence) Commit(ctx context.Context, pending []kvstore.PendingExistence) (map[entity.FileID]error, error) {
 	if x.crashed.Load() {
 		return nil, errCrashed
+	}
+	if x.stalled.Load() {
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 	return x.Existence.Commit(ctx, pending)
 }

@@ -1,13 +1,105 @@
 package engine
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
+
+// Commit makes [off, off+n) of file f of share s stable, n 0 the whole file,
+// and answers the verifier and the file's loss sequence, both sampled after
+// its sync and its wait. It syncs the file in the journal; when a pending
+// write in the extent at or below the version the sync covers overwrites
+// committed content, it also waits for the group commit to commit that
+// write's existence. Under a store that commits nothing that wait answers
+// ErrDelay at the caller's deadline, never success.
+func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, off, n int64) (vfserr.Verifier, uint64, error) {
+	if off < 0 || n < 0 {
+		return vfserr.Verifier{}, 0, vfserr.ErrInvalid
+	}
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return vfserr.Verifier{}, 0, err
+	}
+	e.stabilityPoints.Add(1)
+	// decision: the journal's Sync returns no version, so the version a sync
+	// covers is the highest pending in f's entry just before it: every
+	// operation at or below it was staged before the sync, and one staged
+	// during the sync is the next stability point's. Withdraw this once the
+	// journal's Sync returns the version it reached.
+	through, runs := e.pendingIn(f, off, n)
+	sctx, end := e.d.Tracer(ctx, "engine.sync")
+	err = e.sync(sctx, b, fileID(f))
+	end(err)
+	if err != nil {
+		return vfserr.Verifier{}, 0, e.journalErr(err)
+	}
+	if len(runs) > 0 {
+		// decision: appends and hole fills are never waited for: a crash
+		// before their existence commits leaves them to recovery, which
+		// commits them from the journal before the file is served. Only an
+		// overwrite of committed content, which recovery cannot tell from
+		// the content under it, waits for its commit.
+		//
+		// ponytail: a stable write's Commit reads the store once to learn
+		// whether it overwrites committed content, one read per Commit.
+		// Keep the committed size and holes in the entry if that read shows
+		// in a profile.
+		over, err := e.d.Existence.Overwrites(ctx, s, f, runs)
+		if err != nil {
+			return vfserr.Verifier{}, 0, e.storeErr(err)
+		}
+		if over {
+			if err := e.commitThrough(ctx, b, f, through); err != nil {
+				return vfserr.Verifier{}, 0, waitErr(err)
+			}
+		}
+	}
+	return e.sample(b), e.LossSeq(s, f), nil
+}
+
+// pendingIn is the highest version pending in f's entry, and the extents of
+// its pending writes in [off, off+n), n 0 the whole file, at or below it.
+func (e *Engine) pendingIn(f entity.FileID, off, n int64) (journal.Version, []entity.Extent) {
+	fe := e.files.lockOf(f)
+	if fe == nil {
+		return journal.Version{}, nil
+	}
+	defer e.files.unlock(f, fe)
+	through := fe.ops[len(fe.ops)-1].version
+	var runs []entity.Extent
+	for _, op := range fe.ops {
+		if op.kind != opWrite {
+			continue
+		}
+		x := entity.Extent{Offset: op.extent.Off, Length: op.extent.Len}
+		if n > 0 {
+			lo, hi := max(x.Offset, off), min(x.End(), off+n)
+			if lo >= hi {
+				continue
+			}
+			x = entity.ExtentOf(lo, hi)
+		}
+		runs = append(runs, x)
+	}
+	return through, runs
+}
+
+// waitErr is the answer for a wait on the group commit that the caller's
+// context ended: its deadline is ErrDelay with DelayCommit, a cancel the
+// context's own error.
+func waitErr(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &vfserr.Delay{Cause: vfserr.DelayCommit}
+	}
+	return err
+}
 
 // instanceID is the process instance, drawn at random when the engine is
 // built, so an engine built again in the same process answers other
