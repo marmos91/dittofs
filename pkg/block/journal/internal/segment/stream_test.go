@@ -1338,7 +1338,7 @@ func (e streamEnv) streamActiveID(t *testing.T) core.SegmentID {
 	return top
 }
 
-// TestStreamTheSyncedThroughISReadBeforeTheFsync checks R10 at the stream
+// TestStreamTheSyncedThroughIsReadBeforeTheFsync checks R10 at the stream
 // level: the value a Sync records — and so the value the records after it
 // carry — is the completed prefix the Sync found before its fsync started.
 // Record B completes while the fsync is parked, so it must not be counted:
@@ -1346,7 +1346,7 @@ func (e streamEnv) streamActiveID(t *testing.T) core.SegmentID {
 // below B's own offset. It catches a Sync that records what the tracker holds
 // after the fsync returns, which would claim durability for bytes no fsync
 // reached.
-func TestStreamTheSyncedThroughISReadBeforeTheFsync(t *testing.T) {
+func TestStreamTheSyncedThroughIsReadBeforeTheFsync(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	seg := streamSegName(1)
@@ -1403,7 +1403,7 @@ func TestStreamTheSyncedThroughISReadBeforeTheFsync(t *testing.T) {
 	_ = aPlaced
 }
 
-// TestStreamAFailedSyncStopsTheValuedSyncCovers checks the failed-window half
+// TestStreamAFailedSyncStopsWhatALaterSyncCovers checks the failed-window half
 // of R10: a Sync that fails with the platform's error records nothing, and no
 // later successful sync of the same segment may claim the failed window's
 // bytes — RFC 1 §5.3: a second sync can succeed without having written what
@@ -1411,7 +1411,7 @@ func TestStreamTheSyncedThroughISReadBeforeTheFsync(t *testing.T) {
 // second, successful sync, both carry a synced-through at or below the failed
 // window's first record. It catches a Sync that records the prefix after a
 // failed one, silently claiming durability for bytes no fsync made durable.
-func TestStreamAFailedSyncStopsTheValuedSyncCovers(t *testing.T) {
+func TestStreamAFailedSyncStopsWhatALaterSyncCovers(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	seg := streamSegName(1)
