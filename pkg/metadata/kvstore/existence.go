@@ -37,7 +37,8 @@ type PendingOp struct {
 	Kind    OpKind
 	Extent  entity.Extent // OpWrite
 	Size    int64         // OpGrow
-	Time    time.Time     // the operation's modify and change time
+	Mtime   time.Time     // the modification time it sets; zero when its open suspended it
+	Ctime   time.Time     // the change time it sets
 }
 
 // PendingExistence is one file's operations to commit, in version order.
@@ -328,7 +329,7 @@ func (s *existState) apply(op PendingOp) error {
 	default:
 		return fileFailed(merrs.NewInvalidArgumentError(fmt.Sprintf("unknown operation %d", op.Kind)))
 	}
-	s.f.Modify, s.f.Change = later(s.f.Modify, op.Time), later(s.f.Change, op.Time)
+	s.f.Modify, s.f.Change = later(s.f.Modify, op.Mtime), later(s.f.Change, op.Ctime)
 	s.f.Applied = entity.MaxVersion(s.f.Applied, op.Version)
 	return nil
 }

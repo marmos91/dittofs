@@ -43,6 +43,12 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 		return vfserr.Verifier{}, e.journalErr(err)
 	}
 	fe := e.files.lockFor(f)
+	if len(fe.ops) == 0 {
+		if err := b.gc.note(b, f, now); err != nil {
+			e.files.unlock(f, fe)
+			return vfserr.Verifier{}, err
+		}
+	}
 	fe.insert(pendingOp{
 		version:   ver,
 		kind:      opWrite,

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -153,6 +154,7 @@ func (e *Engine) SetPrimary(s entity.ShareID, node entity.NodeID, nodeEpoch, inc
 		h:           old.h,
 		incarnation: incarnation,
 		primary:     primary{node, nodeEpoch},
+		gc:          old.gc,
 	}
 	b.state.Store(old.state.Load())
 	t[s] = b
@@ -225,4 +227,47 @@ func (e *Engine) Reads(class string) int64 {
 // ReadSeconds is engine_read_seconds: its count and total.
 func (e *Engine) ReadSeconds() (int64, time.Duration) {
 	return e.reads.count.Load(), time.Duration(e.reads.total.Load())
+}
+
+// CloseGroupCommits stops every journal's group commit, as Close will.
+func (e *Engine) CloseGroupCommits() { e.closeGroupCommits() }
+
+// OnCapture runs f after each batch's capture, before its sync.
+func (e *Engine) OnCapture(f func()) { e.hooks.captured.Store(&f) }
+
+// CommitNow is commitNow on share s's file f.
+func (e *Engine) CommitNow(ctx context.Context, s entity.ShareID, f entity.FileID) error {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return err
+	}
+	return e.commitNow(ctx, b, f)
+}
+
+// WaitBatch is waitBatch on f.
+func (e *Engine) WaitBatch(ctx context.Context, f entity.FileID) error { return e.waitBatch(ctx, f) }
+
+// PendingApplied is engine_pending_existence_ops.
+func (e *Engine) PendingApplied() int64 { return e.pendingApplied.Load() }
+
+// OnLookup runs f in lockFor between its lookup and its lock.
+func (e *Engine) OnLookup(f func()) { e.files.afterLookup = f }
+
+// OnTake runs f after each batch's take, before its capture.
+func (e *Engine) OnTake(f func()) { e.hooks.taken.Store(&f) }
+
+// DropShare is dropShare on journal j.
+func (e *Engine) DropShare(ctx context.Context, j Journal, s entity.ShareID) error {
+	return e.dropShare(ctx, j, s)
+}
+
+// CommitAll is commitAll on journal j.
+func (e *Engine) CommitAll(ctx context.Context, j Journal) error { return e.commitAll(ctx, j) }
+
+// Due reports whether f is on journal j's due set.
+func (e *Engine) Due(j Journal, f entity.FileID) bool {
+	g := e.groupCommitFor(j)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.due[f] != nil
 }

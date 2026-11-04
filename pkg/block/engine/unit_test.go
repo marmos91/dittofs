@@ -94,6 +94,11 @@ func newUnitWith(t *testing.T, c unitConfig) *unit {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// An existence age no test reaches unless it applies its own.
+	if err := e.Apply(engine.Settings{ExistenceAge: 24 * time.Hour, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.CloseGroupCommits)
 
 	u.e = e
 	e.SetJournalsForTest(u.rec)

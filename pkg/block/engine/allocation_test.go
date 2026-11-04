@@ -21,9 +21,9 @@ func (u *unit) committed(t *testing.T, name string, data, size int64) entity.Fil
 	t.Helper()
 	_, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, name, kvstore.Regular(0o644))
 	v := made.Version.Counter()
-	ops := []kvstore.PendingOp{{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: data}, Time: time.Now()}}
+	ops := []kvstore.PendingOp{{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: data}, Mtime: time.Now(), Ctime: time.Now()}}
 	if size > data {
-		ops = append(ops, kvstore.PendingOp{Version: entity.VersionOf(v + 2), Kind: kvstore.OpGrow, Size: size, Time: time.Now()})
+		ops = append(ops, kvstore.PendingOp{Version: entity.VersionOf(v + 2), Kind: kvstore.OpGrow, Size: size, Mtime: time.Now(), Ctime: time.Now()})
 	}
 	failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: made.ID, Ops: ops}})
 	if err != nil || failed[made.ID] != nil {
@@ -193,15 +193,15 @@ func TestAllocationReadsTheEntryAfterTheStore(t *testing.T) {
 	_, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "f", kvstore.Regular(0o644))
 	f, v := made.ID, made.Version.Counter()
 	if failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: []kvstore.PendingOp{
-		{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: 4 * kib}, Time: time.Now()},
+		{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: 4 * kib}, Mtime: time.Now(), Ctime: time.Now()},
 	}}}); err != nil || failed[f] != nil {
 		t.Fatalf("commit: %v, %v", err, failed[f])
 	}
 	u.e.AddOp(f, v+2, true, 8*kib, 0)
 	ce.between = func() {
 		ops := []kvstore.PendingOp{
-			{Version: entity.VersionOf(v + 2), Kind: kvstore.OpGrow, Size: 8 * kib, Time: time.Now()},
-			{Version: entity.VersionOf(v + 3), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: 2 * kib, Length: 8 * kib}, Time: time.Now()},
+			{Version: entity.VersionOf(v + 2), Kind: kvstore.OpGrow, Size: 8 * kib, Mtime: time.Now(), Ctime: time.Now()},
+			{Version: entity.VersionOf(v + 3), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: 2 * kib, Length: 8 * kib}, Mtime: time.Now(), Ctime: time.Now()},
 		}
 		if failed, err := u.fs.Store.Existence().Commit(context.Background(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: ops}}); err != nil || failed[f] != nil {
 			t.Errorf("commit: %v, %v", err, failed[f])
@@ -222,13 +222,13 @@ func TestAllocationReadsAgainAfterACommitBetweenItsReads(t *testing.T) {
 	_, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "f", kvstore.Regular(0o644))
 	f, v := made.ID, made.Version.Counter()
 	if failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: []kvstore.PendingOp{
-		{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: 4 * kib}, Time: time.Now()},
+		{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: 4 * kib}, Mtime: time.Now(), Ctime: time.Now()},
 	}}}); err != nil || failed[f] != nil {
 		t.Fatalf("commit: %v, %v", err, failed[f])
 	}
 	u.e.AddWriteOp(f, v+2, 4*kib, 8*kib)
 	ce.after = func() {
-		ops := []kvstore.PendingOp{{Version: entity.VersionOf(v + 2), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: 4 * kib, Length: 8 * kib}, Time: time.Now()}}
+		ops := []kvstore.PendingOp{{Version: entity.VersionOf(v + 2), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: 4 * kib, Length: 8 * kib}, Mtime: time.Now(), Ctime: time.Now()}}
 		if failed, err := u.fs.Store.Existence().Commit(context.Background(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: ops}}); err != nil || failed[f] != nil {
 			t.Errorf("commit: %v, %v", err, failed[f])
 		}
@@ -248,13 +248,13 @@ func TestAllocationReadsAgainAfterAPendingDrop(t *testing.T) {
 	_, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "f", kvstore.Regular(0o644))
 	f, v := made.ID, made.Version.Counter()
 	if failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: []kvstore.PendingOp{
-		{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: 4 * kib}, Time: time.Now()},
+		{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: 4 * kib}, Mtime: time.Now(), Ctime: time.Now()},
 	}}}); err != nil || failed[f] != nil {
 		t.Fatalf("commit: %v, %v", err, failed[f])
 	}
 	drop := u.e.AddPending(f, 4*kib, 8*kib)
 	ce.after = func() {
-		ops := []kvstore.PendingOp{{Version: entity.VersionOf(v + 2), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: 4 * kib, Length: 8 * kib}, Time: time.Now()}}
+		ops := []kvstore.PendingOp{{Version: entity.VersionOf(v + 2), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: 4 * kib, Length: 8 * kib}, Mtime: time.Now(), Ctime: time.Now()}}
 		if failed, err := u.fs.Store.Existence().Commit(context.Background(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: ops}}); err != nil || failed[f] != nil {
 			t.Errorf("commit: %v, %v", err, failed[f])
 		}

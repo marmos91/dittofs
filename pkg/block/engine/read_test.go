@@ -82,7 +82,7 @@ func (u *unit) commitOps(t *testing.T, f entity.FileID, ps []engine.PendingView)
 	t.Helper()
 	var ops []kvstore.PendingOp
 	for _, op := range ps {
-		ops = append(ops, kvstore.PendingOp{Version: entity.JournalVersion(op.Version.Bytes()), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: op.Off, Length: op.Len}, Time: op.At})
+		ops = append(ops, kvstore.PendingOp{Version: entity.JournalVersion(op.Version.Bytes()), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: op.Off, Length: op.Len}, Mtime: op.At, Ctime: op.At})
 	}
 	failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: ops}})
 	if err != nil || failed[f] != nil {
