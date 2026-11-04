@@ -415,7 +415,7 @@ flowchart TD
   E3 -. "per-file state, pending operations" .-> E4
   E4 -. "group commit, for recovery's commits" .-> E6
   E5 -. "removal loop, for start step 4" .-> E6
-  E4 -. "commit times, for the self-fence" .-> E7
+  E4 -. "commits, for the self-fence" .-> E7
   E5 -. "guard and removal marker" .-> E8
   E6 -. "clone markers at start" .-> E8
   E7 & E8 --> S3(["S3 engine complete over the fake journal"]):::sync
