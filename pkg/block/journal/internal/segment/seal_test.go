@@ -2363,10 +2363,16 @@ func streamOverPool(t *testing.T, e streamEnv) (set *segment.Set, pool *segment.
 	set = segment.NewSet(streamCap, nil)
 	budget := core.NewDescriptorBudget(8)
 	cache = segment.NewDescriptors(e.seam.FS(), format.SegmentName, budget)
-	pool = segment.NewPool(segment.NewMaker(e.seam.FS(), set, streamMax, 0, nil), segment.Targets{Content: 1}, nil)
+	// decision: the round's pool keeps four ready content spares rather
+	// than the one its rolls strictly take, for the appends' rolls and the
+	// sealer's retries interleave and a take that meets an emptied class —
+	// a refill still in flight — would answer no space rather than race
+	// the seal, which the round exists to do. Four stays ahead of every
+	// take a round can make, so a spare refusal names a full device alone.
+	pool = segment.NewPool(segment.NewMaker(e.seam.FS(), set, streamMax, 0, nil), segment.Targets{Content: 4}, nil)
 	pool.Start()
-	awaitCounters(t, "the round's content spare ready", pool,
-		func(c segment.PoolCounters) bool { return c.Spares >= 1 })
+	awaitCounters(t, "the round's content spares ready", pool,
+		func(c segment.PoolCounters) bool { return c.Spares >= 4 })
 	stream = segment.NewStream(1, streamIdentity, set, pool, cache)
 	return set, pool, cache, stream
 }
@@ -2412,7 +2418,7 @@ func TestSealRefusesAnAppendResumedFromTheRollGate(t *testing.T) {
 	// keep the end-to-end path honest while the package's time stays its
 	// own.
 	const appenders = 16
-	rounds := 30
+	rounds := 300
 	if testing.Short() {
 		rounds = 3
 	}
@@ -2470,49 +2476,76 @@ func TestSealRefusesAnAppendResumedFromTheRollGate(t *testing.T) {
 				return err
 			}
 
-			// Every success lies at or below the marker; every failure
-			// is the roll signal or its end-carrying join.
-			var placed []segment.Placed
+			// The seal's own segment is identified by the marker its
+			// result names: the one segment whose footer verifies at the
+			// result's size, for the seal wrote that footer and that
+			// size — a segment the race merely rolled out of carries a
+			// header and records but no trailer, so it is never mistaken
+			// for the sealed one, and the assertions below judge every
+			// record and every footer against its own segment alone.
+			done := make([]outcome, 0, appenders)
+			ids := map[core.SegmentID]struct{}{}
 			for o := range outcomes {
+				done = append(done, o)
+				ids[o.p.Loc.Segment] = struct{}{}
+			}
+			delete(ids, 0)
+			sealedID, sealedFooter := core.SegmentID(0), format.Footer{}
+			for id := range ids {
+				ref, err := cache.Acquire(id)
+				if err != nil {
+					return fmt.Errorf("the round's Acquire of %d: %w", id, err)
+				}
+				footer, ferr := format.ReadFooter(sealReader{ref: ref}, int64(res.Size), streamIdentity, id)
+				ref.Release()
+				if ferr == nil {
+					if sealedID != 0 {
+						return fmt.Errorf("two segments of the round verify as the sealed one: %d and %d", sealedID, id)
+					}
+					sealedID, sealedFooter = id, footer
+				}
+				if ferr != nil && !errors.Is(ferr, format.ErrNoFooter) {
+					return fmt.Errorf("the round's %d does not verify as the sealed segment and is refused for damage: %w", id, ferr)
+				}
+			}
+
+			// The successes split per segment: the ones on the sealed
+			// segment — the rounds the resumed append must be judged by —
+			// and the ones a race's roll carried to a successor, which
+			// the seal never touched and owe it nothing. A failure is
+			// the roll signal alone, ErrSegmentFull: a closed stream's
+			// refusal or a pool refusal names a bug of its own.
+			placed := make(map[core.SegmentID][]segment.Placed)
+			for _, o := range done {
 				if o.err != nil {
 					if !errors.Is(o.err, segment.ErrSegmentFull) {
 						return fmt.Errorf("an append: %w", o.err)
 					}
 					continue
 				}
-				if end := o.p.Loc.Off + o.p.Loc.Len; end > res.Marker {
-					return fmt.Errorf("a record ended at %d, past the seal's marker %d: an append resumed from the roll gate was taken after the seal", end, res.Marker)
-				}
-				placed = append(placed, o.p)
-			}
-			if len(placed) == 0 {
-				return nil // the seal won the whole roll race: nothing to check
+				placed[o.p.Loc.Segment] = append(placed[o.p.Loc.Segment], o.p)
 			}
 
-			// The footer verifies and lists exactly the successes, in
-			// offset order.
-			id := placed[0].Loc.Segment
-			ref, err := cache.Acquire(id)
-			if err != nil {
-				return fmt.Errorf("the round's Acquire: %w", err)
+			// No record on the sealed segment sits past its marker, and
+			// its footer lists exactly that segment's own successes, in
+			// offset order — never the records a rolled successor holds.
+			sealed := placed[sealedID]
+			for _, p := range sealed {
+				if end := p.Loc.Off + p.Loc.Len; end > res.Marker {
+					return fmt.Errorf("a record of segment %d ended at %d, past the seal's marker %d: an append resumed from the roll gate was taken after the seal", sealedID, end, res.Marker)
+				}
 			}
-			size := int64(res.Size)
-			footer, ferr := format.ReadFooter(sealReader{ref: ref}, size, streamIdentity, id)
-			ref.Release()
-			if ferr != nil {
-				return fmt.Errorf("the raced round's footer does not verify: %w", ferr)
-			}
-			offs := make([]int64, 0, len(placed))
-			for _, p := range placed {
+			offs := make([]int64, 0, len(sealed))
+			for _, p := range sealed {
 				offs = append(offs, p.Loc.Off)
 			}
 			slices.Sort(offs)
-			if len(footer.Entries) != len(offs) {
-				return fmt.Errorf("the footer holds %d entries, want the %d successes", len(footer.Entries), len(offs))
+			if len(sealedFooter.Entries) != len(offs) {
+				return fmt.Errorf("segment %d's footer holds %d entries, want the %d successes it sealed", sealedID, len(sealedFooter.Entries), len(offs))
 			}
 			for i, want := range offs {
-				if footer.Entries[i].RecordOffset != want {
-					return fmt.Errorf("the footer's entry %d sits at %d, want the placed %d", i, footer.Entries[i].RecordOffset, want)
+				if sealedFooter.Entries[i].RecordOffset != want {
+					return fmt.Errorf("segment %d's footer entry %d sits at %d, want the placed %d", sealedID, i, sealedFooter.Entries[i].RecordOffset, want)
 				}
 			}
 			return nil
