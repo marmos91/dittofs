@@ -1527,21 +1527,26 @@ Sync and unlink, per platform ([§2.2](#2.2%20Segments), [RFC 1 §5.2](rfc-1-jou
   (`nobarrier` or `barrier=0` on ext4, `nobarrier` on older XFS): there no sync
   reaches the device, and a synced record does not survive power loss. Open
   **MUST** also refuse ext4 data journaling — the `data=journal` mode, read from
-  the filesystem's effective options (`/proc/fs/ext4/<dev>/options`, which
-  include a superblock default `/proc/mounts` omits), or the journal-data file
+  the filesystem's effective options (`/proc/fs/ext4/<dev>/options`, `<dev>` the
+  kernel's name for the directory's device number, not the mount source, which
+  device-mapper names differently; they include a superblock default
+  `/proc/mounts` omits, and an unreadable file is an error of the check), or the
+  journal-data file
   attribute on the journal's directory or on any file in it: there a sync
   returns once the data is in the filesystem's own journal, and a failure to
   write it to its place is reported to a later sync, if at all, so
-  [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)'s window would fail the wrong writes. The check covers
+  [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)'s window would fail the wrong writes; and a read past the page
+  cache falls back to a buffered one there, so the open's tail check
+  ([§3.1](#3.1%20Rebuilding)) would read the cache, not the device. The check covers
   every filesystem the ext4 driver mounts, ext3 included, which the mount table
   reports as `ext3`. Each file is checked because the attribute is inherited
   only at creation and can be set on one file alone, and a recycle renames a
   file with its attribute. An attribute set while the journal runs is found at
-  the next open, as the copy-on-write attribute is. The kernel must be 4.13 or
-  later: from there a writeback error is recorded per file and reported to
-  every descriptor open when it happened, which [RFC 1 §7.4](rfc-1-journal.md#7.4%20Open%20descriptors)'s pinned writer
-  relies on; an earlier kernel reports it to the first sync through any
-  descriptor and clears it, and is not supported.
+  the next open, as the copy-on-write attribute is. Open **MUST** refuse a
+  kernel older than 4.13: from there a writeback error is recorded per file and
+  reported to every descriptor open when it happened, which
+  [RFC 1 §7.4](rfc-1-journal.md#7.4%20Open%20descriptors)'s pinned writer relies on; an earlier kernel reports it to
+  the first sync through any descriptor and clears it.
 - **Windows**: segments are opened with `FILE_SHARE_DELETE`, so one can be
   deleted while a reader still holds it; `FlushFileBuffers` is the sync. There
   is no directory sync: a create, rename or unlink is made durable by opening the

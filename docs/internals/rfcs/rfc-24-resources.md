@@ -1118,7 +1118,10 @@ limit at start, and divides the result:
 | --- | --- |
 | a quarter | journal segment descriptors, `DescriptorLimit` ([RFC 1 §7.4](rfc-1-journal.md#7.4%20Open%20descriptors)) |
 | a half | client connections: the ceiling on `connection_limit` (§4.4) |
-| a quarter | everything else: listeners, the metadata store's files, remote-store connections, one per transfer worker, logs |
+| a quarter | everything else: listeners, the metadata store's files, remote-store connections, one per transfer worker, logs, and the journal's counted overruns past `DescriptorLimit` |
+
+A first quarter below the journals' descriptor floor ([RFC 1 §7.4](rfc-1-journal.md#7.4%20Open%20descriptors)) refuses the start,
+naming the open-file limit and the figure it needs.
 
 If the last quarter is smaller than `upload_workers` plus `fetch_workers`
 plus 256, the node starts and raises the health condition `fd_limit_low`
