@@ -2152,12 +2152,19 @@ func TestSealRefusesAnAppendResumedFromTheTakeGate(t *testing.T) {
 	// The spare's creation and allocation wait the beat a busy device
 	// takes, the two calls the probe that found the bug slowed; the rest
 	// of the take, and every record and seal, run at full speed. The bug
-	// is a scheduler-race, not a certainty: unfixed, the probe fired in
-	// seven of three hundred rounds, here at rounds 31 and 97, and a
-	// hundred-round cut was seen to miss it — so the rounds stay at the
-	// probe's three hundred.
+	// is a scheduler-race, not a certainty: unfixed, it caught the bug in
+	// seven of the reviewer's three hundred rounds and missed a whole
+	// -race run, so it is the probabilistic backstop and
+	// TestAppendParkedAtTheLoopTopRefusesTheSeal, in this package's probe
+	// file, is the deterministic guard: its park hook stages the resumed
+	// append against a sealing stream every run. A few rounds keep the
+	// end-to-end path honest while the package's time stays its own.
 	const appenders = 16
-	for round := range 300 {
+	rounds := 30
+	if testing.Short() {
+		rounds = 3
+	}
+	for round := range rounds {
 		set := segment.NewSet(streamCap, nil)
 		budget := core.NewDescriptorBudget(8)
 		cache := segment.NewDescriptors(e.seam.FS(), format.SegmentName, budget)

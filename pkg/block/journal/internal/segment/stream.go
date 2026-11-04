@@ -431,34 +431,46 @@ func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, 
 		s.appendMu.Unlock()
 		return Placed{}, ErrStreamClosed
 	}
-	// The seal states refuse before anything is reserved (R1, R85): once a
-	// seal has taken the segment — while it drains the reservations below
-	// it, and while its own steps run — and once it has completed or the
-	// segment has ended, no append is taken. The refusal reserves nothing,
-	// writes nothing and charges nothing, so the marker a seal chose and
-	// the bytes its footer names cannot be placed under. sealOpen, the
-	// stream that is still appending, alone falls through.
-	//
-	// The check runs again inside the reservation loop, beside the closed
-	// check it mirrors: an append parked on the first take's gate resumes
-	// at the loop's top, and a seal that took the segment while it parked —
-	// past its drain, its marker read — must refuse it there, or its
-	// record lands exactly at the marker the seal's own write is driving
-	// at, unlisted by the footer and overwriting or overwritten by it.
-	if err := s.checkSealedForAppend(); err != nil {
-		s.appendMu.Unlock()
-		return Placed{}, err
-	}
 	// Counted before anything is reserved and under the same lock Close sets
 	// closed under, so every Add happens before Close's Wait: the group is
 	// never reused while a Wait runs.
 	s.inflight.Add(1)
 	defer s.inflight.Done()
 	for {
+		// appendParkHook is a test hook at the loop's top, past the head
+		// checks and with the lock dropped: the one place an append that
+		// has already entered the loop can be held while another
+		// goroutine takes the lock — the state a take-gate park leaves
+		// the append in, staged without the scheduler the real gate
+		// hands the wake to. It lives in this file rather than a test's
+		// because it sits in the window the reservations run in, which
+		// no test file can reach. nil outside the one check that parks
+		// there; the lock is never held across it.
+		if appendParkHook != nil {
+			s.appendMu.Unlock()
+			appendParkHook()
+			s.appendMu.Lock()
+			continue
+		}
 		if s.closed {
 			s.appendMu.Unlock()
 			return Placed{}, ErrStreamClosed
 		}
+		// The seal states refuse before anything is reserved (R1, R85): once
+		// a seal has taken the segment — while it drains the reservations
+		// below it, and while its own steps run — and once it has completed
+		// or the segment has ended, no append is taken. The refusal reserves
+		// nothing, writes nothing and charges nothing, so the marker a seal
+		// chose and the bytes its footer names cannot be placed under.
+		// sealOpen, the stream that is still appending, alone falls through.
+		//
+		// The check runs at every loop top, beside the closed check it
+		// mirrors: an append parked on the first take's gate resumes at the
+		// loop's top, and a seal that took the segment while it parked —
+		// past its drain, its marker read — must refuse it there, or its
+		// record lands exactly at the marker the seal's own write is
+		// driving at, unlisted by the footer and overwriting or
+		// overwritten by it.
 		if err := s.checkSealedForAppend(); err != nil {
 			s.appendMu.Unlock()
 			return Placed{}, err
@@ -640,6 +652,11 @@ func (s *Stream) leaveDrain() {
 	}
 	s.appendMu.Unlock()
 }
+
+// appendParkHook is the test hook at Append's loop top; see the comment at
+// its call site. A check that parks there must nil it before it returns,
+// or every later append of the process parks with it.
+var appendParkHook func()
 
 // checkSealedForAppend answers the seal-state refusal of Append: the roll
 // signal once a seal has closed the segment, the end's name joined to it

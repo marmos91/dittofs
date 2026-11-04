@@ -126,7 +126,10 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 		// The seal is durable on disk whatever the ledger said: the
 		// result carries the facts of what stands there, so a caller
 		// that wants them — the marker it placed, the cap the file is
-		// accounted at — has them beside the refusal.
+		// accounted at — has them beside the refusal. No test reaches
+		// this return: it needs a ledger that refuses a transition the
+		// stream's own sequencing only ever makes valid, which is a
+		// Set double the real-storage rule forbids.
 		return SealResult{Marker: marker, Size: set.cap}, fmt.Errorf("%w: %w", ErrLedgerDisagrees, err)
 	}
 
