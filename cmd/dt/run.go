@@ -61,6 +61,12 @@ func newRun() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// A ref that isn't here would make each {base} script fail with "fetch it first", or pass for want of a diff.
+			if base != "" && os.Getenv("DT_IN_CONTAINER") != "1" {
+				if err := exec.Command("git", "-C", root, "rev-parse", "--verify", "--quiet", base+"^{commit}").Run(); err != nil {
+					return fmt.Errorf("--base %s is not a commit in this checkout: check the name, or fetch it first", base)
+				}
+			}
 			var cells []run.Cell
 			if place != "" {
 				cells, err = placeCells(root, r, tier, place)

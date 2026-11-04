@@ -356,12 +356,36 @@ func TestRunBase(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITHUB_EVENT_NAME", "pull_request")
 	t.Setenv("GITHUB_BASE_REF", "develop")
-	root := t.TempDir()
+	root := tempRepo(t)
+	gitIn(t, root, "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-qm", "x")
+	gitIn(t, root, "update-ref", "refs/remotes/origin/feat/stacked", "HEAD")
 	writeFile(t, filepath.Join(root, "test", "suites.yaml"), "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n"+
 		"  compares: { cmd: \"test {base} = origin/feat/stacked\" }\n")
 	t.Chdir(root)
 	if out, err := dt(t, "run", "compares", "--base", "origin/feat/stacked", "--results", t.TempDir()); err != nil {
 		t.Errorf("dt run --base: %v\n%s", err, out)
+	}
+}
+
+// A --base that names no commit here stops the run, instead of each {base}
+// script failing on it, or passing for want of a diff.
+func TestRunBaseUnknown(t *testing.T) {
+	root := tempRepo(t)
+	gitIn(t, root, "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-qm", "x")
+	writeFile(t, filepath.Join(root, "test", "suites.yaml"), "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n"+
+		"  ok: { cmd: \"true\" }\n")
+	t.Chdir(root)
+	_, err := dt(t, "run", "ok", "--base", "origin/typo", "--results", t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "--base origin/typo is not a commit") {
+		t.Errorf("dt run --base origin/typo: %v", err)
+	}
+}
+
+// gitIn runs git in dir and fails the test when it does.
+func gitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
 
