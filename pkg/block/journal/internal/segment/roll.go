@@ -76,13 +76,12 @@ func (ss *Streams) Len() int {
 }
 
 // Close closes every stream, joining their errors: the first refusal names
-// itself, and the rest land beside it, for no one error owns the set.
+// itself, and the rest land beside it, for no one error owns the set. Join
+// drops the nils, so a clean close answers nil.
 func (ss *Streams) Close() error {
-	var errs []error
-	for _, s := range ss.s {
-		if err := s.Close(); err != nil {
-			errs = append(errs, err)
-		}
+	errs := make([]error, len(ss.s))
+	for i, s := range ss.s {
+		errs[i] = s.Close()
 	}
 	return errors.Join(errs...)
 }
