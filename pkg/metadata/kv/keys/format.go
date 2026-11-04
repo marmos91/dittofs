@@ -150,9 +150,9 @@ var fSubLayouts = map[byte]string{
 var sSubNames = map[byte]string{
 	SInfo: "info", SSt: "st", SNsg: "nsg", SG: "g", SXp: "xp", SSnap: "snap", SCut: "cut", SLive: "live",
 	SSc: "sc", SHd: "hd", SHr: "hr", SUse: "use", SRh: "rh", SOr: "or", SUt: "ut", SPu: "pu", SPj: "pj",
-	SUd: "ud", SQt: "qt", SQx: "qx", SVf: "vf", SFnc: "fnc", SVl: "vl", SPr: "pr", SRr: "rr", SDo: "do",
+	SUd: "ud", SQt: "qt", SQx: "qx", SVf: "vf", SFnc: "fnc", SVl: "vl", SShs: "shs", SPr: "pr", SRr: "rr", SDo: "do",
 }
 
 var sSubLayouts = map[byte]string{
-	SUd: "u h", SPr: "u file", SRr: "u file v", SDo: "u file u",
+	SUd: "u h", SShs: "u", SPr: "u file", SRr: "u file v", SDo: "u file u",
 }

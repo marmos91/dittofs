@@ -16,9 +16,18 @@ import (
 // one decides nothing a rebuild would decide otherwise. One call rebuilds
 // at a time, and a call that waited for it answers its tree when the list
 // has not moved again; a call whose context ends while it waits answers the
-// context's error. A rebuild starts the removal of each share the last
-// tree held and the list no longer does, since only a removal's mark takes a
-// share off the list.
+// context's error. A rebuild first serves the shard of each share the
+// list holds and open state does not serve yet, so a share added while
+// serving holds open state without a restart, and starts the removal of each
+// share the last tree held and the list no longer does, since only a
+// removal's mark takes a share off the list.
+//
+// ponytail: a share added while serving is served by the first call to see
+// the share list move, standing in for the node's own share arrival, as
+// removeShare stands in for its removal driver; a serve that fails is
+// logged, and the tree published all the same, so only that share's calls
+// fail: admission serves it again for each (servedShard). Replace it with
+// the node serving the shards it is primary of, once shards have primaries.
 //
 // decision: the first call that needs the pseudo-filesystem builds it, not
 // Start, as RFC 17 §2.5 has it: a share list moved since Start is rebuilt
@@ -57,9 +66,20 @@ func (fs *Filesystem) tree(ctx context.Context) (*pseudofs.Tree, error) {
 	}
 	placed := make([]pseudofs.Share, len(shares))
 	listed := make(map[[16]byte]bool, len(shares))
+	var added []entity.Share
+	fs.mu.Lock()
 	for i, sh := range shares {
 		placed[i] = pseudofs.Share{ID: sh.ID, Path: sh.Path}
 		listed[sh.ID] = true
+		if !fs.served[sh.ID] {
+			added = append(added, sh)
+		}
+	}
+	fs.mu.Unlock()
+	for _, sh := range added {
+		if err := fs.serve(ctx, []entity.Share{sh}); err != nil {
+			fs.log.Warn("vfs: a share's shard not served", "share", sh.ID, "err", err)
+		}
 	}
 	t := pseudofs.Build(in.ID, list.Version, placed)
 	fs.pseudo.Store(t)

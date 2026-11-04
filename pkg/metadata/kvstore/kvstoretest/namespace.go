@@ -106,6 +106,17 @@ func testCreateAndLookup(t *testing.T, kvo Opener) {
 	if _, _, err := ns.Create(ctx, f.admin, h, []byte("x"), regular(0o644)); err == nil {
 		t.Error("created inside a regular file")
 	}
+	// A create takes the ID its caller drew, and refuses one in use.
+	id := entity.NewFileID()
+	nf := regular(0o644)
+	nf.ID = id
+	if _, drawn, err := ns.Create(ctx, f.admin, f.root, []byte("drawn"), nf); err != nil || drawn.ID != id {
+		t.Errorf("a create naming its ID: %v, %v; want %v", drawn.ID, err, id)
+	}
+	nf.ID = made.ID
+	if _, _, err := ns.Create(ctx, f.admin, f.root, []byte("again"), nf); !isExist(err) {
+		t.Errorf("a create naming README's ID: %v, want it existing", err)
+	}
 	if _, _, err := ns.Create(ctx, f.admin, f.root, []byte("a/b"), regular(0o644)); !errors.Is(err, entity.ErrInvalidName) {
 		t.Errorf("name with a slash: %v", err)
 	}

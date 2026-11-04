@@ -125,6 +125,19 @@ func (t *Table) advance(e *entry, ref StateRef) (uint32, error) {
 	return h.seq, nil
 }
 
+// rewind sets the sequence of the state ref names, under its file's step,
+// which e must be, back to seq, and answers it.
+func (t *Table) rewind(e *entry, ref StateRef, seq uint32) uint32 {
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	k := refKey{ref.Shard, ref.Token}
+	if h, ok := t.refs[k]; ok && h.file == e.file {
+		h.seq = seq
+		t.refs[k] = h
+	}
+	return seq
+}
+
 // release drops the piece of state ref names, under its file's step, which e
 // must be: a reference to another file's state releases nothing. The
 // reference then resolves as a miss.

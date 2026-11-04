@@ -74,6 +74,11 @@ type Share struct {
 	// counter when the share arrives and never given to another share; a
 	// share put never changes it. Zero names no share.
 	Tag uint32
+	// Shard is the share's one shard, drawn from the installation's shard
+	// counter when the share is created and never given to another share:
+	// its own record, not part of the one a share put writes, as a share put
+	// never changes it. Every file of the share is in it.
+	Shard ShardID
 	// State is its own record, not part of the one a share put writes: a cut
 	// and a deletion change it as well as the management API.
 	State ShareState

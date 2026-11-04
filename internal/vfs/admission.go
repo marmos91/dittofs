@@ -61,11 +61,39 @@ func (fs *Filesystem) admit(ctx context.Context, c vfs.Call, share entity.ShareI
 		return nil, func() {}, err
 	}
 	a, err := fs.check(ctx, c, share, secure, false)
+	if err == nil {
+		err = fs.servedShard(ctx, a.share)
+	}
 	if err != nil {
 		release()
 		return nil, func() {}, err
 	}
 	return a, release, nil
+}
+
+// servedShard serves sh's shard when no serve of it has succeeded, as when
+// the tree's serve of it failed, holding the token a rebuild holds so no
+// two serve it at once: a failure is answered to this call alone.
+func (fs *Filesystem) servedShard(ctx context.Context, sh entity.Share) error {
+	fs.mu.Lock()
+	ok := fs.served[sh.ID]
+	fs.mu.Unlock()
+	if ok {
+		return nil
+	}
+	select {
+	case fs.build <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-fs.build }()
+	fs.mu.Lock()
+	ok = fs.served[sh.ID]
+	fs.mu.Unlock()
+	if ok {
+		return nil
+	}
+	return openErr(fs.serve(ctx, []entity.Share{sh}))
 }
 
 // check is admission's steps 1 to 4 for the call c on share, counting nothing:
@@ -155,11 +183,11 @@ type join struct {
 // mark's, if a removal is seen to wait on them.
 //
 // ponytail: only removeShare calls it, on a share seen to leave the share
-// list while serving; nothing runs it at Start, so a share marked before a
-// restart keeps its open state. The node, not the control plane's
-// delete, runs a removal's join, while serving and again at Start, so a
-// delete answers at once and a crash between the mark and the join is
-// finished at the next start. Replace removeShare with the node's removal
+// list while serving; Start drops a share being removed with no join, as it
+// admits no call before. The node, not the control plane's delete, runs a
+// removal's join, while serving and again at its start, so a delete answers
+// at once and a crash between the mark and the join is finished at the next
+// start. Replace removeShare and Start's drop with the node's removal
 // driver, which runs both.
 func (fs *Filesystem) JoinShare(ctx context.Context, share entity.ShareID) error {
 	fs.mu.Lock()
@@ -186,9 +214,9 @@ func (fs *Filesystem) JoinShare(ctx context.Context, share entity.ShareID) error
 // nothing after; RFC 16 §2.3.2's full removal driver, on the node,
 // replaces it. It is started from admission, by a share gone from the share
 // list when its version moves, which costs every admission a read of that
-// version; a share marked before the first call builds the list is never
-// seen to leave it, and a run a drain or a stopped table fails is not run
-// again. It drops every shard of the share, not only those this node is
+// version; a share marked after Start and before the first call builds the
+// list is never seen to leave it, and a run a drain or a stopped table fails
+// is not run again before the next start. It drops every shard of the share, not only those this node is
 // primary of, and keeps every share it ran for, one entry a removed share,
 // for the filesystem's life.
 func (fs *Filesystem) removeShare(share entity.ShareID) {

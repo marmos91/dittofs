@@ -108,7 +108,8 @@ const (
 	SVf   byte = 0x15
 	SFnc  byte = 0x16
 	SVl   byte = 0x17 // version limit
-	SPr   byte = 0x19 // pending-release index: S‖id‖pr‖shard‖file; 0x18 is the RFC's shs
+	SShs  byte = 0x18 // shard list: S‖id‖shs‖shard
+	SPr   byte = 0x19 // pending-release index: S‖id‖pr‖shard‖file
 	SRr   byte = 0x1A // unfinished-removal index: S‖id‖rr‖shard‖file‖version
 	SDo   byte = 0x1B // durable-open index: S‖id‖do‖shard‖file‖openID
 )

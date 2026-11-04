@@ -98,3 +98,32 @@ func testRaiseIncarnationsAllOrNone(t *testing.T, kvo Opener) {
 	wantShard(t, s, 2, 0, 0)
 	wantShard(t, s, 3, 0, 0)
 }
+
+// RFC 14 §2.11: shard numbers are installation-wide. Each share is created
+// with a shard number no share has had, a removed share's included, and its
+// files are in that shard.
+func testSharesGetTheirOwnShards(t *testing.T, kvo Opener) {
+	s, c := newStore(t, kvo)
+	cp, ix := s.ControlPlane(), s.ShareIndex()
+	shardOf := func(id entity.ShareID) entity.ShardID {
+		t.Helper()
+		sh, _, err := ix.Share(ctx, id)
+		must(t, err)
+		return sh.Shard
+	}
+	gone := share("gone", "/gone")
+	must(t, cp.PutShare(ctx, gone))
+	f := setupFS(t, s, c, entity.FoldIdentity)
+	if shardOf(gone.ID) == shardOf(f.share.ID) {
+		t.Errorf("two shares both in shard %d", shardOf(gone.ID))
+	}
+	if _, file := f.create(f.admin, f.root, "x", regular(0o644)); entity.ShardID(file.Shard) != shardOf(f.share.ID) {
+		t.Errorf("a file of the share in shard %d, want the share's %d", file.Shard, shardOf(f.share.ID))
+	}
+	must(t, cp.DeleteShare(ctx, gone.ID, entity.SnapshotsRefuse))
+	next := share("next", "/next")
+	must(t, cp.PutShare(ctx, next))
+	if n := shardOf(next.ID); n == shardOf(gone.ID) || n == shardOf(f.share.ID) {
+		t.Errorf("a share created after a removal took shard %d, which an earlier share had", n)
+	}
+}

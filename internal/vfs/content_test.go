@@ -24,6 +24,12 @@ type fakeContent struct {
 	// truncating, when set, runs as Truncate is called, before it stages
 	// anything.
 	truncating func(entity.FileID)
+	// truncErr, when set, is every Truncate's answer, staging nothing.
+	truncErr error
+	// overlayErr, when set, is every Overlay's answer.
+	overlayErr error
+	// deleteErr, when set, is every Delete's answer, dropping nothing.
+	deleteErr error
 }
 
 var _ Content = (*fakeContent)(nil)
@@ -74,6 +80,9 @@ func (c *fakeContent) Truncate(ctx context.Context, f entity.FileID, size int64)
 	if c.truncating != nil {
 		c.truncating(f)
 	}
+	if c.truncErr != nil {
+		return c.truncErr
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.files[f] = grow(c.files[f], size)[:size]
@@ -104,6 +113,9 @@ func (c *fakeContent) Deallocate(ctx context.Context, f entity.FileID, off, n in
 func (c *fakeContent) Delete(ctx context.Context, f entity.FileID) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.deleteErr != nil {
+		return c.deleteErr
+	}
 	delete(c.files, f)
 	return nil
 }
@@ -130,6 +142,9 @@ func (c *fakeContent) Copy(ctx context.Context, src, dst entity.FileID, xs []vfs
 func (c *fakeContent) Overlay(ctx context.Context, f entity.FileID) (Overlay, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.overlayErr != nil {
+		return Overlay{}, false, c.overlayErr
+	}
 	o, ok := c.overlays[f]
 	return o, ok, nil
 }
