@@ -48,6 +48,16 @@ var (
 	ErrPastEnd = errors.New("vfs: offset at or past the end of the file")
 )
 
+// ErrFileOpen is a release a holder aborted: an open or a clone's hold took
+// the file before the engine's release committed, so its content stays.
+//
+// decision: ErrFileOpen passes only between the engine and the filesystem,
+// which answers an unlink or a rename before a pending release's outcome is
+// known (RFC 17 §5.3), so no adapter ever sees it. It is therefore not one of
+// the values vfs.Errors lists for adapters' tables to cover. Overturned if a
+// call ever answers an adapter with a release's outcome.
+var ErrFileOpen = errors.New("vfs: release aborted by a holder")
+
 // AccessError is an ErrAccess with its cause.
 type AccessError struct{ Cause AccessCause }
 

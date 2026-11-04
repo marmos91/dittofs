@@ -61,6 +61,13 @@ type fakeContent struct {
 	// as for a write whose commit has not landed; otherwise Write calls it.
 	hold  bool
 	dones []func()
+	// pending, when set, is called by each Delete: a non-nil channel it
+	// answers leaves that release pending on it, dropping nothing.
+	pending func() <-chan error
+	// stall, when set, makes each Delete wait for its context's end or for
+	// stall to close, then answer the context's error.
+	stall   chan struct{}
+	deletes int // how many Deletes were called
 }
 
 var _ Content = (*fakeContent)(nil)
@@ -247,17 +254,40 @@ func (c *fakeContent) Deallocate(ctx context.Context, share entity.ShareID, f en
 	return nil
 }
 
-func (c *fakeContent) Delete(ctx context.Context, share entity.ShareID, f entity.FileID) error {
+func (c *fakeContent) Delete(ctx context.Context, share entity.ShareID, f entity.FileID) (<-chan error, error) {
+	c.mu.Lock()
+	stall := c.stall
+	c.mu.Unlock()
+	if stall != nil {
+		select {
+		case <-ctx.Done():
+		case <-stall:
+		}
+		return nil, ctx.Err()
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.deletes++
 	if err := c.placed(share, f); err != nil {
-		return err
+		return nil, err
 	}
 	if c.deleteErr != nil {
-		return c.deleteErr
+		return nil, c.deleteErr
+	}
+	if c.pending != nil {
+		if retry := c.pending(); retry != nil {
+			return retry, nil
+		}
 	}
 	delete(c.files, f)
-	return nil
+	return nil, nil
+}
+
+// deleted is how many Deletes were called.
+func (c *fakeContent) deleted() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.deletes
 }
 
 func (c *fakeContent) Clone(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, x vfs.Extent) error {

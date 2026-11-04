@@ -2018,15 +2018,15 @@ type phaseOne struct {
 	once    sync.Once
 }
 
-func (d *phaseOne) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) error {
+func (d *phaseOne) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) (<-chan error, error) {
 	d.once.Do(func() { close(d.entered); <-d.open })
 	d.mu.Lock()
 	d.n[f]++
 	d.mu.Unlock()
-	if err := d.fakeContent.Delete(ctx, s, f); err != nil {
-		return err
+	if _, err := d.fakeContent.Delete(ctx, s, f); err != nil {
+		return nil, err
 	}
-	return d.st.Existence().Remove(ctx, d.share, f, 0, kvstore.RemoveOp{Version: entity.VersionOf(1 << 40), Kind: entity.RemoveRelease}, nil)
+	return nil, d.st.Existence().Remove(ctx, d.share, f, 0, kvstore.RemoveOp{Version: entity.VersionOf(1 << 40), Kind: entity.RemoveRelease}, nil)
 }
 
 // Two releases of one unlinked file at once delete it once: the second
