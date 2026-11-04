@@ -420,6 +420,15 @@ func (h *Hold) Close() {
 // spare a recycle lands is durable whatever the pool's own start sync was
 // for — the re-adopted spare's case Adopt stands on.
 //
+// ponytail: a make in flight is invisible to the reservation. refill picks
+// its class, sets the slot aside and runs Make outside the mutex, and over
+// that window wantRecycle still counts the class short, so a recycle can
+// reserve a slot a make is already filling and land the pool one spare over
+// its target. Ceiling: one spare per overlap, held ready and re-adopted at
+// the next open rather than spent. Upgrade to a making-class field counted
+// beside incoming, once a trace shows an overlapped recycle costing storage
+// that mattered.
+//
 // decision: any class short of its target wants the recycle, not the content
 // class alone. "The pool is below its target" is one rule for the three
 // classes a spare serves, and RFC 28 §2.2 names only `journal.spare_target`
@@ -453,13 +462,22 @@ func (p *Pool) wantRecycle() (Class, bool) {
 }
 
 // recycled puts a recycled spare — already in the ledger as a spare under its
-// fresh id — into class c, spending the reservation wantRecycle took. After
-// Stop it is still appended, accounted and on disk, as refill's own made
-// spare is: the next open re-adopts it.
+// fresh id — into class c, spending the reservation wantRecycle took, worth
+// what a made spare in the class is: the content class pays the demand level
+// down by the same clamped one a made content spare pays, so a refusal the
+// recycle served is not served a second time. After Stop it is still
+// appended, accounted and on disk, as refill's own made spare is: the next
+// open re-adopts it.
 func (p *Pool) recycled(id core.SegmentID, c Class) {
 	p.mu.Lock()
 	p.incoming[c]--
 	p.ready[c] = append(p.ready[c], id)
+	// The clamp and the ceiling are refill's own: a landed content spare
+	// above the target and the open holds pays one unit of demand, and only
+	// while a level stands.
+	if c == Content && p.pending > 0 && len(p.ready[Content]) > p.t.Content+p.held {
+		p.pending--
+	}
 	p.mu.Unlock()
 }
 

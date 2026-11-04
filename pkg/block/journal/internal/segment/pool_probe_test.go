@@ -25,3 +25,21 @@ func RetryEveryForTest(r *Retirer, d time.Duration) { r.retryEvery = d }
 
 // KickForTest wakes the retirer's worker from the external test package.
 func (r *Retirer) KickForTest() { r.kickWorker() }
+
+// PendingForTest reads the demand level a refused Hold recorded, so a check
+// can assert what a made or recycled spare paid down.
+func (p *Pool) PendingForTest() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.pending
+}
+
+// StoppedForTest reports whether Stop has closed the worker's done, so a
+// check can sequence a Stop that must land while the worker is mid-flight:
+// the closing is under the retirer's mutex, observable without racing the
+// join the Stop itself blocks in.
+func (r *Retirer) StoppedForTest() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stopped
+}
