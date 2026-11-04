@@ -13,7 +13,7 @@ admits before the call and how it holds a call behind a clone;
 the clone `Removal` record and the two phases `kvstore`'s `Existence.Clone` and
 `Content.Resume` already implement.
 **Track:** A.
-**Epic 8 estimate: 6 subtasks, 19 man-days.**
+**Epic 8 estimate: 6 subtasks, 19.5 man-days.**
 **Depends on:** epic 3, built: T3.1's per-file entries, T3.2's `Write`, T3.4's replay and
 T3.5's read resolution, which a clone copies through and resolves its source with; epic 4's
 per-file existence commit (T4.3), which commits the source's pending existence before
@@ -224,7 +224,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | R12 | Step 2: `CloneTarget(dst, spec)` under the destination's guard, the spec naming source share and file, both offsets, the length and `asOf` | MUST | §9.1 step 2, RFC 1 §3.6 | T8.2 |
 | R13 | Every source run the journal holds at `asOf` is copied into the destination above the clone's version *v* through the reservation, the destination synced and the reservation closed, before phase 1 | MUST | §9.1 step 3, E34 | T8.2 |
 | R14 | The destination's guard is held from the journal step over the copies, the sync and phase 1, so no group commit captures one of its operations meanwhile | MUST | E6, §9.1 step 4 | T8.2 |
-| R15 | Phase 1 commits the destination's pending existence, the copies included, and records the removal of kind clone with its spec, through `Existence.Clone`; the guard is then released and `Settle(dst, v)` called | MUST | §9.1 step 4, RFC 6 §6.6 | T8.2 |
+| R15 | Phase 1 commits the destination's pending existence below *v*, records the removal of kind clone with its spec and, after it, the destination's pending operations above *v* outside the extent, through `Existence.Clone`, whose `Copied` covers the copies above *v* (D15); it waits out a batch in flight on the destination first and syncs through the engine's one sync function; the committed operations and the copies leave the entry under its lock, then the guard is released and `Settle(dst, v)` called | MUST | §9.1 step 4, RFC 6 §6.6, RFC 6 §3.4 | T8.2 |
 | R16 | A source run neither held nor a hole or zero ref at `asOf` is carried as uncarved: nothing is copied for it, and the destination reads **Lost** there, never zeros | MUST NOT | §9.1, E34 | T8.2 |
 | R17 | A clone never waits on the remote tier: it fetches nothing | invariant | §9.1, E34 | T8.2 |
 
@@ -413,6 +413,16 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   record, and no `Release` follows. `Release` of a hold already gone answers nil through the
   adapter. A `decision:` marker at the call says a failed `Hold` leaves the source held by the
   durable record alone, which the release's holder check still sees.
+- **D15, writes outside the extent during a clone.** A write outside the extent may be staged
+  on the destination between the journal step and phase 1, at a version between *v* and
+  `Copied`; the guard keeps it out of every group commit. `kvstore`'s `Clone` sets `applied`
+  to the larger of *v* and `Copied`, so a later commit of that write would be skipped as
+  applied and its size and holes never recorded. `Existence.Clone` therefore takes every
+  pending operation of the destination but the copies: it commits those below *v* before the
+  clone, as it does now, and applies those above *v*, all outside the extent, in the same
+  transaction after the clone, so `applied` skips nothing. The engine refusing such writes
+  until phase 1 was the alternative, and would hold a whole file's writes behind a clone of
+  one extent. A `decision:` marker at `kvstore`'s `Clone` names it.
 
 ## 5. Target tree
 
@@ -420,7 +430,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 pkg/block/enginev2/
   types.go          T8.1  Share.Namespace (D2)
   clone.go          T8.1  admission, the registrations and their checks (D2, D3, D4)
-                    T8.2  sizing, Reserve, CloneTarget, the copies, the sync, phase 1 (D5, D6, D8, D13)
+                    T8.2  sizing, Reserve, CloneTarget, the copies, the sync, phase 1 (D5, D6, D8, D13, D15)
                     T8.3  Hold, the post to the removal loop, Release, the done signal (D9, D14)
                     T8.4  the running-clone map, the wait and its deadline, the done memory (D6, D7)
                     T8.5  Copy (D12)
@@ -439,6 +449,8 @@ pkg/block/enginev2/
   export_test.go    T8.1  hooks: the registrations, the admitted count; T8.2 the faked done signal; T8.4 the done memory
   enginev2test/
     fake.go         T8.2  CloneTarget, Reserve, Reservation, Since's clone marker
+pkg/metadata/kvstore/
+  clone.go          T8.2  Clone applies the destination's operations above v outside the extent (D15)
 ```
 
 ## 6. Subtasks
@@ -486,20 +498,24 @@ pkg/block/enginev2/
 
 ### T8.2 Reservation, journal step, copies and phase 1
 
-**Subtask T8.2 estimate: 4.5 man-days.**
+**Subtask T8.2 estimate: 5 man-days.**
 
-- **Track:** A. **Depends on:** T8.1; epic 4's T4.3, the per-file existence commit; epic 5's
-  T5.1 (the guard, phase 1's order) and T5.4 (the retry channel).
+- **Track:** A. **Depends on:** T8.1; epic 4's T4.3 (the per-file existence commit and
+  `waitBatch`) and T4.5 (the one sync function); epic 5's T5.1 (the guard, phase 1's order)
+  and T5.4 (the retry channel).
 - **Covers:** R4, R10, R11, R12, R13, R14, R15, R16, R17, R24, R26, R33, R35, R38.
 - **Deliverables:** `clone.go`'s steps 1 to 4: the source synced and its pending existence
   committed, the sizing pass (D5, its marker), `Reserve` on the destination's handle, a
   refusal undoing both registrations and mapped by epic 3's journal-error mapping; a source
   extent past the source's end at `asOf`, found by the sizing pass, refused `ErrInvalid` the
   same way (D2); then on
-  the clone's own goroutine (D6) the destination's guard, `CloneTarget` with the spec, the
-  clone operation in the entry (D13), the copies of every held run through the reservation
-  with the clock's time, `Sync`, the reservation's `Close`, `Existence.Clone` with the
-  file's pending operations, the guard released, `Settle(dst, v)`; a phase-1 refusal handled
+  the clone's own goroutine (D6) the destination's guard and epic 4's `waitBatch`,
+  `CloneTarget` with the spec, the clone operation in the entry (D13), the copies of every
+  held run through the reservation with the clock's time, the sync through epic 4's one sync
+  function, the reservation's `Close`, `Existence.Clone` with every pending operation of the
+  destination but the copies, which `Copied` covers (D15), the committed operations and the
+  copies removed from the entry under its lock, the guard released, `Settle(dst, v)`;
+  `kvstore`'s `Clone` changed to apply the operations above *v* after the clone (D15); a phase-1 refusal handled
   by D8; RFC 8 §9.1's `decision:` on copying through the journal at the copy step. T5.4's
   `ErrDelay` branch: `Delete` of a file with a registration answers pending before the
   journal's `Delete`, and the channel yields `ErrDelay` with `DelayClone` when the
@@ -542,7 +558,17 @@ pkg/block/enginev2/
   answering it six times: `removal_stalled` names the destination, and a group commit
   triggered between two attempts captures none of its operations (catches the guard
   released across the retry, D8), while a write to another file on the same journal commits
-  in that batch (catches a capture blocking on the pinned guard, D8).
+  in that batch (catches a capture blocking on the pinned guard, D8). Over the real
+  `kvstore`, a destination with a pending write below *v* outside the extent and copies
+  above it: after phase 1 the extent reads the source, the earlier write reads back, and
+  `applied` is at or above `Copied` (catches the copies passed to `Existence.Clone`, which
+  commits them first and then skips the clone as applied, R15); a batch held between its
+  capture and its `Existence.Commit` on the destination: the clone's phase 1 starts only
+  after it returns (catches a phase 1 that overtakes the batch, R15). Over the real
+  `kvstore`, a write outside the extent staged on the destination between the journal step
+  and phase 1, growing the file past a hole: after phase 1, the File record's size and holes
+  include it, and a later group commit changes nothing (fails on `Clone` as it was, which
+  set `applied` to `Copied` over the write and left it unrecorded, D15).
 
 ### T8.3 The clone-kind open and phase 2
 
@@ -712,7 +738,7 @@ over the fake journal. T8.4 and T8.6 can run in parallel once T8.3 and epic 6 ha
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T8.1, T8.2 | 8 | epic 3; epic 5's T5.1 and T5.4; epic 4's T4.3 | the clone up to phase 1, with the registrations it rests on and the fake's clone calls |
+| 1 | T8.1, T8.2 | 8.5 | epic 3; epic 5's T5.1 and T5.4; epic 4's T4.3 | the clone up to phase 1, with the registrations it rests on and the fake's clone calls |
 | 2 | T8.3, T8.4 | 6.5 | PR 1; T5.3, T6.8, T6.9 | phase 2 and the clone's answer: the hold, the join, the deadline |
 | 3 | T8.5, T8.6 | 4.5 | PR 2; T6.5, T6.6 | `Copy` and the restart, each a consumer of the finished clone |
 

@@ -375,18 +375,18 @@ harness (`journalv2test/prof`) wired to the fixture.
 | 1 | **Interfaces** ⛔ | `pkg/block/enginev2`'s surface, `Deps` narrowed to this part, the engine over `pkg/vfs/vfserr`; the `Content` contract agreed with stage 2 | 5 | 8 | team | **everything** |
 | 2 | **Red e2e suite and test foundations** ⛔ | `engine-conformance` registered red, 45 rows, the fixture, a fault-injecting `kv.KV`, the fake journal | 9 | 28.5 | team | **all testing** in 3 to 10 |
 | 3 | **Write, read and overlay** ⛔ | per-file state, `Write`, `Draw`, `Overlay`, `Read`'s resolution, `Allocation` | 6 | 13 | A | 4, 8 |
-| 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 20 | B | 5, 6, 7 |
-| 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 12.5 | B | 6, 8 |
+| 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 21 | B | 5, 6, 7 |
+| 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 15.25 | B | 6, 8 |
 | 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 9 | 24.75 | C | 7, 8 |
 | 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 4 | 12.5 | C | 9 |
-| 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 6 | 19 | A | 9 |
+| 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 6 | 19.5 | A | 9 |
 | 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over stage 2's fake and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
 | 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 4 | 12.5 | team | the second part |
-| | **Total** | | **60** | **162.25** | | |
+| | **Total** | | **60** | **166.5** | | |
 
-**Plan estimate: 60 subtasks, 162.25 man-days.**
+**Plan estimate: 60 subtasks, 166.5 man-days.**
 
-RFC 8 is 3,394 lines, which gives N = 8. This part covers about half of it, and its cohesive
+RFC 8 is 3,574 lines, which gives N = 8. This part covers about half of it, and its cohesive
 areas are six: the data path, the stability point, removals, the lifecycle, capacity and
 health, and clone.
 
@@ -417,6 +417,7 @@ flowchart TD
   E5 -. "removal loop, for start step 4" .-> E6
   E4 -. "commit times, for the self-fence" .-> E7
   E5 -. "guard and removal marker" .-> E8
+  E8 -. "T8.1's registrations, for T5.1's check" .-> E5
   E6 -. "clone markers at start" .-> E8
   E7 & E8 --> S3(["S3 engine complete over the fake journal"]):::sync
   S3 --> E9["E9 Integration"]
@@ -497,9 +498,10 @@ flowchart TD
   epic 4's group commit and epic 5's loop exist.
 - **Where the team converges:** epics 1 and 2 before S2; epic 9 and epic 10 after S3.
 - **Where the tracks wait on each other:** the graph's cross-track edges are E3 to E4, E4
-  to E6 and E7, E5 to E6, and E5 and E6 to E8. Track B starts epic 4 on the verifier, the loss
-  sequence and the split, which need nothing of epic 3, and reaches the group commit once
-  epic 3's per-file state lands. Track C's recovery waits on epics 4 and 5, and the store
+  to E6 and E7, E5 to E6, and E5 and E6 to E8. Track B starts epic 4 on the verifier, which
+  replaces T3.2's stand-in, and the group commit, on epic 3's per-file state; the loss
+  sequence and the split build on the group commit. Epic 5's T5.1 also reads T8.1's
+  registrations, whose admission half needs nothing of epic 5 and lands first. Track C's recovery waits on epics 4 and 5, and the store
   view, the share table, start step 1 and the version limit fill that wait; epic 7 comes
   after epic 6, so the E4 edge is met by then. Track A has the one long wait: with one
   engineer per track, epic 8 waits on epic 5 for about 20 man-days after epic 3. Epic 3's
@@ -632,7 +634,7 @@ Sections owned: RFC 8 §1.1 (the request path), §4.1, §7.1, §7.5, §7.6, §12
 
 ### Epic 4 — Commit, group commit and losses ⛔
 
-**Epic 4 estimate: 7 subtasks, 20 man-days.**
+**Epic 4 estimate: 7 subtasks, 21 man-days.**
 
 The stability point and everything that commits existence. Appends and hole fills are
 answered after the sync; an overwrite of committed content waits for the group commit
@@ -698,7 +700,7 @@ owned: RFC 8 §4.1 (the verifier), §5.1, §5.2, §11.3. Counters: `engine_stabi
 
 ### Epic 5 — Removals ⛔
 
-**Epic 5 estimate: 5 subtasks, 12.5 man-days.**
+**Epic 5 estimate: 5 subtasks, 15.25 man-days.**
 
 `Truncate`, `Deallocate` and `Delete`: guard, journal step, phase 1 through `Existence.Remove`
 with the file's pending existence, release the guard, `Settle(id, v)`, post. No pass is ever
@@ -917,7 +919,7 @@ Sections owned: RFC 8 §10 (the two measures, as far as repack goes), §10.2, §
 
 ### Epic 8 — Clone and copy, journal-held
 
-**Epic 8 estimate: 6 subtasks, 19 man-days.**
+**Epic 8 estimate: 6 subtasks, 19.5 man-days.**
 
 A clone whose source bytes are all journal-held or uncarved: copied into the destination
 above the removal's version and synced before phase 1, with phase 2 adopting nothing. A
