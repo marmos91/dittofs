@@ -2097,7 +2097,8 @@ Until the clone's removal is done, the destination extent **MUST NOT** be served
 in the file or in any snapshot taken after the clone's `cut`: a read of it waits
 for the clone or fails at its deadline, rather than reading a half-copied extent.
 Unfinished clones resume at startup: the source is served once its
-registration and open are rebuilt; the destination file is not served until
+registration is rebuilt, and its open too once phase 1 has written it; the
+destination file is not served until
 the clone's phase 1 has committed, and its extent not until the clone is done
 ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 4). A reservation for the missing copies refused for space
 waits and does not hold up start; meanwhile what the source's writers and the
