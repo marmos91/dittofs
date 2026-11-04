@@ -349,8 +349,8 @@ func TestRollARecordThatExactlyFillsTheRoomIsWrittenInPlace(t *testing.T) {
 	capNeeded := int64(format.SegmentHeaderSize) + recordSize + reserve
 
 	e := rollBuild(t, capNeeded, segment.Targets{Content: 4}, nil).withStream(t, 1)
-	awaitCounters(t, "the content spare ready", e.pool,
-		func(c segment.PoolCounters) bool { return c.Spares >= 1 })
+	awaitCounters(t, "the two content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares >= 2 })
 	se := e.stream(t)
 
 	payload := make([]byte, headerPayload)
@@ -795,8 +795,8 @@ func TestRollASegmentWhoseTruncationFailedStaysSealedAndNamed(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	e := rollBuild(t, streamCap, segment.Targets{Content: 4}, nil).withStream(t, 1)
-	awaitCounters(t, "the content spare ready", e.pool,
-		func(c segment.PoolCounters) bool { return c.Spares >= 1 })
+	awaitCounters(t, "the two content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares >= 2 })
 	se := e.stream(t)
 
 	var placed []segment.Placed
@@ -1039,11 +1039,17 @@ func TestRollSixteenAppendersOverFourStreamsWithTheRefillUnderRace(t *testing.T)
 					}
 					// A spare refusal clears on its own: kick the refill
 					// and poll its counters until a spare is ready or the
-					// bounded attempts run out — the worker's makes are
-					// real fsyncs, far slower than a spin.
+					// bounded attempts run out. The poll yields every pass
+					// and re-kicks every few thousand, so the worker
+					// behind its coalesced kick slot is never left idle
+					// while sixteen consumers wait on its makes.
 					e.pool.Kick()
 					ready := false
-					for range poolAttempts {
+					for i := range poolAttempts {
+						if i%4096 == 0 {
+							e.pool.Kick()
+						}
+						runtime.Gosched()
 						if c := e.pool.Counters(); c.Spares+c.HeadroomBytes/rollCap+c.RepackReserveBytes/rollCap > 0 {
 							ready = true
 							break

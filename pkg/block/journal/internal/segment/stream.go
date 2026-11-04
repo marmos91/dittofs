@@ -796,12 +796,13 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 
 	var pred core.SegmentID
 
-	if state == sealSealed {
+	switch state {
+	case sealSealed:
 		// A seal someone else finished — explicit, idle, or one whose
 		// truncation failed and left the segment sealed at its cap (R34) —
 		// has already made the segment durable; the successor names it.
 		pred = old
-	} else if state == sealOpen {
+	case sealOpen:
 		_, _ = s.Seal(false)
 		// The seal the roll ran may have refused for a seal someone else
 		// was already running — the racing state, which settles on the
@@ -858,7 +859,6 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 		s.appendMu.Unlock()
 		return s.endTaken(id, ref, ErrStreamClosed)
 	}
-	old, oldRef = s.id, s.ref
 	s.id, s.ref = id, ref
 	s.next = format.SegmentHeaderSize
 	s.count = 0
