@@ -10,7 +10,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -129,41 +128,15 @@ type readPlusContent struct {
 	Data   []byte // data bytes (Hole=false only)
 }
 
-// buildReadPlusContents segments [offset, readEnd) of the file into data and
-// hole runs using the file's block list in metadata. Each segment is clipped to
-// the requested window. A window holding data answers common.ErrNoContentStore:
-// no content store is wired to read it from.
+// buildReadPlusContents answers [offset, readEnd) of a payloadless file as one
+// hole. A file with a payload answers common.ErrNoContentStore, as READ does:
+// File.Blocks lists uploaded chunks only, so a range missing from it may hold
+// bytes in a journal, and reporting it as a hole would read data back as zeros.
 func (h *Handler) buildReadPlusContents(ctx *types.CompoundContext, file *metadata.File, offset, readEnd uint64) ([]readPlusContent, error) {
-	// No backing payload: the whole window is a single hole (reads as zeros).
 	if file.PayloadID == "" {
 		return []readPlusContent{{Hole: true, Offset: offset, Length: readEnd - offset}}, nil
 	}
-
-	segs := block.Segments(file.Blocks, file.Size)
-	var contents []readPlusContent
-
-	for _, seg := range segs {
-		// Intersect the segment with the requested window.
-		segStart := seg.Start
-		if segStart < offset {
-			segStart = offset
-		}
-		segEnd := seg.End
-		if segEnd > readEnd {
-			segEnd = readEnd
-		}
-		if segStart >= segEnd {
-			continue
-		}
-
-		if seg.Kind == block.SegmentHole {
-			contents = append(contents, readPlusContent{Hole: true, Offset: segStart, Length: segEnd - segStart})
-			continue
-		}
-
-		return nil, common.ErrNoContentStore
-	}
-	return contents, nil
+	return nil, common.ErrNoContentStore
 }
 
 // encodeReadPlusResok encodes a successful READ_PLUS reply: status, eof, and the

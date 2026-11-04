@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -96,8 +97,14 @@ func (h *Handler) handleSeek(ctx *types.CompoundContext, reader io.Reader) *type
 		return seekErr(types.NFS4ERR_NXIO)
 	}
 
-	// The data/hole map comes from the file's block list in metadata: no
-	// content store is wired to report the extents it holds.
+	// A file with a payload answers as READ does: File.Blocks lists uploaded
+	// chunks only, so a range missing from it may hold bytes in a journal, and
+	// a SEEK_DATA reading it as a hole would make a sparse copy skip data.
+	if file.PayloadID != "" {
+		return seekErr(types.StatusForErr(common.ErrNoContentStore))
+	}
+
+	// A payloadless file is one hole: its block list is empty.
 	var (
 		nextOffset uint64
 		found      bool
