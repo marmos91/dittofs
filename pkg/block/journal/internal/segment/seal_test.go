@@ -2023,19 +2023,22 @@ func TestSealAnAppendArrivingMidSealParksAndRolls(t *testing.T) {
 			t.Fatalf("the Seal: %v", race.err)
 		}
 		// The parked append now rolls: it lands in a new segment, never in
-		// the sealed one.
+		// the sealed one. The place is read first, for the append's return
+		// fills both channels and a select between them would flip a coin.
+		var p2 segment.Placed
 		select {
-		case p2 := <-appended:
-			if p2.Loc.Segment == 1 {
-				t.Fatal("the parked append landed in the sealed segment, want the segment the roll took")
-			}
-			if hdr := streamSegmentHeader(t, e, p2.Loc.Segment); hdr.Predecessor != 1 {
-				t.Fatalf("the rolled-to segment names predecessor %d, want the sealed segment 1", hdr.Predecessor)
-			}
-		case err := <-appErr:
-			t.Fatalf("the parked append after the seal settled: %v", err)
+		case p2 = <-appended:
 		case <-time.After(10 * time.Second):
 			t.Fatal("the parked append did not return after the seal settled")
+		}
+		if err := <-appErr; err != nil {
+			t.Fatalf("the parked append after the seal settled: %v", err)
+		}
+		if p2.Loc.Segment == 1 {
+			t.Fatal("the parked append landed in the sealed segment, want the segment the roll took")
+		}
+		if hdr := streamSegmentHeader(t, e, p2.Loc.Segment); hdr.Predecessor != 1 {
+			t.Fatalf("the rolled-to segment names predecessor %d, want the sealed segment 1", hdr.Predecessor)
 		}
 		if race.r.Marker != wantMarker {
 			t.Fatalf("the seal's marker is at %d, want the last pre-seal record's end %d: the parked append moved the position", race.r.Marker, wantMarker)
@@ -2118,16 +2121,20 @@ func TestSealAnAppendArrivingMidSealParksAndRolls(t *testing.T) {
 			t.Fatalf("the Seal: %v", race.err)
 		}
 		// The parked append rolls now; its record lands in a new segment,
-		// never on the sealed one.
+		// never on the sealed one. The place is read first, for the
+		// append's return fills both channels and a select between them
+		// would flip a coin.
+		var p2 segment.Placed
 		select {
-		case p2 := <-parked:
-			if p2.Loc.Segment == 1 {
-				t.Fatal("the parked append landed in the sealed segment, want the segment the roll took")
-			}
-		case err := <-parksErr:
-			t.Fatalf("the parked append after the seal settled: %v", err)
+		case p2 = <-parked:
 		case <-time.After(10 * time.Second):
 			t.Fatal("the parked append never returned after the seal settled")
+		}
+		if err := <-parksErr; err != nil {
+			t.Fatalf("the parked append after the seal settled: %v", err)
+		}
+		if p2.Loc.Segment == 1 {
+			t.Fatal("the parked append landed in the sealed segment, want the segment the roll took")
 		}
 		if want := held.Loc.Off + held.Loc.Len; race.r.Marker != want {
 			t.Fatalf("the seal's marker is at %d, want the held record's end %d", race.r.Marker, want)

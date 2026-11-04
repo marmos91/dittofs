@@ -1687,10 +1687,18 @@ func TestRollASealRunningUnderARollIsWaitedOut(t *testing.T) {
 	if err := <-sealed; err != nil {
 		t.Fatalf("the Seal whose roll followed: %v", err)
 	}
+	// The place is read first, for the append's return fills both channels
+	// and a select between them would flip a coin.
+	var p segment.Placed
 	select {
-	case err := <-appErr:
+	case p = <-placed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the rolling append never returned after the seal settled")
+	}
+	if err := <-appErr; err != nil {
 		t.Fatalf("the rolling append after the settled seal: %v", err)
-	case p := <-placed:
+	}
+	{
 		if p.Loc.Segment == seg1 {
 			t.Fatalf("the record landed in the sealed segment %d, want its successor", seg1)
 		}
@@ -1714,8 +1722,6 @@ func TestRollASealRunningUnderARollIsWaitedOut(t *testing.T) {
 		if state, err := e.set.State(p.Loc.Segment); err != nil || state != segment.Active {
 			t.Fatalf("the successor's state after the roll is %v, %v, want Active", state, err)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the rolling append never returned after the seal settled")
 	}
 }
 
