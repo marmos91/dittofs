@@ -13,11 +13,11 @@ import (
 // pool and one descriptor cache, each keeping its own active segment and
 // sealing and rolling on its own.
 //
-// decision: the slice is immutable after construction, so no lock domain
-// guards it and none is needed: a stream is reached by an index, and the
-// files of one journal never arrive or leave, only their writes. Withdrawn
-// the day a stream is ever added or removed past the build, which would need
-// a domain of its own over the slice.
+// decision: the slice needs no lock domain because it is never written
+// after NewStreams builds it: the stream count is fixed at construction, and
+// every later access reads the same pointers. Withdrawn the day a stream is
+// ever added or removed past the build, which would need a domain of its own
+// over the slice.
 type Streams struct {
 	s []*Stream
 }
@@ -29,7 +29,11 @@ type Streams struct {
 // stream shares the set, the pool and the cache, so a file's roll and every
 // other's draw on the one spare pool and the one footprint.
 func NewStreams(n int, identity core.JournalID, set *Set, pool *Pool, cache *Descriptors) *Streams {
-	if n < 1 || n > math.MaxUint32 {
+	if n < 1 || uint64(n) > math.MaxUint32 {
+		// Below 1 and above the 32-bit column the header carries are one
+		// refusal: no stream number the format spells could name a stream
+		// of that count, and on a 32-bit int the plain upper comparison
+		// would overflow before it refused.
 		panic(fmt.Sprintf("segment: the stream count %d is below 1 or above MaxUint32, so no header could carry its stream numbers", n))
 	}
 	ss := &Streams{s: make([]*Stream, n)}

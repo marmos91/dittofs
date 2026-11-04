@@ -416,7 +416,7 @@ func TestRollRefusedWithAnEmptyPoolMakesNoSeamCall(t *testing.T) {
 		t.Fatalf("the warm append left %d content spares, want the class drained", got)
 	}
 
-	straddle := streamTestBody(4096, 0xc3)
+	straddle := streamTestBody(1024, 0xc3)
 	h, body := streamWriteHeader(streamFileID(2), 0, straddle, 7, core.Version{Counter: 2})
 	before := rollAllCountersOf(e)
 	leads, err := e.s.AppendRoll(h, body, segment.Roll{})
@@ -725,10 +725,11 @@ func TestRollENOSPCAfterAFailedMakeIsNotAnsweredAsSpare(t *testing.T) {
 
 // TestRollASegmentEndedByAFailedSealSyncNamesNoPredecessor checks R33: a
 // roll whose seal fails on its first or second sync — the record sync or the
-// marker sync, injected on the segment the roll seals — lands the record in a
-// new segment whose predecessor is 0, and the failed segment is ended in the
-// ledger, accounted at its cap. It catches a successor naming a segment the
-// failures ended.
+// marker sync, injected on the segment the roll seals — hands the failure to
+// the append that triggered it, stays on the ended segment, and unwinds the
+// spare it took; the next append rolls into a new segment whose predecessor
+// is 0, and the failed segment is ended in the ledger, accounted at its cap.
+// It catches a successor naming a segment the failures ended.
 func TestRollASegmentEndedByAFailedSealSyncNamesNoPredecessor(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -740,7 +741,7 @@ func TestRollASegmentEndedByAFailedSealSyncNamesNoPredecessor(t *testing.T) {
 		{"the sync of the marker", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e := rollBuild(t, 4096, segment.Targets{Content: 4}, nil).withStream(t, 1)
+			e := rollPin(t, 4096, segment.Targets{Content: 4}, nil).withStream(t, 1)
 			awaitCounters(t, "the content spares ready", e.pool,
 				func(c segment.PoolCounters) bool { return c.Spares >= 2 })
 
@@ -764,24 +765,47 @@ func TestRollASegmentEndedByAFailedSealSyncNamesNoPredecessor(t *testing.T) {
 				t.Fatalf("the straddling AppendRoll placed %d bytes, want a piece", p2.N)
 			}
 
-			// The rest lands in a new segment naming none.
+			// The append that triggered the roll carries the seal's failure:
+			// the roll stays on the ended segment rather than moving the
+			// stream past a window no fsync reached, and the spare it took
+			// is unwound.
 			rest := straddle[p2.N:]
 			h2, b2 := streamWriteHeader(streamFileID(2), 4096+p2.N, rest, 7, core.Version{Counter: 2})
-			p3, err := e.s.AppendRoll(h2, b2, segment.Roll{})
-			if err != nil {
-				t.Fatalf("the AppendRoll of the rest: %v", err)
-			}
-			if p3.Loc.Segment == p2.Loc.Segment {
-				t.Fatalf("the rest landed in segment %d, want a new one", p3.Loc.Segment)
-			}
-			if hdr := rollHeader(t, e, p3.Loc.Segment); hdr.Predecessor != 0 {
-				t.Fatalf("the new segment names predecessor %d, want none: a failed seal sync ends the segment its roll sealed", hdr.Predecessor)
+			if _, err := e.s.AppendRoll(h2, b2, segment.Roll{}); err == nil {
+				t.Fatal("the AppendRoll of the rest answered nil, want the seal's ended failure carried to its caller")
+			} else if !errors.Is(err, segment.ErrSegmentEnded) || !errors.Is(err, syscall.EIO) {
+				t.Fatalf("the AppendRoll of the rest = %v, want ErrSegmentEnded carrying the fault's EIO", err)
 			}
 			if state, err := e.set.State(p1.Loc.Segment); err != nil || state != segment.Ended {
 				t.Fatalf("the failed segment's state is %v, %v, want Ended", state, err)
 			}
-			if c := e.set.Counters(); c.UsedBytes-c.Spares*4096 != 2*4096 {
-				t.Fatalf("the segments account for %d, want both at their caps", c.UsedBytes-c.Spares*4096)
+
+			// The next append rolls, and its successor names none: the
+			// segment a failed seal sync ended leaves no successor of its
+			// own (R33).
+			if err := e.seam.Schedule(); err != nil {
+				t.Fatalf("disarming the sync fault: %v", err)
+			}
+			h3, b3 := streamWriteHeader(streamFileID(3), 0, streamTestBody(64, 0x3c), 7, core.Version{Counter: 3})
+			p3, err := e.s.AppendRoll(h3, b3, segment.Roll{})
+			if err != nil {
+				t.Fatalf("the append after the failed seal: %v", err)
+			}
+			if p3.Loc.Segment == p1.Loc.Segment {
+				t.Fatalf("the append after the failed seal stayed in segment %d, want a rolled-to successor", p3.Loc.Segment)
+			}
+			if hdr := rollHeader(t, e, p3.Loc.Segment); hdr.Predecessor != 0 {
+				t.Fatalf("the new segment names predecessor %d, want none: a failed seal sync ends the segment its roll sealed", hdr.Predecessor)
+			}
+			// Three segments are accounted whole: the ended one, the spare
+			// the failed roll took and unwound, and the successor the next
+			// append took — each at its cap, none leaked as a spare.
+			c := e.set.Counters()
+			if got := c.UsedBytes - c.Spares*4096; got != 3*4096 {
+				t.Fatalf("the segments account for %d, want three at their caps", got)
+			}
+			if c.Segments != 3 {
+				t.Fatalf("the ledger holds %d segments, want the ended, the unwound and the successor", c.Segments)
 			}
 		})
 	}
@@ -1260,10 +1284,11 @@ func TestRollTheStreamClosedWhileARollRanReturnsClosedAndEndsItsSpare(t *testing
 	<-stop.Reached()
 
 	// Close in another goroutine: it sets the stream's closed flag and then
-	// waits the in-flight roll out. Sync answers ErrStreamClosed once the
-	// flag is set, so waiting on it pins the close ahead of the release,
-	// and the roll's install — the one step that still checks — is
-	// guaranteed to see it.
+	// waits the in-flight roll out. The poll below pins the close ahead of
+	// the release, so the roll's next check is guaranteed to see the flag.
+	// That check is the post-seal one inside roll — this test's hold parks
+	// the roll inside its own Seal, so the install step is never reached;
+	// the install-time close check has a case of its own.
 	closed := make(chan error, 1)
 	go func() { closed <- e.s.Close() }()
 	// Seal answers ErrStreamClosed the moment the close has set the stream's
@@ -1415,4 +1440,356 @@ func TestRollTheConstructorGuardsAndTheBadRollOptions(t *testing.T) {
 func streamWriteHeaderOf(fid core.FileID, off int64, payload []byte) format.RecordHeader {
 	h, _ := streamWriteHeader(fid, off, payload, 7, core.Version{Counter: 1})
 	return h
+}
+
+// TestRollASegmentItsSealEndedIsReportedNotRolledPast checks the roll's word
+// for the seal it ran: a roll whose seal fails its records' sync — the
+// step that makes the acknowledged records durable — ends the segment, and
+// the roll does not move the stream past the failure as though nothing had
+// happened. The triggering append carries the seal's error, the stream stays
+// on the ended segment, and a Sync before any further append reports the
+// ended segment rather than answering nil for records no fsync reached. It
+// catches a discarded seal failure, the only signal the durability layer
+// ever had that a segment's acknowledged records were lost.
+func TestRollASegmentItsSealEndedIsReportedNotRolledPast(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := rollPin(t, 4096, segment.Targets{Content: 4}, nil).withStream(t, 1)
+	awaitCounters(t, "the content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares >= 2 })
+	se := e.stream(t)
+
+	// One record lands and is acknowledged; no Sync has run yet.
+	warm := make([]byte, 1024)
+	wh, wb := streamWriteHeaderPair(streamFileID(1), 0, warm)
+	warmPlaced := streamAppendWrite(t, se, wh, wb)
+	seg1 := warmPlaced.Loc.Segment
+
+	// The seal the roll will run fails its first sync — the records' — with
+	// EIO, so the seal ends the segment its roll was closing.
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, streamSegName(seg1), 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+
+	// The straddling write places its piece, and appending the rest rolls:
+	// the roll's seal fails and ends the segment, and the append carries
+	// the failure rather than landing in a successor as though the
+	// acknowledged records were durable.
+	straddle := streamTestBody(3072, 0x5a)
+	h1, b1 := streamWriteHeader(streamFileID(2), 0, straddle, 7, core.Version{Counter: 2})
+	p1, err := e.s.AppendRoll(h1, b1, segment.Roll{})
+	if err != nil {
+		t.Fatalf("the straddling AppendRoll: %v", err)
+	}
+	if p1.N >= int64(len(straddle)) {
+		t.Fatalf("the straddling AppendRoll placed the whole %d, want a piece", len(straddle))
+	}
+	rest := straddle[p1.N:]
+	h2, b2 := streamWriteHeader(streamFileID(2), p1.N, rest, 7, core.Version{Counter: 2})
+	_, err = e.s.AppendRoll(h2, b2, segment.Roll{})
+	if err == nil {
+		t.Fatal("the append whose roll's seal failed the records' sync answered nil: the failure was discarded")
+	}
+	if !errors.Is(err, segment.ErrSegmentEnded) {
+		t.Fatalf("the append whose roll's seal failed = %v, want ErrSegmentEnded carrying the seal's failure", err)
+	}
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the append whose roll's seal failed = %v, want it carrying the fault's EIO", err)
+	}
+
+	// The stream stays on the ended segment, so the next Sync reports it
+	// rather than answering nil for the records the failed window lost.
+	if err := e.s.Sync(); !errors.Is(err, segment.ErrSegmentEnded) {
+		t.Fatalf("the Sync after the ended seal = %v, want ErrSegmentEnded: the stream must not move past the failure silently", err)
+	}
+	if state, err := e.set.State(seg1); err != nil || state != segment.Ended {
+		t.Fatalf("the sealed-failed segment's state is %v, %v, want Ended", state, err)
+	}
+
+	// The next append rolls again, into a successor naming none (R33).
+	if err := e.seam.Schedule(); err != nil {
+		t.Fatalf("disarming the sync fault: %v", err)
+	}
+	h3, b3 := streamWriteHeader(streamFileID(3), 0, streamTestBody(64, 0x3c), 7, core.Version{Counter: 3})
+	p3, err := e.s.AppendRoll(h3, b3, segment.Roll{})
+	if err != nil {
+		t.Fatalf("the append after the ended seal: %v", err)
+	}
+	if p3.Loc.Segment == seg1 {
+		t.Fatalf("the append after the ended seal stayed in segment %d, want a rolled-to successor", seg1)
+	}
+	if hdr := rollHeader(t, e, p3.Loc.Segment); hdr.Predecessor != 0 {
+		t.Fatalf("the successor after the ended seal names predecessor %d, want none (R33)", hdr.Predecessor)
+	}
+}
+
+// TestRollContentFollowsARepackRollIntoTheReserveSpare pins the reserve's
+// half of the class rule: the class decides only which spare a roll takes,
+// and the segment it hands the stream is then the stream's active segment,
+// which every later record fills whatever its own class. A repack copy that
+// rolled onto the last reserve spare is therefore followed by content in the
+// same segment, and a Sync covers it like any record. It pins the ceiling
+// the decision at drawSpare names: content spends repack-reserve space until
+// a stream of the copies' own keeps them apart.
+func TestRollContentFollowsARepackRollIntoTheReserveSpare(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// One reserve spare, pinned so it is the only one the classes hold.
+	e := rollPin(t, streamCap, segment.Targets{Reserve: 1}, nil).withStream(t, 1)
+	awaitCounters(t, "the reserve spare ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.RepackReserveBytes == segCap && c.Spares == 0 })
+
+	// The repack copy rolls onto the reserve spare.
+	payload := streamTestBody(64, 0x3c)
+	hr, br := streamWriteHeader(streamFileID(1), 0, payload, 7, core.Version{Counter: 1})
+	p1, err := e.s.AppendRoll(hr, br, segment.Roll{Repack: true})
+	if err != nil {
+		t.Fatalf("the repack roll onto the ready reserve spare: %v", err)
+	}
+
+	// A plain content write follows into the segment the roll made: the
+	// class named the roll's spare, and the stream's records after it take
+	// the room they find, content included — the ceiling the decision names.
+	hh, bb := streamWriteHeader(streamFileID(2), 0, payload, 7, core.Version{Counter: 2})
+	p2, err := e.s.AppendRoll(hh, bb, segment.Roll{})
+	if err != nil {
+		t.Fatalf("the content write into the repack-made segment: %v", err)
+	}
+	if p2.Loc.Segment != p1.Loc.Segment {
+		t.Fatalf("the content write rolled to segment %d, want the repack-made %d: the segment is the stream's once taken", p2.Loc.Segment, p1.Loc.Segment)
+	}
+
+	// What the pool holds afterwards: the repack reserve spent, and the
+	// content class empty as it began.
+	c := e.pool.Counters()
+	if c.RepackReserveBytes != 0 {
+		t.Fatalf("the reserve holds %d ready bytes after the repack roll, want the spare it took gone", c.RepackReserveBytes)
+	}
+	if c.Spares != 0 {
+		t.Fatalf("the content class holds %d spares, want none", c.Spares)
+	}
+	// A third write, whose segment is nearly spent of room if the cap were
+	// small, stays in the segment while room remains: it neither rolls nor
+	// draws another class's spare.
+	before := e.set.Counters()
+	h3, b3 := streamWriteHeader(streamFileID(3), 64, payload, 7, core.Version{Counter: 3})
+	p3, err := e.s.AppendRoll(h3, b3, segment.Roll{Repack: true})
+	if err != nil {
+		t.Fatalf("the second repack copy into the segment it shares: %v", err)
+	}
+	if p3.Loc.Segment != p1.Loc.Segment {
+		t.Fatalf("the second repack copy rolled to segment %d, want the one segment the stream holds", p3.Loc.Segment)
+	}
+	if now := e.set.Counters(); now != before {
+		t.Fatalf("the second repack copy moved the ledger: %+v, want %+v", now, before)
+	}
+}
+
+// TestRollARecordTooLargeForAnEmptySegmentIsRefused checks the one refusal
+// the roll cannot answer: a record whose size exceeds the room an empty
+// segment holds — an entire segment is the largest room a stream hands out
+// — answers ErrSegmentFull, reserves nothing, and takes no spare, so it
+// neither rolls nor loops the pool drain. It catches the count guard that
+// keeps a too-large record from rolling through spare after spare, each one
+// sealed empty and ended.
+func TestRollARecordTooLargeForAnEmptySegmentIsRefused(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// The smallest room the format spells: the header, the marker, one
+	// catalog entry and the trailer, with 16 bytes of record room past
+	// them — too little for any record's own overhead.
+	tinyCap := int64(format.SegmentHeaderSize) + 16 +
+		int64(format.SealMarkerSize) + int64(format.CatalogEntrySize) + int64(format.TrailerSize)
+
+	e := rollPin(t, tinyCap, segment.Targets{Content: 2}, nil).withStream(t, 1)
+	awaitCounters(t, "the content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	// A write whose record cannot fit the empty room: not even one payload
+	// byte places against its own overhead.
+	payload := streamTestBody(512, 0x3c)
+	h, body := streamWriteHeader(streamFileID(1), 0, payload, 7, core.Version{Counter: 1})
+	_, err := e.s.AppendRoll(h, body, segment.Roll{})
+	if !errors.Is(err, segment.ErrSegmentFull) {
+		t.Fatalf("the write too large for an empty segment = %v, want ErrSegmentFull", err)
+	}
+
+	// A header-only kind whose record does not fit the empty room is
+	// refused the same way: it is not the payload the room lacks but the
+	// record's own size.
+	hh := format.RecordHeader{Kind: format.KindStamp, File: streamFileID(2), Version: core.Version{Counter: 2}, Tag: 7}
+	if _, err := e.s.AppendRoll(hh, format.RecordBody{Cut: 4}, segment.Roll{}); !errors.Is(err, segment.ErrSegmentFull) {
+		t.Fatalf("the stamp too large for an empty segment = %v, want ErrSegmentFull", err)
+	}
+
+	// Both refusals moved nothing: no spare was taken and no segment
+	// sealed, so neither the pool nor the ledger shows a roll.
+	c := e.pool.Counters()
+	if c.Spares != 2 || c.SpareRefusals != 0 {
+		t.Fatalf("after the refusals the pool holds %d spares and %d refusals, want 2 and 0: a too-large record must not drain the pool", c.Spares, c.SpareRefusals)
+	}
+	l := e.set.Counters()
+	if l.Segments != 0 || l.Sealed != 0 || l.Spares != 2 {
+		t.Fatalf("after the refusals the ledger holds %+v, want the two spares alone: no roll ran", l)
+	}
+}
+
+// TestRollASealRunningUnderARollIsWaitedOut checks the roll's word for a
+// segment another seal was already closing: the append whose record needs
+// the room parks while the seal runs, and once the seal settles the roll it
+// then makes names the sealed segment as its predecessor and installs a
+// successor the stream keeps appending to — the old segment's footer written
+// once, by the seal that won, and the successor's state never overwritten by
+// it. It catches a successor named under a running seal, and a successor
+// marked sealed by the seal's later return.
+func TestRollASealRunningUnderARollIsWaitedOut(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := rollPin(t, 4096, segment.Targets{Content: 4}, nil).withStream(t, 1)
+	awaitCounters(t, "the content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares >= 3 })
+	se := e.stream(t)
+
+	// One record nearly fills the segment; the next record must roll.
+	warm := make([]byte, 3400)
+	wh, wb := streamWriteHeaderPair(streamFileID(1), 0, warm)
+	warmPlaced := streamAppendWrite(t, se, wh, wb)
+	seg1 := warmPlaced.Loc.Segment
+
+	// An explicit seal parks inside its first sync: the segment is taken,
+	// the state sealing, its footer not yet durable.
+	stop := e.seam.HoldFirst(t, journaltest.OpSync, streamSegName(seg1))
+	sealed := make(chan error, 1)
+	go func() { _, err := e.s.Seal(false); sealed <- err }()
+	<-stop.Reached()
+
+	// The record that cannot fit parks while the seal runs — never
+	// reserving beneath it — and rolls once the seal has settled.
+	payload := streamTestBody(64, 0x3c)
+	h, body := streamWriteHeader(streamFileID(2), 0, payload, 7, core.Version{Counter: 2})
+	placed := make(chan segment.Placed, 1)
+	appErr := make(chan error, 1)
+	go func() {
+		p, err := e.s.AppendRoll(h, body, segment.Roll{})
+		placed <- p
+		appErr <- err
+	}()
+	select {
+	case err := <-sealed:
+		t.Fatalf("the parked Seal returned %v while the record waited: it must hold the segment until the roll follows it", err)
+	case err := <-appErr:
+		t.Fatalf("the rolling append returned %v while the seal ran", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// The seal settles; the append then rolls and lands in the successor.
+	stop.Release()
+	if err := <-sealed; err != nil {
+		t.Fatalf("the Seal whose roll followed: %v", err)
+	}
+	select {
+	case err := <-appErr:
+		t.Fatalf("the rolling append after the settled seal: %v", err)
+	case p := <-placed:
+		if p.Loc.Segment == seg1 {
+			t.Fatalf("the record landed in the sealed segment %d, want its successor", seg1)
+		}
+		if hdr := rollHeader(t, e, p.Loc.Segment); hdr.Predecessor != seg1 {
+			t.Fatalf("the successor names predecessor %d, want the sealed segment %d: it was named under the seal", hdr.Predecessor, seg1)
+		}
+		// The successor stays the stream's active segment: a second
+		// record lands in it without another roll, and the seal that ran
+		// never overwrote its state.
+		h2, b2 := streamWriteHeader(streamFileID(3), 64, payload, 7, core.Version{Counter: 3})
+		p2, err := e.s.AppendRoll(h2, b2, segment.Roll{})
+		if err != nil {
+			t.Fatalf("the second record in the successor: %v", err)
+		}
+		if p2.Loc.Segment != p.Loc.Segment {
+			t.Fatalf("the second record rolled to segment %d, want the successor %d: its state was overwritten", p2.Loc.Segment, p.Loc.Segment)
+		}
+		if state, err := e.set.State(seg1); err != nil || state != segment.Sealed {
+			t.Fatalf("the sealed segment's state after the roll is %v, %v, want Sealed", state, err)
+		}
+		if state, err := e.set.State(p.Loc.Segment); err != nil || state != segment.Active {
+			t.Fatalf("the successor's state after the roll is %v, %v, want Active", state, err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the rolling append never returned after the seal settled")
+	}
+}
+
+// TestRollAStreamClosedAtItsSuccessorsHeaderIsRefusedAndTheSpareEnded checks
+// the install step's own close check — nearer than the seal's: a close that
+// lands while the roll is writing its successor's header, after the seal has
+// settled, must make the append answer ErrStreamClosed, and the taken spare
+// is ended in the ledger — never installed over the closed stream and never
+// left a spare or an active segment behind, so no ref is released twice.
+// It catches a successor installed past a close, whose ref Close would not
+// hold and whose double release would drop a descriptor an fsync needed.
+func TestRollAStreamClosedAtItsSuccessorsHeaderIsRefusedAndTheSpareEnded(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := rollPin(t, 4096, segment.Targets{Content: 4}, nil).withStream(t, 1)
+	awaitCounters(t, "the content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares == 4 })
+	se := e.stream(t)
+
+	// One record fills the segment to its cap, so the next record must
+	// roll: its roll takes the next spare in id order and writes the
+	// successor's header on it — the write the close must race.
+	warm := make([]byte, 3736)
+	wh, wb := streamWriteHeaderPair(streamFileID(1), 0, warm)
+	warmPlaced := streamAppendWrite(t, se, wh, wb)
+	seg1 := warmPlaced.Loc.Segment
+	seg2 := seg1 + 1 // the pinned pool's FIFO hands the next id out
+
+	// Park the successor's header write: the roll has taken its spare,
+	// sealed the full segment, and reached its last I/O before install.
+	stop := e.seam.HoldFirst(t, journaltest.OpWrite, segmentName(seg2))
+	payload := streamTestBody(1024, 0x3c)
+	h, body := streamWriteHeader(streamFileID(2), 0, payload, 7, core.Version{Counter: 2})
+	appendErr := make(chan error, 1)
+	go func() {
+		_, err := e.s.AppendRoll(h, body, segment.Roll{})
+		appendErr <- err
+	}()
+	<-stop.Reached()
+
+	// Close the stream while the header write parks: the close's wait
+	// cannot pass until the append does, and the append's roll then finds
+	// the flag set at install.
+	closed := make(chan error, 1)
+	go func() { closed <- e.s.Close() }()
+	for range 1 << 20 {
+		if _, err := e.s.Seal(false); errors.Is(err, segment.ErrStreamClosed) {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	// Release the header write: the append answers the close and the taken
+	// spare is ended — never installed.
+	stop.Release()
+	if err := <-closed; err != nil {
+		t.Fatalf("Close after the roll it waited out: %v", err)
+	}
+	if err := <-appendErr; !errors.Is(err, segment.ErrStreamClosed) {
+		t.Fatalf("the append closed under the roll's install = %v, want ErrStreamClosed", err)
+	}
+	if state, err := e.set.State(seg2); err != nil || state != segment.Ended {
+		t.Fatalf("the taken spare's state after the closed install is %v, %v, want Ended at its cap", state, err)
+	}
+	if state, err := e.set.State(seg1); err != nil || state != segment.Sealed {
+		t.Fatalf("the full segment's state after the closed roll is %v, %v, want Sealed", state, err)
+	}
+	// Nothing leaked: the segments' own footprint holds the sealed and the
+	// unwound spare whole, and every other spare is still the pool's.
+	c := e.set.Counters()
+	if got := c.UsedBytes - c.Spares*4096; got != 2*4096 {
+		t.Fatalf("the segments account for %d after the closed install, want the sealed and the unwound at their caps", got)
+	}
+	if c.Spares != 2 {
+		t.Fatalf("the pool holds %d ready spares after the closed install, want the two the takes never reached", c.Spares)
+	}
 }

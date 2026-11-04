@@ -1263,7 +1263,6 @@ func TestSealAppendsRacingItLandBeforeItsMarkerOrAreRefused(t *testing.T) {
 	if p99.Loc.Off < format.SegmentHeaderSize {
 		t.Fatalf("the append after the seal landed at %d, want a record slot", p99.Loc.Off)
 	}
-	_ = p99
 
 	// The footer lists exactly the successes, ascending by offset.
 	size := sealFileSize(t, e, 1)

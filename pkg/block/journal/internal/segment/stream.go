@@ -347,28 +347,19 @@ type Roll struct {
 // is reserved and nothing written.
 var ErrBadRoll = errors.New("segment: the roll options do not fit the record")
 
-// takeSpare takes the spare the roll needs, and classifies the refusal when
-// it finds none. The roll options name the class: a repack copy's takes a
-// repack-reserve spare, never a content one (R23); a reserved roll's takes one
-// of its hold's spares ahead of every unreserved write (R80); and an
-// unreserved content roll's takes a content spare by the unreserved take, so
-// holds keep theirs. A header-only record takes a content spare first the
-// same way, and only when no content spare is ready does it take a headroom
-// spare (D12): the classes never lend to one another, so the content miss is
-// answered by the headroom's readiness alone, never by the reserve's.
+// takeSpare takes the spare the roll needs and, when no class can serve it,
+// classifies the refusal the roll answers with — the one place the roll
+// knows its answer is final.
 //
-// The refusal is classified here, the one place the roll knows its final
-// answer. A refusal is an errors.As *core.NoSpaceError whose Limit is
-// LimitSpare — one drawn from the content, headroom, reserve or hold path
-// alike. A stopped pool's core.ErrClosed passes through unchanged and
-// uncounted, so the stream's answer names the close, not a space limit.
-//
-// When the pool reports making a spare failed with ENOSPC, the refusal is
-// answered with the platform's own ENOSPC, wrapped so errors.Is holds for
-// syscall.ENOSPC and not for core.ErrNoSpace: the journal's limits are the
-// caller's to drain and a full device is the operator's, and the two must not
-// be answered alike (R21). It is not counted. Otherwise the refusal naming
-// `spare` is counted once here and returned unchanged (R20, R22).
+// When the pool reports making a spare failed with ENOSPC, a refusal naming
+// `spare` is answered with the platform's own ENOSPC, wrapped so errors.Is
+// holds for syscall.ENOSPC and not for core.ErrNoSpace: the journal's limits
+// are the caller's to drain and a full device is the operator's, and the two
+// must not be answered alike (R21). It is not counted. Otherwise the refusal
+// naming `spare` is counted once and returned unchanged (R20, R22). Every
+// other answer passes through unchanged and uncounted: a stopped pool's
+// core.ErrClosed, when it carries no NoSpaceError, and a header-only roll's
+// headroom-named refusal.
 //
 // It runs with no lock held and makes no I/O: the takes go to the pool and
 // the hold, which reach the ledger alone, so a roll costs only the take
@@ -379,22 +370,6 @@ func (s *Stream) takeSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
 		return id, nil
 	}
 
-	// A header-only roll that found neither class ready is refused naming
-	// the headroom, not the spare: the record goes on drawing on the
-	// allocated headroom, and the spare pool never held what it asked for,
-	// so the refusal is neither a spare's nor counted (R23).
-	if !hasPayload && !r.Repack && r.Hold == nil {
-		var ns *core.NoSpaceError
-		if errors.As(err, &ns) && ns.Limit == core.LimitSpare {
-			return 0, &core.NoSpaceError{Limit: core.LimitHeadroom, Missing: 1, Unit: core.UnitSegments}
-		}
-	}
-
-	// A stopped pool's core.ErrClosed passes through unchanged and uncounted,
-	// so the stream's answer names the close, not a space limit.
-	if errors.Is(err, core.ErrClosed) {
-		return 0, err
-	}
 	// The full device, answered as itself rather than as a limit.
 	//
 	// ponytail: no full-size retired segment is consulted, because nothing
@@ -426,6 +401,16 @@ func (s *Stream) takeSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
 // ponytail: content that follows lands in that segment, spending headroom
 // space until the refill. The upgrade is keeping the rest of that segment
 // for header-only records, once the headroom's draws show the cost.
+//
+// decision: the class names the spare a roll takes and nothing past it. A
+// repack copy rolled onto a reserve spare hands the stream an ordinary
+// segment, so the content records that follow land in it and spend repack-
+// reserve space, and a repack copy that follows a content roll lands in the
+// segment that content made. The classes keep the takes apart, not the
+// records after them. The exemption holds while streams serve files of every
+// kind; withdraw it when repack copies run on a stream of their own, or when
+// the stream remembers the class of its active segment and rolls a record
+// of the other kind out of it.
 func (s *Stream) drawSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
 	switch {
 	case r.Repack:
@@ -435,16 +420,26 @@ func (s *Stream) drawSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
 	case hasPayload:
 		return s.pool.Take(Content)
 	}
+	// The header-only record, the only kind the switch above passes by: a
+	// content spare by the unreserved take, so holds keep theirs, and only
+	// when no content spare is ready a headroom one (D12). Both refusing —
+	// the content miss naming `spare`, the headroom miss the same — the
+	// roll is answered naming the headroom rather than the spare: the
+	// record goes on drawing on the allocated headroom, and the spare pool
+	// never held what it asked for, so the refusal is neither a spare's
+	// nor counted (R23).
 	id, err := s.pool.Take(Content)
-	if err != nil {
-		var ns *core.NoSpaceError
-		if errors.As(err, &ns) && ns.Limit == core.LimitSpare {
-			if hid, herr := s.pool.Take(Headroom); herr == nil {
-				return hid, nil
-			}
-		}
+	if err == nil {
+		return id, nil
 	}
-	return id, err
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) || ns.Limit != core.LimitSpare {
+		return 0, err
+	}
+	if hid, herr := s.pool.Take(Headroom); herr == nil {
+		return hid, nil
+	}
+	return 0, &core.NoSpaceError{Limit: core.LimitHeadroom, Missing: 1, Unit: core.UnitSegments}
 }
 
 // endTaken unwinds a take that failed past Take: the member segment is ended
@@ -593,6 +588,18 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		if s.sealState == sealSealing {
 			s.drained.Wait()
 			continue
+		}
+
+		// The one refusal the roll cannot answer, checked before anything
+		// is taken: a record whose own size exceeds the room an entire
+		// segment holds — the segment header aside, with the seal's
+		// reserve for one entry — cannot be served by any roll, and
+		// reserve-side discovery, after a take, would consume one spare
+		// after another for a record that fits nowhere. The refusal
+		// reserves nothing, so it leaves the stream exactly where it was.
+		if h.Size()+sealRoom(1) > s.set.cap-format.SegmentHeaderSize {
+			s.appendMu.Unlock()
+			return Placed{}, ErrSegmentFull
 		}
 
 		// The roll an append may need, drawn before anything of the record
@@ -764,9 +771,10 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 // options name, seals the full segment the stream leaves — a full seal, for
 // the segment is closed because the next record did not fit — and writes the
 // new segment's 48-byte header naming the sealed segment as its predecessor,
-// none after a segment a failure ended (R8, R24, R33). A roll the pool cannot
-// serve is refused at once, before any seam call, so the active segment is
-// untouched and the refusal costs no I/O (R15, R20).
+// none after a segment a failure ended (R8, R24, R33). The first segment is
+// a roll from nothing: nothing is sealed, and the header names none. A roll
+// the pool cannot serve is refused at once, before any seam call, so the
+// active segment is untouched and the refusal costs no I/O (R15, R20).
 //
 // It is run by the one caller that armed the roll's gate, with no lock held,
 // for its steps take the ledger's seal and storage's write and sync. A
@@ -789,21 +797,35 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	// finished, or one whose truncation failed (R34), leaves the segment
 	// Sealed and names it; a segment a failed seal's syncs ended names none
 	// (R33), and a stream that held no segment names none.
+	//
+	// A seal that is still running — one the caller asked for, the idle
+	// sealer's, or a race's — is waited out here on the drain's cond before
+	// any word of the predecessor is read: a successor named under a
+	// sealing segment would name a segment whose footer the seal was still
+	// writing, and one installed beside it would be overwritten by the
+	// seal's settled state the moment the seal returned.
 	s.appendMu.Lock()
 	old, oldRef := s.id, s.ref
 	state := s.sealState
+	for state == sealSealing {
+		s.drained.Wait()
+		state = s.sealState
+	}
 	s.appendMu.Unlock()
 
 	var pred core.SegmentID
 
-	switch state {
-	case sealSealed:
+	switch {
+	case old == 0:
+		// A stream that held no segment names none: the first segment of a
+		// stream has nothing before it, and there is nothing to seal.
+	case state == sealSealed:
 		// A seal someone else finished — explicit, idle, or one whose
 		// truncation failed and left the segment sealed at its cap (R34) —
 		// has already made the segment durable; the successor names it.
 		pred = old
-	case sealOpen:
-		_, _ = s.Seal(false)
+	case state == sealOpen:
+		_, serr := s.Seal(false)
 		// The seal the roll ran may have refused for a seal someone else
 		// was already running — the racing state, which settles on the
 		// drain's cond — so the predecessor is read only once no seal is in
@@ -824,14 +846,25 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 			pred = old
 		}
 		closed := s.closed
+		ended := s.sealState == sealEnded
 		s.appendMu.Unlock()
 		if closed {
 			return s.endTaken(id, Ref{}, ErrStreamClosed)
 		}
+		if ended {
+			// The seal ended the segment: a failed sync of its records,
+			// of its marker, or a write that failed. That failure is the
+			// only word the durability layer ever gets that the segment's
+			// acknowledged records were not made durable, so the roll
+			// hands it to its caller and stays on the ended segment —
+			// moving on would answer the next Sync with a nil over a
+			// window no fsync reached. The taken spare is unwound, and the
+			// next append rolls again, naming none (R33).
+			return s.endTaken(id, Ref{}, fmt.Errorf("%w: %w", ErrSegmentEnded, serr))
+		}
 	}
-	// state == sealEnded, or a stream that held no segment, names none: a
-	// segment a failure ended leaves no successor of its own, and the
-	// first segment of a stream has nothing before it.
+	// state == sealEnded names none: a segment a failure ended leaves no
+	// successor of its own.
 
 	// The new segment, opened and named: the header is written once, at
 	// offset 0, and a failure past the take ends the taken segment in the
