@@ -517,8 +517,8 @@ func (fs *Filesystem) releaseOrphan(ctx context.Context, f vfs.File, orphan kvst
 	if orphan.File.IsZero() {
 		return
 	}
-	// The release outlives the call's end, as a last close's does.
-	ctx, cancel := fs.detached(ctx)
+	// The release outlives a client dropping, as a last close's does.
+	ctx, cancel := fs.uncancelled(ctx)
 	defer cancel()
 	if err := fs.release(ctx, keyOf(f)); err != nil {
 		fs.log.Warn("vfs: a release after a name's removal failed", "file", f.ID, "err", err)

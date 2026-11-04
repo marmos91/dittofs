@@ -1363,6 +1363,16 @@ func TestAnAdminsOpenWithoutIntentIsUnprivilegedThroughout(t *testing.T) {
 	if _, err := n.Open(ctx, c, in); err != nil {
 		t.Errorf("a backup-intent creating open in a directory denying everyone: %v, want granted", err)
 	}
+	locked, _ := n.fs.Create(t, n.fs.Admin, pub, "locked-file", kvstore.Regular(0o644))
+	_, err = n.fs.Store.Files().SetACL(ctx, n.fs.Admin, locked, deny)
+	n.must(t, err)
+	if _, err := n.Open(ctx, c, vfs.OpenRequest{H: locked, Disposition: vfs.OpenExisting, Access: entity.ReadData}); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("an open by handle of a file denying everyone: %v, want ErrAccess", err)
+	}
+	const genericAll = entity.AccessMask(1 << 28)
+	if _, err := n.Open(ctx, c, byName(pub, "generic", vfs.CreateNew, entity.ReadData|genericAll)); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("a creating open asking a generic right: %v, want ErrAccess", err)
+	}
 }
 
 // Over NFS, which has no backup intent, an open is decided with the caller's

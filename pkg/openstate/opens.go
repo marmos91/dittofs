@@ -147,10 +147,11 @@ type OpenResult struct {
 	Grant    *CachingGrant // the grant covering the open, or offered with it; nil: none
 	Confirm  bool          // the open's owner is new: it must ConfirmOpen before any other request
 	Replayed bool          // a replayed create, answered with the open it made
-	Prior    *OpenPrior    // the owner's open as it stood before this one upgraded it; nil: a new open
+	Prior    *OpenPrior    // the owner's open as it stood before this one upgraded or reclaimed it; nil: an open this request made or replayed
 }
 
-// OpenPrior is an owner's open as it stood before an open upgraded it.
+// OpenPrior is an owner's open as it stood before an open upgraded or
+// reclaimed it.
 type OpenPrior struct {
 	Access, Deny entity.AccessMask
 	Seq          uint32
@@ -240,13 +241,16 @@ type Opens interface {
 	// Close ends an open, and reports what the service runs after it.
 	Close(ctx context.Context, who Caller, o OpenRef, q Seqs) (CloseResult, error)
 	// Abandon undoes an open whose answer never reached its client, quoting
-	// no owner number: an upgrade goes back to prior, and a new open ends
-	// with its delete on close dropped, as a refused open leaves the file.
+	// no owner number: an open the owner held goes back to prior, and a new
+	// open ends with its delete on close dropped, as a refused open leaves
+	// the file.
 	//
-	// decision: a grant offered with the undone open is not taken back, as
-	// the client was answered none and the grant covers an open it still
-	// holds or none. Take it back if a client is seen using a grant it was
-	// never answered.
+	// decision: a grant offered with the undone open is not taken back. A
+	// delegation, which covers no open, then stays with a client that never
+	// learns of it, as its later opens are offered none: the next
+	// conflicting open recalls it and waits out the recall's deadline, one
+	// lease period, as the client does not return it. Take back a delegation
+	// the undone open minted if such waits are seen.
 	Abandon(ctx context.Context, who Caller, o OpenRef, prior *OpenPrior) (CloseResult, error)
 	// Reconnect attaches a durable or persistent open, disconnected and
 	// within its Timeout, to session s, answering it with the lease covering
@@ -616,6 +620,7 @@ func (t *Table) reclaimHeld(e *entry, who Caller, r OpenRequest, res *OpenResult
 		return ErrNotYours
 	}
 	res.Open = o.Open
+	res.Prior = &OpenPrior{Access: o.Mode.Access, Deny: o.Mode.Deny, Seq: o.Ref.Seq, Delete: o.Delete}
 	for _, g := range e.grants {
 		if g.heldBy(who.Client, o.lease, o) {
 			p := g.public(e.file)

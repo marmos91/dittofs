@@ -167,7 +167,8 @@ func (fs *Filesystem) openHandle(ctx context.Context, a *admitted, c vfs.Call, r
 // set for a file the open made. Over SMB the open is decided with the
 // caller's privilege only on a backup or restore intent, and the maximal
 // access it answers never with it. An open whose answer fails once open
-// state recorded it is closed again.
+// state recorded it is undone: an open the owner held goes back to what it
+// held, and a new open is closed.
 //
 // decision: an open that created its file is granted what it asks without
 // deciding it on the new file, as the add right on its directory was
@@ -232,15 +233,15 @@ func (fs *Filesystem) grant(ctx context.Context, a *admitted, c vfs.Call, req vf
 	ref := vfs.OpenRef{Kind: openstate.RefOpened, State: o.Open.Ref, Open: o.Open.ID, Handle: h}
 	file, err := fs.openedFile(ctx, a, h, f, overwrite)
 	if err != nil {
-		// No client holds the open's reference to close it, so it is closed
+		// No client holds the open's reference to undo it, so it is undone
 		// here, on a context the call's end does not cancel, though Drain's
-		// deadline does. An unlinked f it alone held is released here, under
-		// the admission lock already held, as a close releases it.
+		// deadline does. An unlinked f a new open alone held is released here,
+		// under the admission lock already held, as a close releases it.
 		ctx, cancel := fs.detached(ctx)
 		defer cancel()
 		// The open is undone, not closed: it quotes no owner number, as the
-		// open took the request's, and an upgrade goes back to what the owner
-		// held, a new open ending with its delete on close dropped.
+		// open took the request's, and an open the owner held goes back to
+		// what it held, a new open ending with its delete on close dropped.
 		cr, cerr := fs.opens.Abandon(ctx, who, ref, o.Prior)
 		switch {
 		case cerr != nil:
@@ -323,12 +324,27 @@ func (fs *Filesystem) reconnect(ctx context.Context, a *admitted, c vfs.Call, re
 }
 
 // detached is ctx without the call's own end, for what a call finishes once
-// its change has committed or open state recorded its open: Drain's
+// open state recorded its open, an undo or a reconnect's close: Drain's
 // deadline and Stop still end it, as they end every call.
 func (fs *Filesystem) detached(ctx context.Context) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	stop := context.AfterFunc(fs.stop, cancel)
 	return ctx, func() { stop(); cancel() }
+}
+
+// uncancelled is detached keeping ctx's deadline, for what a close or a
+// name's removal leaves: a client dropping does not end it, while the
+// call's deadline, Drain's and Stop still do (RFC 17 §5.3). A deferred
+// unlink the call's deadline ends is refused and counted, as any refused
+// one is.
+func (fs *Filesystem) uncancelled(ctx context.Context) (context.Context, context.CancelFunc) {
+	d, ok := ctx.Deadline()
+	ctx, cancel := fs.detached(ctx)
+	if !ok {
+		return ctx, cancel
+	}
+	ctx, end := context.WithDeadline(ctx, d)
+	return ctx, func() { end(); cancel() }
 }
 
 // forOpen is c as an open over protocol p is decided: over SMB, which
@@ -465,11 +481,12 @@ func (fs *Filesystem) opened(ctx context.Context, c vfs.Call, ref vfs.OpenRef) (
 // one open state made itself, holding none of f's locks: the deferred unlink
 // of a delete-pending f, then the release of an f left with no name and no
 // open. It answers the directory's WCC when the deferred unlink ran at once.
-// Both run on the call, on a context the call's end does not cancel, so a
-// call ending once the close committed neither loses the delete on close
-// nor leaves f's content held until the next start.
+// Both run on the call, on a context a client dropping does not cancel and
+// the call's deadline still ends, so a client dropping once the close
+// committed neither loses the delete on close nor leaves f's content held
+// until the next start.
 func (fs *Filesystem) closed(ctx context.Context, share entity.ShareID, f entity.FileID, cr openstate.CloseResult) *vfs.WCC {
-	ctx, cancel := fs.detached(ctx)
+	ctx, cancel := fs.uncancelled(ctx)
 	defer cancel()
 	var w *vfs.WCC
 	if d := cr.Unlink; d != nil {
