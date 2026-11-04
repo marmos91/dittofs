@@ -66,7 +66,6 @@ suites:
           printf '%s\0' "$f"
         done | xargs -0 shellcheck --severity=warning
   unit:
-    job: Unit Tests (1.26.x)
     parallel: true
     format: go-json
     # Its coverage profile goes beside the cell's results, for the coverage report.
@@ -86,7 +85,6 @@ suites:
         # measures on a shared runner, where a busy neighbour can trip it; it fails no pull request.
         tier: nightly
   integration:
-    job: Integration Tests (1.26.x)
     format: go-json
     cmd: go test -tags=integration -p 1 -timeout=20m {packages}
     packages: { tag: integration }
