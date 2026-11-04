@@ -518,12 +518,17 @@ func TestIntents(t *testing.T) {
 		t.Errorf("abandoned name's record: %+v, %v", blk, ok)
 	}
 	var left []entity.BlockName
-	_ = f.s.kv.View(ctx, func(r kv.Reader) error {
-		for row := range r.Scan(intentsPrefix(f.ns), nil) {
+	if err := f.s.kv.View(ctx, func(r kv.Reader) error {
+		for row, err := range r.Scan(intentsPrefix(f.ns), nil) {
+			if err != nil {
+				return err
+			}
 			left = append(left, entity.BlockName(row.Key[len(intentsPrefix(f.ns)):]))
 		}
 		return nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if len(left) != 1 || left[0] != gc {
 		t.Errorf("intents left %v, want the GC partition's", left)
 	}

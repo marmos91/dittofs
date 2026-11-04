@@ -635,7 +635,10 @@ func testScan(t *testing.T, s kv.KV) {
 	}
 	// Stopping early is allowed.
 	if err := s.View(ctx(t), func(r kv.Reader) error {
-		for range r.Scan([]byte("p/"), nil) {
+		for _, err := range r.Scan([]byte("p/"), nil) {
+			if err != nil {
+				return err
+			}
 			break
 		}
 		return nil
