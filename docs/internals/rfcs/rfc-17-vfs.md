@@ -1852,9 +1852,13 @@ func (s *Filesystem) openAt(ctx context.Context, c Caller, r OpenRequest) (OpenR
 		return s.reconnect(ctx, c, r)
 	}
 	for {
-		seen, _ := s.lookup(ctx, c, r.Parent, r.Name)          // unlocked: learns which steps to take
-		unlock := s.order.OpenState(fileOf(r.Parent), seen.ID) // §5.0: parent and file, in file-ID order
-		res, again, err := s.openLocked(ctx, c, r, seen)
+		seen, _ := s.lookup(ctx, c, r.Parent, r.Name) // unlocked: learns which steps to take
+		id := seen.ID
+		if id.IsZero() {
+			id = NewFileID() // a create's file: drawn before its locks, so they keep §5.0's order
+		}
+		unlock := s.order.OpenState(fileOf(r.Parent), id) // §5.0: parent and file, in file-ID order
+		res, again, err := s.openLocked(ctx, c, r, seen, id)
 		unlock()
 		if !again {
 			return res, err
@@ -1864,7 +1868,7 @@ func (s *Filesystem) openAt(ctx context.Context, c Caller, r OpenRequest) (OpenR
 
 // openLocked runs holding the parent's and the named file's open-state steps;
 // again is set when the name no longer names seen, and the steps are re-taken.
-func (s *Filesystem) openLocked(ctx context.Context, c Caller, r OpenRequest, seen File) (OpenResult, bool, error) {
+func (s *Filesystem) openLocked(ctx context.Context, c Caller, r OpenRequest, seen File, id FileID) (OpenResult, bool, error) {
 	f, exists := s.lookup(ctx, c, r.Parent, r.Name)
 	if f.ID != seen.ID {
 		return OpenResult{}, true, nil
@@ -1876,8 +1880,9 @@ func (s *Filesystem) openLocked(ctx context.Context, c Caller, r OpenRequest, se
 		}
 		// §5.10's create, in its order: add-file on the parent, then its delete
 		// pending (§5.4), then one inode charged to the new file's owner (§5.6).
-		// The new file's own step is taken last: no other call can name it yet.
-		cr, err := s.createLocked(ctx, c, r.Parent, r.Name, r.Create)
+		// The new file's step is held already, under the ID it is created with:
+		// once the name commits, another call can name it.
+		cr, err := s.createLocked(ctx, c, r.Parent, r.Name, r.Create, id)
 		if err != nil {
 			return OpenResult{}, false, err
 		}
@@ -2423,15 +2428,17 @@ same steps under the steps it holds:
 
 ```go
 func (s *Filesystem) createAt(ctx context.Context, c Caller, dir Handle, name []byte, a CreateArgs) (CreateResult, error) {
-	unlock := s.order.OpenState(fileOf(dir))
+	id := NewFileID() // drawn before the locks, so the new file's are taken in §5.0's order
+	unlock := s.order.OpenState(fileOf(dir), id)
 	defer unlock()
-	return s.createLocked(ctx, c, dir, name, a)
+	return s.createLocked(ctx, c, dir, name, a, id)
 }
 
-// createLocked runs holding the parent's open-state step; Open calls it too (§5.3).
+// createLocked runs holding the parent's and the new file's open-state steps, id
+// being the ID the file is created with; Open calls it too (§5.3).
 // A new file placed in another shard is created by RFC 15 §4.2's two-primary
 // path, with this filesystem as coordinator.
-func (s *Filesystem) createLocked(ctx context.Context, c Caller, dir Handle, name []byte, a CreateArgs) (CreateResult, error) {
+func (s *Filesystem) createLocked(ctx context.Context, c Caller, dir Handle, name []byte, a CreateArgs, id FileID) (CreateResult, error) {
 	// add-file or add-subdirectory on the parent (RFC 7 §7.7)
 	if err := s.authz.Check(ctx, c, dir, Handle{}, addRight(a.Kind)); err != nil {
 		return CreateResult{}, err
@@ -2454,10 +2461,11 @@ func (s *Filesystem) createLocked(ctx context.Context, c Caller, dir Handle, nam
 		// ErrInvalid); owner and group from the resolved caller after squashing; the
 		// inherited ACL; a case-fold collision is ErrExist under the share's case rule
 		// (RFC 7 §3.3); an exclusive create stores the verifier, and a retry whose
-		// verifier matches returns the file, any other ErrExist (RFC 7 §2.10).
-		r.Handle, r.File, err = s.meta.Namespace.Create(ctx, c.Resolved(), v, dir, name, attrsOf(c, a))
+		// verifier matches returns the file, any other ErrExist (RFC 7 §2.10). The
+		// file takes id, which the store refuses ErrExist if a file already has.
+		r.Handle, r.File, err = s.meta.Namespace.Create(ctx, c.Resolved(), v, dir, name, id, attrsOf(c, a))
 		r.Dir.After = s.overlaid(ctx, dir)
-	}, fileOf(dir), NewFile)
+	}, fileOf(dir), id)
 	if err != nil {
 		res.Release()
 	} else {
