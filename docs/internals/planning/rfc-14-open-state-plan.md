@@ -6,10 +6,14 @@ who has the file open, who locked which bytes, what each client may cache, and w
 all of it when a client, a server or a node goes away. Its only caller is the filesystem service
 of [RFC 17](../rfcs/rfc-17-vfs.md) (stage 2); adapters reach it only through that service.
 
-**Status:** draft for review. These have merged into `feat/storage-v2`:
-piece 1 (#3256) and the store's first PR (#3329), pieces 2 to 8 (#3330, #3336, #3341, #3344,
-#3363, #3400; piece 8 as #3456, #3457, #3458, #3417 and #3459), and the store's side (#3335,
-#3362 and #3399). The RFC 14, 17 and 22 edits this plan names merged in #3414.
+**Status:** draft for review. Pieces 1 to 8 have merged into `feat/storage-v2`. Piece 1
+(#3256), the store's first PR (#3329), piece 2 (#3330) and the store's side (#3335, #3362 and
+#3399) merged into it directly. Pieces 3 to 8 (#3336, #3341, #3344, #3363, #3400; piece 8 as
+#3456, #3457, #3458, #3417 and #3459) merged into the `feat/openstate-*` stack branches and
+reached it together in #3489. The RFC 14, 17 and 22 edits this plan names merged into `develop`
+in #3414 and reached `feat/storage-v2` in #3622. Piece 0's follow-up is partly built:
+`RaiseIncarnations` and `GraceInstance` merged in #3463, while `NSMState`, `Of`,
+`ClearDeletePending` and the store's `Clients.AddSession` keep their old shape.
 The RFCs cited are `develop`'s, since #3142 merged; `feat/storage-v2` needs `develop` merged in
 before these links resolve to them.
 
@@ -288,9 +292,11 @@ The store's clone already writes the source's hold in its
 first phase (`clonePhase1`, `pkg/metadata/kvstore/clone.go`), so `CloneOpen` loads that record
 through piece 7's install path and `CloneClose` drops it. #3414 edits §9.2, §11.1 and §11.3 to
 match.
-Piece 8 is done when its five PRs are. L52 is not the table's: the table has no
-logoff call, since a `LOGOFF` is a `Close` of each of the session's opens (MS-SMB2 3.3.5.6; RFC 22
-Appendix G says so once #3414 lands), so its case lands with the SMB adapter in stage 5.
+Piece 8 is done when its five PRs are. L52 is not only the table's: once #3674 lands, the table ends a
+session through `Disconnect`, whose `SessionEnd.Logoff` closes every open of the session (§2.1),
+and RFC 22 Appendix G maps `LOGOFF` to it (MS-SMB2 3.3.5.6). But most of L52's cases are SMB
+session steps (a `SESSION_SETUP` racing a `LOGOFF`, the node's last session), so its case lands
+with the SMB adapter in stage 5.
 
 Layouts (§2.6) and every "(cluster)" row wait for the cluster stages, L8 among them; piece 8 tests
 `DropShare`'s part of it. Three rows are other layers': L1 and L20 are the service's, tested in
