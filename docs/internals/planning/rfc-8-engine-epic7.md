@@ -211,7 +211,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | R3 | A refusal naming the version limit, from `WriteAt`, `Draw` or a header-only record, answers `ErrDelay` with `DelayCommit` until epic 6's raise commits, never `ErrNoSpace` | MUST | §10.2 table, §2.7, RFC 17 §4.3 | T7.1a |
 | R4 | A refusal naming the spare pool answers `ErrDelay` with `DelayCapacity` and is never waited for inside the journal; a spare that cannot be made because the device is full is a full device | MUST | §10.2 table, RFC 1 §6, RFC 28 §2.2 | T7.1a |
 | R5 | A full device (`ENOSPC`) answers `ErrNoSpace` at once | MUST | §10.2 table, second row, RFC 1 §6 | T7.1a |
-| R6 | A refusal naming the index bound answers `ErrDelay` with `DelayCapacity` for as long as a repack, a sync or the group commit's stamp can lower the count, and `ErrNoSpace` at once when nothing can | MUST | §10.2 table, RFC 1 §4.2 (#3665) | T7.1a, T7.1b |
+| R6 | A refusal naming the index bound answers `ErrDelay` with `DelayCapacity` for as long as a repack or a sync can lower the count, and `ErrNoSpace` at once when nothing can | MUST | §10.2 table, RFC 1 §4.2 (#3665) | T7.1a, T7.1b |
 | R7 | A refusal naming the headroom is answered as the journal's capacity: retry-later while repack can return space | MUST | RFC 1 §6, §10.2 | T7.1a, T7.1b |
 | R8 | The deadline ends the wait, never the cause's class: an `ErrDelay` standing at the caller's deadline stays `ErrDelay`, and a refusal that would outlast the deadline returns `ErrDelay` at once instead of waiting. With no estimate of a wait's length in this part, a refusal outlasts the deadline when the deadline has already passed: it answers `ErrDelay` at once, with no repack and no wait on the raise; every other wait runs under the caller's context and answers `ErrDelay` when it ends | MUST | §10.2, RFC 0 §10.3 | T7.1a, T7.1b |
 | R9 | A refused write changes nothing: no version kept, no pending operation, no `Done` | invariant | §4.1, RFC 1 §6 | T7.1a, T7.1b |
@@ -265,10 +265,8 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   refusal as the journal named it (limit, missing amount, or a full device), the step
   reached, the scope's bytes left to free (D4), which the engine reads from the journal's
   `Stats`, and whether another repack pass is running on that journal (D3), which the engine
-  knows since in this part only its refusal path calls `Repack`, and, for the index row,
-  whether the group commit holds pending existence of that journal not yet stamped; it
-  returns the next action: repack (with its scope), the last step, retry, or the answer with
-  its cause.
+  knows since in this part only its refusal path calls `Repack`; it returns the next action:
+  repack (with its scope), the last step, retry, or the answer with its cause.
   The engine only sequences: it calls the journal, passes the refusal in, and does what the
   table names, so the table is tested on its own (rule 1). It lives in `capacity.go`, as
   RFC 8 §2.8 and the plan place "the refusal table", while RFC 8 §10.2 has `admit` decide
@@ -279,9 +277,11 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   that holds against a concurrent writer (RFC 1 §6). A `Repack` or a scope `Sync` of the
   refusal path that fails with anything but a failed window (T4.6's per-file report) or the
   caller's own context leaves the refusal as the input: the table goes on as if that step
-  freed nothing, so the answer still rests on what is left to free, and the step's error is
-  logged at `Error`; `ErrClosed` answers `ErrUnavailable`, as epic 3's D4 maps it, since a
-  closed journal is not a capacity cause (R1).
+  freed nothing, so the answer still rests on what is left to free. The step's error is
+  logged at `Error` when that step starts failing on the journal, then as RFC 25 §5.2's
+  summary while it lasts and a line when it ends, never once per refused write;
+  `ErrClosed` answers `ErrUnavailable`, as epic 3's D4 maps it, since a closed journal is
+  not a capacity cause (R1).
 - **D2, the scope of each limit.** The share's limit: `RepackScope{Share: tag}` and the
   share's `Files`. The journal's maximum and the headroom: the zero scope and every bound
   share's `Files` on that journal. The index bound: the zero scope, since coalescing lowers
@@ -290,21 +290,20 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   superseded it is synced (RFC 1 §3.8, §4.2), which RFC 8 §10.2's index row leaves out
   (§9 point 9). The version limit and the spare pool: no repack; the raise and the spare
   pool clear them on their own.
-- **D3, the index row in this part.** Three things lower the index's count here: a sync,
-  which drops the retained extents its records supersede; the group commit's stamp, within
-  the existence age, which drops the existence-committed versions those synced overwrites
-  superseded (RFC 1 §3.11); and a repack, which coalesces held extents. Held extents that
-  are all dirty count as nothing that can be freed, as in the capacity rows (T7.1b's
+- **D3, the index row in this part.** Two things lower the index's count here: a sync,
+  which drops the retained extents its records supersede, and a repack, which coalesces
+  held extents. #3665 also names the group commit's stamp, which this part does not write
+  (the plan's §5.1 row), so the row has no stamp to wait for. Held extents that are all
+  dirty count as nothing that can be freed, as in the capacity rows (T7.1b's
   `decision:`). So the row runs the capacity rows' steps over the journal's scope: one
   journal-wide repack and retry, then the last step (the sync of every bound share's
   `Files`, a journal-wide repack, a retry). Still refused, it answers `ErrDelay` with
   `DelayCapacity` while another repack pass is running on that journal, since its
-  coalescing may still lower the count, or while the group commit holds pending existence
-  of that journal's files not yet stamped, and `ErrNoSpace` at once otherwise. No refusal
-  of the index is retried forever: an endless delay hangs an NFS hard mount. The same
-  `decision:` marker covers it, withdrawn when offload is composed. The sync and the stamp
-  follow RFC 1 §3.8, §3.11 and §4.2, as #3665 words them, against develop's RFC 8 §10.2
-  index row (§9 point 9).
+  coalescing may still lower the count, and `ErrNoSpace` at once otherwise. No refusal of
+  the index is retried forever: an endless delay hangs an NFS hard mount. The same
+  `decision:` marker covers it, withdrawn when offload is composed. The sync follows RFC 1
+  §3.8 and §4.2, as #3665 words it, against develop's RFC 8 §10.2 index row; the stamp
+  joins the row with the second part's group commit (§9 point 9).
 - **D4, left to free.** The unreclaimed bytes of the scope's segments that take no further
   append: sealed ones, and ones a failed sync or append left, whether or not its window has
   resolved, counting segments a running pass has selected. A failed segment is never sealed
@@ -335,7 +334,8 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   and §2.1 sizes every wait on `Elapsed` (§9 point 2).
 - **D7, what failing means.** A write transaction is failing while the latest attempt of an
   owner that retries it (the group commit, the removal loop, the version-limit raise, the
-  late attach, a resumed clone's phase 1) failed at the store as a whole. A file's own
+  late attach, a resumed clone's phase 1, at start or after a store error, as epic 8's
+  R26 resumes it) failed at the store as a whole. A file's own
   failure, which the group commit retries alone (RFC 8 §5.2), and a clone's refusal raise
   their own conditions and are not failing. So a `Commit` that returns only per-file errors
   in its map is not a failed attempt, nor is a conflict or a file's own refusal that the
@@ -364,12 +364,15 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   refused at capacity", and no RFC says who raises it. Here the engine does: raised when a
   write on that journal is answered `ErrDelay` with `DelayCapacity` or `ErrNoSpace` for the
   journal's maximum, its headroom or its index bound. It clears at the next write on it
-  accepted, or when `Stats` reads the journal's figures and finds room under the limit that
-  refused for the amount that refusal was missing, so a journal nobody writes to clears once
-  a removal or a repack frees the space, as RFC 25 §3.4 derives a condition from current
-  evidence at every evaluation. A share at its own limit raises nothing on the journal: a
-  journal condition applies to every share the journal serves (RFC 25 §3.3), and the others
-  still write. Withdrawn if RFC 1 or RFC 25 names another owner (§9 point 1).
+  accepted, or when `Stats` reads the journal's figures and finds the room under the limit
+  that refused grown by at least that refusal's `Missing` since the refusal, whose room the
+  engine notes from the journal's `Stats` as it answers it: `Missing` is what the
+  reservation lacked, not what it needed, so room for `Missing` alone can stand at the
+  refusal itself. A journal nobody writes to then clears once a removal or a repack frees
+  the space, as RFC 25 §3.4 derives a condition from current evidence at every
+  evaluation. A share at its own limit raises nothing on the journal: a journal condition
+  applies to every share the journal serves (RFC 25 §3.3), and the others still write.
+  Withdrawn if RFC 1 or RFC 25 names another owner (§9 point 1).
 
 ## 5. Target tree
 
@@ -413,7 +416,11 @@ test/enginev2/known.yaml  T7.1a to T7.4  each new red row, naming this epic's is
   T5.1, T8.2 and this subtask lands last wires them, with a test each. Until T7.1b lands,
   the share's, the journal's, the headroom's and the index's rows answer `ErrDelay` with
   `DelayCapacity`, as epic 3's interim answer does. The version-limit row waiting on T6.7's
-  raise until the caller's deadline; the deadline rule; RFC 8 §10.2's `decision:` on the
+  raise until the caller's deadline; the deadline rule, at the refusal path: a caller's
+  context that ends while a refusal stands answers `ErrDelay` with that refusal's cause,
+  never `ctx.Err()`, since RFC 8 §10.2 keeps an `ErrDelay` standing at the deadline as
+  `ErrDelay`; this is the one place epic 3's D4 pass-through of the context's error does
+  not apply (R8); RFC 8 §10.2's `decision:` on the
   first two rows at the table; the rate-limited `Warn` and `engine_write_refusals_total`.
   Epic 3's D4 `decision:` marker is withdrawn, and T3.2's test of a journal-limit refusal is
   rewritten for the table.
@@ -427,9 +434,10 @@ test/enginev2/known.yaml  T7.1a to T7.4  each new red row, naming this epic's is
   device answers `ErrNoSpace` at once without a repack (R5); a spare refusal answers
   `ErrDelay` with no repack (R4). Over the fake: a version-limit refusal held while the raise
   is blocked, `ErrDelay` with `DelayCommit` at the caller's deadline, and served once the
-  raise commits (catches a deadline turned into `ErrNoSpace`, R8); a version-limit refusal
-  whose deadline has already passed answers `ErrDelay` at once, without waiting on the raise
-  (catches a wait that starts past the deadline, R8); a refusal by each limit answers
+  raise commits (catches a deadline turned into `ErrNoSpace` or `ctx.Err()`, R8); a
+  version-limit refusal whose deadline has already passed answers `ErrDelay` at once,
+  without waiting on the raise (catches a wait that starts past the deadline, R8); a
+  refusal by each limit answers
   `ErrDelay` or `ErrNoSpace`, never the journal's error (catches a leaked `NoSpaceError`,
   R1);
   a journal closed under the refusal answers `ErrUnavailable` (R1); after a refusal,
@@ -461,11 +469,11 @@ test/enginev2/known.yaml  T7.1a to T7.4  each new red row, naming this epic's is
   `Repack` and the files each scope syncs (D2); a refusal by the journal's maximum repacks
   the journal before it answers (R16); a `SyncError` from the scope sync goes to T4.6's
   per-file report and the refused write is still answered by the table; an index refusal
-  with no other pass running and nothing awaiting a stamp: one journal-wide repack, then
-  the last step with every bound share's files synced, then `ErrNoSpace`; with another pass
-  held: `ErrDelay`; with the group commit held before its stamp: `ErrDelay`, and served once
-  the stamp lands (D3); the fake's `Repack` failing with an I/O error, with bytes left to
-  free: `ErrDelay` with `DelayCapacity` and an `Error` line, and with none: `ErrNoSpace`
+  with no other pass running: one journal-wide repack, then the last step with every bound
+  share's files synced, then `ErrNoSpace`; with another pass held: `ErrDelay` (D3); the
+  fake's `Repack` failing with an I/O error, with bytes left to free: `ErrDelay` with
+  `DelayCapacity`, and 100 such refusals within a second of the test clock log one `Error`
+  line (catches a line per refused write, RFC 25 §5.2), and with none: `ErrNoSpace`
   (catches a repack's error handed to the client, R1); a refusal whose deadline has already
   passed answers `ErrDelay` with no `Repack` call (R8); the fake's `Repack` held past the
   caller's deadline: `ErrDelay` with `DelayCapacity`, never `ErrNoSpace`, and the write not
@@ -580,7 +588,10 @@ test/enginev2/known.yaml  T7.1a to T7.4  each new red row, naming this epic's is
   share refused at start, its journal missing, has a `Shares` entry naming its device and
   cause (catches a refused share left out of `Stats`, RFC 8 §2.5, R29); a journal-maximum
   refusal, then a removal frees the space and nothing is written: `Stats` no longer
-  reports `journal_full` (catches a condition only a write clears, D9, R31); with a
+  reports `journal_full` (catches a condition only a write clears, D9, R31); a
+  journal-maximum refusal whose `Missing` is below the room left, nothing freed: `Stats`
+  still reports `journal_full` (catches a clear on room for the missing amount alone, D9);
+  with a
   file's state lock held through `export_test.go`, `Stats` returns within a second (catches
   a `Stats` that takes it, R32), and `Stats` under `-race` beside writes and the group commit.
 
@@ -698,9 +709,9 @@ A suggestion only: one pull request per subtask works as well.
 9. **The index row and the sync** (D2, D3). RFC 8 §10.2's index row and RFC 1 §4.2 name
    offload, eviction and repack as what lowers the index's count; RFC 1 §3.8 and §4.2 count
    a retained extent in `ExtentCount` until the record that superseded it is synced, so a
-   sync lowers it too, and the group commit's stamp lowers it within the existence age
-   (RFC 1 §3.11). D2 and D3 follow #3665's text: the index row syncs every bound share's
-   files in its last step, and answers `ErrDelay` while a stamp is still due. RFC 1 §1 and
+   sync lowers it too. D2 and D3 follow #3665's text for the sync: the index row syncs
+   every bound share's files in its last step. #3665 also names the group commit's stamp,
+   which this part does not write (D3). RFC 1 §1 and
    §3.6, RFC 13's index excess row and RFC 24 §2.3 and §7.1 still answer a removal's or the
    index's refusal retry-later, where R6, R7 and D3 can answer `ErrNoSpace`. Pending #3665,
    which closes #3660 and #3662.
