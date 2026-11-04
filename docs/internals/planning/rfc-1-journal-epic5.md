@@ -200,7 +200,7 @@ below or in §1.2.
 | R12 | Of the lock domains only the file append domain is held across I/O. Reserving a position in a segment takes the segment append domain for the reservation alone, and the record write happens outside it | invariant | RFC 1 §8.2 | T5.4b |
 | R87 | Records, once written, are immutable: a record is written once at its reserved slot and never rewritten, and a recycle's zeroing touches only a retired segment's header and trailer slots | invariant | RFC 28 §2.2 | T5.4b, T5.9 |
 | R88 | Every record `Append` writes, whatever path appended it, is registered once with the durability sink (epic 6's ledger), after its bytes are written and before `Append` returns its location; every completed sync of a segment, a seal's and a roll's included, is reported to the same sink with the offset it covered. The sink may be called with the file append domain or the segment append domain held, so it takes no lock of this epic's and never blocks: epic 6 hands the event to its own per-stream worker. (Added with the breakdown of epics 6 and 8: epic 6 owns what the sink does) | invariant | RFC 1 §5.2, §5.3, §8.3 | T5.4b, T5.7 |
-| R89 | While the journal is read-only, the pool's refill worker makes no spare, the idle seal writes nothing and retirement unlinks nothing: each asks the read-only check epic 6 registers (its `Admit`) before it creates, writes or unlinks a file. The check is a function the set takes when it is built, nil meaning writable. (Added with the breakdown of epics 6 and 8: epic 6 owns the state) | MUST | RFC 1 §5.4, §9.4 B | T5.5, T5.8, T5.9 |
+| R89 | While the journal is read-only, the pool's refill worker makes no spare, the idle seal writes nothing and retirement unlinks nothing: each asks the read-only check epic 6 registers (its `Admit`) before it creates, writes or unlinks a file. The check is a function each of the three takes in its own constructor (the pool, the idle seal, the retirement executor), nil meaning writable; the set does not take it. Epic 8's constructor passes the same function to all three. (Added with the breakdown of epics 6 and 8: epic 6 owns the state) | MUST | RFC 1 §5.4, §9.4 B | T5.5, T5.8, T5.9 |
 
 **The spare pool**
 
@@ -583,7 +583,7 @@ pkg/block/journalv2/internal/
 - **Covers:** R15, R17, R23, R54, R60, R80, R84, R86, R89.
 - **Deliverables:** `internal/segment/pool.go`: the three classes (D3) with `Take(class)`
   over T5.4a's `Make`; a refill worker that makes spares off the write path when a class
-  falls below its target, after asking the read-only check (R89), with a `Stop` that joins it; `Hold(n)` and its return, which keep
+  falls below its target, after asking the read-only check `NewPool` takes (R89), with a `Stop` that joins it; `Hold(n)` and its return, which keep
   spares for a reservation ahead of need (R80); `Adopt(id, class)`, which accepts a spare
   found at open into a class and the set at its cap (R84); the `HeadroomBytes` and
   `RepackReserveBytes` figures, each as allocated now, and the `Spares` gauge once RFC 1's
@@ -727,8 +727,9 @@ pkg/block/journalv2/internal/
   in the set, accounted, and the worker retries it. After an unlink, or after a recycle's
   rename, the directory is synced and the retirement reports whether that is durable.
   `freed_bytes` is raised after an unlink has happened. A queue and a worker retire the
-  segments epic 9 hands over (D5); the worker asks the read-only check before each unlink or
-  recycle and leaves the queue as it is while it fails (R89); it has a `Stop` that joins it,
+  segments epic 9 hands over (D5); the executor, through both entry points, asks the read-only
+  check its constructor takes before each unlink or recycle, and the worker leaves the queue as
+  it is while the check fails (R89); it has a `Stop` that joins it,
   which T5.11 calls.
 - **Acceptance criteria:**
   - The seam sees, per recycle, a rename, a directory sync, two zero writes and one sync, and

@@ -782,8 +782,8 @@ held when `Take` runs (catches a capacity lock taken under the file index, RFC 1
   `reservation_refused` (and `index_refusals` for the index) and opens the `reserve_refused`
   span. `WriteAt` and `Fill` consume the grant (T8.1's `WriteAt` calls `Take` from now on), and
   call it with no file index held, T8.4's check having released it. `New` now wraps E5's storage
-  seam with T6.6's `Observe`, so an `EROFS` from any call turns the journal read-only. Nothing
-  here evicts.
+  seam with T6.6's `Observe`, so an `EROFS` from any call turns the journal read-only, and passes
+  T6.6's `Admit` to E5's pool, idle seal and retirement executor (E5's R89). Nothing here evicts.
 - **Acceptance criteria:**
   - A share at its limit refuses the next write naming the share's limit and the bytes
     missing, with no I/O at the seam and without waiting, while another share still writes; a
