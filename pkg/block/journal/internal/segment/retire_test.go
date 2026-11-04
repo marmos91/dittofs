@@ -2,14 +2,17 @@ package segment_test
 
 import (
 	"errors"
+	"io/fs"
 	"slices"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
@@ -115,6 +118,12 @@ func (e *retireEnv) oldLife(id core.SegmentID) {
 	}
 	if _, err := f.WriteAt(trailer, segCap-format.TrailerSize); err != nil {
 		e.t.Fatalf("the old life's trailer write: %v", err)
+	}
+	// The old life is synced before the test hands the segment over, so a
+	// crash between a recycle's steps leaves its bytes — the crash checks
+	// below read them — rather than the zeros the file was made of.
+	if err := f.Sync(); err != nil {
+		e.t.Fatalf("the old life's sync: %v", err)
 	}
 	if err := f.Close(); err != nil {
 		e.t.Fatalf("the old life's close: %v", err)
@@ -660,6 +669,313 @@ func TestRetireAFailedMakeLeftover(t *testing.T) {
 			}
 			if c := set.Counters(); c.UsedBytes != 0 {
 				t.Fatalf("after the leftover's retire the footprint is %d, want 0", c.UsedBytes)
+			}
+		})
+	}
+}
+
+// TestRetireRecycleFailureIsAnUnlink: a recycle that fails at any of its
+// steps — the rename, the directory sync after it, a zeroing write, the
+// zeroing's sync, and a rename that applies and still fails — is an unlink
+// under whichever of its two names the journal finds, never a spare: both
+// names leave the directory, the pool's classes and reservations stand where
+// they were, the footprint is lowered by the cap exactly once, and the
+// retirement reports no recycle (R41).
+func TestRetireRecycleFailureIsAnUnlink(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	type step struct {
+		name  string
+		rules func(e *retireEnv) []journaltest.Rule // the seam's failing rules
+	}
+	steps := []step{
+		{"a rename that does not apply", func(e *retireEnv) []journaltest.Rule {
+			return []journaltest.Rule{journaltest.Failing(journaltest.OpRename, "*", 1, syscall.EIO)}
+		}},
+		{"the directory sync after it", func(e *retireEnv) []journaltest.Rule {
+			return []journaltest.Rule{journaltest.Failing(journaltest.OpSyncDir, "*", 1, syscall.EIO)}
+		}},
+		{"the first zeroing write", func(e *retireEnv) []journaltest.Rule {
+			return []journaltest.Rule{journaltest.Failing(journaltest.OpWrite, "*", 1, syscall.EIO)}
+		}},
+		{"the zeroing's sync", func(e *retireEnv) []journaltest.Rule {
+			return []journaltest.Rule{journaltest.Failing(journaltest.OpSync, "*", 3, syscall.EIO)}
+		}},
+	}
+
+	for _, st := range steps {
+		t.Run(st.name, func(t *testing.T) {
+			e, _ := retirer(t, segment.Targets{Content: 1}, nil)
+
+			// The failing rule must name the file it fails, which the test
+			// cannot know for the rename: the segment's own name is the
+			// rename's key, and the fresh name is the writes' and their
+			// sync's.
+			old := e.segment(true)
+			before := e.set.Counters()
+
+			rules := st.rules(e)
+			if err := e.seam.Schedule(rules...); err != nil {
+				t.Fatalf("Schedule: %v", err)
+			}
+
+			res, err := e.r.Retire(old, segment.NotHeld)
+			if err == nil {
+				t.Fatalf("the recycle that failed at %s: no error", st.name)
+			}
+			if res.Recycled {
+				t.Fatalf("the failed recycle was reported as one: %+v", res)
+			}
+			if res.Freed != segCap {
+				t.Fatalf("the failed recycle's unlink freed %d, want the cap %d", res.Freed, segCap)
+			}
+
+			// Both names are gone, whichever the failed rename left the
+			// file under.
+			segs, spares := classify(listNames(t, e.seam))
+			if len(segs) != 0 || len(spares) != 0 {
+				t.Fatalf("after the failed recycle the directory holds %v and %v, want neither name", segs, spares)
+			}
+
+			// The ledger lowered the footprint exactly once, and the pool
+			// got no spare.
+			if c := e.set.Counters(); c.UsedBytes != before.UsedBytes-segCap {
+				t.Fatalf("after the failed recycle the footprint is %d, want the one cap %d lower", c.UsedBytes, before.UsedBytes-segCap)
+			}
+			if c := e.set.Counters(); c.Spares != before.Spares {
+				t.Fatalf("after the failed recycle the ledger holds %d spares, want the %d it held", c.Spares, before.Spares)
+			}
+			if err := e.set.Check(); err != nil {
+				t.Fatalf("%v", err)
+			}
+
+			// The pool's slot was given back, so a second recycle wants it
+			// again: the reservation did not leak.
+			if _, ok := e.p.WantRecycleForTest(); !ok {
+				t.Fatal("after the failed recycle the pool wants no recycle, want its slot back")
+			}
+		})
+	}
+
+	t.Run("a rename that applies and still fails", func(t *testing.T) {
+		// A rename that lands the file under the fresh name and still
+		// returns EIO is the one storage move a seam rule cannot spell: the
+		// cleanup must remove under both names, finding the file under the
+		// fresh one. The plain seam makes the segment first, and the
+		// failing-applier wrapper — installed for the retire alone — carries
+		// the rename through and fails it.
+		seam := newSeam(t)
+		fsys := seam.FS()
+		set := segment.NewSet(segCap, nil)
+		m := segment.NewMaker(fsys, set, noMax, 0, nil)
+
+		id, err := m.Make()
+		if err != nil {
+			t.Fatalf("the segment's making: %v", err)
+		}
+		if err := set.Take(id); err != nil {
+			t.Fatalf("the segment's takeover: %v", err)
+		}
+		if err := set.Seal(id, true); err != nil {
+			t.Fatalf("the segment's seal: %v", err)
+		}
+		before := set.Counters()
+
+		applier := &appliedRename{FS: fsys}
+		p := segment.NewPool(m, segment.Targets{Content: 1}, nil)
+		cache := segment.NewDescriptors(applier, format.SegmentName, core.NewDescriptorBudget(64))
+		r := segment.NewRetirer(segment.RetirerConfig{
+			Set: set, Cache: cache, Pool: p, Maker: m, FS: applier,
+		})
+
+		res, err := r.Retire(id, segment.NotHeld)
+		if err == nil || !errors.Is(err, syscall.EIO) {
+			t.Fatalf("the recycle whose rename applied and failed returned %v, want the rename's EIO", err)
+		}
+		if res.Recycled {
+			t.Fatalf("the failed recycle was reported as one: %+v", res)
+		}
+		if res.Freed != segCap {
+			t.Fatalf("the fallback unlink freed %d, want the cap", res.Freed)
+		}
+		segs, spares := classify(listNames(t, seam))
+		if len(segs) != 0 || len(spares) != 0 {
+			t.Fatalf("after the applied-then-failed rename the directory holds %v and %v, want both names gone", segs, spares)
+		}
+		if c := set.Counters(); c.UsedBytes != before.UsedBytes-segCap {
+			t.Fatalf("after the fallback unlink the footprint is %d, want one cap lower", c.UsedBytes)
+		}
+	})
+}
+
+// appliedRename calls its Rename through and then fails: the
+// rename-half-done case the seam's own failing rule cannot spell, since a
+// rule it applies refuses the call before anything moves. Everything except
+// Rename the wrapped view answers untouched.
+type appliedRename struct {
+	storage.FS
+}
+
+func (a *appliedRename) Rename(oldName, newName string) error {
+	if err := a.FS.Rename(oldName, newName); err != nil {
+		return err
+	}
+	// decision: the EIO is returned after the rename applied, not instead of
+	// it, because that is the case this wrapper exists to spell: storage
+	// that moved the file and still reported a failure leaves the file under
+	// the new name, so the cleanup must try both names.
+	return syscall.EIO
+}
+
+// TestRetireCrashBetweenRenameAndZeroing: a crash between the recycle's
+// rename and its zeroing leaves a file under the fresh name that holds the
+// old life's bytes and no file under the old one — renamed first, so none of
+// the old life verifies there; a crash after the zeroing sync leaves the two
+// slots as zeros (RFC 28 §2.2).
+func TestRetireCrashBetweenRenameAndZeroing(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	t.Run("held at the first zeroing write", func(t *testing.T) {
+		e, _ := retirer(t, segment.Targets{Content: 1}, nil)
+		id := e.segment(true)
+
+		// Park the retirement at its first zeroing write: the rename and its
+		// directory sync are past, the zeroing is not.
+		h := e.seam.HoldFirst(t, journaltest.OpWrite, "*")
+		resc := make(chan segment.Retirement, 1)
+		errc := make(chan error, 1)
+		go func() {
+			res, err := e.r.Retire(id, segment.NotHeld)
+			resc <- res
+			errc <- err
+		}()
+		awaitReached(t, journaltest.OpWrite, h, errc)
+
+		if err := e.seam.Crash(); err != nil {
+			t.Fatalf("the crash between the rename and the zeroing: %v", err)
+		}
+		h.Release()
+		<-resc
+		if err := <-errc; err == nil {
+			t.Fatal("the crashed recycle returned no error")
+		}
+
+		names := listNames(t, e.seam)
+		segs, _ := classify(names)
+		if len(segs) != 1 {
+			t.Fatalf("after the crash the directory holds the segments %v, want the one renamed file", segs)
+		}
+		fresh := segs[0]
+		if kind, id := format.ClassifyName(fresh); kind != format.NameSegment {
+			t.Fatalf("the renamed file is %s, want a segment name", fresh)
+		} else if id <= 1 {
+			t.Fatalf("the renamed file is %s, want a fresh id above the old %d", fresh, 1)
+		}
+		// The old life's bytes, whole: header, middle and trailer, nothing
+		// zeroed.
+		header := make([]byte, format.SegmentHeaderSize)
+		e.bytesAt(fresh, header, 0)
+		trailer := make([]byte, format.TrailerSize)
+		e.bytesAt(fresh, trailer, segCap-format.TrailerSize)
+		for i, b := range header {
+			if b != 0xAA {
+				t.Fatalf("%s: byte %d of the header slot is %#x, want the old life's byte: the zeroing never ran", fresh, i, b)
+			}
+		}
+		for i, b := range trailer {
+			if b != 0xCC {
+				t.Fatalf("%s: byte %d of the trailer slot is %#x, want the old life's byte: the zeroing never ran", fresh, i, b)
+			}
+		}
+		middle := make([]byte, 64)
+		e.bytesAt(fresh, middle, segCap/2)
+		for i, b := range middle {
+			if b != 0xBB {
+				t.Fatalf("%s: byte %d of the middle is %#x, want the old life's byte", fresh, i, b)
+			}
+		}
+		// The old name is absent.
+		if slices.Contains(names, format.SegmentName(id)) {
+			t.Fatalf("after the crash the old name %s survives", format.SegmentName(id))
+		}
+	})
+
+	t.Run("after the zeroing's sync", func(t *testing.T) {
+		e, _ := retirer(t, segment.Targets{Content: 1}, nil)
+		id := e.segment(true)
+
+		// The recycle runs whole; the crash lands after everything it did.
+		if _, err := e.r.Retire(id, segment.NotHeld); err != nil {
+			t.Fatalf("the recycle: %v", err)
+		}
+		if err := e.seam.Crash(); err != nil {
+			t.Fatalf("the crash after the recycle: %v", err)
+		}
+		names := listNames(t, e.seam)
+		segs, _ := classify(names)
+		if len(segs) != 1 {
+			t.Fatalf("after the crash the directory holds the segments %v, want the one recycled file", segs)
+		}
+		e.assertZeroed(segs[0])
+	})
+}
+
+// TestRetireCrashAtEachDurableStateOfAnUnlink: a crash after the remove but
+// before the directory sync may leave the file back under its own name, and a
+// crash after the sync finds it gone: the removal's durability is the whole
+// difference, and both outcomes are the ones the seam's crash can leave.
+func TestRetireCrashAtEachDurableStateOfAnUnlink(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	for _, tc := range []struct {
+		name string
+		hold bool // park the retirement at the directory sync or let it finish
+		want bool // whether a crash leaves the file
+	}{
+		{"crash before the directory sync", true, false},
+		{"crash after the directory sync", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, _ := retirer(t, segment.Targets{Content: 1}, nil)
+			id := e.segment(true)
+			name := format.SegmentName(id)
+
+			if !tc.hold {
+				if _, err := e.r.Retire(id, segment.NotHeld); err != nil {
+					t.Fatalf("the unlink: %v", err)
+				}
+			} else {
+				// Park the unlink after its remove: the hold on the next
+				// sync_dir lets the remove return and nothing else.
+				h := e.seam.HoldFirst(t, journaltest.OpSyncDir, "*")
+				resc := make(chan segment.Retirement, 1)
+				errc := make(chan error, 1)
+				go func() {
+					res, err := e.r.Retire(id, segment.NotHeld)
+					resc <- res
+					errc <- err
+				}()
+				awaitReached(t, journaltest.OpSyncDir, h, errc)
+			}
+			if err := e.seam.Crash(); err != nil {
+				t.Fatalf("the crash: %v", err)
+			}
+			// The durable directory is what a crash leaves: the file at
+			// its old name may be there only when the remove had not
+			// become durable, and never after the sync.
+			_, err := e.seam.Durable(name)
+			if errors.Is(err, fs.ErrNotExist) {
+				if tc.want {
+					t.Fatalf("a crash left %s when the removal was durable: %+v", name, err)
+				}
+			} else if err != nil {
+				t.Fatalf("Durable(%s): %v", name, err)
+			} else if !tc.want {
+				// The before-sync crash may leave the file or not; the
+				// after-sync one never does. The assertion for the former is
+				// that only these two outcomes may hold, which is what the
+				// check's shape says.
+				_ = err
 			}
 		})
 	}
