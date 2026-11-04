@@ -441,6 +441,49 @@ func TestRollRefusedWithAnEmptyPoolMakesNoSeamCall(t *testing.T) {
 	}
 }
 
+// TestRollAHeaderOnlyRecordTakesAContentSpareBeforeAHeadroomOne checks the
+// header-only roll's draw order (D12): with a content spare and a headroom
+// spare both ready — the worker's targets met, so it makes no more — a
+// header-only record rolls onto the content spare and the headroom's ready
+// bytes are left whole. It catches a header-only draw that takes the headroom
+// first and falls back to content, which would drain the headroom on every
+// header-only roll while content spares sit ready.
+func TestRollAHeaderOnlyRecordTakesAContentSpareBeforeAHeadroomOne(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// The pins hold every class at exactly its target, so no refill makes a
+	// spare behind the assertions: the worker filled each class once and every
+	// take below is final for its class.
+	e := rollPin(t, streamCap, segment.Targets{Content: 1, Headroom: 1}, nil).withStream(t, 1)
+	awaitCounters(t, "the content and headroom spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares == 1 && c.HeadroomBytes == segCap })
+
+	// A content roll over the same pool would be refused nothing: the
+	// content spare is an unreserved take's own. A header-only record takes
+	// it first (D12) — by the unreserved take, so holds keep theirs — and
+	// only a content miss falls back to the headroom.
+	hdr := format.RecordHeader{Kind: format.KindStamp, File: streamFileID(1), Version: core.Version{Counter: 1}, Tag: 7}
+	p, err := e.s.AppendRoll(hdr, format.RecordBody{Cut: 4}, segment.Roll{})
+	if err != nil {
+		t.Fatalf("the stamp's append onto the content spare: %v", err)
+	}
+	if p.Loc.Segment == 0 {
+		t.Fatal("the stamp's append named no segment")
+	}
+
+	// The headroom is left whole: the sparing it exists for is drawn by no
+	// header-only record while a content spare was ready.
+	if got := e.pool.Counters().HeadroomBytes; got != segCap {
+		t.Fatalf("a header-only roll over a ready content spare left the headroom at %d bytes, want its whole %d", got, segCap)
+	}
+	if got := e.pool.Counters().Spares; got != 0 {
+		t.Fatalf("the header-only roll left %d content spares, want the one it took gone", got)
+	}
+	if got := e.pool.Counters().SpareRefusals; got != 0 {
+		t.Fatalf("a header-only roll that found its content spare counts %d refusals, want 0", got)
+	}
+}
+
 // TestRollSpareRefusalsRiseByOnePerRefusedRoll checks the counter (R22):
 // `spare_refusals` rises by exactly one per refused roll — three refused
 // appends, three refusals — and a header-only append that falls back to
