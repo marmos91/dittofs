@@ -527,7 +527,7 @@ pkg/block/enginev2/                    E1: the package; renamed pkg/block/engine
   commit.go groupcommit.go loss.go     E4: Commit, the verifier, the group commit, the loss sequence
   remove.go removals.go                E5: Truncate, Deallocate, Delete; the removal loop
   share.go start.go limit.go           E6: the share table, Bind, Unbind, Drop; start and stop; the version limit
-  capacity.go fence.go stats.go        E7: the refusal table, repack, the self-fence, Stats and conditions
+  capacity.go fence.go health.go       E7: the refusal table, repack, the self-fence, Stats and conditions
   clone.go                             E8: Clone, Copy
   imports_test.go                      E1: the import walk (rule 7)
   arch_test.go                         E2: declared interfaces, no assertions
