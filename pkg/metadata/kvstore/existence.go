@@ -28,6 +28,10 @@ const (
 	OpWrite OpKind = iota + 1
 	// OpGrow is a truncate up to Size. A truncate down is a removal.
 	OpGrow
+	// OpLost is a write of Extent the journal dropped after it was synced:
+	// it exists as an OpWrite does, uncarved, and holds nothing, so it
+	// charges nothing and a read of it answers that it is lost.
+	OpLost
 )
 
 // PendingOp is one journal operation of a file whose existence is not yet
@@ -35,7 +39,7 @@ const (
 type PendingOp struct {
 	Version entity.JournalVersion
 	Kind    OpKind
-	Extent  entity.Extent // OpWrite
+	Extent  entity.Extent // OpWrite, OpLost
 	Size    int64         // OpGrow
 	Mtime   time.Time     // the modification time it sets; zero when its open suspended it
 	Ctime   time.Time     // the change time it sets
@@ -232,7 +236,7 @@ func (s *existState) keys() int { return fileKeys + len(s.dirtyH) + len(s.dirtyO
 func (s *existState) window(op PendingOp) entity.Extent {
 	lo, hi := s.f.Size, s.f.Size
 	switch op.Kind {
-	case OpWrite:
+	case OpWrite, OpLost:
 		lo, hi = min(lo, op.Extent.Offset), op.Extent.End()
 	case OpGrow:
 		hi = op.Size
@@ -303,7 +307,7 @@ func covered(ws []entity.Extent, e entity.Extent) bool {
 
 func (s *existState) apply(op PendingOp) error {
 	switch op.Kind {
-	case OpWrite:
+	case OpWrite, OpLost:
 		e := op.Extent
 		if e.IsEmpty() {
 			break
@@ -316,7 +320,9 @@ func (s *existState) apply(op PendingOp) error {
 		}
 		filled := s.removeHoles(e)
 		grown := max(0, e.End()-max(e.Offset, s.f.Size))
-		s.f.Charged += filled + grown
+		if op.Kind == OpWrite {
+			s.f.Charged += filled + grown
+		}
 		s.f.Size = max(s.f.Size, e.End())
 	case OpGrow:
 		if op.Size < s.f.Size {

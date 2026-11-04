@@ -21,14 +21,6 @@ func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 	return vfserr.Verifier{}, 0, errUnbuilt
 }
 
-// LossSeq is the file's loss sequence now, with no sync; 0 for a share with
-// no binding.
-//
-// decision: the stub answers 0 because the signature has no error to carry
-// errUnbuilt. Zero reads as "no loss since any open", so no caller may depend
-// on it until the loss sequence is built.
-func (e *Engine) LossSeq(s entity.ShareID, f entity.FileID) uint64 { return 0 }
-
 // Truncate sets the file's size.
 func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID, size int64) error {
 	return errUnbuilt

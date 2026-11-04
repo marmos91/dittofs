@@ -49,10 +49,10 @@ type Engine struct {
 	health   Stats                       // the shares refused at start and the conditions raised
 
 	gcMu           sync.Mutex
-	gcs            map[Journal]*groupCommit                         // each journal's group commit
-	gcsClosed      bool                                             // closeGroupCommits ran: none starts again
-	pendingApplied atomic.Int64                                     // engine_pending_existence_ops: operations committed
-	hooks          struct{ taken, captured atomic.Pointer[func()] } // a test's seams: after a batch's take, and after its capture
+	gcs            map[Journal]*groupCommit                                  // each journal's group commit
+	gcsClosed      bool                                                      // closeGroupCommits ran: none starts again
+	pendingApplied atomic.Int64                                              // engine_pending_existence_ops: operations committed
+	hooks          struct{ taken, captured, drained atomic.Pointer[func()] } // a test's seams: after a batch's take, its capture, and a drain's read of the ring
 }
 
 // New checks d and builds the engine. It takes no settings, opens nothing and
