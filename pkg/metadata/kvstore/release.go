@@ -98,6 +98,40 @@ func releasePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch ui
 	return putRemoval(tx, share, file, m)
 }
 
+// held reports, in a read of its own, whether something holds the file a
+// release would remove, by releasePhase1's own checks. Remove asks it before
+// it commits a release's pending writes, so a release a holder refuses leaves
+// them uncommitted; releasePhase1's checks, run again inside its
+// transaction, stay the authority.
+func held(r kv.Reader, share entity.ShareID, file entity.FileID) (bool, error) {
+	f, live, err := fileOrGone(r, share, file)
+	if err != nil || !live {
+		return false, err
+	}
+	if f.Nlink != 0 || f.Parent == f.ID && f.IsDir() {
+		return true, nil
+	}
+	if _, ok, err := get(r, releaseKey(share, file)); err != nil || !ok {
+		return !ok, err
+	}
+	if cloning, err := cloneRunning(r, share, file); err != nil || cloning {
+		return cloning, err
+	}
+	streams, err := streamsOf(r, share, file)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range append([]entity.FileID{file}, streams...) {
+		for _, err := range r.Scan(opensPrefix(share, id), nil) {
+			if err != nil {
+				return false, err
+			}
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // streamsOf lists a file's named streams.
 func streamsOf(r kv.Reader, share entity.ShareID, file entity.FileID) ([]entity.FileID, error) {
 	var out []entity.FileID

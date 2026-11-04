@@ -15,15 +15,6 @@ import (
 // from the removal mark. None is built yet: each answers errUnbuilt, and moves
 // to its own file as it is built.
 
-// Delete is the file's release; never the journal's eviction. retry is
-// non-nil only when the release is pending, and yields its outcome once
-// (RFC 8 §8.1). The send on it never blocks: it has capacity 1, as its
-// receiver may stop listening, abandoned at the filesystem's Stop, which
-// precedes the engine's Close (RFC 17 §2.5).
-func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) (retry <-chan error, err error) {
-	return nil, errUnbuilt
-}
-
 // Copy copies xs in order as bounded clones, and may answer a short count.
 func (e *Engine) Copy(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, xs []vfserr.Extent) (int64, error) {
 	return 0, errUnbuilt

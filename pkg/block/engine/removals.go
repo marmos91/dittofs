@@ -292,6 +292,9 @@ func (e *Engine) retryLater(r *removal, op kvstore.RemoveOp, outcome func(error)
 			case err == nil:
 				tell(nil)
 				return itemDone
+			case errors.Is(err, kvstore.ErrHeld):
+				tell(e.abort(r))
+				return itemDone
 			case terminal(err):
 				e.unstage(r, err)
 				tell(e.storeErr(err))
@@ -306,5 +309,6 @@ func (e *Engine) retryLater(r *removal, op kvstore.RemoveOp, outcome func(error)
 	})
 }
 
-// errLoopEnded is a retried phase 1's outcome when its loop ended first.
+// errLoopEnded is a retried phase 1's outcome when its loop ended first:
+// vfserr.ErrUnavailable.
 var errLoopEnded = errClosed

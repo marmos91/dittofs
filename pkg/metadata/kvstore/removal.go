@@ -192,6 +192,23 @@ func (e Existence) Remove(ctx context.Context, share entity.ShareID, file entity
 	if op.Kind != entity.RemoveTruncate && op.Kind != entity.RemoveDeallocate && op.Kind != entity.RemoveRelease {
 		return merrs.NewInvalidArgumentError("Remove takes a truncate, a deallocate or a release")
 	}
+	if op.Kind == entity.RemoveRelease && len(pending) > 0 {
+		// decision: a release asks its holders before it commits the file's
+		// pending writes, so one a holder refuses leaves them uncommitted.
+		// A holder arriving between this read and phase 1 still aborts the
+		// release, after the writes committed; close that by committing them
+		// inside phase 1's transaction if such aborts are seen.
+		var refused bool
+		if err := e.s.kv.View(ctx, func(r kv.Reader) (err error) {
+			refused, err = held(r, share, file)
+			return err
+		}); err != nil {
+			return err
+		}
+		if refused {
+			return ErrHeld
+		}
+	}
 	if len(pending) > 0 {
 		failed, err := e.Commit(ctx, []PendingExistence{{Share: share, File: file, Epoch: epoch, Ops: pending}}, nil)
 		if err != nil {
