@@ -257,8 +257,8 @@ run is a failure ([RFC index, test tiers](../rfcs/rfc-index.md)).
 | 4 | **Placement index and versions** ⛔ | Per-file B-tree, held, retained and marker sets, precedence, sequence and version counters, version limit, floor buckets, extent bound, drop ranges, per-segment bytes | 11 | B | 7, 8, 9 |
 | 5 | **Segments, streams and accounting** ⛔ | Segment lifecycle, spare pool, append streams, seal, catalog and free tail, recycle and unlink, descriptor cache, storage guard, footprint accounting | 11 | A | 6, 7, 8 |
 | 6 | **Durability and loss** | `Sync`, group commit, the sync-bound timer, failed-sync windows (re-append or fail), loss records, the loss ring and generation, the read-time corruption rule | 10 | A | 7 (loss records), 8 (Sync, corruption on read), 9 (corruption on offer and repack), 11 |
-| 7 | **Recovery and identity** | `Init`, `Open`, `Restamp`, rebuild by catalog and by scan, torn vs corrupt, unproven-tail re-verify, offload-state rebuild, stale rule, spare re-adoption, inspection and verify | 12 | A | 10, 11 |
-| 8 | **Data path and capacity** ⛔ | `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 13 | B | 9, 11 |
+| 7 | **Recovery and identity** | `Open` with recovery (E8 delivers a minimal `Init` and `Open` of a directory with no segment), `Restamp`, rebuild by catalog and by scan, torn vs corrupt, unproven-tail re-verify, offload-state rebuild, stale rule, spare re-adoption, inspection and verify | 12 | A | 10, 11 |
+| 8 | **Data path and capacity** ⛔ | a minimal `Init` and `Open` for S3, `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 13 | B | 9, 11 |
 | 9 | **Offload, reclamation, holds and tags** | `Offload`, `OffloadMany`, pins, `MarkOffloaded`, `Unmark`, `Release`, auto-retire, `Repack` and drop test, snapshot holds, `Forget`, `Strand` | 13 | B | 11 |
 | 10 | **Start and initialisation** | Start check and its two refusals, `journalv2.Init` in the initialisation step and the `J‖journal` writes, wipe of devices left by an interrupted step, device config keys | 5 | A | 11 |
 | 11 | **Engine on the RFC 16 store** 🔀 | Stage 3 of #3119, planned after S4a: engine wiring (`Fill`, `report`, `Release`), per-device registry, version floor and limit, store contracts, error mapping, salvage, exporters and alert rules, API and CLI, system e2e tests | planned after S4a | team | 12 |
@@ -284,7 +284,7 @@ everything before it.
    A: E3 format        B: E4 index
         │                   │
         ▼                   │
-   A: E5 segments ──────────┤        S3: walking skeleton (E5 minimal stream + E6 T6.1–T6.4, T6.7 + E8 WriteAt/ReadAt)
+   A: E5 segments ──────────┤        S3: walking skeleton (E5 streams, pool, seal, roll + E6 T6.1–T6.4, T6.7 + E8 WriteAt/ReadAt, minimal Open)
         │   ╲               ▼
         │    ╲─────► B: E8 data path & capacity
         ▼                   │
@@ -311,16 +311,19 @@ everything before it.
 - **S2. Red suite in CI** (end of E2). The conformance suite compiles, runs, fails, and is
   all listed as known failures. The system scenario catalogue is written. The seam, clock,
   model and profiler are green. Implementation epics start here.
-- **S3. Walking skeleton** (mid E5 / mid E6 / mid E8). A minimal append stream from E5 (one
-  stream, no spare pool, no seal), E6's T6.1 to T6.4 and T6.7, and E8's `WriteAt` and `ReadAt`
-  on top of E4's index. The skeleton therefore includes durability tracking (`Sync`, group
-  commit and the sync bound), the retained-extent drop on sync, failed-window resolution, and
-  the read-time corruption rule, so `WriteAt` and `ReadAt` are built against the durability they
-  ship with rather than against stand-ins. The first
-  conformance tests turn green and leave the known-failure list, and the entries still red
-  move from failing in the fixture to failing on a stub (epic 2, D4). **E8's integration
-  tests are blocked on this point.** E5 therefore delivers the minimal stream as its first
-  subtasks.
+- **S3. Walking skeleton** (mid E5 / mid E6 / mid E8). E5's append streams with the spare
+  pool, the seal, the roll and the end event (its T5.1, T5.2, T5.4a, T5.4b, T5.5, T5.6, T5.7
+  and T5.10), E6's T6.1 to T6.4 and T6.7, and E8's `WriteAt`, `ReadAt` and a minimal `Init`
+  and `Open` of a directory with no segment (its T8.1, T8.2 and T8.15), on top of E4's index.
+  The skeleton therefore includes durability tracking (`Sync`, group commit and the sync
+  bound), the retained-extent drop on sync, failed-window resolution, and the read-time
+  corruption rule, so `WriteAt` and `ReadAt` are built against the durability they ship with
+  rather than against stand-ins. E6's subtasks need E5's seal, headroom and end event, which is
+  why S3 waits for E5's pool, seal and roll; S3 is a checkpoint, not a deadline, and a simpler
+  dependency graph is worth the later date. The first conformance tests turn green through the
+  minimal `Open` and leave the known-failure list, and the entries still red move from failing
+  in the fixture to failing on a stub (epic 2, D4). **E8's integration tests are blocked on
+  this point.**
 - **S4. Core complete** (E3–E9 done). All component conformance tests are green. Only
   system e2e tests remain on the known-failure list. E11 cannot finish before this point.
 - **S4a. Engine interface agreed** (with rif, stage 2 of #3119). The filesystem service's
@@ -352,7 +355,8 @@ everything before it.
 - **E5** blocks E6, E7 and E8's integration tests.
 - **E6's T6.1 to T6.4 and T6.7** block S3: E8's `WriteAt` needs `Sync`, the ledger epic 5's
   `Append` fills, the retained-extent drop and the failed-window resolution, and its `ReadAt`
-  the corruption rule.
+  the corruption rule. They need E5's seal (T5.7), headroom (T5.6) and end event (T5.10), so
+  those block S3 too.
 - **E6** blocks E7: recovery appends E6's loss records.
 - **E6's read-time corruption rule** blocks E8's `ReadAt` failure path and E9's offer and
   repack verification, which call it outside recovery. E7 calls the same handler from
@@ -387,7 +391,7 @@ owner (for example, epic 1's 1.4 is on track B).
 | --- | --- | --- | --- |
 | 0 | E1: skeleton and import test, observability, storage seam | E1: value types, errors, lifecycle, public API (`Journal`, `Handle`, ops) | review → **S1** |
 | 1 | E2: test clock and fault schedule, crash-simulating seam, profiler, `raw` | E2: reference model, fixture and `dt` registration, conformance test bodies, traceability matrix | → **S2** |
-| 2 | E3, then E5 (minimal stream first), then E6's T6.1 to T6.4 and T6.7 | E4, then E8's storage-independent parts (share registry, capacity counters, version counter) | → **S3** |
+| 2 | E3, then E5's stream, pool, seal, roll and end event, then E6's T6.1 to T6.4 and T6.7 | E4, then E8's storage-independent parts (share registry, capacity counters, version counter), then `WriteAt`, `ReadAt` and the minimal `Init` and `Open` | → **S3** |
 | 3 | E6's remaining subtasks (re-append, read-only state and probe, counted checks), then E7 | E8 remainder, then E9 | → **S4**; S4a with rif |
 | 4 | E10: device config keys, start check, journal side of initialisation | E11 planning, once S4a exists | |
 | 5 | E11 | E11 | → **S5** |
@@ -732,8 +736,8 @@ and supersedes this section where they differ.
   `segment_reopens`.
 - **Storage guard:** a shared/exclusive guard per segment that is not reader-preferring.
 
-**The first two subtasks deliver the S3 minimal stream:** one stream, append and read,
-with no pool and no seal.
+**S3 needs the stream, the pool, the seal, the roll and the end event:** epic 6's subtasks
+before S3 need the seal's sync, the headroom and the hand-off of a failed segment.
 
 ### Epic 6 — Durability and loss (≈10 subtasks, A)
 
@@ -792,7 +796,9 @@ Epic 6 implements RFC 1 §5 and §3.8.
 
 ### Epic 7 — Recovery and identity (≈12 subtasks, A)
 
-Epic 7 implements RFC 28 §3 and RFC 1's `Init`, `Open` and `Restamp`.
+Epic 7 implements RFC 28 §3 and RFC 1's `Init`, `Open` and `Restamp`. Epic 8 delivers a minimal
+`Init` and an `Open` of a directory with no segment before S3 (its T8.15); epic 7 extends `Open`
+with recovery and owns the rules below that need a segment on disk.
 
 - **Identity and attach rules:**
   - `Init` refuses a non-empty directory, not counting a `format.tmp`; `Open` ignores one
@@ -890,6 +896,9 @@ not gated.
 
 Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.4, §3.6, §3.7,
 §3.10, §6, §8).
+
+- **A minimal `Init` and `Open`** for S3: `Init` of an empty directory, and `Open` of one that
+  holds a `format` file and no segment, so the conformance suite runs on the public API from S3.
 
 - **Journal and handles:**
   - `Share`, which raises the counter above the share's floor;
