@@ -55,6 +55,7 @@ type Engine struct {
 	stabilityPoints atomic.Int64                                                       // engine_stability_points_total
 	pendingApplied  atomic.Int64                                                       // engine_pending_existence_ops: operations committed
 	hooks           struct{ taken, captured, drained, written atomic.Pointer[func()] } // a test's seams: after a batch's take, its capture, a drain's read of the ring, and a write's WriteAt
+	afterRegister   func()                                                             // a test's hook: run once a clone's registrations are installed
 }
 
 // New checks d and builds the engine. It takes no settings, opens nothing and

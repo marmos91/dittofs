@@ -30,10 +30,17 @@ func (e *Engine) Read(ctx context.Context, s entity.ShareID, f entity.FileID, of
 	if err != nil {
 		return 0, err
 	}
-	// decision: a read refused before it starts, out of range or of an
-	// unbound share, is counted in neither series: it reached no content, so
-	// it has no class among engine_reads_total's, and its time is no read's
-	// latency. Count it once RFC 8 §14 names a series for refusals.
+	if fe := e.files.lockOf(f); fe != nil {
+		err := fe.refuseRead(off, off+int64(len(dst)))
+		e.files.unlock(f, fe)
+		if err != nil {
+			return 0, err
+		}
+	}
+	// decision: a read refused before it starts, out of range, of an unbound
+	// share or behind a clone, is counted in neither series: it reached no
+	// content, so it has no class among engine_reads_total's, and its time is
+	// no read's latency. Count it once RFC 8 §14 names a series for refusals.
 	start := e.d.Clock.Elapsed()
 	r := reader{e: e, b: b, s: s, f: f}
 	n, err := r.window(ctx, off, dst)

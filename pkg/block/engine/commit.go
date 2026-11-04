@@ -136,6 +136,9 @@ func (e *Engine) pendingIn(f entity.FileID, off, n int64) (journal.Version, []en
 		return journal.Version{}, nil
 	}
 	defer e.files.unlock(f, fe)
+	if len(fe.ops) == 0 { // alive for an admitted write or a registration only
+		return journal.Version{}, nil
+	}
 	through := fe.ops[len(fe.ops)-1].version
 	var runs []entity.Extent
 	for _, op := range fe.ops {

@@ -35,18 +35,24 @@ type pendingOp struct {
 	done      func()         // the write's WriteOpts.Done, called once its existence commits or it is dropped
 }
 
-// fileEntry is one file's state: its pending operations in version order.
+// fileEntry is one file's state: its pending operations in version order,
+// the writes admitted and not yet inserted, and the clones registered on it.
 // It exists only while it holds something.
 type fileEntry struct {
 	mu        sync.Mutex
-	dead      bool // removed from its shard: a caller that finds it so looks again
+	staged    sync.Cond // signalled, under mu, as an admitted write leaves writing
+	dead      bool      // removed from its shard: a caller that finds it so looks again
 	ops       []pendingOp
 	inBatch   bool          // a group commit batch claimed its leading operations
 	batchDone chan struct{} // closed when that batch returns
+	writing   []extent      // admitted writes not yet inserted, one per write
+	regs      []*reg        // the clones registered on the file
 }
 
 // empty reports the entry holds nothing. The caller holds mu.
-func (fe *fileEntry) empty() bool { return len(fe.ops) == 0 && !fe.inBatch }
+func (fe *fileEntry) empty() bool {
+	return len(fe.ops) == 0 && !fe.inBatch && len(fe.writing) == 0 && len(fe.regs) == 0
+}
 
 // fileShards is the count of shards the entry map is split into, each with
 // its own lock held only to look up, insert or remove.
@@ -114,6 +120,7 @@ func (fs *files) entryFor(f entity.FileID) *fileEntry {
 	fe := sh.m[f]
 	if fe == nil {
 		fe = &fileEntry{}
+		fe.staged.L = &fe.mu
 		sh.m[f] = fe
 	}
 	sh.mu.Unlock()

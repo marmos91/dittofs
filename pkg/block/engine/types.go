@@ -17,11 +17,12 @@ type Settings struct {
 
 // Share is one share's storage binding, as Start and Bind take it.
 type Share struct {
-	ID    entity.ShareID
-	Tag   journal.ShareTag // the share's tag in every journal
-	Shard entity.ShardID   // the share's own shard, which keys a clone's source open
-	Limit int64            // the share's journal limit, in bytes
-	State ShareState
+	ID        entity.ShareID
+	Tag       journal.ShareTag   // the share's tag in every journal
+	Shard     entity.ShardID     // the share's own shard, which keys a clone's source open
+	Namespace entity.NamespaceID // the share's write namespace: a clone's two shares must share it
+	Limit     int64              // the share's journal limit, in bytes
+	State     ShareState
 }
 
 // ShareState is what a bound share admits.

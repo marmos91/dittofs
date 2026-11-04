@@ -38,14 +38,27 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	if o.Suspend&entity.TimeModify == 0 {
 		mtime = now.UnixNano()
 	}
-	ver, err := b.h.WriteAt(ctx, fileID(f), off, p, mtime)
-	if err != nil {
-		return vfserr.Verifier{}, e.journalErr(err)
+	// The write is admitted under the entry's lock, where a clone's
+	// registration is checked and installed, and stays counted until its
+	// operation is in the entry, so a registration waits for it.
+	x := extent{off, off + int64(len(p))}
+	fe := e.files.lockFor(f)
+	if err := fe.refuseWrite(x.off, x.end); err != nil {
+		e.files.unlock(f, fe)
+		return vfserr.Verifier{}, err
 	}
+	fe.writing = append(fe.writing, x)
+	e.files.unlock(f, fe)
+	ver, err := b.h.WriteAt(ctx, fileID(f), off, p, mtime)
 	if h := e.hooks.written.Load(); h != nil {
 		(*h)()
 	}
-	fe := e.files.lockFor(f)
+	fe = e.files.lockFor(f) // the admitted write keeps the entry alive
+	fe.leave(x)
+	if err != nil {
+		e.files.unlock(f, fe)
+		return vfserr.Verifier{}, e.journalErr(err)
+	}
 	// A loss drained since WriteAt answered found no pending write to apply
 	// to and was kept: a corrupt loss inserts the write lost, a failed
 	// window's drops it, its Done run and nothing charged.

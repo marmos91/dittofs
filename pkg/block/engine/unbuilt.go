@@ -34,13 +34,6 @@ func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) 
 	return nil, errUnbuilt
 }
 
-// Clone makes x of dst the content of x of src, atomically, answered when
-// done. Each file is named with its own share: on one node a clone between
-// two shares of one namespace reaches the engine.
-func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, x vfserr.Extent) error {
-	return errUnbuilt
-}
-
 // Copy copies xs in order as bounded clones, and may answer a short count.
 func (e *Engine) Copy(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, xs []vfserr.Extent) (int64, error) {
 	return 0, errUnbuilt

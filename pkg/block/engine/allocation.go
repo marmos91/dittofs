@@ -29,6 +29,29 @@ func (e *Engine) Allocation(ctx context.Context, s entity.ShareID, f entity.File
 	if _, err := e.bindingOf(s); err != nil {
 		return entity.Span{}, err
 	}
+	limit := int64(math.MaxInt64) // the start of the first destination extent a clone holds past off
+	if fe := e.files.lockOf(f); fe != nil {
+		err := fe.refuseRead(off, off+1)
+		for _, r := range fe.regs {
+			if r.dst && r.off > off {
+				limit = min(limit, r.off)
+			}
+		}
+		e.files.unlock(f, fe)
+		if err != nil {
+			return entity.Span{}, err
+		}
+	}
+	sp, err := e.spanFrom(ctx, s, f, off)
+	if err == nil && sp.End() > limit {
+		sp.Length = limit - off // the span stops where a clone's destination extent starts
+	}
+	return sp, err
+}
+
+// spanFrom is Allocation's span from off, f's pending operations read at each
+// pass after the store.
+func (e *Engine) spanFrom(ctx context.Context, s entity.ShareID, f entity.FileID, off int64) (entity.Span, error) {
 	cursor, class := off, -1 // class: -1 unset, 0 data, 1 hole
 	// ponytail: one store call per committed run a pending write spans, each
 	// loading the store's window, so N alternating runs under one write cost
