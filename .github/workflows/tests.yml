@@ -106,10 +106,17 @@ jobs:
         env:
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
           SUITE: ${{ inputs.suite }}
+          # On feat/storage-v2 the data path answers unavailable until the
+          # adapters run on vfs.Service, so a suite that moves file bytes cannot
+          # pass there. Only the cells that move none run: the operator's and
+          # the AD DC's, besides the cells with a job of their own. The others,
+          # unit/windows included, run once the branch merges into develop.
+          V2: ${{ github.ref == 'refs/heads/feat/storage-v2' || github.base_ref == 'feat/storage-v2' }}
         run: |
           set -o pipefail
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
-            jq -c --arg suite "$SUITE" '[(.cells // [])[] | select($suite == "" or .suite == $suite) | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
+            jq -c --arg suite "$SUITE" --arg v2 "$V2" '[(.cells // [])[] | select($suite == "" or .suite == $suite)
+              | select($v2 != "true" or .job or .suite == "operator" or .name == "integration/ad-dc") | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
                 or .suite == "smbtorture" or (.suite == "system" and .place != "dedicated")
                 or .suite == "clients" or .suite == "cthon04" or .suite == "nfstest" or .suite == "fio-verify"
                 or IN(.name; "unit/windows", "unit/nonrace", "integration/ad-dc", "bench-smoke"))
@@ -125,9 +132,7 @@ jobs:
   run:
     name: ${{ matrix.name }}
     needs: plan
-    # Not on feat/storage-v2: the data path answers unavailable there until the
-    # adapters run on vfs.Service, so a suite that moves file bytes cannot pass.
-    if: needs.plan.outputs.blocking != '[]' && github.ref != 'refs/heads/feat/storage-v2' && github.base_ref != 'feat/storage-v2'
+    if: needs.plan.outputs.blocking != '[]'
     runs-on: ${{ matrix.place }}-latest
     timeout-minutes: ${{ matrix.job_timeout_minutes }}
     strategy:
@@ -280,9 +285,7 @@ jobs:
   non-blocking:
     name: ${{ matrix.name }} (non-blocking)
     needs: plan
-    # Not on feat/storage-v2: the data path answers unavailable there until the
-    # adapters run on vfs.Service, so a suite that moves file bytes cannot pass.
-    if: needs.plan.outputs.non-blocking != '[]' && github.ref != 'refs/heads/feat/storage-v2' && github.base_ref != 'feat/storage-v2'
+    if: needs.plan.outputs.non-blocking != '[]'
     continue-on-error: true
     runs-on: ${{ matrix.place }}-latest
     timeout-minutes: ${{ matrix.job_timeout_minutes }}
