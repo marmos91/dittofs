@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -51,8 +52,10 @@ type Retirement struct {
 	// has completed — a recycle returns the cap to the spare pool.
 	Freed int64
 	// Durable reports whether the directory sync after the unlink or the
-	// rename returned nil. A retirement it is false for is owed its signal,
-	// and the worker re-syncs it until one returns.
+	// rename returned nil. False means the removal may not have reached the
+	// directory: no later sync makes it durable in this process (RFC 1
+	// §5.1), the retirement is still done, and the next open's scan settles
+	// the file.
 	Durable bool
 }
 
@@ -112,9 +115,7 @@ type Retirer struct {
 	reasons []Reason
 	queued  map[core.SegmentID]struct{}
 	started bool
-	// owed holds the retirements whose directory sync failed: their signal
-	// is held back until the worker's own re-sync returns.
-	owed []Retirement
+	stopped bool // Stop has closed done; guarded by mu, mirrored from Pool
 	// extra holds the names a recycle's failed rename may have put the file
 	// under beside the segment's own, keyed by the segment id: the retry's
 	// unlink removes them together with the segment name.
@@ -160,9 +161,12 @@ func NewRetirer(c RetirerConfig) *Retirer {
 // Retire runs one retirement now: the unlink or the recycle of the segment id
 // stands for, under the reason named. The refusals are the ledger's own
 // (ErrNotInSet, ErrWrongState, ErrClaimed, ErrWrongReason), the wrapped
-// read-only refusal, or the wrapped error of the storage step that failed —
-// a failed step leaves the segment in the set, accounted, its claim released,
-// for a retry through the queue.
+// read-only refusal, or the wrapped error of a storage step that failed with
+// the segment still unretired — a failed step leaves the segment in the set,
+// accounted, its claim released, for a retry through the queue. A recycle
+// that fails at a step and falls back to an unlink that succeeds is a
+// completed retirement, not an error: it returns nil with Recycled false and
+// names the failed step at Warn.
 //
 // The order of the steps is RFC 28 §2.2's and RFC 1 §8.5's: the read-only
 // check first, nothing touched before it passes; the ledger's claim, which
@@ -201,12 +205,12 @@ func (r *Retirer) Retire(id core.SegmentID, reason Reason) (Retirement, error) {
 	// failed and whose size still stands at the cap, and every ended
 	// segment, whatever the pool holds.
 	recycle := st == Sealed && full && r.cfg.Pool != nil
+	// class is the class wantRecycle reserved; its zero on a refusal names an
+	// unlink, and recycle is already false for that pool-less case, so one
+	// condition covers both.
 	var class Class
 	if recycle {
-		if class, recycle = r.cfg.Pool.wantRecycle(); !recycle {
-			// The pool is at its target: an unlink.
-			class = 0
-		}
+		class, recycle = r.cfg.Pool.wantRecycle()
 	}
 
 	// RFC 1 §8.5, by way of the cache's own drain: this segment's readers are
@@ -220,7 +224,7 @@ func (r *Retirer) Retire(id core.SegmentID, reason Reason) (Retirement, error) {
 	if recycle {
 		return r.recycle(id, class)
 	}
-	return r.unlink(id)
+	return r.unlink(id, st)
 }
 
 // reasonState is the state the reason names. The pairs are exactly two, and
@@ -290,9 +294,7 @@ func (r *Retirer) recycle(id core.SegmentID, class Class) (Retirement, error) {
 	if err := r.cfg.Set.Recycle(id, fresh); err != nil {
 		return r.recycleFailed(id, class, fresh, "ledger", err)
 	}
-	if r.cfg.Pool != nil {
-		r.cfg.Pool.recycled(fresh, class)
-	}
+	r.cfg.Pool.recycled(fresh, class)
 	r.cfg.Cache.Forget(id)
 
 	// decision: freed_bytes rises by the cap on a recycle, against the epic
@@ -314,30 +316,36 @@ func (r *Retirer) recycle(id core.SegmentID, class Class) (Retirement, error) {
 // recycleFailed is what a failed recycle step becomes: not a spare, never
 // taken, an unlink under both of the segment's names — "since a failed
 // rename may or may not have happened" (RFC 28 §2.2, R41). The pool's
-// reservation is given back, the fallback unlink proceeds exactly as
-// unlink's own, and the error that returns names the step that failed.
+// reservation is given back and the fallback unlink proceeds exactly as
+// unlink's own. An unlink that succeeds completes the retirement at nil
+// with Recycled false, and the failed recycle step is named at Warn for the
+// operator; the error of a failed step only returns when the fallback itself
+// failed and the segment is still in the set — the one shape a retry exists
+// for.
 func (r *Retirer) recycleFailed(id core.SegmentID, class Class, fresh core.SegmentID, step string, err error) (Retirement, error) {
-	if r.cfg.Pool != nil {
-		r.cfg.Pool.recycleFailed(class)
-	}
+	r.cfg.Pool.recycleFailed(class)
 	// The fresh name is remembered beside the segment's own, so the unlink
 	// here — and the retry, should the unlink itself fail — removes both.
 	r.extraNames(id, format.SegmentName(fresh))
-	ret, uerr := r.unlink(id)
+	ret, uerr := r.unlink(id, Sealed)
 	if uerr != nil {
 		return ret, fmt.Errorf("segment: retiring %d: recycle %s: %w", uint64(id), step, errors.Join(err, uerr))
 	}
-	// The fallback unlink's own error, if one gets this far, is nil: the
-	// recycle's step leads.
-	return ret, fmt.Errorf("segment: retiring %d: recycle %s: %w", uint64(id), step, err)
+	// The fallback unlink retired the segment: the recycle's step is a
+	// happened event, not a debt — the operator's Warn names it, and no
+	// caller is handed a retirement its err calls failed.
+	r.log.Warn("segment: a recycle's failed step fell back to an unlink",
+		"segment", uint64(id), "step", step, "err", err)
+	return ret, nil
 }
 
-// unlink unlinks a claimed segment: theStorageSync first — under the
-// segment's own name, under the spare's temporary name for an ended segment,
-// and under every extra name a failed recycle recorded — then the ledger's
-// retire and the bytes' freed count, and last the directory sync that makes
-// the removal durable, whose result the returned Retirement reports.
-func (r *Retirer) unlink(id core.SegmentID) (Retirement, error) {
+// unlink unlinks a claimed segment in the state st the retirement already
+// claimed under: the removals first — under the segment's own name, under
+// the spare's temporary name for an ended segment, and under every extra name
+// a failed recycle recorded — then the ledger's retire and the bytes' freed
+// count, and last the directory sync that makes the removal durable, whose
+// result the returned Retirement reports.
+func (r *Retirer) unlink(id core.SegmentID, st State) (Retirement, error) {
 	ret := Retirement{ID: id}
 
 	names := []string{format.SegmentName(id)}
@@ -346,8 +354,9 @@ func (r *Retirer) unlink(id core.SegmentID) (Retirement, error) {
 	// left may sit under either (R83): a remove that finds one absent counts
 	// it gone, so the extra remove costs nothing when the file sits under
 	// the first. A Sealed segment was never a spare, so it pays no second
-	// remove.
-	if st, _, serr := r.cfg.Set.state(id); serr == nil && st == Ended {
+	// remove — and the state the claim fixed is the fact the decision runs
+	// on, so the ledger is not re-asked for what it already answered.
+	if st == Ended {
 		names = append(names, format.SpareName(id))
 	}
 	r.mu.Lock()
@@ -374,22 +383,33 @@ func (r *Retirer) unlink(id core.SegmentID) (Retirement, error) {
 	if r.cfg.Pool != nil {
 		r.cfg.Pool.Kick()
 	}
+
+	// The extra names left with the segment, and freed_bytes rises only now,
+	// after the unlink has happened: a Wait on the remove still sees the old
+	// figure.
 	r.mu.Lock()
 	delete(r.extra, id)
-	r.mu.Unlock()
-
-	// freed_bytes rises only now, after the unlink has happened: a Wait on
-	// the remove still sees the old figure.
-	r.mu.Lock()
 	r.freedB += uint64(freed)
 	r.mu.Unlock()
 
 	if err := r.cfg.FS.SyncDir(); err != nil {
-		// The retirement is done, only its durability is not; the worker
-		// re-syncs and the signal waits for it.
-		r.mu.Lock()
-		r.owed = append(r.owed, ret)
-		r.mu.Unlock()
+		// The retirement is done; the removal may not be durable. Warn names
+		// it: no signal follows, in this process or a later one.
+		//
+		// decision: a failed directory sync stays failed — the removal it
+		// failed to cover is never reported durable, and no later pass
+		// re-syncs it into a signal — because RFC 1 §5.1 rules that "a sync
+		// that failed MUST NOT satisfy, by a later success, a Sync for
+		// writes made before the failure", and §5.3 reaches a directory sync
+		// that lost a removal the same way: the retry would tell epic 9's
+		// index the removal record is safe where the crash answer says the
+		// file may still sit on disk. No new error is returned either: the
+		// unlink itself succeeded, so a retry would only count a double
+		// retire. Overturned only when the seam's failure model changes to
+		// make a re-synced removal genuinely durable. The next open's scan
+		// settles whatever the failed sync left.
+		r.log.Warn("segment: a retirement's directory sync failed; the removal is not durable",
+			"segment", uint64(id), "err", err)
 		return ret, nil
 	}
 
@@ -481,7 +501,8 @@ func (r *Retirer) Start() {
 }
 
 // Stop stops the worker and joins it. An in-flight retirement completes
-// first; the queue is dropped rather than drained.
+// first; the queue is dropped rather than drained, and a pass Stop interrupts
+// drops the ids it was still to run.
 //
 // decision: the queue is dropped at Stop, because epic 9 re-hands every
 // not-held segment at the next open — a segment left queued is found again by
@@ -489,7 +510,16 @@ func (r *Retirer) Start() {
 // Withdrawn if T5.11's close ever needs the queue drained before the set
 // shuts.
 func (r *Retirer) Stop() {
-	r.stop.Do(func() { close(r.done) })
+	// stopped and done close under mu, mirroring the pool's own Start/Stop:
+	// a Stop that raced a Start would otherwise close done and return from
+	// Wait before the worker it must join exists, and the worker's select
+	// could still pick the pending kick and run a pass after Stop returned.
+	r.stop.Do(func() {
+		r.mu.Lock()
+		r.stopped = true
+		r.mu.Unlock()
+		close(r.done)
+	})
 	r.wg.Wait()
 }
 
@@ -503,7 +533,7 @@ func (r *Retirer) Counters() RetireCounters {
 // worker drains the queue: one goroutine, woken by a coalesced kick or by
 // its retry ticker, running one pass per wake.
 //
-// ponytail: the retry pass runs every retryEach, one retry per second on a
+// ponytail: the retry pass runs every retryEvery, one retry per second on a
 // failing device, plain and unbacked-off. Ceiling: a segment whose unlink
 // keeps failing retries once a second forever, which a watched device reads
 // as a steady one-line error. Upgrade to a backoff once a stuck unlink shows
@@ -525,37 +555,24 @@ func (r *Retirer) worker() {
 	}
 }
 
-// pass runs one drain: the owed directory syncs first, then every queued id
-// once. A read-only journal changes nothing and leaves the queue and the
-// owed signals as they are (R89), so a queue lives a read-only interval and
-// drains once the journal is writable again.
+// pass runs one drain: every queued id once. A read-only journal changes
+// nothing and leaves the queue as it is (R89), so a queue lives a read-only
+// interval and drains once the journal is writable again. A Stop that lands
+// mid-pass leaves the in-flight retirement to finish and drops the rest —
+// the queue as a whole is dropped at Stop, and the part the pass still owed
+// is no different.
 func (r *Retirer) pass() {
 	// R89: a read-only journal unlinks nothing, so the pass retires nothing
-	// either — the queue and the owed signals wait.
+	// either — the queue waits.
 	if r.cfg.ReadOnly != nil {
 		if err := r.cfg.ReadOnly(); err != nil {
 			return
 		}
 	}
 
-	// The owed durable signals: one sync returns them all, for the
-	// retirements whose own sync failed after the storage had moved.
-	r.mu.Lock()
-	owed := r.owed
-	r.mu.Unlock()
-	if len(owed) > 0 {
-		if err := r.cfg.FS.SyncDir(); err == nil {
-			for _, ret := range owed {
-				ret.Durable = true
-				r.signal(ret)
-			}
-			r.mu.Lock()
-			r.owed = nil
-			r.mu.Unlock()
-		}
-	}
-
-	// The queue: one id at a time, each hand-over's own retirement.
+	// The queue: one id at a time, each hand-over's own retirement. Between
+	// them the pass asks whether the retirer was stopped, so a Stop during a
+	// slow retirement leaves one in flight rather than a whole queue's worth.
 	r.mu.Lock()
 	if r.stoppedLocked() {
 		r.mu.Unlock()
@@ -565,9 +582,22 @@ func (r *Retirer) pass() {
 	reasons := r.reasons
 	r.queue = nil
 	r.reasons = nil
+	// requeued collects the ids this pass must put back, in its own order:
+	// prepending them one at a time under the lock would reverse whichever
+	// stretch fails together.
+	requeued := make([]core.SegmentID, 0, len(queue))
+	requeuedReasons := make([]Reason, 0, len(queue))
 	r.mu.Unlock()
 
 	for i, id := range queue {
+		r.mu.Lock()
+		stopped := r.stoppedLocked()
+		r.mu.Unlock()
+		if stopped {
+			// The rest of the queue is dropped with the retirer: epic 9
+			// re-hands every not-held segment at the next open.
+			break
+		}
 		_, err := r.Retire(id, reasons[i])
 		switch {
 		case err == nil:
@@ -584,14 +614,20 @@ func (r *Retirer) pass() {
 			}
 			r.dropQueued(id)
 		case errors.Is(err, ErrClaimed), errors.Is(err, fs.ErrClosed):
-			// Another path holds the claim, or the journal has closed: the
-			// id stays for a later pass, which is the retry.
-			r.requeue(id, reasons[i])
+			// Another path holds the claim, or the journal has closed: the id
+			// stays for a later pass, which is the retry — the same move a
+			// failed step's makes, so the two share the fallback below.
+			fallthrough
 		default:
 			// A failed step, the read-only refusal included: the id stays
 			// for the next pass.
-			r.requeue(id, reasons[i])
+			requeued = append(requeued, id)
+			requeuedReasons = append(requeuedReasons, reasons[i])
 		}
+	}
+
+	if len(requeued) > 0 {
+		r.requeue(requeued, requeuedReasons)
 	}
 }
 
@@ -604,24 +640,11 @@ func (r *Retirer) dropQueued(id core.SegmentID) {
 }
 
 // requeue puts an id back at the head of the queue with its reason, for the
-// next pass.
-func (r *Retirer) requeue(id core.SegmentID, reason Reason) {
+// next pass. It keeps the ids it is handed in their own order, so a stretch
+// that fails together is retried in the order it failed in.
+func (r *Retirer) requeue(ids []core.SegmentID, reasons []Reason) {
 	r.mu.Lock()
-	r.queue = append([]core.SegmentID{id}, r.queue...)
-	r.reasons = append([]Reason{reason}, r.reasons...)
+	r.queue = append(slices.Clone(ids), r.queue...)
+	r.reasons = append(slices.Clone(reasons), r.reasons...)
 	r.mu.Unlock()
-}
-
-// state answers a segment's state and the seal's full word. The unlink's
-// both-names decision is its only caller: the ledger exposes no read of its
-// own because nothing else may reach a segment's state without a claim.
-func (s *Set) state(id core.SegmentID) (st State, full bool, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	e, ok := s.segs[id]
-	if !ok {
-		return 0, false, ErrNotInSet
-	}
-	return e.state, e.full, nil
 }
