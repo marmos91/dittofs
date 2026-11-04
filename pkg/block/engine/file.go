@@ -29,6 +29,7 @@ type pendingOp struct {
 	extent    journal.Extent // a truncate's Off is the size it sets, its Len zero
 	at        time.Time      // the clock's time when staged: the file's change time
 	setsMtime bool           // the operation moves the file's modification time
+	grow      bool           // a truncate at or above the replayed size: committed by the group commit, no phase 1
 	lost      bool           // the journal dropped it after its sync: its existence commits lost
 	claimed   bool           // a batch claimed it: no other path commits it or calls its Done
 	dropped   bool           // a failed window dropped it while claimed: it no longer exists, its Done has run
@@ -47,11 +48,14 @@ type fileEntry struct {
 	batchDone chan struct{} // closed when that batch returns
 	writing   []extent      // admitted writes not yet inserted, one per write
 	regs      []*reg        // the clones registered on the file
+	guarded   atomic.Bool   // a removal holds the file's guard: read without mu by a capture
+	guardDone chan struct{} // non-nil while guarded, closed when the guard is released
+	removing  *extent       // the extent of the removal in flight, until its phase 1 ends
 }
 
 // empty reports the entry holds nothing. The caller holds mu.
 func (fe *fileEntry) empty() bool {
-	return len(fe.ops) == 0 && !fe.inBatch && len(fe.writing) == 0 && len(fe.regs) == 0
+	return len(fe.ops) == 0 && !fe.inBatch && len(fe.writing) == 0 && len(fe.regs) == 0 && fe.guardDone == nil
 }
 
 // fileShards is the count of shards the entry map is split into, each with

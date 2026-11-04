@@ -231,7 +231,15 @@ func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uin
 	ext := op.Extent
 	if op.Kind == entity.RemoveTruncate {
 		if ext.Offset > f.Size {
-			return merrs.NewInvalidArgumentError("a truncate up is a grow")
+			// A truncate the writer took for a removal can land above the
+			// size, as when a failed sync window dropped a write it counted:
+			// it sets the size whichever way, the gap a hole, removing nothing.
+			h, back, err := mergedHole(tx, share, file, f, ms, entity.ExtentOf(f.Size, ext.Offset), op.Version, 0, entity.ExtentOf(0, entity.EndOfFile))
+			if err != nil {
+				return err
+			}
+			f.Charged += back
+			f.MaxSpan = max(f.MaxSpan, h.Length)
 		}
 		ext = entity.ExtentOf(ext.Offset, entity.EndOfFile)
 	}

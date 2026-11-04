@@ -86,6 +86,19 @@ func (fe *fileEntry) writingInto(x extent) bool {
 // nothing, if ctx ends first.
 func (e *Engine) register(ctx context.Context, f entity.FileID, r *reg) error {
 	fe := e.files.lockFor(f)
+	// A removal in flight over the extent is waited out: it checked the
+	// file's registrations before this one, so its phase 1 must end before
+	// the clone reads the file.
+	for fe.removing != nil && fe.removing.overlaps(r.off, r.end) {
+		ch := fe.guardDone
+		e.files.unlock(f, fe)
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		fe = e.files.lockFor(f)
+	}
 	var err error
 	if r.dst {
 		err = fe.refuseWrite(r.off, r.end)

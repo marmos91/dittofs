@@ -133,19 +133,28 @@ func (e *Engine) pending(c captured) kvstore.PendingExistence {
 		if op.setsMtime {
 			mtime = op.at
 		}
-		kind := kvstore.OpWrite
-		if op.lost {
-			kind = kvstore.OpLost
-		}
-		p.Ops = append(p.Ops, kvstore.PendingOp{
-			Version: entity.JournalVersion(op.version.Bytes()),
-			Kind:    kind,
-			Extent:  entity.Extent{Offset: op.extent.Off, Length: op.extent.Len},
-			Mtime:   mtime,
-			Ctime:   op.at,
-		})
+		p.Ops = append(p.Ops, storeOp(op, mtime))
 	}
 	return p
+}
+
+// storeOp is op as the store commits it: a write, a write the journal lost,
+// or a truncate up.
+func storeOp(op pendingOp, mtime time.Time) kvstore.PendingOp {
+	o := kvstore.PendingOp{
+		Version: entity.JournalVersion(op.version.Bytes()),
+		Kind:    kvstore.OpWrite,
+		Extent:  entity.Extent{Offset: op.extent.Off, Length: op.extent.Len},
+		Mtime:   mtime,
+		Ctime:   op.at,
+	}
+	switch {
+	case op.grow:
+		o.Kind, o.Extent, o.Size = kvstore.OpGrow, entity.Extent{}, op.extent.Off
+	case op.lost:
+		o.Kind = kvstore.OpLost
+	}
+	return o
 }
 
 // groupCommitFor is journal j's group commit, started on first use. Once
@@ -492,15 +501,27 @@ func (e *Engine) failCause(b *binding, f entity.FileID) vfserr.DelayCause {
 // keep answering them until the batch returns. A file with no write at the
 // front of its entry is not captured: its operations are a removal's, which
 // commits them itself.
+//
+// decision: a file whose guard a removal holds is skipped without its
+// entry's lock, which a truncate holds across its journal call, and is taken
+// in a later batch: no file's commit waits on another's removal, and the
+// removal's phase 1 commits the writes below it itself. Correctness never
+// rests on the skip, as the store's fences order the two either way.
 func (e *Engine) capture(b *binding, f entity.FileID) (c captured, ok, held bool) {
+	if fe := e.files.entryOf(f); fe != nil && fe.guarded.Load() {
+		return captured{}, false, true
+	}
 	fe := e.files.lockOf(f)
 	if fe == nil {
 		return captured{}, false, false
 	}
 	defer e.files.unlock(f, fe)
+	if fe.guarded.Load() {
+		return captured{}, false, true
+	}
 	c = captured{b: b, f: f, fe: fe}
 	for i := range fe.ops {
-		if fe.ops[i].kind != opWrite {
+		if fe.ops[i].kind != opWrite && !fe.ops[i].grow {
 			break
 		}
 		fe.ops[i].claimed = true
@@ -847,6 +868,17 @@ func (e *Engine) commitThrough(ctx context.Context, b *binding, f entity.FileID,
 		}
 		if lost {
 			return errLost
+		}
+		// A removal holding f's guard commits f's operations below it in its
+		// own phase 1, and no batch captures f meanwhile: wait for the guard
+		// rather than asking a batch that would only skip f again.
+		if ch := e.guardOf(f); ch != nil {
+			select {
+			case <-ch:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 		g.mu.Lock()
 		d := g.due[f]

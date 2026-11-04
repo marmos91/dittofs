@@ -627,6 +627,18 @@ func (e Existence) Applied(ctx context.Context, share entity.ShareID, file entit
 	return v, err
 }
 
+// Size is the file's committed size, in one read transaction: a truncate
+// replays the file's uncommitted operations over it to tell a grow from a
+// removal.
+func (e Existence) Size(ctx context.Context, share entity.ShareID, file entity.FileID) (size int64, err error) {
+	err = e.s.kv.View(ctx, func(r kv.Reader) error {
+		f, err := fileIn(r, share, file)
+		size = f.Size
+		return err
+	})
+	return size, err
+}
+
 // Overwrites reports whether any run covers content whose existence is
 // committed — below size, outside the holes — in one read transaction: a
 // stability point waits for the existence commit of exactly such a write.

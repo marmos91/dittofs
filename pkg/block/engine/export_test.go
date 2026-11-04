@@ -350,3 +350,12 @@ func (e *Engine) PendingWrites(f entity.FileID, off, end int64) int {
 	}
 	return n
 }
+
+// OnStaged runs f in each removal between its journal step and its phase 1.
+func (e *Engine) OnStaged(f func()) { e.hooks.staged.Store(&f) }
+
+// GuardHeld reports whether a removal holds f's guard.
+func (e *Engine) GuardHeld(f entity.FileID) bool {
+	fe := e.files.entryOf(f)
+	return fe != nil && fe.guarded.Load()
+}
