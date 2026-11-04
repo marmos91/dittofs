@@ -1562,7 +1562,7 @@ func (g *graceThenRecall) CheckChange(ctx context.Context, who openstate.Caller,
 func TestAGraceSpendsNoUnlinkRetry(t *testing.T) {
 	first, longest := unlinkRetry, unlinkWait
 	t.Cleanup(func() { unlinkRetry, unlinkWait = first, longest })
-	unlinkRetry, unlinkWait = time.Millisecond, time.Millisecond
+	unlinkRetry, unlinkWait = time.Millisecond, 20*time.Millisecond
 	n := newNames(t)
 	ctx := t.Context()
 	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
@@ -1572,6 +1572,7 @@ func TestAGraceSpendsNoUnlinkRetry(t *testing.T) {
 	n.must(t, err)
 	n.checks = &graceThenRecall{Checks: n.checks, graces: unlinkRetries + 1}
 	before := testutil.ToFloat64(n.refusals)
+	start := time.Now()
 	if _, err := n.Close(ctx, c, r.Ref, vfs.Seqs{}); err != nil {
 		t.Fatal(err)
 	}
@@ -1583,6 +1584,10 @@ func TestAGraceSpendsNoUnlinkRetry(t *testing.T) {
 	}
 	if refused := testutil.ToFloat64(n.refusals) - before; !errors.Is(err, vfs.ErrNotFound) || refused != 0 {
 		t.Errorf("f after %d grace answers and a recall: %v, %v refusals; want gone and none", unlinkRetries+1, err, refused)
+	}
+	// Each grace answer waits unlinkWait, not a delay's shorter first wait.
+	if took, least := time.Since(start), time.Duration(unlinkRetries+1)*unlinkWait; took < least {
+		t.Errorf("f gone %v after its close, want at least %v: a grace answer waited less than unlinkWait", took, least)
 	}
 }
 

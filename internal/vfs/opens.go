@@ -268,7 +268,7 @@ func (fs *Filesystem) openedFile(ctx context.Context, a *admitted, h vfs.Handle,
 }
 
 // reconnect attaches the durable open req names to the call's session, as
-// open state matches it, holding no lock: it changes no file. Its maximal
+// open state matches it, the attach holding no lock: it changes no file. Its maximal
 // access is the caller's without privilege over SMB, as a new open answers
 // it. The reads after the attach run on a context the call's end does not
 // cancel, though Drain's deadline does, so a client dropping mid-reconnect
@@ -278,9 +278,10 @@ func (fs *Filesystem) openedFile(ctx context.Context, a *admitted, h vfs.Handle,
 // open state attached the open answers an error for a reconnect that
 // happened, and the open is closed again, as a durable open that times out
 // is: the client's retry is refused as no reclaim and it loses the durable
-// handle, but nothing it cannot reach stays held. Open state has no way to
-// park the open again; park it on that failure once open state offers it,
-// if such failures are seen.
+// handle, but nothing it cannot reach stays held. One cut short by Drain's
+// deadline stays attached, as Drain leaves every open to the next start.
+// Open state has no way to park the open again; park it on that failure
+// once open state offers it, if such failures are seen.
 func (fs *Filesystem) reconnect(ctx context.Context, a *admitted, c vfs.Call, req vfs.OpenRequest) (vfs.OpenResult, error) {
 	m := openstate.ReconnectMatch{Share: a.share.ID, Create: req.CreateID, Lease: req.Lease}
 	o, err := fs.opens.Reconnect(ctx, a.who(), req.Reconnect.Open, m, c.Session)
@@ -302,6 +303,11 @@ func (fs *Filesystem) reconnect(ctx context.Context, a *admitted, c vfs.Call, re
 		err = storeErr(err)
 	}
 	if err != nil {
+		if ctx.Err() != nil {
+			// Drain's deadline ended the reads: the open stays attached, as
+			// Drain leaves every open to the next start's grace.
+			return vfs.OpenResult{}, err
+		}
 		// No client holds the reference to close it.
 		unlock := fs.Admission(o.Open.File)
 		cr, cerr := fs.opens.Close(ctx, a.who(), ref, vfs.Seqs{})
@@ -459,17 +465,17 @@ func (fs *Filesystem) opened(ctx context.Context, c vfs.Call, ref vfs.OpenRef) (
 // one open state made itself, holding none of f's locks: the deferred unlink
 // of a delete-pending f, then the release of an f left with no name and no
 // open. It answers the directory's WCC when the deferred unlink ran at once.
-// The release runs on the call, on a context the call's end does not
-// cancel, so a call ending mid-release does not leave f's content held
-// until the next start.
+// Both run on the call, on a context the call's end does not cancel, so a
+// call ending once the close committed neither loses the delete on close
+// nor leaves f's content held until the next start.
 func (fs *Filesystem) closed(ctx context.Context, share entity.ShareID, f entity.FileID, cr openstate.CloseResult) *vfs.WCC {
+	ctx, cancel := fs.detached(ctx)
+	defer cancel()
 	var w *vfs.WCC
 	if d := cr.Unlink; d != nil {
 		w = fs.unlinkClosed(ctx, share, f, *d, 0)
 	}
 	if cr.Orphan {
-		ctx, cancel := fs.detached(ctx)
-		defer cancel()
 		if err := fs.releaseAlone(ctx, share, f); err != nil {
 			fs.log.Warn("vfs: a release after a last close failed", "file", f, "err", err)
 		}
