@@ -238,9 +238,10 @@ func (fs *Filesystem) grant(ctx context.Context, a *admitted, c vfs.Call, req vf
 		// the admission lock already held, as a close releases it.
 		ctx, cancel := fs.detached(ctx)
 		defer cancel()
-		// The close quotes no owner number: the open took the request's, and
-		// the client numbers its next request after it.
-		cr, cerr := fs.opens.Close(ctx, who, ref, vfs.Seqs{})
+		// The open is undone, not closed: it quotes no owner number, as the
+		// open took the request's, and an upgrade goes back to what the owner
+		// held, a new open ending with its delete on close dropped.
+		cr, cerr := fs.opens.Abandon(ctx, who, ref, o.Prior)
 		switch {
 		case cerr != nil:
 			fs.log.Warn("vfs: a failed open not closed", "file", f.ID, "err", cerr)

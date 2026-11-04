@@ -147,6 +147,14 @@ type OpenResult struct {
 	Grant    *CachingGrant // the grant covering the open, or offered with it; nil: none
 	Confirm  bool          // the open's owner is new: it must ConfirmOpen before any other request
 	Replayed bool          // a replayed create, answered with the open it made
+	Prior    *OpenPrior    // the owner's open as it stood before this one upgraded it; nil: a new open
+}
+
+// OpenPrior is an owner's open as it stood before an open upgraded it.
+type OpenPrior struct {
+	Access, Deny entity.AccessMask
+	Seq          uint32
+	Delete       DeleteMark
 }
 
 // OpenUpdate is a change made through an open; nil or zero fields change
@@ -231,6 +239,15 @@ type Opens interface {
 	Update(ctx context.Context, who Caller, o entity.OpenID, u OpenUpdate) error
 	// Close ends an open, and reports what the service runs after it.
 	Close(ctx context.Context, who Caller, o OpenRef, q Seqs) (CloseResult, error)
+	// Abandon undoes an open whose answer never reached its client, quoting
+	// no owner number: an upgrade goes back to prior, and a new open ends
+	// with its delete on close dropped, as a refused open leaves the file.
+	//
+	// decision: a grant offered with the undone open is not taken back, as
+	// the client was answered none and the grant covers an open it still
+	// holds or none. Take it back if a client is seen using a grant it was
+	// never answered.
+	Abandon(ctx context.Context, who Caller, o OpenRef, prior *OpenPrior) (CloseResult, error)
 	// Reconnect attaches a durable or persistent open, disconnected and
 	// within its Timeout, to session s, answering it with the lease covering
 	// it. It matches only the open's client and principal, its share, its
@@ -531,9 +548,11 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 			return err
 		}
 		if granted != o {
+			prior := &OpenPrior{Access: granted.Mode.Access, Deny: granted.Mode.Deny, Seq: granted.Ref.Seq, Delete: granted.Delete}
 			if err := t.upgrade(e, granted, who, r, access, deny); err != nil {
 				return err
 			}
+			res.Prior = prior
 		} else if err := t.addOpen(ctx, e, f, o, r); err != nil {
 			return err
 		} else if o.lease != r.Lease {
@@ -1218,6 +1237,33 @@ func (v opens) Close(ctx context.Context, who Caller, ref OpenRef, q Seqs) (Clos
 			}
 			return err
 		}
+		res.Unlink = t.closeOpen(ctx, e, o, &out)
+		return nil
+	})
+	out.raise(t, sink)
+	return res, err
+}
+
+func (v opens) Abandon(ctx context.Context, who Caller, ref OpenRef, prior *OpenPrior) (CloseResult, error) {
+	t := v.t
+	sink, err := t.running()
+	if err != nil {
+		return CloseResult{}, err
+	}
+	var res CloseResult
+	var out outbox
+	err = t.withOpen(who, ref, nil, seqOther, func(e *entry, o *open) (err error) {
+		if prior != nil {
+			// An upgrade is not written to the open's record, so the
+			// record already holds prior.
+			o.Mode.Access, o.Mode.Deny, o.Delete = prior.Access, prior.Deny, prior.Delete
+			o.Ref.Seq = t.rewind(e, o.Ref, prior.Seq)
+			return nil
+		}
+		if res.Orphan, err = t.unrecord(ctx, o); err != nil {
+			return err
+		}
+		o.Delete.OnClose = false
 		res.Unlink = t.closeOpen(ctx, e, o, &out)
 		return nil
 	})
