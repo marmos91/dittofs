@@ -36,10 +36,13 @@ func (p *Pool) PendingForTest() int {
 
 // StoppedForTest reports whether Stop has closed the worker's done, so a
 // check can sequence a Stop that must land while the worker is mid-flight:
-// the closing is under the retirer's mutex, observable without racing the
-// join the Stop itself blocks in.
+// the closed channel is the stop flag, observable without racing the join
+// the Stop itself blocks in.
 func (r *Retirer) StoppedForTest() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.stopped
+	select {
+	case <-r.done:
+		return true
+	default:
+		return false
+	}
 }

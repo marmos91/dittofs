@@ -99,12 +99,12 @@ type RetirerConfig struct {
 // one retirement now; Enqueue hands the worker one; Stop joins it.
 //
 // decision: the executor's own state — the queue with its reasons, the set of
-// queued ids, the freed counter, the owed durable signals and the extra names
-// a failed recycle left — sits under the capacity domain of RFC 1 §8.2, as
-// D13 asks of every piece of mutable state this epic adds: no I/O under the
-// mutex, no lock acquired while it is held, and never held across a Set,
-// Pool, Descriptors or storage call. Withdrawn the day a recorder of the
-// domain's order finds the mutex held across one of those.
+// queued ids, the freed counter and the extra names a failed recycle left —
+// sits under the capacity domain of RFC 1 §8.2, as D13 asks of every piece of
+// mutable state this epic adds: no I/O under the mutex, no lock acquired
+// while it is held, and never held across a Set, Pool, Descriptors or storage
+// call. Withdrawn the day a recorder of the domain's order finds the mutex
+// held across one of those.
 type Retirer struct {
 	cfg RetirerConfig
 	log *slog.Logger
@@ -115,7 +115,6 @@ type Retirer struct {
 	reasons []Reason
 	queued  map[core.SegmentID]struct{}
 	started bool
-	stopped bool // Stop has closed done; guarded by mu, mirrored from Pool
 	// extra holds the names a recycle's failed rename may have put the file
 	// under beside the segment's own, keyed by the segment id: the retry's
 	// unlink removes them together with the segment name.
@@ -510,14 +509,16 @@ func (r *Retirer) Start() {
 // Withdrawn if T5.11's close ever needs the queue drained before the set
 // shuts.
 func (r *Retirer) Stop() {
-	// stopped and done close under mu, mirroring the pool's own Start/Stop:
-	// a Stop that raced a Start would otherwise close done and return from
-	// Wait before the worker it must join exists, and the worker's select
-	// could still pick the pending kick and run a pass after Stop returned.
+	// done closes under the mutex, which orders this Stop against Start:
+	// Start checks done and registers the worker under the same mutex, so a
+	// Stop that ran beside a Start would otherwise close done and return
+	// from Wait before the worker it must join exists, and the worker's
+	// select could still pick the pending kick and run a pass after Stop
+	// returned. The closed channel is itself the stop flag everything
+	// reads — stoppedLocked only selects on it.
 	r.stop.Do(func() {
 		r.mu.Lock()
-		r.stopped = true
-		r.mu.Unlock()
+		defer r.mu.Unlock()
 		close(r.done)
 	})
 	r.wg.Wait()
