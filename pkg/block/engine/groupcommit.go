@@ -43,6 +43,8 @@ type groupCommit struct {
 	done   chan struct{}
 	ctx    context.Context // the batches' context, cancelled at stop
 	cancel context.CancelFunc
+
+	removals *removalLoop // the journal's removal work
 }
 
 // marks is what a group commit knows of its journal's sync marks.
@@ -176,10 +178,12 @@ func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 		done:     make(chan struct{}),
 	}
 	g.ctx, g.cancel = context.WithCancel(context.Background())
+	g.removals = newRemovalLoop(e)
 	if e.gcsClosed {
 		g.closed = true
 		g.cancel()
 		close(g.done)
+		g.removals.closed = true // never started: nothing to join
 		return g
 	}
 	if e.gcs == nil {
@@ -187,6 +191,7 @@ func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 	}
 	e.gcs[j] = g
 	go g.run()
+	go g.removals.run()
 	return g
 }
 
@@ -210,6 +215,7 @@ func (e *Engine) closeGroupCommits() {
 		close(g.returned) // wakes every waiter, which then finds the group commit closed
 		g.returned = make(chan struct{})
 		g.mu.Unlock()
+		g.removals.close()
 	}
 }
 
@@ -957,10 +963,12 @@ func (e *Engine) waitBatch(ctx context.Context, f entity.FileID) error {
 	}
 }
 
-// dropShare takes share s's files off the due set of journal j and returns
-// once no batch is in flight there, so none of them is committed after.
+// dropShare takes share s's files off the due set of journal j and its
+// items off the journal's removal loop, ending each, and returns once no
+// batch is in flight there, so none of them is committed after.
 func (e *Engine) dropShare(ctx context.Context, j Journal, s entity.ShareID) error {
 	g := e.groupCommitFor(j)
+	g.removals.dropShare(s)
 	for {
 		g.mu.Lock()
 		for f, d := range g.due {
