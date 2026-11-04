@@ -58,6 +58,20 @@
   category: feature
   reason: 'Epic 4: the group commit syncs before it commits existence; also the start (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt, Sync and its crash seam.'
   issue: '#3587'
+- test: TestRFC8A_TruncateSyncBeforeExistence
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 5: a truncate''s phase 1 size is backed by synced records across a crash; also the start (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt, Truncate, Sync and its crash seam.'
+  issue: '#3588'
+- test: TestRFC8A_TruncateUpSurvivesACrash
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 5: a truncate up crashed before its group commit is served after the restart; also recovery (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt, Truncate, Since and its crash seam.'
+  issue: '#3588'
 - test: TestRFC8A_Verifier
   message: 'fixture: journal init: journal: not implemented'
   status: fail
