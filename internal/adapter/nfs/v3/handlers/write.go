@@ -30,25 +30,6 @@ const (
 	FileSyncWrite = 2
 )
 
-// Flush Reasons
-
-// FlushReason indicates why a block store flush was triggered.
-type FlushReason string
-
-const (
-	// FlushReasonStableWrite indicates flush due to stable write requirement
-	FlushReasonStableWrite FlushReason = "stable_write"
-
-	// FlushReasonThreshold indicates flush due to cache size threshold reached
-	FlushReasonThreshold FlushReason = "threshold_reached"
-
-	// FlushReasonCommit indicates flush due to COMMIT procedure
-	FlushReasonCommit FlushReason = "commit"
-
-	// FlushReasonTimeout indicates flush due to auto-flush timeout (for macOS compatibility)
-	FlushReasonTimeout FlushReason = "timeout"
-)
-
 // Request and Response Structures
 
 // WriteRequest represents a WRITE request from an NFS client.
@@ -110,8 +91,9 @@ type WriteResponse struct {
 
 // Write handles NFS WRITE (RFC 1813 Section 3.3.7).
 // Writes data to a regular file at a given offset using two-phase PrepareWrite/CommitWrite pattern.
-// Delegates to MetadataService.PrepareWrite+CommitWrite and BlockStore.WriteAt (cache-backed).
-// Updates file size/timestamps via metadata; writes data to local store (flushed on COMMIT); returns WCC data.
+// Runs MetadataService.PrepareWrite, so a refused write answers its own status; a
+// zero-count write then succeeds, and any other answers NFS3ErrIO, since no
+// content store is wired (common.ErrNoContentStore).
 // Errors: NFS3ErrNoEnt, NFS3ErrAcces, NFS3ErrFBig (offset overflow), NFS3ErrNoSpc, NFS3ErrIO.
 func (h *Handler) Write(
 	ctx *NFSHandlerContext,

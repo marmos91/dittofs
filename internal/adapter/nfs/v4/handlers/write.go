@@ -55,10 +55,9 @@ func bootVerifierBytes() [8]byte {
 }
 
 // handleWrite implements the WRITE operation (RFC 7530 Section 16.36).
-// Writes data to a file using two-phase PrepareWrite/CommitWrite pattern with cache-backed I/O.
-// Delegates to MetadataService.PrepareWrite+CommitWrite and BlockStore.WriteAt.
-// Updates file size/timestamps via metadata; writes data to the local store, flushing it
-// synchronously when the client asks for DATA_SYNC4 or FILE_SYNC4.
+// Runs MetadataService.PrepareWrite, so a refused write answers its own status;
+// a zero-count write then succeeds, and any other answers NFS4ERR_IO, since no
+// content store is wired (common.ErrNoContentStore).
 // Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_FBIG, NFS4ERR_NOSPC, NFS4ERR_IO.
 func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle

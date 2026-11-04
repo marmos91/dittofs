@@ -13,8 +13,9 @@ import (
 
 // handleCommit implements the COMMIT operation (RFC 7530 Section 16.5).
 // Flushes unstable writes to stable storage and returns a server boot verifier.
-// Delegates to BlockStore.Flush for the file referenced by the current filehandle.
-// Persists cached write data to the backing store; verifier enables server-restart detection.
+// An empty file is trivially durable and succeeds; any other answers NFS4ERR_IO,
+// since no content store is wired (common.ErrNoContentStore). The verifier
+// enables server-restart detection.
 // Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_STALE, NFS4ERR_IO, NFS4ERR_BADXDR.
 func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle

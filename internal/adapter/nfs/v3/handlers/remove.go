@@ -62,8 +62,9 @@ type RemoveResponse struct {
 
 // Remove handles NFS REMOVE (RFC 1813 Section 3.3.12).
 // Deletes a non-directory file from a parent directory (symlinks and special files included).
-// Delegates to MetadataService.RemoveFile then BlockStore.Delete for content cleanup.
-// Removes directory entry and file metadata; deletes block data; returns parent WCC data.
+// Delegates to MetadataService.RemoveFile; removes the directory entry and file
+// metadata and returns parent WCC data. No content store is wired, so no content
+// is deleted here.
 // Errors: NFS3ErrNoEnt, NFS3ErrIsDir (use RMDIR), NFS3ErrAcces, NFS3ErrIO.
 func (h *Handler) Remove(
 	ctx *NFSHandlerContext,

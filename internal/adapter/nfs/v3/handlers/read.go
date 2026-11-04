@@ -94,8 +94,8 @@ func (r *ReadResponse) Release() {
 
 // Read handles NFS READ (RFC 1813 Section 3.3.6).
 // Reads data from a regular file at a given offset, returning bytes and EOF flag.
-// Delegates to BlockStore.ReadAt via pooled buffers; MetadataService validates file existence.
-// No side effects; read-only, high-frequency data operation using buffer pools to reduce GC.
+// MetadataService validates file existence; reading content answers NFS3ErrIO,
+// since no content store is wired (common.ErrNoContentStore).
 // Errors: NFS3ErrStale (bad handle), NFS3ErrIsDir (not regular file), NFS3ErrIO.
 func (h *Handler) Read(
 	ctx *NFSHandlerContext,

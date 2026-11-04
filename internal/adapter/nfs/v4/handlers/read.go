@@ -14,8 +14,8 @@ import (
 
 // handleRead implements the READ operation (RFC 7530 Section 16.25).
 // Reads file data at a given offset, returning bytes and EOF flag.
-// Delegates to BlockStore.ReadAt via pooled buffers; validates stateid for open state.
-// No side effects; read-only data operation using buffer pools to reduce GC pressure.
+// Validates the stateid for open state; reading content answers NFS4ERR_IO,
+// since no content store is wired (common.ErrNoContentStore).
 // Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_ACCESS, NFS4ERR_STALE, NFS4ERR_IO, NFS4ERR_BADXDR.
 func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle

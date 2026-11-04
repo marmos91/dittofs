@@ -77,8 +77,9 @@ type CommitResponse struct {
 
 // Commit handles NFS COMMIT (RFC 1813 Section 3.3.21).
 // Flushes cached unstable writes to stable storage for a file byte range.
-// Delegates to BlockStore.Flush and MetadataService.FlushPendingWriteForFile.
-// Triggers cache-to-store transfer; returns WCC data and server boot-time write verifier.
+// An empty file is trivially durable and succeeds with WCC data and the boot-time
+// write verifier; any other answers NFS3ErrIO, since no content store is wired
+// (common.ErrNoContentStore).
 // Errors: NFS3ErrStale (handle does not resolve), NFS3ErrIsDir (directory handle),
 // NFS3ErrAccess / NFS3ErrRofs (no write permission on the file or its share),
 // NFS3ErrIO (flush failure).

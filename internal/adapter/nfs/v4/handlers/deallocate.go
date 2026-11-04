@@ -23,13 +23,10 @@ import (
 //	 default:      void;
 //	};
 //
-// DEALLOCATE punches a hole in [da_offset, da_offset+da_length): the range is
-// marked as unbacked (reads back as zeros) and its block-store space is
-// reclaimed. The file's logical size is unchanged. The metadata mutation
-// (block-ref pruning) is done by metadata.Service.PunchHole; the physical
-// reclaim (dedup refcount decrement, remote sweep, GC eligibility) is driven
-// here via BlockStore.Truncate with the pre-op block snapshot — the same
-// reclaim seam SETATTR-truncate uses (CLAUDE.md invariants #1/#5).
+// DEALLOCATE punches a hole in [da_offset, da_offset+da_length) without
+// changing the file's logical size. An empty file, or a range at or past EOF,
+// has nothing to punch and succeeds; any other range answers NFS4ERR_IO, since
+// no content store is wired (common.ErrNoContentStore).
 func (h *Handler) handleDeallocate(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
 		return deallocErr(status)

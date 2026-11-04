@@ -155,36 +155,17 @@ func (resp *FlushResponse) Encode() ([]byte, error) {
 //
 //  1. Validate FileID maps to an open file
 //  2. Get metadata store and verify file exists
-//  3. Flush cache to block store using shared flush logic
-//  4. Flush pending metadata writes (deferred commit optimization)
-//  5. Return success response
-//
-// **Cache Integration:**
-//
-// The flush writes dirty in-memory blocks to disk cache (.blk files).
-// Remote uploads to the block store (S3) happen asynchronously via
-// the periodic uploader. No cache means immediate success since writes
-// are synchronous.
+//  3. Flush pending metadata writes (deferred commit optimization)
+//  4. An empty file succeeds; any other answers the I/O status, since no
+//     content store is wired (common.ErrNoContentStore)
 //
 // **Error Handling:**
 //
 // Returns appropriate SMB status codes:
 //   - StatusInvalidHandle: Invalid FileID
 //   - StatusBadNetworkName: Share not found
-//   - StatusInternalError: Block store unavailable
-//   - StatusUnexpectedIOError: Flush operation failed
-//   - StatusSuccess: Flush completed (or no-op if no cache)
-//
-// **Performance Considerations:**
-//
-// FLUSH can be expensive (triggers disk I/O for cache flushes):
-//   - Clients should batch flushes when possible
-//   - Remote uploads (S3) happen asynchronously after the flush returns
-//
-// **Shared Logic:**
-//
-// Uses the BlockStore.Flush() method which is shared with NFS COMMIT handler
-// to ensure consistent flush behavior across protocols.
+//   - StatusUnexpectedIOError: a file with content (no content store is wired)
+//   - StatusSuccess: an empty file, after its pending metadata is flushed
 //
 // **Example:**
 //

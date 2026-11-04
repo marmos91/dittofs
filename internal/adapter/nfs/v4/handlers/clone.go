@@ -28,10 +28,9 @@ import (
 //	};
 //
 // CLONE makes the destination file (CURRENT_FH) reference the same content as a
-// range of the source file (SAVED_FH). common.CloneWholeFile shares the source's
-// content-addressed blocks on remote-backed shares, through engine.CopyPayload.
-// A later WRITE creates new blocks without changing the other file's content.
-// Local-only shares materialize the bytes into the destination's own journal.
+// range of the source file (SAVED_FH). Cloning moves content, so a clone that
+// passes its checks answers NFS4ERR_IO: no content store is wired
+// (common.ErrNoContentStore).
 //
 // SAVED_FH is the source and CURRENT_FH is the destination, exactly like COPY
 // (RFC 7862 Section 15.2): the client issues SAVEFH on the source before PUTFH
