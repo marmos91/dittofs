@@ -43,7 +43,11 @@ type Deps struct {
 }
 
 // Content is the engine's content methods, declared where the filesystem calls
-// them. The engine satisfies it, and a fake does in unit tests.
+// them. The engine satisfies it, and a fake does in unit tests. Every call
+// names the file's share, which the filesystem has from the handle; a share
+// with no binding answers a Delay with DelayFrozen, its binding still to come.
+// A share being removed never reaches it unbound, as admission answers
+// ErrStale from the removal mark.
 //
 // ponytail: WriteOpts and Overlay are declared here, beside Content, as the
 // engine that should declare them is not built. Alias the engine's once it
@@ -51,27 +55,30 @@ type Deps struct {
 type Content interface {
 	// Draw is a version for a change stored outside the journal, drawn under
 	// the file's accept lock.
-	Draw(ctx context.Context, f entity.FileID) (entity.JournalVersion, error)
-	Write(ctx context.Context, f entity.FileID, off int64, p []byte, o WriteOpts) (vfs.Verifier, error)
+	Draw(ctx context.Context, s entity.ShareID, f entity.FileID) (entity.JournalVersion, error)
+	Write(ctx context.Context, s entity.ShareID, f entity.FileID, off int64, p []byte, o WriteOpts) (vfs.Verifier, error)
 	// Commit makes the range stable, n 0 the whole file, and answers the
 	// file's loss sequence.
-	Commit(ctx context.Context, f entity.FileID, off, n int64) (v vfs.Verifier, lossSeq uint64, err error)
-	// LossSeq is the file's loss sequence now, with no sync.
-	LossSeq(f entity.FileID) uint64
+	Commit(ctx context.Context, s entity.ShareID, f entity.FileID, off, n int64) (v vfs.Verifier, lossSeq uint64, err error)
+	// LossSeq is the file's loss sequence now, with no sync; 0 for a share
+	// with no binding.
+	LossSeq(s entity.ShareID, f entity.FileID) uint64
 	// Read answers the verified bytes read, then the error.
-	Read(ctx context.Context, f entity.FileID, off int64, dst []byte) (int, error)
-	Truncate(ctx context.Context, f entity.FileID, size int64) error
-	Deallocate(ctx context.Context, f entity.FileID, off, n int64) error
+	Read(ctx context.Context, s entity.ShareID, f entity.FileID, off int64, dst []byte) (int, error)
+	Truncate(ctx context.Context, s entity.ShareID, f entity.FileID, size int64) error
+	Deallocate(ctx context.Context, s entity.ShareID, f entity.FileID, off, n int64) error
 	// Delete is the file's release; never the journal's eviction.
-	Delete(ctx context.Context, f entity.FileID) error
-	// Clone is atomic; Copy copies xs in order and may be short.
-	Clone(ctx context.Context, src, dst entity.FileID, x vfs.Extent) error
-	Copy(ctx context.Context, src, dst entity.FileID, xs []vfs.Extent) (int64, error)
+	Delete(ctx context.Context, s entity.ShareID, f entity.FileID) error
+	// Clone is atomic; Copy copies xs in order and may be short. Each file
+	// is named with its own share, as on one node a clone between two
+	// shares of one namespace reaches the engine.
+	Clone(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, x vfs.Extent) error
+	Copy(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, xs []vfs.Extent) (int64, error)
 	// Overlay is the file's size, times and version as the journal's
 	// uncommitted operations leave them, replayed in version order; pending
 	// false, none is, and the File record answers alone.
-	Overlay(ctx context.Context, f entity.FileID) (o Overlay, pending bool, err error)
-	Allocation(ctx context.Context, f entity.FileID, off int64) (entity.Span, error)
+	Overlay(ctx context.Context, s entity.ShareID, f entity.FileID) (o Overlay, pending bool, err error)
+	Allocation(ctx context.Context, s entity.ShareID, f entity.FileID, off int64) (entity.Span, error)
 }
 
 // WriteOpts is what a write asks of the engine beside its bytes.

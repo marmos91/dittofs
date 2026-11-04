@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/marmos91/dittofs/pkg/openstate"
 	"github.com/marmos91/dittofs/pkg/sim"
+	"github.com/marmos91/dittofs/pkg/vfs/vfserr"
 )
 
 // Settings are the engine settings the fixture applies. The existence age is
@@ -61,6 +63,9 @@ type Fixture struct {
 	dir    string
 	logger *slog.Logger
 	starts uint64 // the processes started, each serving the shard under a new grace instance
+	// crashed fences the running engine's existence and content views: once
+	// set, by Crash, that engine's closing changes nothing in the store.
+	crashed *atomic.Bool
 }
 
 // New creates the journal and the store, then starts a process over them: the
@@ -114,6 +119,7 @@ func (f *Fixture) Restart() {
 // variants.
 func (f *Fixture) Crash(opts ...journalv2test.CrashOption) {
 	f.t.Helper()
+	f.crashed.Store(true) // before the crash, so nothing the old engine runs meanwhile reaches the store
 	if err := f.Seam.Crash(opts...); err != nil {
 		f.t.Fatalf("fixture: crash: %v", err)
 	}
@@ -146,6 +152,7 @@ func (f *Fixture) start() {
 	t.Helper()
 	ctx := t.Context()
 
+	f.crashed = new(atomic.Bool)
 	var err error
 	f.Opens, err = openstate.New(openstate.Deps{Records: f.FS.Store, Clock: f.Clock, Rand: rand.Reader, Logger: f.logger})
 	if err != nil {
@@ -168,15 +175,12 @@ func (f *Fixture) start() {
 			}
 			return wrapJournal(j), nil
 		},
-		Existence: f.FS.Store.Existence(),
-		Content:   f.FS.Store.Content(),
+		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed},
+		Content:   fencedContent{Content: f.FS.Store.Content(), crashed: f.crashed},
 		Lifecycle: unbuiltLifecycle{},
-		Opens:     f.Opens.Opens(),
-		Closed: func(id entity.FileID, r openstate.CloseResult) {
-			t.Errorf("fixture: the engine left file %v an orphan: %+v", id, r)
-		},
-		Clock:  f.Clock,
-		Logger: f.logger,
+		Holds:     cloneHold{opens: f.Opens.Opens(), t: t},
+		Clock:     f.Clock,
+		Logger:    f.logger,
 		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
 			return ctx, func(error) {}
 		},
@@ -231,9 +235,9 @@ var errNoLifecycle = errors.New("fixture: the store's Lifecycle view is not buil
 // store does not have yet: every call is refused.
 //
 // ponytail: refusing every call holds only while no row reaches the engine's
-// start past the journal's Init. T6.1, which builds the store's Lifecycle
-// view, replaces it in the fixture, with Fixture.Journal recorded for the
-// fixture's directory.
+// start past the journal's Init. The store's Lifecycle view, once built,
+// replaces it here, with Fixture.Journal recorded for the fixture's
+// directory.
 type unbuiltLifecycle struct{}
 
 func (unbuiltLifecycle) JournalID(context.Context, string) ([16]byte, error) {
@@ -267,3 +271,97 @@ func (quietSink) GraceEnded(entity.ShareID, openstate.ShardID)                  
 
 // noOrder takes no admission lock: the fixture has no service holding one.
 func noOrder(entity.FileID) func() { return func() {} }
+
+// cloneHold adapts the open-state table to the engine's CloneHold, as the
+// composition root does.
+//
+// ponytail: an orphan CloneClose leaves fails the test, standing in for open
+// state's Sink.Closed, which reports it once CloneClose stops returning it;
+// and Served answers at once, since the fixture serves the share's shard
+// before the engine starts. Wait on open state's Recovery.Served once it
+// exists and a test rebuilds a clone at start.
+type cloneHold struct {
+	opens openstate.Opens
+	t     testing.TB
+}
+
+func (h cloneHold) Hold(ctx context.Context, src enginev2.CloneSrc) (entity.OpenID, error) {
+	id, err := h.opens.CloneOpen(ctx, openstate.FileKey{Share: src.Share, Shard: src.Shard, ID: src.File}, openstate.CloneSource{Dst: src.Dst, Version: src.AsOf})
+	return id, holdErr(err)
+}
+
+func (h cloneHold) Release(ctx context.Context, o entity.OpenID) error {
+	r, err := h.opens.CloneClose(ctx, o)
+	if r != (openstate.CloseResult{}) {
+		h.t.Errorf("fixture: the clone's close left an orphan: %+v", r)
+	}
+	if errors.Is(err, openstate.ErrBadState) {
+		return nil // the hold is already gone
+	}
+	return holdErr(err)
+}
+
+// holdErr is open state's answer to a clone's hold in the engine's types: a
+// shard not yet served or a table not running holds the clone for a retry.
+func holdErr(err error) error {
+	var delay *openstate.DelayError
+	if errors.As(err, &delay) && delay.Cause == openstate.DelayFrozen || errors.Is(err, openstate.ErrStopped) {
+		return &vfserr.Delay{Cause: vfserr.DelayFrozen}
+	}
+	return err
+}
+
+func (cloneHold) Served(context.Context, entity.ShardID) error { return nil }
+
+// errCrashed answers a store change the crashed process's engine makes.
+var errCrashed = errors.New("fixture: the process crashed: its engine commits nothing")
+
+// fencedExistence is the store's existence view, refusing every change once
+// crashed is set: a crashed process's engine closing must not commit what
+// only recovery may, or a row after the crash would pass without recovery.
+type fencedExistence struct {
+	enginev2.Existence
+	crashed *atomic.Bool
+}
+
+func (x fencedExistence) Commit(ctx context.Context, pending []kvstore.PendingExistence) (map[entity.FileID]error, error) {
+	if x.crashed.Load() {
+		return nil, errCrashed
+	}
+	return x.Existence.Commit(ctx, pending)
+}
+
+func (x fencedExistence) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+	if x.crashed.Load() {
+		return errCrashed
+	}
+	return x.Existence.Remove(ctx, share, file, epoch, op, pending)
+}
+
+func (x fencedExistence) Clone(ctx context.Context, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
+	if x.crashed.Load() {
+		return errCrashed
+	}
+	return x.Existence.Clone(ctx, op, pending)
+}
+
+// fencedContent is the store's content view, refusing its changes once
+// crashed is set, as fencedExistence does.
+type fencedContent struct {
+	enginev2.Content
+	crashed *atomic.Bool
+}
+
+func (c fencedContent) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) error {
+	if c.crashed.Load() {
+		return errCrashed
+	}
+	return c.Content.Resume(ctx, share, file)
+}
+
+func (c fencedContent) PruneRemovals(ctx context.Context, share entity.ShareID, file entity.FileID, atOrBelow entity.JournalVersion) error {
+	if c.crashed.Load() {
+		return errCrashed
+	}
+	return c.Content.PruneRemovals(ctx, share, file, atOrBelow)
+}

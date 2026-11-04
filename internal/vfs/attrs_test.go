@@ -116,7 +116,7 @@ func TestATruncateOfAnAppendOnlyFileClearsNothing(t *testing.T) {
 func TestGetAttrJoinsTheOverlay(t *testing.T) {
 	s := newAttrs(t)
 	f := entity.NewFileID()
-	rec := vfs.File{ID: f, Type: entity.Regular, Size: 1 << 20, Version: entity.VersionOf(100), Change: time.Unix(200, 0)}
+	rec := vfs.File{ID: f, Share: entity.NewShareID(), Type: entity.Regular, Size: 1 << 20, Version: entity.VersionOf(100), Change: time.Unix(200, 0)}
 	for _, c := range []struct {
 		name string
 		o    Overlay
@@ -161,6 +161,8 @@ func TestEveryChangesWCCIsReadInOneHold(t *testing.T) {
 	} {
 		h := s.file(t, name, s.alice.Principal, 0o644)
 		id := fileOf(h)
+		share, _, perr := h.Parse()
+		s.must(t, perr)
 		var w vfs.WCC
 		var err error
 		if name == "RemoveXattr" {
@@ -175,14 +177,14 @@ func TestEveryChangesWCCIsReadInOneHold(t *testing.T) {
 			w, err = change(vfs.Target{H: h})
 		}()
 		time.Sleep(20 * time.Millisecond)
-		_, _ = s.engine.Write(ctx, id, 0, []byte("staged while held"), WriteOpts{})
+		_, _ = s.engine.Write(ctx, share, id, 0, []byte("staged while held"), WriteOpts{})
 		unlock()
 		<-answered
 		s.must(t, err)
 		if w.Before == nil || w.Before.Size != 17 || w.After.Size != 17 {
 			t.Errorf("%s: WCC %+v, want a Before and an After both after the held write", name, w)
 		}
-		_, _ = s.engine.Write(ctx, id, 17, []byte("later"), WriteOpts{})
+		_, _ = s.engine.Write(ctx, share, id, 17, []byte("later"), WriteOpts{})
 		if got, _ := s.GetAttr(ctx, admin, h); got.Size == w.After.Size {
 			t.Errorf("%s: a later write did not move GetAttr past the WCC", name)
 		}

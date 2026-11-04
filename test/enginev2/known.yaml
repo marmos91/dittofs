@@ -1,8 +1,7 @@
 # The engine's conformance tests that fail today, one entry per test, never a pattern, each
 # naming the epic expected to turn it green. A test that starts to pass fails the run: remove
 # its entry in the change that turned it green, a journal change included. Each entry's
-# message is the failure it is known by: a test failing for any other reason, a panic
-# included, is unexpected.
+# message is the failure it is known by: a test failing for any other reason is unexpected.
 - test: TestRFC8A_JournalAuthority
   message: 'fixture: journal init: journal: not implemented'
   status: fail

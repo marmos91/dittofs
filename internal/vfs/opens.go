@@ -221,7 +221,7 @@ func (fs *Filesystem) grant(ctx context.Context, a *admitted, c vfs.Call, req vf
 	o, err := fs.opens.Open(ctx, who, keyOf(f), openstate.OpenRequest{
 		Unlinked: f.Nlink == 0 && !f.IsDir(), Via: fileOf(via), Name: req.Name,
 		Privileged: req.Backup && a.caller.Privileged, Access: access, Deny: req.Deny, DeleteOnClose: req.DeleteOnClose,
-		Loss: fs.engine.LossSeq(f.ID), Owner: req.Owner, Seqs: req.Seqs,
+		Loss: fs.engine.LossSeq(f.Share, f.ID), Owner: req.Owner, Seqs: req.Seqs,
 		Lease: req.Lease, Parent: req.Parent, Epoch: req.Epoch, Want: req.Want,
 		SetID: f.Mode&(entity.ModeSetuid|entity.ModeSetgid) != 0, Reclaim: req.Reclaim,
 		Durability: req.Durability, Durable: openstate.DurableKeys{Timeout: req.Timeout, Create: req.CreateID, Instance: req.Instance},
@@ -674,7 +674,7 @@ func (fs *Filesystem) release(ctx context.Context, key openstate.FileKey) error 
 	if err != nil || held {
 		return openErr(err)
 	}
-	err = fs.engine.Delete(ctx, key.ID)
+	err = fs.engine.Delete(ctx, key.Share, key.ID)
 	done(err == nil)
 	return storeErr(err)
 }

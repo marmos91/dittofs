@@ -148,10 +148,15 @@ func (j *FakeJournal) Close() error {
 }
 
 // Lose drops what file id holds in e as the journal does on a loss: the bytes
-// are no longer held, and the loss, at the newest version it dropped, is a
-// synced change Since reports and an event in the loss ring; a corrupt loss
-// also raises the loss generation, a stale one does not. A loss of nothing
-// held records nothing.
+// are no longer held, and the loss, at the newest version it dropped, is an
+// event in the loss ring and, unless its sync window failed, a synced change
+// Since reports; a corrupt loss and a failed window's also raise the loss
+// generation, a stale one does not. A loss of nothing held records nothing.
+//
+// ponytail: a failed window's loss cuts the extent and raises the generation
+// once per call, where RFC 1 holds again what the failed writes superseded
+// and raises the generation once per window. Model both once a test drops
+// several extents in one window or reads what a failed write overwrote.
 func (j *FakeJournal) Lose(id journalv2.FileID, e journalv2.Extent, why journalv2.LossReason) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -163,8 +168,10 @@ func (j *FakeJournal) Lose(id journalv2.FileID, e journalv2.Extent, why journalv
 	if !ok {
 		return
 	}
-	f.changes = append(f.changes, journalv2.Change{Kind: journalv2.ChangeLoss, Extent: e, Version: v})
-	if why == journalv2.LossCorrupt {
+	if why != journalv2.LossFailedWindow { // a failed window's loss was never synced, so Since has nothing of it
+		f.changes = append(f.changes, journalv2.Change{Kind: journalv2.ChangeLoss, Extent: e, Version: v})
+	}
+	if why == journalv2.LossCorrupt || why == journalv2.LossFailedWindow {
 		j.gen++
 	}
 	j.losses = append(j.losses, journalv2.LossEvent{SeqNum: uint64(len(j.losses)) + 1, Share: f.tag, File: id, Extent: e, Version: v, Reason: why})

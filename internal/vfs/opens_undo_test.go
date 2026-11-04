@@ -89,7 +89,7 @@ type stalling struct {
 	entered, free chan struct{}
 }
 
-func (s stalling) Overlay(ctx context.Context, f entity.FileID) (Overlay, bool, error) {
+func (s stalling) Overlay(ctx context.Context, _ entity.ShareID, _ entity.FileID) (Overlay, bool, error) {
 	select {
 	case s.entered <- struct{}{}:
 	default:
