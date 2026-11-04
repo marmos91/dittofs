@@ -402,8 +402,9 @@ func TestSealStepsRunInOrder(t *testing.T) {
 }
 
 // sealNthFault fails the n-th call (1-based) of an op on the segment's file,
-// and passes everything else: the shape the failure injections need, since a
-// schedule rule counts from the first call of the op, not from the seal.
+// counted from the fault's installation, and passes everything else: the
+// shape the failure injections need, since a schedule rule counts from the
+// first call of the op, which the appends made long before the seal.
 type sealNthFault struct {
 	seg string
 	op  string
@@ -706,4 +707,270 @@ func TestSealACrashAtEveryDurableStateLeavesThePromisedBytes(t *testing.T) {
 // marker sits.
 func pEnd(p segment.Placed) int64 {
 	return p.Loc.Off + p.Loc.Len
+}
+
+// TestSealAFailedSyncOrWriteEndsTheSegment checks R33: a failure in
+// either of the seal's first two steps — the record sync, the step-2
+// write, the step-2 sync — ends the segment rather than sealing it. Each
+// answers an error matching ErrSegmentEnded and the store's error, leaves
+// the segment Ended in the ledger, unsealed, accounted at its cap, and
+// refuses every later append, second seal and sync. It catches a seal that
+// leaves a failed segment Active, or that later pretends it sealed.
+func TestSealAFailedSyncOrWriteEndsTheSegment(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		op    string
+		nth   int // which of the seal's own calls of op the fault fails
+		err   error
+		early bool
+	}{
+		{"the record sync", journaltest.OpSync, 1, syscall.EIO, true},
+		// The step-2 write: the full seal writes the marker and footer,
+		// then the trailer, so its first step-2 write is the first write
+		// after the fault is armed.
+		{"the step-2 write", journaltest.OpWrite, 1, syscall.EIO, false},
+		{"the step-2 sync", journaltest.OpSync, 2, syscall.EIO, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+
+			seg := streamSegName(1)
+			e := sealCrashBuilt(t, streamOver(t, streamCap, func(streamEnv) {}))
+			defer func() { _ = e.s.Close() }()
+
+			placed := sealAppended(t, e)
+			// The nth-call fault fails the named call of the seal's own,
+			// counted from the appends: the fault is armed once they are
+			// done, so n=1 is the seal's first sync, n=2 its second, and
+			// the write the seal's first marker write — a failed first
+			// step is told from a failed second by which call the fault
+			// refused.
+			f := &sealNthFault{seg: seg, op: tc.op, n: tc.nth, err: tc.err}
+			e.seam.SetFault(f)
+
+			if _, err := e.s.Seal(tc.early); !errors.Is(err, segment.ErrSegmentEnded) || !errors.Is(err, tc.err) {
+				t.Fatalf("the Seal whose %s failed = %v, want ErrSegmentEnded carrying %v", tc.name, err, tc.err)
+			}
+			_ = placed
+
+			// The segment is ended in the ledger — never sealed — and
+			// kept at its cap with every share-byte charged.
+			if state, err := e.set.State(1); err != nil || state != segment.Ended {
+				t.Fatalf("the segment's state after the failed %s is %v, %v, want Ended", tc.name, state, err)
+			}
+			if c := e.set.Counters(); c.Sealed != 0 {
+				t.Fatalf("the ledger counts %d sealed segments after the failed %s, want none", c.Sealed, tc.name)
+			}
+			if c := e.set.Counters(); c.UsedBytes != streamCap {
+				t.Fatalf("the footprint after the failed %s is %d, want the cap %d", tc.name, c.UsedBytes, streamCap)
+			}
+			if err := e.set.Check(); err != nil {
+				t.Fatalf("the ledger after the failed %s: %v", tc.name, err)
+			}
+
+			// Every later append is refused and reserves nothing.
+			payload := streamTestBody(64, 0x77)
+			h, body := streamWriteHeader(streamFileID(9), 512, payload, 7, core.Version{Counter: 99})
+			if _, err := e.s.Append(h, body); !errors.Is(err, segment.ErrSegmentFull) {
+				t.Fatalf("the append after the failed %s = %v, want ErrSegmentFull", tc.name, err)
+			}
+			// A second seal writes nothing and answers ErrSegmentEnded.
+			returned := sealResult{writes: e.seam.CallsFor(journaltest.OpWrite, seg), syncs: e.seam.CallsFor(journaltest.OpSync, seg), truncates: e.seam.CallsFor(journaltest.OpTruncate, seg)}
+			if _, err := e.s.Seal(true); !errors.Is(err, segment.ErrSegmentEnded) {
+				t.Fatalf("the second Seal after the failed %s = %v, want ErrSegmentEnded", tc.name, err)
+			}
+			now := sealResult{writes: e.seam.CallsFor(journaltest.OpWrite, seg), syncs: e.seam.CallsFor(journaltest.OpSync, seg), truncates: e.seam.CallsFor(journaltest.OpTruncate, seg)}
+			if now != returned {
+				t.Fatalf("the second Seal after the failed %s moved the seam: %+v, want %+v", tc.name, now, returned)
+			}
+			// A sync after the end is refused too.
+			if err := e.s.Sync(); !errors.Is(err, segment.ErrSegmentEnded) {
+				t.Fatalf("the Sync after the failed %s = %v, want ErrSegmentEnded", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestSealAFailedTruncationLeavesItSealedAtItsCap checks R34: a failure of
+// the truncation or of its sync is the tail's alone — the seal returns a nil
+// error with TailErr carrying the failure, the segment is Sealed and
+// accounted at its cap, no Shrink ran, and a successor may be taken. It
+// catches a truncation failure treated as an end, or an accounting that cut
+// the footprint before the cut was durable.
+func TestSealAFailedTruncationLeavesItSealedAtItsCap(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		op   string
+	}{
+		{"the truncation", journaltest.OpTruncate},
+		{"the truncation's sync", journaltest.OpSync},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+
+			seg := streamSegName(1)
+			e := sealCrashBuilt(t, streamOver(t, streamCap, func(streamEnv) {}))
+			defer func() { _ = e.s.Close() }()
+
+			sealAppended(t, e)
+			before := e.set.Counters()
+			if tc.op == journaltest.OpSync {
+				// Fail the truncation's own sync — the seal's third,
+				// counted from the appends: the first two pass and the
+				// truncation runs, so the fault fires on the third sync
+				// it sees.
+				e.seam.SetFault(&sealNthFault{seg: seg, op: journaltest.OpSync, n: 3, err: syscall.EIO})
+				r, err := e.s.Seal(true)
+				if err != nil {
+					t.Fatalf("the early Seal whose tail sync failed = %v, want nil: the truncation is the tail's", err)
+				}
+				if r.TailErr == nil || !errors.Is(r.TailErr, syscall.EIO) {
+					t.Fatalf("the failed tail sync in TailErr = %v, want the EIO", r.TailErr)
+				}
+				checkSealedAtCap(t, e, before, r)
+				return
+			}
+
+			// The truncation itself: the fault fails the seal's only
+			// truncation call.
+			e.seam.SetFault(&sealNthFault{seg: seg, op: journaltest.OpTruncate, n: 1, err: syscall.EIO})
+
+			r, err := e.s.Seal(true)
+			if err != nil {
+				t.Fatalf("the early Seal whose %s failed = %v, want nil: the truncation's failure is the tail's", tc.name, err)
+			}
+			if r.TailErr == nil || !errors.Is(r.TailErr, syscall.EIO) {
+				t.Fatalf("the failed %s in TailErr = %v, want the EIO", tc.name, r.TailErr)
+			}
+			checkSealedAtCap(t, e, before, r)
+		})
+	}
+}
+
+// checkSealedAtCap asserts what a failed truncation leaves: the segment is
+// Sealed in the ledger, counted once, accounted at its cap with the
+// footprint unmoved, no Shrink served, and the ledger's check nil.
+func checkSealedAtCap(t *testing.T, e streamEnv, before segment.Counters, r segment.SealResult) {
+	t.Helper()
+
+	if r.Size != streamCap {
+		t.Fatalf("the sealed segment is accounted at %d, want its cap %d", r.Size, streamCap)
+	}
+	if state, err := e.set.State(1); err != nil || state != segment.Sealed {
+		t.Fatalf("the segment's state after the failed tail is %v, %v, want Sealed", state, err)
+	}
+	c := e.set.Counters()
+	if c.Sealed != 1 {
+		t.Fatalf("the ledger counts %d sealed segments, want 1", c.Sealed)
+	}
+	if c.UsedBytes != before.UsedBytes {
+		t.Fatalf("the footprint after the failed tail is %d, want the before-seal %d", c.UsedBytes, before.UsedBytes)
+	}
+	if err := e.set.Check(); err != nil {
+		t.Fatalf("the ledger after the failed tail: %v", err)
+	}
+	// A failed-tail seal is complete: a Shrink is not needed, and the
+	// segment's accounted size is the cap, so a later append is refused
+	// and a second seal writes nothing (R32).
+	if _, err := e.s.Seal(true); err == nil {
+		t.Fatal("a second seal of the sealed segment succeeded, want ErrWrongState")
+	}
+}
+
+// TestSealASecondSealWritesNothing checks R32: after a full seal and after
+// an early one, every later Seal is refused with ErrWrongState and makes no
+// seam call and no ledger change; two Seals racing each other leave exactly
+// one sealed, the other refused, and the footer written once.
+func TestSealASecondSealWritesNothing(t *testing.T) {
+	for _, early := range []bool{false, true} {
+		name := "full"
+		if early {
+			name = "early"
+		}
+		t.Run(name, func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+
+			seg := streamSegName(1)
+			e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
+			defer func() { _ = e.s.Close() }()
+
+			sealAppended(t, e)
+			if _, err := e.s.Seal(early); err != nil {
+				t.Fatalf("the first Seal: %v", err)
+			}
+			counters := sealCountersOf(e, seg)
+			c := e.set.Counters()
+
+			// Both refusals of the sealed stream.
+			for _, again := range []bool{false, true} {
+				if _, err := e.s.Seal(again); !errors.Is(err, segment.ErrWrongState) {
+					t.Fatalf("the second Seal(%v) = %v, want ErrWrongState", again, err)
+				}
+			}
+			if now := sealCountersOf(e, seg); now != counters {
+				t.Fatalf("the second seals moved the seam: %+v, want %+v", now, counters)
+			}
+			if after := e.set.Counters(); after != c {
+				t.Fatalf("the second seals moved the ledger: %+v, want %+v", after, c)
+			}
+		})
+	}
+
+	t.Run("two racing seals leave one", func(t *testing.T) {
+		prof.Watch(t, prof.Options{})
+
+		e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
+		defer func() { _ = e.s.Close() }()
+
+		sealAppended(t, e)
+		results := make(chan sealRace, 2)
+		for range 2 {
+			go func() {
+				r, err := e.s.Seal(false)
+				results <- sealRace{r: r, err: err}
+			}()
+		}
+		first, second := <-results, <-results
+		sealed, refused := first, second
+		if first.err != nil {
+			sealed, refused = second, first
+		}
+		if sealed.err != nil {
+			t.Fatalf("neither racing seal succeeded: %v and %v", first.err, second.err)
+		}
+		if !errors.Is(refused.err, segment.ErrWrongState) {
+			t.Fatalf("the refused racing seal = %v, want ErrWrongState", refused.err)
+		}
+		// The footer is written once: the sealed segment verifies, and its
+		// marker, footer and trailer were written by one write at least
+		// but the segment was sealed once.
+		if c := e.set.Counters(); c.Sealed != 1 {
+			t.Fatalf("the ledger counts %d sealed segments after the race, want 1", c.Sealed)
+		}
+		if err := e.set.Check(); err != nil {
+			t.Fatalf("the ledger after the race: %v", err)
+		}
+		size := sealFileSize(t, e, 1)
+		r := sealReaderOf(t, e, 1)
+		defer r.Close()
+		footer, err := format.ReadFooter(r, size, streamIdentity, 1)
+		if err != nil {
+			t.Fatalf("the raced footer does not verify: %v", err)
+		}
+		if len(footer.Entries) != 5 {
+			t.Fatalf("the raced footer holds %d entries, want the 5 appended", len(footer.Entries))
+		}
+	})
+}
+
+// sealRace is one racing seal's outcome.
+type sealRace struct {
+	r   segment.SealResult
+	err error
+}
+
+// sealResult is a snapshot of the seam's counters on one file, comparable
+// with ==.
+type sealResult struct {
+	writes, syncs, truncates int
 }
