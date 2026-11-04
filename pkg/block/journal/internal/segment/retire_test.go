@@ -1173,7 +1173,6 @@ func TestRetireWaitsForAReadInFlight(t *testing.T) {
 	if _, err := e.c.Acquire(id); !errors.Is(err, segment.ErrSegmentGone) {
 		t.Fatalf("the acquire after the retire: %v, want %v", err, segment.ErrSegmentGone)
 	}
-	_ = name
 }
 
 // TestRetireFreedBytesAfterTheUnlink: freed_bytes rises by the accounted size
