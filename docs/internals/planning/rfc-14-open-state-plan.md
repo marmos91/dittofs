@@ -292,7 +292,7 @@ The store's clone already writes the source's hold in its
 first phase (`clonePhase1`, `pkg/metadata/kvstore/clone.go`), so `CloneOpen` loads that record
 through piece 7's install path and `CloneClose` drops it. #3414 edits §9.2, §11.1 and §11.3 to
 match.
-Piece 8 is done when its five PRs are. L52 is not only the table's: the table ends a
+Piece 8 is done when its five PRs are. L52 is not only the table's: once #3674 lands, the table ends a
 session through `Disconnect`, whose `SessionEnd.Logoff` closes every open of the session (§2.1),
 and RFC 22 Appendix G maps `LOGOFF` to it (MS-SMB2 3.3.5.6). But most of L52's cases are SMB
 session steps (a `SESSION_SETUP` racing a `LOGOFF`, the node's last session), so its case lands
