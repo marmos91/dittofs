@@ -387,7 +387,7 @@ sections found every one of them below, in §1.2, or in the closing note of this
 | R106 | The model-based run draws random sequences of this epic's operations and compares each file's bytes and the removal markers `Since` yields with the reference model after every step | test row | RFC 1 §9.1 | T8.14 |
 | R107 | The rows of RFC 1 §9.4 that name this area, mapped test by test in §6: no zero-fill, fill safety, fill sets the bit, a read's `asOf` against a change in flight, removals survive to `Since`, no resurrection, a file is its share's, an attached share raises the counter, a cancelled call changes nothing or completes, a clone target survives a crash, reservation, reserve ahead, handle close, named refusal, share limit, index bound refuses, records without bytes at the limit, offloaded records below half the headroom, floor buckets, no version repeats, no deadlock, background joined, the wedge is visible, stats are cheap, the named inequalities hold, clean bytes count as occupancy, metrics are reachable | test row | RFC 1 §9.4 | T8.2, T8.3, T8.4, T8.5, T8.6, T8.7, T8.8, T8.10, T8.11, T8.12, T8.13 |
 | R109 | `UnreclaimedBytes`, journal-wide and per share, is a maintained counter: the share's record bytes still on disk less the whole of every record that still backs a held or retained extent (its header and footer entry with the bytes it backs) and of every live header-only record, so a journal of clean held content reads zero and `Stats` names released but unrepacked storage without a walk | invariant | RFC 1 §3.7 | T8.13 |
-| R110 | `Init` creates a journal only in an empty directory (one holding at most a `format.tmp`), refusing any other with `ErrNotEmpty`, after the platform checks, which refuse with `ErrUnsuitableStorage`; it writes the `format` file with a fresh identity and the installation ID it is given and returns the identity. `Open` fails with `ErrUnidentified` on a directory holding a segment and no `format` file, refuses an identity other than `expect` and an `expect` of zero, fails on a directory with neither a `format` file nor a segment as holding no journal, and creates no journal. (An `Open` that recovers segments is epic 7's) | MUST | RFC 1 §3, RFC 28 §2.1, §3.4 | T8.15 |
+| R110 | `Init` creates a journal only in an empty directory (one holding at most a `format.tmp`), refusing any other with `ErrNotEmpty`, after the platform checks, which refuse with `ErrUnsuitableStorage`; it writes the `format` file with a fresh identity and the installation ID it is given and returns the identity. `Open` fails with `ErrUnidentified` on a directory holding a segment and no `format` file, refuses an identity other than `expect` and an `expect` of zero, the latter with an error naming the journal identity and installation ID its `format` file holds and whether the directory holds any segment, fails on a directory with neither a `format` file nor a segment as holding no journal, and creates no journal. (An `Open` that recovers segments is epic 7's) | MUST | RFC 1 §3, RFC 28 §2.1, §3.4 | T8.15 |
 | R108 | Every change to held state, this epic's (a write's or a fill's publish, a removal) or epic 6's (a retained extent lifted on sync, a failed window's drop and re-hold, the read-only undo, a corrupt record's drop), reaches one function that updates held and dirty bytes, the per-share figures and the dirty-file list, so `Stats` stays served from maintained counters | invariant | RFC 1 §3.7 | T8.1, T8.9, T8.13 |
 
 **Keyword hits that map to another epic or to no obligation.** The search of the owned sections
@@ -636,7 +636,7 @@ pkg/block/journalv2/
   verifies its payload checksum with E3's codec, compares the header it found with the index
   entry (D5) and copies out only the bytes the caller asked for. It fills `held` with each
   piece's version, leaves the bytes of every missing piece untouched, and never widens
-  `missing`. A record that fails either check is passed to T6.7's `Corrupt`, which decides itself whether the record was synced: on `UseCopy` the read continues from the verified copy's location, and on `Dropped` it reports the extent missing, also when the loss record could not be appended (`Corrupt` returns no error then, epic 6's R90). A reference the drain has closed makes the read
+  `missing`. A record that fails either check is passed to T6.7's `Corrupt`, after the read releases its segment reference (`Corrupt` takes the file's append domain, which ranks above the storage guard, RFC 1 §8.3), and `Corrupt` decides itself whether the record was synced: on `UseCopy` the read continues from the verified copy's location, and on `Dropped` it reports the extent missing; the loss record, the raise and the event follow on epic 6's worker, so the read appends nothing and gets no error from it (epic 6's R90). A reference the drain has closed makes the read
   resolve again, or report the extent missing. An I/O error from the read is returned as itself and changes nothing (§9).
 - **Acceptance criteria:**
   - A sentinel in `p` survives a read of a never-written extent and of a released one, and both
@@ -662,7 +662,9 @@ pkg/block/journalv2/
   segment retired by E5's executor (R39); a read of an extent whose bit is set and one whose bit is unset, the bit flipped in the
   index between two reads, returning the same bytes (catches a read that consults the bit, R34); a
   lock-held-during-I/O probe on the index (R38, R91); a
-  read of file A while a write of file B is held at the seam (R40); the headroom drawn to
+  read of file A while a write of file B is held at the seam (R40), repeated with a corrupt record
+  in file A and the active segment's seal held at the seam (catches a read that rolls or waits on
+  a sync through its loss record, R40, epic 6's R90); the headroom drawn to
   exhaustion, then a read of a corrupt record (catches an append refusal surfacing on a read,
   R37).
 
@@ -1205,7 +1207,9 @@ its counter (R75); `ReservedBytes` read at the
   not reach `New`); `Init` on a directory with `lost+found`, and with a `format.tmp` (catches a
   check that blocks a crashed `Init`'s leftovers, or lets anything else through); the unsuitable
   storage row of RFC 1 §9.4 in its `Init` and fresh-`Open` parts; `Open` with a wrong `expect`
-  and with `expect` zero (catches a check that accepts any identity, RFC 28 §3.4); `Open` of an
+  and with `expect` zero, asserting the error names the identity, the installation ID and that
+  no segment is held (catches a check that accepts any identity, and an error the caller cannot
+  act on, RFC 28 §3.4, including its interrupted-`Init` row); `Open` of an
   empty directory (catches an `Open` that creates a journal); a
   crash between `format.tmp` and the rename, then `Init` again (catches a `format` file that is not
   written atomically); the runner after the `known.yaml` change (rule 6).

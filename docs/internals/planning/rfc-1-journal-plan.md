@@ -256,9 +256,9 @@ run is a failure ([RFC index, test tiers](../rfcs/rfc-index.md)).
 | 3 | **On-disk format and platform layer** ⛔ | RFC 28 codecs, golden vectors, CRC32C, `format` file replace, per-OS sync, allocation, direct I/O and CoW checks; declares `internal/format` and `internal/platform`; the conformance tests that need them | 12 | A | 5, 7 |
 | 4 | **Placement index and versions** ⛔ | Per-file B-tree, held, retained and marker sets, precedence, sequence and version counters, version limit, floor buckets, extent bound, drop ranges, per-segment bytes | 11 | B | 7, 8, 9 |
 | 5 | **Segments, streams and accounting** ⛔ | Segment lifecycle, spare pool, append streams, seal, catalog and free tail, recycle and unlink, descriptor cache, storage guard, footprint accounting | 11 | A | 6, 7, 8 |
-| 6 | **Durability and loss** | `Sync`, group commit, the sync-bound timer, failed-sync windows (re-append or fail), loss records, the loss ring and generation, the read-time corruption rule | 10 | A | 7 (loss records), 8 (Sync, corruption on read), 9 (corruption on offer and repack), 11 |
+| 6 | **Durability and loss** | `Sync`, group commit, the sync-bound timer, failed-sync windows (re-append or fail), loss records, the loss ring and generation, the read-time corruption rule | 8 | A | 7 (loss records), 8 (Sync, corruption on read), 9 (corruption on offer and repack), 11 |
 | 7 | **Recovery and identity** | `Open` with recovery (E8 delivers a minimal `Init` and `Open` of a directory with no segment), `Restamp`, rebuild by catalog and by scan, torn vs corrupt, unproven-tail re-verify, offload-state rebuild, stale rule, spare re-adoption, inspection and verify | 12 | A | 10, 11 |
-| 8 | **Data path and capacity** ⛔ | a minimal `Init` and `Open` for S3, `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 13 | B | 9, 11 |
+| 8 | **Data path and capacity** ⛔ | a minimal `Init` and `Open` for S3, `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 15 | B | 9, 11 |
 | 9 | **Offload, reclamation, holds and tags** | `Offload`, `OffloadMany`, pins, `MarkOffloaded`, `Unmark`, `Release`, auto-retire, `Repack` and drop test, snapshot holds, `Forget`, `Strand` | 13 | B | 11 |
 | 10 | **Start and initialisation** | Start check and its two refusals, `journalv2.Init` in the initialisation step and the `J‖journal` writes, wipe of devices left by an interrupted step, device config keys | 5 | A | 11 |
 | 11 | **Engine on the RFC 16 store** 🔀 | Stage 3 of #3119, planned after S4a: engine wiring (`Fill`, `report`, `Release`), per-device registry, version floor and limit, store contracts, error mapping, salvage, exporters and alert rules, API and CLI, system e2e tests | planned after S4a | team | 12 |
@@ -740,7 +740,7 @@ and supersedes this section where they differ.
 **S3 needs the stream, the pool, the seal, the roll and the end event:** epic 6's subtasks
 before S3 need the seal's sync, the headroom and the hand-off of a failed segment.
 
-### Epic 6 — Durability and loss (≈10 subtasks, A)
+### Epic 6 — Durability and loss (8 subtasks, A)
 
 Epic 6 implements RFC 1 §5 and §3.8.
 
@@ -893,7 +893,7 @@ scanner's `scan_resyncs` folded into `Stats`. Span: `open`, with child
 spans per phase. Also the J6, J7 and J9 benchmark harnesses (RFC 28 §4.3), recorded but
 not gated.
 
-### Epic 8 — Data path and capacity ⛔ (≈13 subtasks, B)
+### Epic 8 — Data path and capacity ⛔ (15 subtasks, B)
 
 Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.4, §3.6, §3.7,
 §3.10, §6, §8).
