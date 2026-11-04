@@ -560,20 +560,24 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 			s.appendMu.Unlock()
 			return Placed{}, ErrStreamClosed
 		}
-		// decision: the seal states are not re-checked here, the way an
-		// append resumed from the take gate once re-checked one (R1, R85:
-		// once a seal has taken the segment and once it has completed or
-		// the segment has ended, the past-seal refusal reserved nothing,
-		// so the marker a seal chose and the bytes its footer names cannot
-		// be placed under). The roll replaced the take, and the roll's own
-		// gate now parks the same caller the take gate parked — with no
-		// lock and no in-flight reservation — so a seal that took the
-		// segment while this append parked is waited by the sealRunning
-		// branch the loop's next turn runs, and the roll the append arms
-		// after it names the segment the settled seal left. The re-check
-		// would refuse what the turn after the wait places. Withdraw it if
-		// a roll is ever armed with the segment left open, which the roll's
-		// own first step would have to account for again.
+		// decision: no reservation is placed here without re-reading the
+		// seal state under this same hold (R1, R85: once a seal has taken
+		// the segment, a marker chosen over bytes its footer does not name
+		// is corruption, so the reservation must never land past a seal).
+		// What is deliberately NOT here is the past-seal refusal the take
+		// gate's resume once ran: the roll replaced the take, and every
+		// park this loop makes — the roll gate's, the drain cond's, this
+		// hook's — resumes at this top, where the state read below is the
+		// one the next turn re-reads too. A seal that settled while this
+		// append parked leaves sealSealed or sealEnded, which arm the roll
+		// below rather than reserving under the marker; a seal still
+		// running parks the append on the drain's cond, whose wake lands
+		// here again. So a reservation runs only with sealState == sealOpen
+		// read under appendMu, whatever parks came before it. What would
+		// still need the refusal is a park that resumes without this top —
+		// a gate bypassed or an inline reserve — which the loop's shape
+		// alone forbids; a reservation found running under a settled seal
+		// that this top did not gate is the bug to withdraw this over.
 
 		// A seal someone else runs — the idle seal, or one the caller asked
 		// for — parks this append on the drain's cond until the seal
