@@ -427,7 +427,10 @@ func (s *Stream) drawSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
 	// roll is answered naming the headroom rather than the spare: the
 	// record goes on drawing on the allocated headroom, and the spare pool
 	// never held what it asked for, so the refusal is neither a spare's
-	// nor counted (R23).
+	// nor counted (R23). Only the pool's own `spare` miss names the
+	// headroom: a headroom take answered something else — a stopped pool's
+	// ErrClosed, a ledger that refused the spare it popped — carries its own
+	// word to the caller, never a capacity label that reads as drainable.
 	id, err := s.pool.Take(Content)
 	if err == nil {
 		return id, nil
@@ -436,10 +439,14 @@ func (s *Stream) drawSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
 	if !errors.As(err, &ns) || ns.Limit != core.LimitSpare {
 		return 0, err
 	}
-	if hid, herr := s.pool.Take(Headroom); herr == nil {
+	hid, herr := s.pool.Take(Headroom)
+	if herr == nil {
 		return hid, nil
 	}
-	return 0, &core.NoSpaceError{Limit: core.LimitHeadroom, Missing: 1, Unit: core.UnitSegments}
+	if errors.As(herr, &ns) && ns.Limit == core.LimitSpare {
+		return 0, &core.NoSpaceError{Limit: core.LimitHeadroom, Missing: 1, Unit: core.UnitSegments}
+	}
+	return 0, herr
 }
 
 // endTaken unwinds a take that failed past Take: the member segment is ended

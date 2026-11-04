@@ -631,6 +631,64 @@ func TestRollHeaderOnlyFallsBackToHeadroomThenRefusesNamingIt(t *testing.T) {
 	}
 }
 
+// TestRollAHeadroomTakeTheLedgerRefusedIsNotAnsweredAsHeadroom checks the
+// header-only roll's fallback: only the pool's own `spare` miss names the
+// headroom, so a headroom take the ledger refused — the pool popped a spare
+// the ledger no longer owns, an accounting bug the operator must see — comes
+// back as itself rather than as a headroom-named limit, which the caller would
+// read as a drainable capacity and retry. It catches the silent relabelling of
+// every headroom-take failure as a headroom refuse. The stopped pool answers
+// ErrClosed unchanged, never a limit of any name.
+func TestRollAHeadroomTakeTheLedgerRefusedIsNotAnsweredAsHeadroom(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// The content class has no target, and the one headroom spare is the
+	// pool's by adoption — its make final under the pinned maximum, since the
+	// adoption already spent the cap the maximum holds. The spare is pulled
+	// out of the ledger behind the pool's back, so the header-only roll's
+	// fallback pops it and the ledger refuses it: the take must answer the
+	// refusal itself, not relabel it.
+	e := rollPin(t, streamCap, segment.Targets{Content: 0, Headroom: 1}, func(e rollEnv) {
+		id := core.SegmentID(1)
+		if err := e.pool.Adopt(id, segment.Headroom); err != nil {
+			t.Fatalf("adopting the spare into the headroom class, accounted in the ledger: %v", err)
+		}
+		if _, derr := e.set.DropSpare(id); derr != nil {
+			t.Fatalf("pulling the adopted spare out of the ledger behind the pool's back: %v", derr)
+		}
+	}).withStream(t, 1)
+	awaitCounters(t, "the headroom spare the pool alone still counts", e.pool,
+		func(c segment.PoolCounters) bool { return c.HeadroomBytes == segCap && c.Spares == 0 })
+
+	hdr := format.RecordHeader{Kind: format.KindStamp, File: streamFileID(1), Version: core.Version{Counter: 1}, Tag: 7}
+	_, err := e.s.AppendRoll(hdr, format.RecordBody{Cut: 4}, segment.Roll{})
+	var ns *core.NoSpaceError
+	if errors.As(err, &ns) && ns.Limit == core.LimitHeadroom {
+		t.Fatalf("the header-only roll over a headroom spare the ledger refused = %v, want the refusal itself: a ledger that lost a spare is a bug, never a capacity limit", err)
+	}
+	if !errors.Is(err, segment.ErrNotInSet) {
+		t.Fatalf("the header-only roll = %v, want the ledger's own refusal of the take", err)
+	}
+	if got := e.pool.Counters().SpareRefusals; got != 0 {
+		t.Fatalf("the refused header-only roll counted %d spare refusals, want 0", got)
+	}
+
+	// The stopped pool answers ErrClosed unchanged: nothing of it becomes a
+	// limit, for no caller drains a closed pool.
+	e2 := rollPin(t, streamCap, segment.Targets{Content: 0, Headroom: 1}, nil).withStream(t, 1)
+	awaitCounters(t, "the headroom spare ready", e2.pool,
+		func(c segment.PoolCounters) bool { return c.HeadroomBytes == segCap && c.Spares == 0 })
+	e2.pool.Stop()
+	hdr2 := format.RecordHeader{Kind: format.KindStamp, File: streamFileID(1), Version: core.Version{Counter: 2}, Tag: 7}
+	_, err = e2.s.AppendRoll(hdr2, format.RecordBody{Cut: 4}, segment.Roll{})
+	if !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("the header-only roll over a stopped pool = %v, want core.ErrClosed unchanged", err)
+	}
+	if errors.As(err, &ns) {
+		t.Fatalf("the stopped pool was answered as a limit too: %v", err)
+	}
+}
+
 // TestRollARepackCopyTakesAReserveSpareNeverAContentOne checks the repack
 // roll (R23): with only reserve spares ready a Roll{Repack: true} rolls onto
 // one and is not refused `spare` while one is ready, while a plain write over
