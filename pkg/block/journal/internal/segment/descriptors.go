@@ -445,6 +445,15 @@ func (r Ref) WriteAt(p []byte, off int64) (int, error) {
 	return n, err
 }
 
+// Truncate cuts the segment file to size through the reference's descriptor.
+// The cut is numbered as a write is, so the descriptor stays pinned until a
+// sync covers it, as for any other write through it.
+func (r Ref) Truncate(size int64) error {
+	err := r.e.file.Truncate(size)
+	r.e.written.Add(1)
+	return err
+}
+
 // Sync makes the writes issued through the reference's descriptor durable,
 // covering every write numbered before it: whether the sync returned nil or
 // failed, the covered-or-failed count rises to the write number the sync

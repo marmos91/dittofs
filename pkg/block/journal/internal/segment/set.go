@@ -252,6 +252,20 @@ func (s *Set) Take(id core.SegmentID) error {
 	return nil
 }
 
+// State returns the state of segment id in the set, or ErrNotInSet: what
+// the sealed, ended and charged paths need to know of one segment, read
+// without a walk of the set.
+func (s *Set) State(id core.SegmentID) (State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.segs[id]
+	if !ok {
+		return 0, ErrNotInSet
+	}
+	return e.state, nil
+}
+
 // Seal closes a segment to further appends, at the size it is accounted at:
 // a full seal keeps the cap, an early one is followed by Shrink to the
 // truncated size. The full flag is the seal's own word for itself, and the

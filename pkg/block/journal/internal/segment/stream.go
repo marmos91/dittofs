@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"sync"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -13,11 +14,15 @@ import (
 
 // ErrSegmentFull is returned by Append when the record does not fit in what
 // remains of the active segment before the seal's reserve: nothing was
-// reserved and nothing was written.
+// reserved and nothing was written. It is the answer after a seal too, where
+// it is the roll signal rather than the room's: the segment is closed.
 //
 // ponytail: with no roll yet, a full segment refuses the append outright. The
 // roll replaces the refusal with a seal and a take of the next segment, so
-// the caller's remaining bytes go on there instead of coming back here.
+// the caller's remaining bytes go on there instead of coming back here — and
+// the refusal after a seal, likewise, is answered by the roll taking the next
+// segment naming this one as predecessor, until when the stream stays on its
+// sealed segment and answers ErrSegmentFull.
 var ErrSegmentFull = errors.New("segment: no room for the record before the seal's reserve")
 
 // ErrStreamClosed is returned by Append after Close: the stream publishes no
@@ -235,11 +240,13 @@ func (t *tracker) syncFail() {
 }
 
 // Stream is one append stream of a journal: it takes segments from the Maker,
-// appends records to one active segment at a time and reads back positioned
-// records through the descriptor cache. It is the writing half of the walking
-// skeleton: one stream, one active segment, no roll and no seal — a record
-// that does not fit answers ErrSegmentFull, and the segment it appends to is
-// the first the Maker returns.
+// appends records to one active segment at a time, seals that segment on
+// demand and reads back positioned records through the descriptor cache. It
+// is the writing half of the walking skeleton: one stream, one active
+// segment, a seal and no roll — a record that does not fit answers
+// ErrSegmentFull, and the segment it appends to is the first the Maker
+// returns. After a seal the stream stays on its segment and answers
+// ErrSegmentFull from every later Append, until the roll takes the next one.
 type Stream struct {
 	no       uint32
 	identity core.JournalID
@@ -249,23 +256,55 @@ type Stream struct {
 
 	// decision: every field below is guarded by appendMu, the segment append
 	// domain of RFC 1 §8.2 — next, count, entries, the tracker, the active
-	// segment and its ref, the take's single-flight gate and the closed
-	// flag. The lock is held for a record's reservation and its completion
-	// only — never across I/O, and nothing else is acquired under it, so no
-	// set call and no storage call sit inside it.
+	// segment and its ref, the take's single-flight gate, the closed flag,
+	// and the seal state with its pending-drain. The lock is held for a
+	// record's reservation and its completion only — never across I/O, and
+	// nothing else is acquired under it, so no set call and no storage call
+	// sit inside it.
 	appendMu sync.Mutex
 	next     int64 // the first free record slot of the active segment
 	count    int64 // records reserved in the active segment
 	// entries are the catalog entries of the segment's records, kept in
 	// completion order for the seal, which sorts them by offset.
-	entries  []format.CatalogEntry
-	tracker  tracker
-	id       core.SegmentID // 0 until a take installs its segment
-	ref      Ref
-	taking   chan struct{} // armed while one caller runs the take for all
-	closed   bool
-	inflight sync.WaitGroup // the appends and syncs Close waits for, added to under the lock
+	entries []format.CatalogEntry
+	tracker tracker
+	id      core.SegmentID // 0 until a take installs its segment
+	ref     Ref
+	taking  chan struct{} // armed while one caller runs the take for all
+	closed  bool
+	inflight sync.WaitGroup // the appends, syncs and seals Close waits for, added to under the lock
+
+	// sealState names where the stream's seal stands. The zero value is
+	// sealOpen: the stream is appending.
+	sealState sealState
+	// pending is the appends of the active segment between their
+	// reservation and their final exit, so a seal can wait for every one
+	// reserved below it (R85).
+	pending int
+	// drained wakes the seal when pending reaches zero.
+	drained *sync.Cond
+	// sealRes is what the first seal returned, for the callers after it.
+	sealRes SealResult
 }
+
+// sealState is where a stream's seal stands: open, closing, closed for good,
+// or ended instead of sealed.
+type sealState uint8
+
+const (
+	// sealOpen is a stream whose segment takes appends: the zero value, so
+	// a fresh stream needs no seal initialisation of its own.
+	sealOpen sealState = iota
+	// sealSealing is a seal that has taken the segment but not yet
+	// finished: its appends are refused, its syncs pass.
+	sealSealing
+	// sealSealed is a stream whose segment is sealed: every later Append
+	// answers ErrSegmentFull, the roll signal.
+	sealSealed
+	// sealEnded is a stream whose segment was ended rather than sealed: a
+	// write or a sync of it failed. No seal and no append runs on it.
+	sealEnded
+)
 
 // NewStream returns the append stream no of the journal identity over set,
 // taking its segments with maker and reading and writing them through cache.
@@ -286,7 +325,9 @@ func NewStream(no uint32, identity core.JournalID, set *Set, maker *Maker, cache
 	if set.cap > math.MaxUint32 {
 		panic("segment: the segment cap is above MaxUint32, so an offset cannot be carried in a record header")
 	}
-	return &Stream{no: no, identity: identity, set: set, maker: maker, cache: cache}
+	s := &Stream{no: no, identity: identity, set: set, maker: maker, cache: cache}
+	s.drained = sync.NewCond(&s.appendMu)
+	return s
 }
 
 // take makes the stream its next segment and returns its id and the ref held
@@ -387,6 +428,17 @@ func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, 
 	if s.closed {
 		s.appendMu.Unlock()
 		return Placed{}, ErrStreamClosed
+	}
+	// The seal states refuse before anything is reserved (R1, R85): a
+	// sealed segment takes no append, an ended one neither — the refusal
+	// reserves nothing, writes nothing and charges nothing.
+	switch s.sealState {
+	case sealSealed:
+		s.appendMu.Unlock()
+		return Placed{}, fmt.Errorf("%w: the segment is sealed", ErrSegmentFull)
+	case sealEnded:
+		s.appendMu.Unlock()
+		return Placed{}, fmt.Errorf("%w: %w", ErrSegmentFull, ErrSegmentEnded)
 	}
 	// Counted before anything is reserved and under the same lock Close sets
 	// closed under, so every Add happens before Close's Wait: the group is
@@ -491,6 +543,24 @@ func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, 
 		slot := s.tracker.reserve(h.Offset, h.Offset+size)
 		s.next += size
 		s.count++
+		// pending names this append to a seal that may start while it is
+		// in flight, and leaves at the append's final exit — after its
+		// record is charged, or after its failed write returned — so a
+		// drained segment holds every entry and every share-charge its
+		// appends made (R85). The one short lock section past the
+		// completion's costs nothing the completion did not already pay.
+		s.pending++
+		// Every exit from here on is this append's final one: the loop
+		// never re-enters once a reservation is made, so the deferred
+		// decrement runs exactly once per reservation.
+		defer func() {
+			s.appendMu.Lock()
+			s.pending--
+			if s.pending == 0 {
+				s.drained.Broadcast()
+			}
+			s.appendMu.Unlock()
+		}()
 		id, ref, off := s.id, s.ref, h.Offset
 		s.appendMu.Unlock()
 
@@ -583,6 +653,19 @@ func (s *Stream) Sync() error {
 		s.appendMu.Unlock()
 		return nil // no segment is active: nothing to make durable
 	}
+	// A sealed segment's every record is durable by the seal's first step,
+	// so a Sync here needs no fsync of its own; an ended segment takes no
+	// sync that could claim its bytes durable. A seal in flight keeps the
+	// ordinary path, for the seal's own syncs run through the ref, never
+	// through the stream's Sync.
+	switch s.sealState {
+	case sealSealed:
+		s.appendMu.Unlock()
+		return nil
+	case sealEnded:
+		s.appendMu.Unlock()
+		return ErrSegmentEnded
+	}
 	// Counted under the lock Close sets closed under, like Append's.
 	s.inflight.Add(1)
 	defer s.inflight.Done()
@@ -605,6 +688,96 @@ func (s *Stream) Sync() error {
 	s.tracker.syncDone(through)
 	s.appendMu.Unlock()
 	return nil
+}
+
+// Seal seals the stream's active segment: early truncates the free tail and
+// returns it, full keeps the cap and writes the trailer at its last 32 bytes.
+// A seal closes the segment to new reservations, waits for every one
+// reserved before it — so the marker lands just past the last completed
+// record, never over an in-flight slot (R85) — makes the records durable,
+// writes the marker, the footer and the trailer, makes them durable, and, for
+// an early seal, truncates and makes that durable (R26).
+//
+// A second seal is refused with ErrWrongState or ErrSegmentEnded and writes
+// nothing: a sealed segment keeps the footer it already carries, and an ended
+// one takes no seal (R32, R33).
+func (s *Stream) Seal(early bool) (SealResult, error) {
+	s.appendMu.Lock()
+	if s.closed {
+		s.appendMu.Unlock()
+		return SealResult{}, ErrStreamClosed
+	}
+	if s.id == 0 {
+		s.appendMu.Unlock()
+		return SealResult{}, ErrNoSegment
+	}
+	switch s.sealState {
+	case sealSealing, sealSealed:
+		s.appendMu.Unlock()
+		return SealResult{}, fmt.Errorf("%w: the stream's seal already ran", ErrWrongState)
+	case sealEnded:
+		s.appendMu.Unlock()
+		return SealResult{}, ErrSegmentEnded
+	}
+	// Counted with the appends and the syncs, so Close waits a seal out
+	// before it releases the segment's ref.
+	s.inflight.Add(1)
+	defer s.inflight.Done()
+	s.sealState = sealSealing
+
+	// The drain: every append reserved below the seal has left, so every
+	// record the segment holds is complete and charged. The wait holds no
+	// lock, so the appends it waits for can finish.
+	for s.pending > 0 {
+		s.drained.Wait()
+	}
+
+	// A write or a sync of this segment already failed: the segment is
+	// ended, not sealed, and the seal writes nothing.
+	if s.tracker.freeze || s.tracker.syncFailed {
+		s.sealState = sealEnded
+		s.appendMu.Unlock()
+		s.set.End(s.id)
+		return SealResult{}, ErrSegmentEnded
+	}
+
+	// The marker sits at the stream's next free slot: every record below it
+	// has completed. The entries are cloned and sorted, for the footer's
+	// reader takes them ascending by offset while the stream kept them in
+	// completion order.
+	marker := s.next
+	entries := slices.Clone(s.entries)
+	SortSealEntries(entries)
+	id, ref := s.id, s.ref
+	s.appendMu.Unlock()
+
+	res, err := WriteSeal(s.set, ref, s.identity, id, marker, entries, early)
+
+	s.appendMu.Lock()
+	if err != nil {
+		// The seal failed: the segment takes no further append and no
+		// second seal. WriteSeal has ended it in the ledger for the
+		// failures it owns — a failed record sync, a failed write, a
+		// failed step-2 sync — so nothing lands in it again, and its
+		// successor names none (R33). A refusal the writer does not own,
+		// ErrBadCatalog or a ledger refusal, is a bug in this stream's
+		// own catalog: the segment is ended here too, so nothing appends
+		// past a refused seal either.
+		s.sealState = sealEnded
+		if !errors.Is(err, ErrSegmentEnded) {
+			s.appendMu.Unlock()
+			if unerr := s.set.End(id); unerr != nil {
+				err = errors.Join(err, unerr)
+			}
+			return SealResult{}, fmt.Errorf("%w: %w", ErrSegmentEnded, err)
+		}
+		s.appendMu.Unlock()
+		return SealResult{}, err
+	}
+	s.sealState = sealSealed
+	s.sealRes = res
+	s.appendMu.Unlock()
+	return res, nil
 }
 
 // ReadAt reads len(p) bytes at offset off of segment seg through the
