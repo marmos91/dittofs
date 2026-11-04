@@ -91,6 +91,11 @@ type tslot struct {
 // failed freezes the recorded value, for no later sync of the segment may
 // claim what the failure left (RFC 1 §5.3).
 //
+// The value is read at the reservation, not when the record's write lands —
+// the safe side of RFC 28 §2.3's "when the record was written": a sync can
+// only have covered more by the time the write runs, so the value recorded
+// at the reservation is at or below the one at the write, never above.
+//
 // decision: every field is guarded by the owning stream's append mutex, the
 // segment append domain. Nothing else may touch the tracker.
 //
