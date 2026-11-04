@@ -179,6 +179,7 @@ func (e *Engine) lostWhole(j Journal) {
 		fs = append(fs, f)
 	}
 	clear(g.due)
+	clear(g.failing) // no file of a lost journal is left to commit
 	g.mu.Unlock()
 	var dones []func()
 	for _, f := range fs {

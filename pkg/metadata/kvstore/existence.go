@@ -53,6 +53,14 @@ type PendingExistence struct {
 	Ops   []PendingOp
 }
 
+// ErrConflict is a transaction conflict, as a view's call answers it once the
+// call's context ended while the store was still retrying it: joined with the
+// context's error, never alone.
+var ErrConflict = kv.ErrConflict
+
+// ErrClosed is a view's call on a store whose backend closed.
+var ErrClosed = kv.ErrClosed
+
 // ErrNotContent is an existence commit for a file that holds no content.
 var ErrNotContent = errors.New("kvstore: file holds no content")
 

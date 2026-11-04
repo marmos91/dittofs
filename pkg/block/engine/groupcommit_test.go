@@ -1,17 +1,19 @@
 package engine_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"errors"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -444,5 +446,291 @@ func TestACommitSettlesTheJournal(t *testing.T) {
 	defer log.mu.Unlock()
 	if got, ok := log.settled[journal.NewFileID(f)]; !ok || got != newest {
 		t.Errorf("settled through %v (%v), want the batch's newest %v", got, ok, newest)
+	}
+}
+
+// A file the store fails on its own never fails another: the others'
+// overwrite Commits succeed beside it, its own answers ErrDelay, and
+// existence_commit_failing names it once it fails alone.
+func TestAFailingFileFailsNoOther(t *testing.T) {
+	u := newUnit(t)
+	a := committedFile(t, u, "a", 4)
+	b := committedFile(t, u, "b", 4)
+	_, dir := u.fs.Create(t, u.fs.Admin, u.fs.Root, "d", kvstore.Dir(0o755))
+	d := dir.ID
+	u.write(t, a, 0, []byte("over"))
+	u.write(t, b, 0, []byte("over"))
+	u.write(t, d, 0, []byte("not content"))
+	var wg sync.WaitGroup
+	errs := make([]error, 3)
+	for i, f := range []entity.FileID{a, b} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_, _, errs[i] = u.e.Commit(ctx, u.share.ID, f, 0, 4)
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		errs[2] = u.e.CommitNow(ctx, u.share.ID, d)
+	}()
+	wg.Wait()
+	if errs[0] != nil || errs[1] != nil {
+		t.Errorf("the other files' Commits: %v, %v; want both answered", errs[0], errs[1])
+	}
+	if !errors.Is(errs[2], context.DeadlineExceeded) {
+		t.Errorf("the failing file's commit: %v, want its deadline", errs[2])
+	}
+	if !u.e.Failing(u.rec, d) || u.e.Failing(u.rec, a) {
+		t.Errorf("existence_commit_failing names d %v and a %v; want d alone", u.e.Failing(u.rec, d), u.e.Failing(u.rec, a))
+	}
+}
+
+// conflicting is a store whose existence commits, once set, answer a
+// conflict.
+type conflicting struct {
+	engine.Existence
+	on    atomic.Bool
+	calls atomic.Int32 // the commits answered a conflict
+}
+
+func (x *conflicting) Commit(ctx context.Context, p []kvstore.PendingExistence) (map[entity.FileID]error, error) {
+	if x.on.Load() {
+		x.calls.Add(1)
+		return nil, kvstore.ErrConflict
+	}
+	return x.Existence.Commit(ctx, p)
+}
+
+// A conflict unresolved at a Commit's deadline is ErrDelay with
+// DelayConflict, never an I/O error.
+func TestAConflictAtTheDeadlineIsDelayConflict(t *testing.T) {
+	c := &conflicting{}
+	u := newUnit(t, func(d *engine.Deps) { c.Existence = d.Existence; d.Existence = c })
+	f := committedFile(t, u, "a", 4)
+	c.on.Store(true)
+	u.write(t, f, 0, []byte("over"))
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	_, _, err := u.e.Commit(ctx, u.share.ID, f, 0, 4)
+	var d *vfserr.Delay
+	if !errors.As(err, &d) || d.Cause != vfserr.DelayConflict {
+		t.Errorf("Commit under a conflict: %v, want ErrDelay(DelayConflict)", err)
+	}
+	// The file failed alone, so it backs off by itself: the clock has not
+	// moved past its backoff, so it was not tried again.
+	if n := c.calls.Load(); n != 1 {
+		t.Errorf("the failing file was tried %d times within its backoff, want once", n)
+	}
+	if !u.e.Failing(u.rec, f) {
+		t.Error("existence_commit_failing does not name the failing file")
+	}
+	c.on.Store(false)
+	u.clock.Advance(time.Second) // past the backoff
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	if u.e.Failing(u.rec, f) {
+		t.Error("existence_commit_failing still names the file after its commit succeeded")
+	}
+}
+
+// A file the store names in its map is retried alone in the next batch, even
+// with another file due beside it.
+func TestAFailedFileIsRetriedAlone(t *testing.T) {
+	u, log := newLoggedUnit(t, 24*time.Hour, 64)
+	_, dir := u.fs.Create(t, u.fs.Admin, u.fs.Root, "d", kvstore.Dir(0o755))
+	d, a, c := dir.ID, u.create(t, "a"), u.create(t, "c")
+	u.write(t, d, 0, []byte("not content"))
+	u.write(t, a, 0, []byte("a"))
+	var once sync.Once
+	u.e.OnCapture(func() {
+		once.Do(func() {
+			u.write(t, c, 0, []byte("c"))
+			go func() { _ = u.e.CommitNow(context.Background(), u.share.ID, c) }()
+			eventually(t, "c is due now", func() bool { return u.e.Due(u.rec, c) })
+		})
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	_ = u.e.CommitAll(ctx, u.rec)
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	if len(log.commits) < 2 {
+		t.Fatalf("%d commits, want the batch and the retry", len(log.commits))
+	}
+	if r := log.commits[1]; len(r) != 1 || r[0] != d {
+		t.Errorf("the retry's batch holds %d files, want d alone", len(r))
+	}
+}
+
+// conflictingKV is a kv.KV whose writes, once on, conflict until their
+// context ends, as a file another writer keeps changing does.
+type conflictingKV struct {
+	kv.KV
+	on *atomic.Bool
+}
+
+func (c conflictingKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
+	if !c.on.Load() {
+		return c.KV.Update(ctx, fn)
+	}
+	return kv.Retry(ctx, func() error { return kv.ErrConflict })
+}
+
+// A conflict the store keeps retrying ends at the commit's own bound: the
+// overwrite's Commit answers DelayConflict at its deadline, and once the
+// conflict clears the journal's group commit commits again.
+func TestAConflictTheStoreKeepsRetryingHoldsNoBatch(t *testing.T) {
+	engine.SetConflictBound(50 * time.Millisecond)
+	t.Cleanup(func() { engine.SetConflictBound(time.Second) })
+	on := new(atomic.Bool)
+	u := newUnitOver(t, func(k kv.KV) kv.KV { return conflictingKV{k, on} })
+	f := committedFile(t, u, "a", 4)
+	on.Store(true)
+	u.write(t, f, 0, []byte("over"))
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	_, _, err := u.e.Commit(ctx, u.share.ID, f, 0, 4)
+	var d *vfserr.Delay
+	if !errors.As(err, &d) || d.Cause != vfserr.DelayConflict {
+		t.Errorf("Commit under a conflict the store keeps retrying: %v, want ErrDelay(DelayConflict)", err)
+	}
+	on.Store(false)
+	u.clock.Advance(time.Minute) // past the backoff
+	ctx, cancel = context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if err := u.e.CommitNow(ctx, u.share.ID, f); err != nil {
+		t.Errorf("after the conflict cleared: %v; the group commit is still held", err)
+	}
+}
+
+// conflictingFile is a store whose existence commits conflict whenever they
+// hold file x, counting those calls.
+type conflictingFile struct {
+	engine.Existence
+	x     entity.FileID
+	calls atomic.Int32
+}
+
+func (s *conflictingFile) Commit(ctx context.Context, p []kvstore.PendingExistence) (map[entity.FileID]error, error) {
+	for _, pe := range p {
+		if pe.File == s.x {
+			s.calls.Add(1)
+			return nil, errors.Join(kvstore.ErrConflict, context.DeadlineExceeded)
+		}
+	}
+	return s.Existence.Commit(ctx, p)
+}
+
+// A file a split left failing alone has already failed alone: it backs off
+// at once, with no further solo try, and existence_commit_failing names it.
+func TestASplitLeafBacksOffAtOnce(t *testing.T) {
+	s := &conflictingFile{}
+	u := newUnit(t, func(d *engine.Deps) { s.Existence = d.Existence; d.Existence = s })
+	a, x := u.create(t, "a"), u.create(t, "x")
+	s.x = x
+	u.write(t, a, 0, []byte("a"))
+	u.write(t, x, 0, []byte("x"))
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	_ = u.e.CommitAll(ctx, u.rec)
+	if n := s.calls.Load(); n != 2 {
+		t.Errorf("x was sent %d times, want twice: with a, then alone by the split", n)
+	}
+	if !u.e.Failing(u.rec, x) {
+		t.Error("existence_commit_failing does not name the split's failing leaf")
+	}
+	if u.e.HasEntry(a) {
+		t.Error("the file beside it did not commit")
+	}
+}
+
+// A failing file whose writes leave another way is no longer named failing:
+// its journal's device lost, or its share dropped.
+func TestAFailingFileLeftAnotherWayIsCleared(t *testing.T) {
+	for _, how := range []string{"lost whole", "share dropped"} {
+		t.Run(how, func(t *testing.T) {
+			u := newUnit(t)
+			_, dir := u.fs.Create(t, u.fs.Admin, u.fs.Root, "d", kvstore.Dir(0o755))
+			u.write(t, dir.ID, 0, []byte("not content"))
+			ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+			defer cancel()
+			_ = u.e.CommitNow(ctx, u.share.ID, dir.ID)
+			if !u.e.Failing(u.rec, dir.ID) {
+				t.Fatal("the directory's commit is not named failing")
+			}
+			if how == "lost whole" {
+				u.e.LostWhole(u.rec)
+			} else if err := u.e.DropShare(t.Context(), u.rec, u.share.ID); err != nil {
+				t.Fatal(err)
+			}
+			if u.e.Failing(u.rec, dir.ID) {
+				t.Errorf("after the %s, existence_commit_failing still names it", how)
+			}
+		})
+	}
+}
+
+// corruptKV is a kv.KV whose reads of any key naming file f fail, as a
+// record of f the store cannot decode does: a whole-call error of the
+// existence commit that names no file.
+type corruptKV struct {
+	kv.KV
+	f *entity.FileID
+}
+
+func (c corruptKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
+	return c.KV.Update(ctx, func(tx kv.Txn) error { return fn(corruptTxn{tx, c.f}) })
+}
+
+type corruptTxn struct {
+	kv.Txn
+	f *entity.FileID
+}
+
+func (t corruptTxn) bad(key []byte) bool {
+	return *t.f != (entity.FileID{}) && bytes.Contains(key, t.f[:])
+}
+
+func (t corruptTxn) Get(key []byte) ([]byte, error) {
+	if t.bad(key) {
+		return nil, errors.New("a record that does not decode")
+	}
+	return t.Txn.Get(key)
+}
+
+func (t corruptTxn) GetMany(keys [][]byte) ([][]byte, error) {
+	for _, k := range keys {
+		if t.bad(k) {
+			return nil, errors.New("a record that does not decode")
+		}
+	}
+	return t.Txn.GetMany(keys)
+}
+
+// A file whose records the store cannot decode fails its batch's whole call,
+// and the split leaves it alone: every other file of the batch commits.
+func TestACorruptFileFailsNoOther(t *testing.T) {
+	bad := new(entity.FileID)
+	u := newUnitOver(t, func(k kv.KV) kv.KV { return corruptKV{k, bad} })
+	a, b, x := u.create(t, "a"), u.create(t, "b"), u.create(t, "x")
+	for _, f := range []entity.FileID{a, b, x} {
+		u.write(t, f, 0, []byte("abc"))
+	}
+	*bad = x
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	_ = u.e.CommitAll(ctx, u.rec)
+	if u.e.HasEntry(a) || u.e.HasEntry(b) {
+		t.Errorf("the other files did not commit: a %v, b %v", u.e.HasEntry(a), u.e.HasEntry(b))
+	}
+	if !u.e.Failing(u.rec, x) {
+		t.Error("existence_commit_failing does not name the corrupt file")
 	}
 }

@@ -6,10 +6,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"math/rand/v2"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -74,4 +78,58 @@ func TestRFC8A_StalledStore(t *testing.T) {
 	if !errors.As(err, &d) || d.Cause != vfserr.DelayCommit {
 		t.Errorf("an overwrite's Commit under a stalled store: %v, want ErrDelay(DelayCommit)", err)
 	}
+}
+
+// 64 writers flushing while chmod writes random files' records: every flush
+// is answered, none waiting past its deadline on another file's conflict.
+func TestRFC8A_GroupCommit(t *testing.T) {
+	f := enginetest.New(t)
+	type file struct {
+		h  entity.Handle
+		id entity.FileID
+	}
+	files := make([]file, 64)
+	for i := range files {
+		h, id := f.File(fmt.Sprintf("f%d", i))
+		files[i] = file{h, id}
+		write(t, f, id, 0, []byte("committed"))
+	}
+	f.Clock.Advance(enginetest.Settings.ExistenceAge)
+	eventually(t, "every file's first write commits", func() bool { return f.Committed(files[63].h).Size == 9 })
+
+	stop := make(chan struct{})
+	var chmods sync.WaitGroup
+	chmods.Add(1)
+	go func() {
+		defer chmods.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			h := files[rand.IntN(len(files))].h
+			_, _ = f.FS.Store.Files().SetAttrs(context.Background(), f.FS.Admin, h, entity.Attrs{}.WithMode(uint32(0o600+i%2)))
+		}
+	}()
+	var flushes sync.WaitGroup
+	for _, fl := range files {
+		flushes.Add(1)
+		go func() {
+			defer flushes.Done()
+			for n := range 4 {
+				write(t, f, fl.id, 0, []byte(fmt.Sprintf("overwrite%d", n)))
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				_, _, err := f.E.Commit(ctx, f.Share.ID, fl.id, 0, 10)
+				cancel()
+				if err != nil {
+					t.Errorf("a flush beside the chmods: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	flushes.Wait()
+	close(stop)
+	chmods.Wait()
 }

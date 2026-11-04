@@ -51,6 +51,7 @@ type Engine struct {
 	gcMu            sync.Mutex
 	gcs             map[Journal]*groupCommit                                  // each journal's group commit
 	gcsClosed       bool                                                      // closeGroupCommits ran: none starts again
+	splits          atomic.Int64                                              // engine_group_commit_splits_total
 	stabilityPoints atomic.Int64                                              // engine_stability_points_total
 	pendingApplied  atomic.Int64                                              // engine_pending_existence_ops: operations committed
 	hooks           struct{ taken, captured, drained atomic.Pointer[func()] } // a test's seams: after a batch's take, its capture, and a drain's read of the ring

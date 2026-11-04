@@ -57,7 +57,7 @@ func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 		}
 		if over {
 			if err := e.commitThrough(ctx, b, f, through); err != nil {
-				return vfserr.Verifier{}, 0, waitErr(err)
+				return vfserr.Verifier{}, 0, e.waitErr(b, f, err)
 			}
 		}
 	}
@@ -92,11 +92,12 @@ func (e *Engine) pendingIn(f entity.FileID, off, n int64) (journal.Version, []en
 }
 
 // waitErr is the answer for a wait on the group commit that the caller's
-// context ended: its deadline is ErrDelay with DelayCommit, a cancel the
+// context ended: its deadline is ErrDelay with the cause f's failing commit
+// gives, DelayConflict for a conflict, else DelayCommit; a cancel is the
 // context's own error.
-func waitErr(err error) error {
+func (e *Engine) waitErr(b *binding, f entity.FileID, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
-		return &vfserr.Delay{Cause: vfserr.DelayCommit}
+		return &vfserr.Delay{Cause: e.failCause(b, f)}
 	}
 	return err
 }

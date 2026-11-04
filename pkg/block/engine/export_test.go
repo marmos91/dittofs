@@ -289,3 +289,14 @@ func (e *Engine) SyncFile(ctx context.Context, s entity.ShareID, f entity.FileID
 
 // StabilityPoints is engine_stability_points_total.
 func (e *Engine) StabilityPoints() int64 { return e.stabilityPoints.Load() }
+
+// Failing reports whether existence_commit_failing names f on journal j.
+func (e *Engine) Failing(j Journal, f entity.FileID) bool {
+	g := e.groupCommitFor(j)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.failing[f] != nil && g.failing[f].raised
+}
+
+// SetConflictBound sets how long one existence commit may run.
+func SetConflictBound(d time.Duration) { conflictBound.Store(d) }
