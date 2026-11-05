@@ -257,11 +257,12 @@ type Stream struct {
 	// decision: every field below is guarded by appendMu, the segment append
 	// domain of RFC 1 §8.2 — next, count, entries, the tracker, the active
 	// segment and its ref, the roll's single-flight gate, the closed flag,
-	// the last append's idle stamp, the seal state with its pending-drain,
-	// and the end the stream holds for its consumer. The lock is held for a
-	// record's reservation and its completion only — never across I/O, and
-	// nothing else is acquired under it, so no set call and no storage call
-	// sit inside it.
+	// the last append's idle stamp, the seal state with its pending-drain, the in-flight reservations the
+	// end's event waits on, the failed write's own offset, and the end the
+	// stream holds for its consumer with the consumer that reads it. The
+	// lock is held for a record's reservation and its completion only —
+	// never across I/O, and nothing else is acquired under it, so no set
+	// call and no storage call sit inside it.
 	appendMu sync.Mutex
 	next     int64 // the first free record slot of the active segment
 	count    int64 // records reserved in the active segment
@@ -306,7 +307,8 @@ type Stream struct {
 	pending int
 	// drained wakes the seal when pending reaches zero, and wakes the
 	// stream syncs that parked while the seal ran when it settles, and
-	// wakes whoever waits out the end a failed append made.
+	// wakes the end's notifier when the last in-flight reservation lands
+	// and the roll it parked on the end's record.
 	drained *sync.Cond
 
 	// ended holds the record of the segment the stream ended while no
@@ -752,6 +754,11 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 				continue
 			}
 			s.rolling = make(chan struct{})
+			// The first roll starts the stream no less than the first
+			// reservation does, for OnEnd's gate reads its history
+			// through the one flag: a consumer registered while a roll
+			// is in flight would miss the segment the roll's seal ends.
+			s.started = true
 			s.appendMu.Unlock()
 			rerr := s.roll(hasPayload, r)
 			s.appendMu.Lock()
@@ -1047,7 +1054,6 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	if s.apending != 0 {
 		panic("segment: a roll installs a successor over reservations the ended segment still holds")
 	}
-	s.started = true
 	s.id, s.ref = id, ref
 	s.next = format.SegmentHeaderSize
 	s.count = 0
