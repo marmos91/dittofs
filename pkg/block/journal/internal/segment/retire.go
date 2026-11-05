@@ -90,10 +90,11 @@ type RetirerConfig struct {
 	ReadOnly func() error
 	// Retired is the retired-segment hook: called once per completed
 	// retirement, with the retired segment's id (the old id for a recycle,
-	// never the fresh one), after the segment has left the set, whether or
-	// not the directory sync that follows succeeds. Nil does nothing. It
-	// is called holding no lock of the executor's, from the caller of
-	// Retire or from the worker goroutine.
+	// never the fresh one), after the segment has left the set — for an
+	// unlink, whether or not its directory sync then succeeds; a recycle's
+	// own sync comes earlier and has already returned by then. Nil does
+	// nothing. It is called holding no lock of the executor's, from the
+	// caller of Retire or from the worker goroutine.
 	Retired func(id core.SegmentID)
 	// Durable is the durable-retirement signal: called once per retirement
 	// whose directory sync returned nil. Nil means no signal.

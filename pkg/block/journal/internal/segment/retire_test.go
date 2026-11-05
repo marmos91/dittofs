@@ -42,8 +42,9 @@ var noPool = segment.Targets{Content: -1}
 
 // retirer builds a retirer over a fresh seam, with no retired-segment hook.
 // targets is the pool's; noPool means every retirement unlinks. readOnly is
-// the R89 check, nil meaning writable. retired collects the hook's calls,
-// when the test needs them.
+// the R89 check, nil meaning writable. The durable signal's calls, which the
+// worker goroutine may be the one to make, are handed out guarded: read them
+// through the returned collector's own lock.
 func retirer(t *testing.T, targets segment.Targets, readOnly func() error) (*retireEnv, *durableCollector) {
 	t.Helper()
 	return retirerBuilt(t, targets, readOnly, nil, 0, nil)
@@ -65,9 +66,10 @@ func retirerSeeded(t *testing.T, targets segment.Targets, readOnly func() error,
 // retirerBuilt is retirer with every knob a test needs: the read-only check,
 // the retired-segment hook, the Maker's seed and a logger for the retirer and
 // its ledger. The read-only check the pool's refill and the retirer both ask
-// is the one epic 8 passes to both. The durable signal's slice, and the
-// hook's, are handed out guarded: the worker goroutine is the one that
-// appends to them, so a test must read them through the collector's own lock.
+// is the one epic 8 passes to both. The durable signal's calls are handed out
+// guarded through the returned collector — the worker goroutine is the one
+// that appends to them — while the hook's collector belongs to the caller
+// that built the hook handed in here (retirerHooked's, say).
 func retirerBuilt(t *testing.T, targets segment.Targets, readOnly func() error, retired func(core.SegmentID), last core.SegmentID, log *slog.Logger) (*retireEnv, *durableCollector) {
 	t.Helper()
 
@@ -792,6 +794,14 @@ func (f *countingFault) At(string, []byte) (time.Duration, int, error) {
 	defer f.mu.Unlock()
 	f.calls++
 	return 0, 0, nil
+}
+
+// count is how many calls the seam has consulted it on, read under the
+// mutex for the goroutine that may be inside At.
+func (f *countingFault) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 // TestRetireRefusals: an Active segment, a spare of the pool and a segment
@@ -1875,6 +1885,9 @@ func TestRetireRetiredHookAfterLeavingTheSet(t *testing.T) {
 		e, rc := retirerHooked(t, noPool, nil)
 		id := e.segment(true)
 
+		// A failed assertion must join the worker too, or the profiler
+		// reports the leak beside the failure and buries it.
+		t.Cleanup(e.r.Stop)
 		segment.RetryEveryForTest(e.r, time.Millisecond)
 		e.r.Start()
 		e.r.Enqueue(id, segment.NotHeld)
@@ -1891,6 +1904,9 @@ func TestRetireRetiredHookAfterLeavingTheSet(t *testing.T) {
 		if !errors.Is(rc.at(0).err, segment.ErrNotInSet) {
 			t.Fatalf("the hook's id was still in the set: %v, want %v", rc.at(0).err, segment.ErrNotInSet)
 		}
+		// Stopped here rather than left to the cleanup, so a Stop that
+		// wedges fails this test on its own line rather than at the
+		// cleanup's.
 		e.r.Stop()
 	})
 }
