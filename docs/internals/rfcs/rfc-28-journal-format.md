@@ -1451,7 +1451,8 @@ The acknowledgement is an operation ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%
 Before step 1 it records its ranges and whether any part is one nothing names.
 Once steps 1 and 2 have run and the engine has marked `failed` the snapshots
 the `AckResult` names, it records them **done**, with the extents step 2 left
-pending, by file. **It stays running until** the journal's shares are attached
+pending, by file; a range added to a running operation ([RFC 23 §3.3](rfc-23-control-plane.md#3.3%20Stores%20and%20namespaces)) clears
+the mark until its own steps are done. **It stays running until** the journal's shares are attached
 with their loss sequences raised, no extent is left pending, and every segment
 holding a range it names is unlinked; every other statement of when it ends
 points here. A start that finds it running raises the loss sequences, as past
