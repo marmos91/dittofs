@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 
@@ -12,31 +13,35 @@ import (
 
 // The filesystem is open state's Sink: the table raises each of these after
 // the step that raised it has released every table lock, on a goroutine that
-// may still hold the file's admission lock. So the filesystem hands each to a
-// path the client registered on a goroutine of its own and returns: the
+// may still hold the file's admission lock. So the filesystem hands each to
+// the Callbacks the client registered, on a goroutine of its own, and returns: the
 // table's goroutine never waits on a client, and a method that took that lock
 // itself, or through a table call that serves waiters, would wait on its own
-// caller. An event with no path to go by is dropped: a recall then ends at its
-// deadline, as one the client never answered. A callback that fails, or
-// finds no path, is counted in vfs_callback_errors_total by its kind.
+// caller. An event for a client with no Callbacks here is dropped: a recall
+// then ends at its deadline, as one the client never answered. A callback
+// that fails, or finds no Callbacks or session to go to, is counted in
+// vfs_callback_errors_total by its kind.
 //
-// A recall of a lease or an oplock, an SMB break, goes by the opens it
-// covers, never by the client: to the session holding one of them, else to a
-// session of the client signed in as one of their openers, else nowhere. A
-// ClientGuid travels in clear, so anyone can connect under a machine's; a
-// path kept per SMB client is one a stranger could move.
+// A recall of a lease or an oplock, an SMB break, is routed by the opens it
+// covers, never by the client: it names the session holding a connected one
+// of them, and the adapter only delivers on it. With every one disconnected,
+// it names no session but their openers, and the adapter picks one of its
+// own sessions of the client signed in now as an opener, or none, and the
+// break is asked again until one is picked or its deadline passes. Only the
+// adapter knows what a session is signed in as now, so no copy of it here
+// goes stale when a session re-authenticates. A ClientGuid travels in clear,
+// so anyone can connect under a machine's and register its Callbacks; a
+// session signed in as another principal is never one the break goes to.
 //
 // decision: every other callback, a delegation's recall, a revocation, a lock
-// wait's end, goes by the path the client's latest Connect registered, which
-// for an SMB client is its latest session's, so a stranger connected under a
-// machine's ClientGuid may receive them. They carry no cached data: a
-// revocation tells of state ended already, and a lock wait's end tells only
-// that a range was granted, so the stranger can hold up the machine's lock
-// wait, not read its data. A lock wait's end is not routed by its open as a
-// break is, since a callback names no session for the adapter to deliver on:
-// the path is the session, and one picked by open would leave Revoked and
-// RecallAny on the latest anyway. Overturned once a callback carries the
-// session it goes to, or if an SMB lock completion is seen held up this way.
+// wait's end, a recall-any, names no session: the adapter delivers it by the
+// state or waiter it names. So a stranger whose Connect under a machine's
+// ClientGuid registered the Callbacks may receive them. They carry no cached
+// data: a revocation tells of state ended already, and a lock wait's end
+// tells only that a range was granted, so the stranger can hold up the
+// machine's lock wait, not read its data. Overturned if an SMB lock
+// completion is seen held up this way: then a lock wait's end names its
+// waiter's session as a break does.
 //
 // ponytail: one goroutine per callback, so two raised for one client may
 // reach it out of order. Queue each client's callbacks in order if an
@@ -47,14 +52,23 @@ import (
 const callbackDeadline = 35 * time.Second
 
 // grantRetry is how long a lock grant the client did not answer waits before
-// it is sent again, and how often a recall whose send failed looks for a new
-// path to send it through.
-//
-// ponytail: a fixed pause, retried until the client answers, its path ends,
-// or the filesystem stops, one goroutine per grant
-// meanwhile. Back off, and bound the goroutines, if hosts that stay down
-// are seen holding grants.
+// it is sent again, and how often a recall not yet sent, or whose send
+// failed, looks for a new path to send it through.
 var grantRetry = 10 * time.Second
+
+// grantResendFor is how long after its first send an unanswered lock grant
+// to a client other than an NLM host is sent again: one lease period. Past it
+// the grant stays offered, unsent, until the client answers it or ends. An
+// NLM host's grant is resent until it answers or its record ends, never given
+// up for a silence.
+//
+// ponytail: one goroutine per unanswered grant, resending each grantRetry:
+// an SMB client's for up to grantResendFor, or until it ends or its record is
+// released, after which an SMB client that signs in again is not told of its
+// grant; an NLM host's for as long as its record lives. Resend at the
+// client's next Connect, and bound the NLM goroutines, if hosts that stay
+// down are seen missing their grants or holding goroutines.
+var grantResendFor = 90 * time.Second
 
 // ClientEnded tells the client its state ended, then drops its path.
 //
@@ -70,11 +84,14 @@ func (fs *Filesystem) ClientEnded(c entity.ClientID, shards []openstate.ShardID,
 
 // LockWaitOver tells the waiting owner's client, and hands its answer to a
 // grant back to open state, under the file's admission lock. A grant the
-// client gives no answer to is sent again, through the client's latest path,
-// as the lock stays granted until it answers.
+// client gives no answer to is sent again each grantRetry, through the
+// client's Callbacks as they are then, until the client ends or is released,
+// or, but for an NLM host, grantResendFor has passed; the lock stays granted,
+// the grant offered, until it answers or ends.
 func (fs *Filesystem) LockWaitOver(w openstate.LockWaiter, granted bool) {
 	c := w.Owner.Client
 	fs.deliver(fs.latest("LockWaitOver", c), func(ctx context.Context, cb vfs.Callbacks) {
+		until := time.Now().Add(grantResendFor)
 		refused, err := cb.LockWaitOver(ctx, w, granted)
 		for granted && err != nil {
 			fs.callbackErrors.WithLabelValues("LockWaitOver").Inc()
@@ -82,6 +99,9 @@ func (fs *Filesystem) LockWaitOver(w openstate.LockWaiter, granted bool) {
 			case <-fs.stop.Done():
 				return
 			case <-time.After(grantRetry):
+			}
+			if time.Now().After(until) && !fs.reg.isNLM(c) {
+				return
 			}
 			if cb = fs.counted("LockWaitOver", fs.reg.latest(c)); cb == nil {
 				return
@@ -106,56 +126,74 @@ func grantAgain(stop context.Context, cb vfs.Callbacks, w openstate.LockWaiter) 
 	return cb.LockWaitOver(ctx, w, true)
 }
 
-// RecallGrant sends the recall through its path. One whose send fails is
-// sent again through the next path the grant's client registers, looked for
-// every grantRetry until the callback's deadline; a look that finds no path
-// ends it, and the recall runs to its deadline unanswered.
+// RecallGrant sends the recall through the client's Callbacks, to the
+// session its break goes to. One not sent looks again every grantRetry,
+// until the callback's deadline or the grant is gone: one the adapter sent
+// nowhere, finding no session signed in as an opener, is asked again by the
+// same route, and one whose send failed only once the client registers
+// other Callbacks or the break finds another session, as a failed send may
+// still have reached the client. So a client that reconnects, or signs in
+// again, is recalled there. A recall with no Callbacks at first, or sent
+// nowhere at first, is counted once.
+//
+// decision: only the grant's end or the deadline stops it, not an answer to
+// the recall: nothing here tells whether one is still in flight. An answer
+// comes from an opener's session, one the break went to already, so it is
+// sent again only after a send that failed yet reached the client. Have
+// Openers report the recall in flight if an adapter is seen misreading such
+// a break.
 func (fs *Filesystem) RecallGrant(g openstate.CachingGrant) {
 	to := openstate.GrantNone
 	if g.Recall != nil {
 		to = g.Recall.To
 	}
-	path := func(ctx context.Context) route {
-		opens, err := fs.grants.Openers(ctx, openstate.Caller{Client: g.Client}, g.ID)
-		var r route
-		switch {
-		case err != nil:
-			return route{} // gone since: nothing is left to recall
-		case len(opens) == 0:
-			r = fs.reg.latestRoute(g.Client) // a delegation, the client's own
-		default:
-			r = fs.reg.breakPath(g.Client, opens)
-		}
-		fs.counted("RecallGrant", r.cb)
-		return r
-	}
-	var sent route // deliver runs both closures on one goroutine, path first
-	fs.deliver(func(ctx context.Context) vfs.Callbacks { sent = path(ctx); return sent.cb }, func(ctx context.Context, cb vfs.Callbacks) {
-		for cb.RecallGrant(ctx, g, to) != nil {
-			fs.callbackErrors.WithLabelValues("RecallGrant").Inc()
-			if sent = nextPath(ctx, path, sent.gen); sent.cb == nil {
-				return
+	fs.background(func(stop context.Context) {
+		ctx, cancel := context.WithTimeout(stop, callbackDeadline)
+		defer cancel()
+		var tried recallRoute // the route last sent through; zero: none yet
+		for first := true; ; first = false {
+			opens, err := fs.grants.Openers(ctx, g.ID)
+			if err != nil {
+				return // gone since: nothing is left to recall
 			}
-			cb = sent.cb
+			r := fs.reg.recallRoute(g.Client, opens)
+			if first {
+				fs.counted("RecallGrant", r.cb)
+			}
+			if r.cb != nil && !r.same(tried) {
+				sent, err := r.cb.RecallGrant(ctx, r.sess, r.openers, g, to)
+				switch {
+				case sent && err == nil:
+					return
+				case err != nil:
+					fs.callbackErrors.WithLabelValues("RecallGrant").Inc()
+					tried = r
+				case first:
+					fs.callbackErrors.WithLabelValues("RecallGrant").Inc()
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(grantRetry):
+			}
 		}
 	})
 }
 
-// nextPath waits, grantRetry at a time, for path to answer a path another
-// registration than gen made, and answers it; the zero route once path
-// answers none or ctx ends.
-func nextPath(ctx context.Context, path func(context.Context) route, gen uint64) route {
-	for {
-		select {
-		case <-ctx.Done():
-			return route{}
-		case <-time.After(grantRetry):
-		}
-		if next := path(ctx); next.gen != gen {
-			return next
-		}
-	}
+// recallRoute is where a recall goes: the client's Callbacks, the generation
+// that registered them, and the session to deliver on, zero for a
+// delegation, or zero with the openers for the adapter to pick by.
+type recallRoute struct {
+	cb      vfs.Callbacks
+	gen     uint64
+	sess    entity.SessionRef
+	openers []entity.Principal
 }
+
+// same reports whether r and o go the same way: through Callbacks one
+// registration made, to one session. Callbacks need not be comparable.
+func (r recallRoute) same(o recallRoute) bool { return r.gen == o.gen && r.sess == o.sess }
 
 func (fs *Filesystem) RecallAny(c entity.ClientID, keep int) {
 	fs.deliver(fs.latest("RecallAny", c), func(ctx context.Context, cb vfs.Callbacks) {
@@ -178,9 +216,9 @@ func (fs *Filesystem) Revoked(r openstate.Revocation) {
 // with Watch.
 func (fs *Filesystem) Notify(c entity.ClientID, w openstate.WatchID, ch []openstate.Change) {}
 
-// deliver runs send in the background with the callbacks path finds there,
-// under a context ending at callbackDeadline or at Stop. With no path found,
-// or once the filesystem is stopped, it sends nothing.
+// deliver runs send in the background with the Callbacks path finds there,
+// under a context ending at callbackDeadline or at Stop. With none found, or
+// once the filesystem is stopped, it sends nothing.
 func (fs *Filesystem) deliver(path func(context.Context) vfs.Callbacks, send func(ctx context.Context, cb vfs.Callbacks)) {
 	fs.background(func(stop context.Context) {
 		ctx, cancel := context.WithTimeout(stop, callbackDeadline)
@@ -204,8 +242,8 @@ func (fs *Filesystem) background(run func(ctx context.Context)) bool {
 	return true
 }
 
-// latest is a path for deliver: client c's latest path as it is now, a
-// callback of kind dropped for want of one counted.
+// latest is a path for deliver: client c's Callbacks as they are now, a
+// callback of kind dropped for want of them counted.
 func (fs *Filesystem) latest(kind string, c entity.ClientID) func(context.Context) vfs.Callbacks {
 	cb := fs.counted(kind, fs.reg.latest(c))
 	return func(context.Context) vfs.Callbacks { return cb }
@@ -219,136 +257,107 @@ func (fs *Filesystem) counted(kind string, cb vfs.Callbacks) vfs.Callbacks {
 	return cb
 }
 
-// registry is each client's callback paths at this node: the one its latest
-// Connect registered, with the session it came on, and an SMB client's per
-// session, with the principal each session signed in as; and the client each
-// NLM host last connected as.
+// registry is, at this node, each client's Callbacks, which its latest
+// Connect registered, and the client each NLM host last connected as.
 //
 // ponytail: an NLM host's entry stays once its client has ended, one per host
-// ever connected. Drop it with the client's paths if host churn shows it.
+// ever connected. Drop it with the client's Callbacks if host churn shows it.
 type registry struct {
-	mu   sync.Mutex
-	gen  uint64 // the last registration's
-	byID map[entity.ClientID]latestPath
-	smb  map[entity.ClientID]map[entity.SessionRef]session
-	nlm  map[string]entity.ClientID
+	mu  sync.Mutex
+	gen uint64 // raised by each register, naming the Callbacks it registered
+	cb  map[entity.ClientID]registered
+	nlm map[string]entity.ClientID
 }
 
-// route is a path and the registration that made it, from 1. A path is told
-// from another by its registration, never by its Callbacks: they need not be
-// comparable, and one value may be registered again.
-type route struct {
+// registered is a client's Callbacks and the register that made them.
+type registered struct {
 	cb  vfs.Callbacks
 	gen uint64
 }
 
-// latestPath is the path a client's latest Connect registered, and its
-// session; zero for a client that names none.
-type latestPath struct {
-	sess entity.SessionRef
-	route
-}
-
-// session is an SMB session's path.
-type session struct {
-	principal entity.Principal
-	route
-}
-
 func newRegistry() *registry {
-	return &registry{byID: map[entity.ClientID]latestPath{}, smb: map[entity.ClientID]map[entity.SessionRef]session{}, nlm: map[string]entity.ClientID{}}
+	return &registry{cb: map[entity.ClientID]registered{}, nlm: map[string]entity.ClientID{}}
 }
 
-// register makes cb client id's latest path and, for a non-zero sess, that
-// session's, signed in as p. A reboot's ended ID has already gone, through
-// ClientEnded. For a non-empty NLM host, it drops the path of the client the
-// host connected as before when that is another: open state deletes an idle
-// host's record without raising ClientEnded, and the host's next Connect
-// makes a new client. It registers nothing for a host already connected as
-// a newer client: IDs only grow, so id is one open state has deleted, and a
+// register makes cb client id's Callbacks. A reboot's ended ID has already gone, through
+// ClientEnded. For a non-empty NLM host, it drops the Callbacks of the client
+// the host connected as before when that is another: open state deletes an
+// idle host's record without raising ClientEnded, and the host's next Connect
+// makes a new client. It registers nothing for a host already connected as a
+// newer client: IDs only grow, so id is one open state has deleted, and a
 // Connect that got it registering late must not displace the live one.
-func (r *registry) register(id entity.ClientID, host string, sess entity.SessionRef, p entity.Principal, cb vfs.Callbacks) {
+func (r *registry) register(id entity.ClientID, host string, cb vfs.Callbacks) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if old, ok := r.nlm[host]; ok && old != id {
 		if old > id {
 			return
 		}
-		delete(r.byID, old)
+		delete(r.cb, old)
 	}
 	if host != "" {
 		r.nlm[host] = id
 	}
 	r.gen++
-	rt := route{cb, r.gen}
-	r.byID[id] = latestPath{sess, rt}
-	if sess == (entity.SessionRef{}) {
-		return
-	}
-	if r.smb[id] == nil {
-		r.smb[id] = map[entity.SessionRef]session{}
-	}
-	r.smb[id][sess] = session{p, rt}
+	r.cb[id] = registered{cb, r.gen}
 }
 
-// dropSession drops session sess's path of client id, and the client's
-// latest path when that session registered it, so nothing goes by a
-// session that has ended: another session of the client still connected
-// then holds the latest path.
-func (r *registry) dropSession(id entity.ClientID, sess entity.SessionRef) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.smb[id], sess)
-	if l, ok := r.byID[id]; ok && l.sess == sess {
-		delete(r.byID, id)
-		for s, p := range r.smb[id] {
-			r.byID[id] = latestPath{s, p.route}
-			break
-		}
-	}
-	if len(r.smb[id]) == 0 {
-		delete(r.smb, id)
-	}
-}
-
-// unregister drops every path of client id.
+// unregister drops client id's Callbacks.
 func (r *registry) unregister(id entity.ClientID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.byID, id)
-	delete(r.smb, id)
+	delete(r.cb, id)
 }
 
-// latest is client id's latest path, or nil.
+// isNLM reports whether client id is the one an NLM host last connected as.
+func (r *registry) isNLM(id entity.ClientID) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, c := range r.nlm {
+		if c == id {
+			return true
+		}
+	}
+	return false
+}
+
+// latest is client id's Callbacks, or nil.
 func (r *registry) latest(id entity.ClientID) vfs.Callbacks {
-	return r.latestRoute(id).cb
-}
-
-// latestRoute is client id's latest path with its registration, or zero.
-func (r *registry) latestRoute(id entity.ClientID) route {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.byID[id].route
+	return r.cb[id].cb
 }
 
-// breakPath is the path a break of a grant covering opens, of client id,
-// goes by: the session holding one of them, else a session of the client
-// signed in as one of their openers, else zero.
-func (r *registry) breakPath(id entity.ClientID, opens []openstate.Open) route {
+// recallRoute is where a recall of a grant covering opens, of client id,
+// goes. With no opens, a delegation, it goes to the client naming no
+// session. Otherwise, a break, it goes to the session holding a connected one
+// of them, or, with every one disconnected, to no session but with their
+// openers, for the adapter to pick one of its sessions signed in as one.
+//
+// ponytail: only this node's adapter is asked to pick, and an open's session
+// is taken to be on this node, so a client signed in as an opener on another
+// node is not reached. Once the filesystem runs in a cluster, route a
+// connected open's break through Peers.Recall to the node its SessionRef
+// names, and fan a disconnected one out through Peers.Recall to every node in
+// the client's Reach.Sessions in parallel. Then mirror the decision that a
+// client signed in as an opener on two nodes may be sent one break on both,
+// its second acknowledgement refused: asked in turn, an unreachable node not
+// yet declared lost would use up the deadline before a live one is asked.
+func (r *registry) recallRoute(id entity.ClientID, opens []openstate.Open) recallRoute {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	sessions := r.smb[id]
+	reg := r.cb[id]
+	if len(opens) == 0 || reg.cb == nil {
+		return recallRoute{cb: reg.cb, gen: reg.gen}
+	}
+	var openers []entity.Principal
 	for _, o := range opens {
-		if s, ok := sessions[o.Session]; ok {
-			return s.route
+		if o.Session != (entity.SessionRef{}) {
+			return recallRoute{cb: reg.cb, gen: reg.gen, sess: o.Session}
+		}
+		if !slices.Contains(openers, o.Principal) {
+			openers = append(openers, o.Principal)
 		}
 	}
-	for _, o := range opens {
-		for _, s := range sessions {
-			if s.principal == o.Principal {
-				return s.route
-			}
-		}
-	}
-	return route{}
+	return recallRoute{cb: reg.cb, gen: reg.gen, openers: openers}
 }

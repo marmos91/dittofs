@@ -61,6 +61,29 @@ func signedIn(p entity.Principal, id uint64) vfs.Call {
 	return c
 }
 
+// disconnect ends session sess of client id's last connection: its durable
+// opens are kept, disconnected.
+func disconnect(t *testing.T, s *shares, id vfs.ClientID, sess uint64) {
+	t.Helper()
+	if _, err := s.Disconnect(t.Context(), vfs.Call{}, id, vfs.SessionRef{ID: sess}, vfs.SessionEnd{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// sentOn waits up to a second for cb to have sent n breaks, and answers
+// the session each went on.
+func sentOn(t *testing.T, cb *vfstest.RecordingCallbacks, n int) []vfs.SessionRef {
+	t.Helper()
+	for range 100 {
+		if got := breakSessions(cb); len(got) >= n {
+			return got
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("sent %d breaks, want %d", len(breakSessions(cb)), n)
+	return nil
+}
+
 // leased opens file for p on session sess of client cl, under lease key k
 // with read and handle caching, durable so a disconnect keeps it, and
 // answers the lease.
@@ -82,10 +105,23 @@ func breaks(cb *vfstest.RecordingCallbacks) []vfs.GrantID {
 	var gs []vfs.GrantID
 	for _, c := range cb.Calls() {
 		if c.Method == "RecallGrant" {
-			gs = append(gs, c.Args[0].(vfs.CachingGrant).ID)
+			gs = append(gs, c.Args[2].(vfs.CachingGrant).ID)
 		}
 	}
 	return gs
+}
+
+// breakSessions is the session each break cb sent went on, in order: the
+// one the filesystem named, or the one cb picked; a break sent nowhere is
+// left out.
+func breakSessions(cb *vfstest.RecordingCallbacks) []vfs.SessionRef {
+	var ss []vfs.SessionRef
+	for _, c := range cb.Calls() {
+		if c.Method == "RecallGrant" && c.Session != (vfs.SessionRef{}) {
+			ss = append(ss, c.Session)
+		}
+	}
+	return ss
 }
 
 func clientInUse(err error) bool {
@@ -99,29 +135,29 @@ func notYours(err error) bool {
 }
 
 // V36: mallory presents alice-pc's ClientGuid and signs in as herself, the
-// latest to connect under it. build01's conflicting open breaks alice's
-// lease: the break reaches alice's session, holding the lease's open, and
-// none of mallory's, and mallory's answer to it is NotYours while alice's is
-// taken.
+// latest to connect under it, registering the client's Callbacks. build01's
+// conflicting open breaks alice's lease: the break names alice's session,
+// holding the lease's open, never mallory's, and mallory's answer to it is
+// NotYours while alice's is taken.
 func TestAnSMBBreakGoesToTheSessionHoldingTheLeasesOpen(t *testing.T) {
 	s := newShares(t, nil, nil)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	mallory := s.user(t, "mallory", "", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 
-	alicePC := &vfstest.RecordingCallbacks{}
-	id, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), alicePC)
+	id, _, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), &vfstest.RecordingCallbacks{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	thief := &vfstest.RecordingCallbacks{}
-	if again, err := s.Connect(ctx, signedIn(mallory.Principal, 2), smb("alice-pc", 1), thief); err != nil || again != id {
+	alicePC := &vfstest.RecordingCallbacks{}
+	if again, _, err := s.Connect(ctx, signedIn(mallory.Principal, 2), smb("alice-pc", 1), alicePC); err != nil || again != id {
 		t.Fatalf("mallory's Connect under alice-pc's ClientGuid answered %v, %v; want alice-pc's %v", again, err, id)
 	}
+	alicePC.SignIn(vfs.SessionRef{ID: 2}, mallory.Principal)
 	file := entity.NewFileID()
 	g := leased(t, s, id, alice.Principal, 1, file, 1)
 
-	build01, err := s.Connect(ctx, signedIn(alice.Principal, 3), smb("build01", 1), &vfstest.RecordingCallbacks{})
+	build01, _, err := s.Connect(ctx, signedIn(alice.Principal, 3), smb("build01", 1), &vfstest.RecordingCallbacks{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,9 +168,11 @@ func TestAnSMBBreakGoesToTheSessionHoldingTheLeasesOpen(t *testing.T) {
 	}
 	calls(t, alicePC, 1)
 	if got := breaks(alicePC); len(got) != 1 || got[0] != g.ID {
-		t.Errorf("alice's session saw breaks %v, want the one of her lease", got)
+		t.Errorf("alice-pc saw breaks %v, want the one of her lease", got)
 	}
-	none(t, "mallory", thief)
+	if got := breakSessions(alicePC); len(got) != 1 || got[0] != (vfs.SessionRef{ID: 1}) {
+		t.Errorf("the break went to sessions %v, want alice's, 1", got)
+	}
 
 	asMallory, asAlice := signedIn(mallory.Principal, 2), signedIn(alice.Principal, 1)
 	asMallory.Client, asAlice.Client = id, id
@@ -152,105 +190,134 @@ func TestABreakPrefersTheSessionHoldingTheOpen(t *testing.T) {
 	s := newShares(t, nil, nil)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
-	holding, other := &vfstest.RecordingCallbacks{}, &vfstest.RecordingCallbacks{}
-	id, err := s.Connect(ctx, signedIn(alice.Principal, 2), smb("alice-pc", 1), other)
+	pc := &vfstest.RecordingCallbacks{}
+	id, _, err := s.Connect(ctx, signedIn(alice.Principal, 2), smb("alice-pc", 1), pc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), holding); err != nil {
-		t.Fatal(err)
-	}
+	pc.SignIn(vfs.SessionRef{ID: 2}, alice.Principal)
+	pc.SignIn(vfs.SessionRef{ID: 1}, alice.Principal)
 	g := leased(t, s, id, alice.Principal, 1, entity.NewFileID(), 1)
 	for range 10 {
 		s.RecallGrant(g)
 	}
-	calls(t, holding, 10)
-	none(t, "alice's session holding no open of the lease", other)
+	calls(t, pc, 10)
+	for _, sess := range breakSessions(pc) {
+		if sess != (vfs.SessionRef{ID: 1}) {
+			t.Errorf("a break went to session %v, want the one holding the open, 1", sess)
+		}
+	}
 }
 
-// A session's disconnect ends the client's latest path when that session
-// registered it: a callback raised after goes nowhere.
-func TestADisconnectEndsTheLatestPathItRegistered(t *testing.T) {
+// The Disconnect of the node's last session of an SMB client still holding
+// a disconnected durable open keeps the client and its Callbacks; one
+// holding nothing is released in open state, and its Callbacks go with it.
+func TestLastDisconnectDropsOnlyAReleasedClientsCallbacks(t *testing.T) {
 	s := newShares(t, nil, nil)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
-	ctx := t.Context()
-	cb := &vfstest.RecordingCallbacks{}
-	id, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), cb)
+	ctx, as := t.Context(), signedIn(alice.Principal, 1)
+	pc := &vfstest.RecordingCallbacks{}
+	id, gen, err := s.Connect(ctx, as, smb("alice-pc", 1), pc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Disconnect(ctx, signedIn(alice.Principal, 1), id, vfs.SessionRef{ID: 1}); err != nil {
+	leased(t, s, id, alice.Principal, 1, entity.NewFileID(), 1)
+	if _, err := s.Disconnect(ctx, as, id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true, Gen: gen}); err != nil {
 		t.Fatal(err)
 	}
 	s.RecallAny(id, 0)
-	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, false)
-	none(t, "the disconnected session", cb)
-}
+	if got := calls(t, pc, 1); got[0].Method != "RecallAny" {
+		t.Errorf("a client holding a durable open saw %v after its last Disconnect, want RecallAny", got)
+	}
 
-// When the session that registered the client's latest path ends, another
-// session of the client still connected takes it: alice and bob share a PC,
-// bob, the latest, logs off, and alice's session receives every callback
-// that goes by the latest path. Her logoff then leaves the client no path.
-func TestADisconnectHandsTheLatestPathToALiveSession(t *testing.T) {
-	s := newShares(t, nil, nil)
-	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
-	bob := s.user(t, "bob", "", s.share, entity.AccessReadWrite)
-	ctx := t.Context()
-	alicePC, bobPC := &vfstest.RecordingCallbacks{}, &vfstest.RecordingCallbacks{}
-	id, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("shared-pc", 1), alicePC)
+	idle, gen, err := s.Connect(ctx, as, smb("idle-pc", 1), &vfstest.RecordingCallbacks{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Connect(ctx, signedIn(bob.Principal, 2), smb("shared-pc", 1), bobPC); err != nil {
+	if _, err := s.Disconnect(ctx, as, idle, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true, Gen: gen}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Disconnect(ctx, signedIn(bob.Principal, 2), id, vfs.SessionRef{ID: 2}); err != nil {
-		t.Fatal(err)
+	if _, err := s.Record(ctx, as, idle); !stateKind(err, vfs.StateStaleClient) {
+		t.Errorf("an idle client after its last Disconnect: %v, want StaleClient", err)
 	}
-	s.RecallAny(id, 0)
-	s.Revoked(openstate.Revocation{Client: id, Reason: vfs.RevokedByAdmin})
-	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, false)
-	got := map[string]bool{}
-	for _, c := range calls(t, alicePC, 3) {
-		got[c.Method] = true
+	if _, ok := s.reg.cb[idle]; ok {
+		t.Error("a released client keeps its Callbacks")
 	}
-	if !got["RecallAny"] || !got["Revoked"] || !got["LockWaitOver"] {
-		t.Errorf("alice's session saw %v, want RecallAny, Revoked and LockWaitOver", alicePC.Calls())
-	}
-	none(t, "bob's ended session", bobPC)
 
-	if err := s.Disconnect(ctx, signedIn(alice.Principal, 1), id, vfs.SessionRef{ID: 1}); err != nil {
+	// A logoff closes the session's durable open in the same call, so the
+	// client is left holding nothing and is released.
+	off, gen, err := s.Connect(ctx, as, smb("off-pc", 1), &vfstest.RecordingCallbacks{})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if n := len(s.reg.byID) + len(s.reg.smb); n != 0 {
-		t.Errorf("a client with no session left holds %d paths", n)
+	leased(t, s, off, alice.Principal, 1, entity.NewFileID(), 2)
+	if _, err := s.Disconnect(ctx, as, off, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Logoff: true, Last: true, Gen: gen}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Record(ctx, as, off); !stateKind(err, vfs.StateStaleClient) {
+		t.Errorf("a client whose durable open's session logged off: %v, want it released, StaleClient", err)
 	}
 }
 
-// A disconnect of a session that did not register the latest path leaves
-// it: each of five of alice's earlier sessions ends, and the latest still
-// receives the client's callbacks.
-func TestADisconnectKeepsTheLatestPathItDidNotRegister(t *testing.T) {
+// A last Disconnect at a Gen a second Connect raised answers that newer Gen
+// and keeps the client, its Callbacks included; one at that Gen answers zero
+// and releases it.
+func TestALastDisconnectAtAStaleGenAnswersTheNewer(t *testing.T) {
 	s := newShares(t, nil, nil)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
-	ctx := t.Context()
-	var id vfs.ClientID
-	for sess := range uint64(10) {
-		var err error
-		if id, err = s.Connect(ctx, signedIn(alice.Principal, sess+1), smb("alice-pc", 1), &vfstest.RecordingCallbacks{}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	latest := &vfstest.RecordingCallbacks{}
-	if _, err := s.Connect(ctx, signedIn(alice.Principal, 11), smb("alice-pc", 1), latest); err != nil {
+	ctx, as := t.Context(), signedIn(alice.Principal, 1)
+	id, first, err := s.Connect(ctx, as, smb("alice-pc", 1), &vfstest.RecordingCallbacks{})
+	if err != nil {
 		t.Fatal(err)
 	}
-	for sess := range uint64(5) {
-		if err := s.Disconnect(ctx, signedIn(alice.Principal, sess+1), id, vfs.SessionRef{ID: sess + 1}); err != nil {
-			t.Fatal(err)
-		}
-		s.RecallAny(id, 0)
-		calls(t, latest, int(sess)+1)
+	_, second, err := s.Connect(ctx, signedIn(alice.Principal, 2), smb("alice-pc", 1), &vfstest.RecordingCallbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gen, err := s.Disconnect(ctx, as, id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true, Gen: first}); err != nil || gen != second {
+		t.Fatalf("a last Disconnect at the stale Gen %d: Gen %d, %v; want %d", first, gen, err, second)
+	}
+	if _, ok := s.reg.cb[id]; !ok {
+		t.Error("a client still listed lost its Callbacks")
+	}
+	if gen, err := s.Disconnect(ctx, as, id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true, Gen: second}); err != nil || gen != 0 {
+		t.Fatalf("a last Disconnect at the current Gen: Gen %d, %v; want zero", gen, err)
+	}
+	if _, ok := s.reg.cb[id]; ok {
+		t.Error("a released client keeps its Callbacks")
+	}
+}
+
+// A re-list's Connect landing after the last session's Disconnect removed
+// the node's entry lists it again at a Gen above the removed one; the
+// adapter, holding no session on that Connect's return, sends Disconnect
+// with Last and that Gen, which unlists the node.
+func TestARelistAfterTheLastDisconnectIsUnlistedByItsOwnGen(t *testing.T) {
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	ctx, as := t.Context(), signedIn(alice.Principal, 1)
+	id, first, err := s.Connect(ctx, as, smb("alice-pc", 1), &vfstest.RecordingCallbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A durable open keeps the record once the node is unlisted, so the
+	// re-list finds it.
+	leased(t, s, id, alice.Principal, 1, entity.NewFileID(), 1)
+	if gen, err := s.Disconnect(ctx, as, id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true, Gen: first}); err != nil || gen != 0 {
+		t.Fatalf("the last Disconnect: Gen %d, %v; want zero", gen, err)
+	}
+	again, gen, err := s.Connect(ctx, as, smb("alice-pc", 1), &vfstest.RecordingCallbacks{})
+	if err != nil || again != id || gen <= first {
+		t.Fatalf("the re-list: client %d Gen %d, %v; want client %d at a Gen above %d", again, gen, err, id, first)
+	}
+	if rec, err := s.Record(ctx, as, id); err != nil || len(rec.Reach.Sessions) != 1 {
+		t.Fatalf("after the re-list: sessions %v, %v; want this node listed", rec.Reach.Sessions, err)
+	}
+	if left, err := s.Disconnect(ctx, as, id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true, Gen: gen}); err != nil || left != 0 {
+		t.Fatalf("the Disconnect at the re-list's Gen: Gen %d, %v; want zero", left, err)
+	}
+	if rec, err := s.Record(ctx, as, id); err != nil || len(rec.Reach.Sessions) != 0 {
+		t.Errorf("after the Disconnect at the re-list's Gen: sessions %v, %v; want the node unlisted", rec.Reach.Sessions, err)
 	}
 }
 
@@ -267,7 +334,7 @@ func TestADestroyedClientsPathIsDropped(t *testing.T) {
 	}
 	info.Proposal = &p
 	cb := &vfstest.RecordingCallbacks{}
-	id, err := s.Connect(ctx, claimed(1000, inLab), info, cb)
+	id, _, err := s.Connect(ctx, claimed(1000, inLab), info, cb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,63 +345,102 @@ func TestADestroyedClientsPathIsDropped(t *testing.T) {
 	none(t, "the destroyed client", cb)
 }
 
-// With every open of the lease disconnected, its break goes only to a
-// session of the client signed in as an opener; with none, it goes nowhere,
-// not to the client's latest session.
+// With every open of the lease disconnected, its break names no session but
+// the openers' principals, and the adapter sends it on one of its sessions
+// of the client signed in as an opener, not on another principal's.
 func TestAnSMBBreakOfDisconnectedOpensGoesOnlyToAnOpenersSession(t *testing.T) {
 	s := newShares(t, nil, nil)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	mallory := s.user(t, "mallory", "", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 
-	first, second, thief := &vfstest.RecordingCallbacks{}, &vfstest.RecordingCallbacks{}, &vfstest.RecordingCallbacks{}
-	id, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), first)
+	pc := &vfstest.RecordingCallbacks{}
+	id, _, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), pc)
 	if err != nil {
 		t.Fatal(err)
 	}
 	g := leased(t, s, id, alice.Principal, 1, entity.NewFileID(), 1)
-	if _, err := s.Connect(ctx, signedIn(alice.Principal, 2), smb("alice-pc", 1), second); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Connect(ctx, signedIn(mallory.Principal, 3), smb("alice-pc", 1), thief); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Disconnect(ctx, signedIn(alice.Principal, 1), id, vfs.SessionRef{ID: 1}); err != nil {
-		t.Fatal(err)
-	}
+	pc.SignIn(vfs.SessionRef{ID: 2}, mallory.Principal)
+	pc.SignIn(vfs.SessionRef{ID: 3}, alice.Principal)
+	disconnect(t, s, id, 1)
 	s.RecallGrant(g)
-	calls(t, second, 1)
-	none(t, "the disconnected session", first)
-	none(t, "mallory", thief)
-
-	if err := s.Disconnect(ctx, signedIn(alice.Principal, 2), id, vfs.SessionRef{ID: 2}); err != nil {
-		t.Fatal(err)
+	got := calls(t, pc, 1)
+	if got[0].Args[0] != (vfs.SessionRef{}) || !reflect.DeepEqual(got[0].Args[1], []vfs.Principal{alice.Principal}) {
+		t.Errorf("the break named session %v and openers %v, want none and alice", got[0].Args[0], got[0].Args[1])
 	}
-	s.RecallGrant(g)
-	time.Sleep(50 * time.Millisecond)
-	if n := len(second.Calls()); n != 1 {
-		t.Errorf("alice's ended session saw %d breaks, want only the first", n)
+	if got[0].Session != (vfs.SessionRef{ID: 3}) {
+		t.Errorf("the break went on session %v, want alice's, 3", got[0].Session)
 	}
-	none(t, "mallory, with no opener's session left", thief)
 }
 
-// A null or guest session, or a call naming no session, never joins an SMB
-// client: its Connect is ErrInvalid and registers no path.
-func TestAGuestOrNullSessionNeverJoinsAClient(t *testing.T) {
+// A session re-authenticated as guest is no longer one a disconnected
+// open's break goes to: the adapter's table says what it is signed in as
+// now, and with no other session of the opener the break is sent nowhere.
+func TestABreakSkipsASessionReauthenticatedAsGuest(t *testing.T) {
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	pc := &vfstest.RecordingCallbacks{}
+	id, _, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := leased(t, s, id, alice.Principal, 1, entity.NewFileID(), 1)
+	pc.SignIn(vfs.SessionRef{ID: 2}, alice.Principal)
+	disconnect(t, s, id, 1)
+	pc.SignIn(vfs.SessionRef{ID: 2}, vfs.Principal{})
+	s.RecallGrant(g)
+	calls(t, pc, 1)
+	time.Sleep(50 * time.Millisecond)
+	if got := breakSessions(pc); len(got) != 0 {
+		t.Errorf("the break went on sessions %v, want none", got)
+	}
+}
+
+// A break whose send to the session holding the open fails, as that
+// session ended meanwhile, is sent again once the open is disconnected, on
+// the session the adapter then picks, through the same Callbacks.
+func TestAFailedBreakGoesToTheNextSession(t *testing.T) {
+	fastRetry(t)
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	pc := &vfstest.RecordingCallbacks{Answer: func(_ context.Context, c vfstest.Callback) error {
+		if c.Args[0] == (vfs.SessionRef{ID: 1}) {
+			return errors.New("session gone")
+		}
+		return nil
+	}}
+	id, _, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc.SignIn(vfs.SessionRef{ID: 2}, alice.Principal)
+	g := leased(t, s, id, alice.Principal, 1, entity.NewFileID(), 1)
+	s.RecallGrant(g)
+	calls(t, pc, 1)
+	disconnect(t, s, id, 1)
+	sentOn(t, pc, 2)
+	if got := breakSessions(pc); len(got) != 2 || got[0] != (vfs.SessionRef{ID: 1}) || got[1] != (vfs.SessionRef{ID: 2}) {
+		t.Errorf("the break went to sessions %v, want 1, then 2 once 1 ended", got)
+	}
+}
+
+// A null or guest session never connects an SMB client: its Connect is
+// ErrInvalid and registers no path.
+func TestAGuestOrNullSessionNeverConnectsAClient(t *testing.T) {
 	s := newShares(t, nil, nil)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	guest := signedIn(entity.Principal{}, 1)
 	guest.Identity = vfs.Identity{Proof: vfs.ProofNone, Client: inLab}
 	cb := &vfstest.RecordingCallbacks{}
-	for name, c := range map[string]vfs.Call{"guest": guest, "sessionless": proven(alice.Principal, inLab)} {
-		if _, err := s.Connect(t.Context(), c, smb("alice-pc", 1), cb); !errors.Is(err, vfs.ErrInvalid) {
-			t.Errorf("a %s Connect answered %v, want ErrInvalid", name, err)
-		}
+	if _, _, err := s.Connect(t.Context(), guest, smb("alice-pc", 1), cb); !errors.Is(err, vfs.ErrInvalid) {
+		t.Errorf("a guest Connect answered %v, want ErrInvalid", err)
 	}
-	if _, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), nil); !errors.Is(err, vfs.ErrInvalid) {
+	if _, _, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), nil); !errors.Is(err, vfs.ErrInvalid) {
 		t.Errorf("a Connect with no callbacks answered %v, want ErrInvalid", err)
 	}
-	if n := len(s.reg.byID) + len(s.reg.smb); n != 0 {
+	if n := len(s.reg.cb); n != 0 {
 		t.Errorf("refused Connects registered %d paths", n)
 	}
 }
@@ -346,7 +452,7 @@ func TestAConnectWithNoRecoveryKindIsRefused(t *testing.T) {
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	info := smb("alice-pc", 1)
 	info.Recovery = 0
-	if _, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), info, &vfstest.RecordingCallbacks{}); !errors.Is(err, vfs.ErrInvalid) {
+	if _, _, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), info, &vfstest.RecordingCallbacks{}); !errors.Is(err, vfs.ErrInvalid) {
 		t.Errorf("a Connect with no recovery kind answered %v, want ErrInvalid", err)
 	}
 }
@@ -363,7 +469,7 @@ func TestADelegationsRecallGoesByItsClientsPath(t *testing.T) {
 	}
 	info.Proposal = &p
 	cb := &vfstest.RecordingCallbacks{}
-	id, err := s.Connect(ctx, claimed(1000, inLab), info, cb)
+	id, _, err := s.Connect(ctx, claimed(1000, inLab), info, cb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +495,7 @@ func laptop(t *testing.T, s *shares, cb vfs.Callbacks) vfs.ClientID {
 		t.Fatal(err)
 	}
 	info.Proposal = &p
-	id, err := s.Connect(t.Context(), claimed(1000, inLab), info, cb)
+	id, _, err := s.Connect(t.Context(), claimed(1000, inLab), info, cb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,6 +541,30 @@ func TestAFailedRecallGoesThroughTheClientsNextPath(t *testing.T) {
 	}
 }
 
+// nowhere is Callbacks whose adapter sends every recall nowhere, finding
+// no session to send it on.
+type nowhere struct{ *vfstest.RecordingCallbacks }
+
+func (n nowhere) RecallGrant(ctx context.Context, s vfs.SessionRef, openers []vfs.Principal, g vfs.CachingGrant, to vfs.GrantKind) (bool, error) {
+	_, err := n.RecordingCallbacks.RecallGrant(ctx, s, openers, g, to)
+	return false, err
+}
+
+// A recall sent nowhere at first is counted once, however often it is
+// asked again.
+func TestARecallSentNowhereAtFirstIsCountedOnce(t *testing.T) {
+	fastRetry(t)
+	s := newShares(t, nil, nil)
+	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	cb := &vfstest.RecordingCallbacks{}
+	id := laptop(t, s, nowhere{cb})
+	s.RecallGrant(delegate(t, s, id))
+	calls(t, cb, 3)
+	if n := testutil.ToFloat64(s.callbackErrors.WithLabelValues("RecallGrant")); n != 1 {
+		t.Errorf("vfs_callback_errors_total{kind=RecallGrant} is %v, want 1", n)
+	}
+}
+
 // valueCallbacks is Callbacks of a type that is not comparable, as an
 // adapter's value type holding a func or a map is.
 type valueCallbacks struct {
@@ -470,6 +600,23 @@ func TestACallbackWithNoPathIsCounted(t *testing.T) {
 	}
 }
 
+// A callback the client fails to answer is counted.
+func TestAFailedCallbackIsCounted(t *testing.T) {
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	cb := &vfstest.RecordingCallbacks{Answer: func(context.Context, vfstest.Callback) error { return errors.New("connection reset") }}
+	id, _, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.RecallAny(id, 0)
+	calls(t, cb, 1)
+	time.Sleep(20 * time.Millisecond)
+	if n := testutil.ToFloat64(s.callbackErrors.WithLabelValues("RecallAny")); n != 1 {
+		t.Errorf("vfs_callback_errors_total{kind=RecallAny} is %v, want 1", n)
+	}
+}
+
 // A client that rebooted is told its old ID ended, through the path it
 // registered, and that path no longer receives the old ID's events.
 func TestARebootTellsTheEndedClientAndDropsItsPath(t *testing.T) {
@@ -478,12 +625,12 @@ func TestARebootTellsTheEndedClientAndDropsItsPath(t *testing.T) {
 	ctx := t.Context()
 
 	old := &vfstest.RecordingCallbacks{}
-	oldID, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), old)
+	oldID, _, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), old)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fresh := &vfstest.RecordingCallbacks{}
-	newID, err := s.Connect(ctx, signedIn(alice.Principal, 2), smb("alice-pc", 2), fresh)
+	newID, _, err := s.Connect(ctx, signedIn(alice.Principal, 2), smb("alice-pc", 2), fresh)
 	if err != nil || newID == oldID {
 		t.Fatalf("the reboot's Connect answered %v, %v", newID, err)
 	}
@@ -512,7 +659,7 @@ func TestALeaseExpiryTellsTheClientAndDropsItsPath(t *testing.T) {
 	}
 	info.Proposal = &p
 	cb := &vfstest.RecordingCallbacks{}
-	id, err := s.Connect(ctx, claimed(1000, inLab), info, cb)
+	id, _, err := s.Connect(ctx, claimed(1000, inLab), info, cb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -538,7 +685,7 @@ func TestARevokeReachesTheClient(t *testing.T) {
 	s := newShares(t, nil, nil)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	cb := &vfstest.RecordingCallbacks{}
-	id, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), cb)
+	id, _, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), cb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -565,7 +712,7 @@ func TestAnNFSv4ClientIsOwnedByItsMappedPrincipal(t *testing.T) {
 		t.Fatal(err)
 	}
 	info.Proposal = &p
-	id, err := s.Connect(ctx, claimed(1000, inLab), info, &vfstest.RecordingCallbacks{})
+	id, _, err := s.Connect(ctx, claimed(1000, inLab), info, &vfstest.RecordingCallbacks{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -596,7 +743,7 @@ func TestAClientsAdapterBytesComeBackFromItsRecord(t *testing.T) {
 			t.Fatal(err)
 		}
 		info.Proposal = &p
-		id, err := s.Connect(ctx, claimed(1000, inLab), info, &vfstest.RecordingCallbacks{})
+		id, _, err := s.Connect(ctx, claimed(1000, inLab), info, &vfstest.RecordingCallbacks{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -642,7 +789,7 @@ func TestAClientRecordKeepsItsRecoveryKind(t *testing.T) {
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	old := &vfstest.RecordingCallbacks{}
-	id, err := s.Connect(ctx, claimed(1000, inLab), nlmHost("build01", 1), old)
+	id, _, err := s.Connect(ctx, claimed(1000, inLab), nlmHost("build01", 1), old)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -650,13 +797,13 @@ func TestAClientRecordKeepsItsRecoveryKind(t *testing.T) {
 		t.Fatalf("the host's record answered recovery %v, %v; want the notice", rec.Recovery, err)
 	}
 	lockAndUnlock(t, s, id)
-	again, err := s.Connect(ctx, claimed(1000, inLab), nlmHost("build01", 1), &vfstest.RecordingCallbacks{})
+	again, _, err := s.Connect(ctx, claimed(1000, inLab), nlmHost("build01", 1), &vfstest.RecordingCallbacks{})
 	if err != nil || again == id {
 		t.Fatalf("the idle host's next Connect answered %v, %v; want a new client", again, err)
 	}
 	s.RecallAny(id, 0)
 	none(t, "the idle host's ended client", old)
-	if _, ok := s.reg.byID[id]; ok {
+	if _, ok := s.reg.cb[id]; ok {
 		t.Error("the idle host's ended client keeps its path")
 	}
 }
@@ -667,8 +814,8 @@ func TestAClientRecordKeepsItsRecoveryKind(t *testing.T) {
 func TestAnNLMHostsLateRegisterKeepsItsNewerClient(t *testing.T) {
 	r := newRegistry()
 	live, stale := &vfstest.RecordingCallbacks{}, &vfstest.RecordingCallbacks{}
-	r.register(2, "build01", entity.SessionRef{}, entity.Principal{}, live)
-	r.register(1, "build01", entity.SessionRef{}, entity.Principal{}, stale)
+	r.register(2, "build01", live)
+	r.register(1, "build01", stale)
 	if r.latest(2) != live || r.nlm["build01"] != 2 {
 		t.Errorf("after a late register of the dropped client, the host maps to %v and its new client's path is %v", r.nlm["build01"], r.latest(2))
 	}
@@ -684,7 +831,7 @@ func TestAHostRestartConnectsItWithTheNotice(t *testing.T) {
 	}
 	info := nlmHost("build01", 2)
 	info.Recovery = entity.RecoverStatus
-	id, err := s.Connect(ctx, claimed(1000, inLab), info, &vfstest.RecordingCallbacks{})
+	id, _, err := s.Connect(ctx, claimed(1000, inLab), info, &vfstest.RecordingCallbacks{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -698,10 +845,10 @@ func TestNoPathWithoutAnAdmittedConnect(t *testing.T) {
 	s := newShares(t, nil, nil)
 	mallory := s.user(t, "mallory", "", s.share, entity.AccessReadWrite)
 	cb := &vfstest.RecordingCallbacks{}
-	if _, err := s.Connect(t.Context(), signedIn(mallory.Principal, 1), vfs.ClientInfo{Protocol: entity.ProtocolSMB, Recovery: entity.RecoverReconnect}, cb); !errors.Is(err, vfs.ErrInvalid) {
+	if _, _, err := s.Connect(t.Context(), signedIn(mallory.Principal, 1), vfs.ClientInfo{Protocol: entity.ProtocolSMB, Recovery: entity.RecoverReconnect}, cb); !errors.Is(err, vfs.ErrInvalid) {
 		t.Fatalf("a Connect naming no client answered %v, want ErrInvalid", err)
 	}
-	if n := len(s.reg.byID) + len(s.reg.smb); n != 0 {
+	if n := len(s.reg.cb); n != 0 {
 		t.Errorf("a refused Connect registered %d paths", n)
 	}
 }
@@ -720,7 +867,7 @@ func TestALockGrantUnansweredIsSentAgain(t *testing.T) {
 		}
 		return nil
 	}}
-	id, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), cb)
+	id, _, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), cb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -731,6 +878,10 @@ func TestALockGrantUnansweredIsSentAgain(t *testing.T) {
 	if n := len(cb.Calls()); n != 3 {
 		t.Errorf("a grant unanswered twice, then answered, was sent %d times, want 3", n)
 	}
+	lockErrs := s.callbackErrors.WithLabelValues("LockWaitOver")
+	if n := testutil.ToFloat64(lockErrs); n != 2 {
+		t.Errorf("vfs_callback_errors_total{kind=LockWaitOver} is %v after two unanswered sends, want 2", n)
+	}
 
 	silent.Store(1)
 	s.LockWaitOver(w, false)
@@ -738,6 +889,9 @@ func TestALockGrantUnansweredIsSentAgain(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if n := len(cb.Calls()); n != 4 {
 		t.Errorf("an ungranted wait's end was sent %d times, want once", n-3)
+	}
+	if n := testutil.ToFloat64(lockErrs); n != 3 {
+		t.Errorf("vfs_callback_errors_total{kind=LockWaitOver} is %v after an unanswered wait's end, want 3", n)
 	}
 }
 
@@ -762,7 +916,7 @@ func TestStopEndsTheCallbacksBeingDelivered(t *testing.T) {
 		returned.Store(true)
 		return ctx.Err()
 	}}
-	id, err := f.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), cb)
+	id, _, err := f.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), cb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -849,7 +1003,11 @@ func TestEachClientCallReachesOpenState(t *testing.T) {
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx, c, gone := t.Context(), claimed(1000, inLab), vfs.ClientID(999)
 	for name, err := range map[string]error{
-		"AddSession":       func() error { _, err := s.AddSession(ctx, c, gone, nil, nil); return err }(),
+		"AddSession": func() error { _, err := s.AddSession(ctx, c, gone, nil, nil); return err }(),
+		"Disconnect": func() error {
+			_, err := s.Disconnect(ctx, c, gone, vfs.SessionRef{}, vfs.SessionEnd{Last: true})
+			return err
+		}(),
 		"Renew":            func() error { _, err := s.Renew(ctx, c, gone); return err }(),
 		"ReclaimComplete":  s.ReclaimComplete(ctx, c, gone, nil),
 		"ReleaseLockOwner": s.ReleaseLockOwner(ctx, c, gone, vfs.LockOwner{Client: gone, Name: []byte("pid 1")}),
@@ -871,7 +1029,7 @@ func TestAHostRestartEndsItsOldClient(t *testing.T) {
 	s := newShares(t, nil, nil)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	cb := &vfstest.RecordingCallbacks{}
-	id, err := s.Connect(t.Context(), claimed(1000, inLab), nlmHost("build01", 1), cb)
+	id, _, err := s.Connect(t.Context(), claimed(1000, inLab), nlmHost("build01", 1), cb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -890,30 +1048,37 @@ func TestADisabledUserConnectsNoClient(t *testing.T) {
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	alice.Disabled = true
 	s.must(t, s.cp.PutUser(t.Context(), alice))
-	if _, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), &vfstest.RecordingCallbacks{}); !errors.Is(err, vfs.ErrAccess) {
+	if _, _, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), &vfstest.RecordingCallbacks{}); !errors.Is(err, vfs.ErrAccess) {
 		t.Errorf("a disabled user's Connect answered %v, want ErrAccess", err)
 	}
-	if n := len(s.reg.byID) + len(s.reg.smb); n != 0 {
+	if n := len(s.reg.cb); n != 0 {
 		t.Errorf("a disabled user's Connect registered %d paths", n)
 	}
 }
 
 // The latest Connect's path is the client's: a callback raised after goes
-// there, carrying what open state raised, and not to an earlier path.
+// there, carrying what open state raised, and not to an earlier path: a
+// break goes through the latest path to the session holding its open.
 func TestTheLatestConnectsPathTakesTheClientsCallbacks(t *testing.T) {
 	s := newShares(t, nil, nil)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	first, latest := &vfstest.RecordingCallbacks{}, &vfstest.RecordingCallbacks{}
-	id, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), first)
+	id, _, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), first)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Connect(t.Context(), signedIn(alice.Principal, 2), smb("alice-pc", 1), latest); err != nil {
+	if _, _, err := s.Connect(t.Context(), signedIn(alice.Principal, 2), smb("alice-pc", 1), latest); err != nil {
 		t.Fatal(err)
 	}
 	s.RecallAny(id, 3)
 	if got := calls(t, latest, 1); got[0].Method != "RecallAny" || got[0].Args[0] != 3 {
 		t.Errorf("the latest path saw %v, want RecallAny keeping 3", got)
+	}
+
+	s.RecallGrant(leased(t, s, id, alice.Principal, 3, entity.NewFileID(), 1))
+	calls(t, latest, 2)
+	if got := breakSessions(latest); len(got) != 1 || got[0] != (vfs.SessionRef{ID: 3}) {
+		t.Errorf("the break went to sessions %v, want 3", got)
 	}
 	none(t, "the first path", first)
 }
@@ -931,8 +1096,8 @@ func TestADelegationsRecall(t *testing.T) {
 	recalled := g
 	recalled.Recall = &openstate.Recall{To: openstate.GrantRead}
 	s.RecallGrant(recalled)
-	if got := calls(t, cb, 1); got[0].Args[1] != openstate.GrantRead {
-		t.Errorf("the recall saw %v, want it to read caching", got)
+	if got := calls(t, cb, 1); got[0].Args[0] != (vfs.SessionRef{}) || got[0].Args[3] != openstate.GrantRead {
+		t.Errorf("the recall saw %v, want it to read caching, naming no session", got)
 	}
 	s.RecallGrant(openstate.CachingGrant{ID: openstate.GrantID{}, Client: id})
 	time.Sleep(50 * time.Millisecond)
@@ -940,7 +1105,7 @@ func TestADelegationsRecall(t *testing.T) {
 		t.Errorf("a recall of a grant that is gone reached the client: %v", cb.Calls())
 	}
 
-	build01, err := s.Connect(ctx, signedIn(alice.Principal, 3), smb("build01", 1), &vfstest.RecordingCallbacks{})
+	build01, _, err := s.Connect(ctx, signedIn(alice.Principal, 3), smb("build01", 1), &vfstest.RecordingCallbacks{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -963,7 +1128,7 @@ func TestARefusedLockGrantReleasesTheLock(t *testing.T) {
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	host := func(name string, cb *vfstest.RecordingCallbacks) openstate.Caller {
-		id, err := s.Connect(ctx, claimed(1000, inLab), nlmHost(name, 1), cb)
+		id, _, err := s.Connect(ctx, claimed(1000, inLab), nlmHost(name, 1), cb)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -997,26 +1162,194 @@ func TestARefusedLockGrantReleasesTheLock(t *testing.T) {
 	t.Error("the range b refused stays locked")
 }
 
-// A lock grant goes on being sent only while the client has a path: once
-// its session ends, the grant is sent no more.
+// A lock grant goes on being sent only while the client has Callbacks: once
+// the client ends, the grant is sent no more.
 func TestALockGrantStopsAtThePathsEnd(t *testing.T) {
 	fastRetry(t)
 	s := newShares(t, nil, nil)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	cb := &vfstest.RecordingCallbacks{Answer: func(context.Context, vfstest.Callback) error { return context.DeadlineExceeded }}
-	id, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), cb)
+	id, _, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), cb)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, true)
 	calls(t, cb, 3)
-	if err := s.Disconnect(t.Context(), signedIn(alice.Principal, 1), id, vfs.SessionRef{ID: 1}); err != nil {
-		t.Fatal(err)
-	}
+	s.ClientEnded(id, nil, openstate.RevokedLeaseExpired)
 	time.Sleep(20 * time.Millisecond)
 	n := len(cb.Calls())
 	time.Sleep(50 * time.Millisecond)
 	if m := len(cb.Calls()); m != n {
-		t.Errorf("the grant was sent %d times more after the client's path ended", m-n)
+		t.Errorf("the grant was sent %d times more after the client ended", m-n)
+	}
+}
+
+// A break that finds no session to go on is asked again: alice's only
+// session ends, her lease's open kept as durable, and a break raised then is
+// sent on the session she signs in on again within its deadline.
+func TestABreakWithNoSessionGoesToTheNextOneSignedIn(t *testing.T) {
+	fastRetry(t)
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	pc := &vfstest.RecordingCallbacks{}
+	id, _, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := leased(t, s, id, alice.Principal, 1, entity.NewFileID(), 1)
+	disconnect(t, s, id, 1)
+	s.RecallGrant(g)
+	calls(t, pc, 1)
+	if got := breakSessions(pc); len(got) != 0 {
+		t.Fatalf("with no session the break went on %v, want none", got)
+	}
+	pc.SignIn(vfs.SessionRef{ID: 2}, alice.Principal)
+	if got := sentOn(t, pc, 1); got[0] != (vfs.SessionRef{ID: 2}) {
+		t.Errorf("the break went on sessions %v, want alice's new one, 2", got)
+	}
+}
+
+// A break whose send failed is sent again through Callbacks of a type that
+// cannot be compared: its routes are told apart without comparing them.
+func TestAFailedBreakThroughIncomparableCallbacksIsSentAgain(t *testing.T) {
+	fastRetry(t)
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	rec := &vfstest.RecordingCallbacks{Answer: func(_ context.Context, c vfstest.Callback) error {
+		if c.Args[0] == (vfs.SessionRef{ID: 1}) {
+			return errors.New("session gone")
+		}
+		return nil
+	}}
+	pc := valueCallbacks{RecordingCallbacks: rec}
+	id, _, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.SignIn(vfs.SessionRef{ID: 2}, alice.Principal)
+	g := leased(t, s, id, alice.Principal, 1, entity.NewFileID(), 1)
+	s.RecallGrant(g)
+	calls(t, rec, 1)
+	time.Sleep(20 * time.Millisecond)
+	disconnect(t, s, id, 1)
+	sentOn(t, rec, 2)
+	if got := breakSessions(rec); len(got) != 2 || got[1] != (vfs.SessionRef{ID: 2}) {
+		t.Errorf("the break went to sessions %v, want 1, then 2", got)
+	}
+}
+
+// An SMB Connect lists this node among the client's sessions, so the client's
+// record is not released while it is listed, under the node's current
+// epoch: another node's last Disconnect leaves it.
+func TestAnSMBConnectListsThisNode(t *testing.T) {
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	ctx, as := t.Context(), signedIn(alice.Principal, 1)
+	id, _, err := s.Connect(ctx, as, smb("alice-pc", 1), &vfstest.RecordingCallbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec, err := s.Record(ctx, as, id); err != nil || len(rec.Reach.Sessions) != 1 || rec.Reach.Sessions[0].Node != (entity.NodeID{}) || rec.Reach.Sessions[0].Epoch == 0 {
+		t.Fatalf("after Connect: sessions %v, %v; want this node's, under its epoch", rec.Reach.Sessions, err)
+	}
+	if _, err := s.tab.Clients().Disconnect(ctx, id, vfs.SessionRef{Node: 1, ID: 1}, vfs.SessionEnd{Last: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Record(ctx, as, id); err != nil {
+		t.Errorf("with this node listed, another's last Disconnect released the record: %v", err)
+	}
+}
+
+// A lock grant the client never answers stops being sent once
+// grantResendFor has passed, and at once when the client's record is
+// released.
+func TestALockGrantStopsBeingSentAtItsDeadlineOrRelease(t *testing.T) {
+	fastRetry(t)
+	d := grantResendFor
+	t.Cleanup(func() { grantResendFor = d })
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite).Principal
+	silent := func(context.Context, vfstest.Callback) error { return context.DeadlineExceeded }
+	stops := func(name string, cb *vfstest.RecordingCallbacks, end func()) {
+		t.Helper()
+		calls(t, cb, 3)
+		end()
+		time.Sleep(20 * time.Millisecond)
+		n := len(cb.Calls())
+		time.Sleep(50 * time.Millisecond)
+		if m := len(cb.Calls()); m != n {
+			t.Errorf("%s: the grant was sent %d times more", name, m-n)
+		}
+	}
+
+	grantResendFor = 20 * time.Millisecond
+	cb := &vfstest.RecordingCallbacks{Answer: silent}
+	id, _, err := s.Connect(t.Context(), signedIn(alice, 1), smb("alice-pc", 1), cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, true)
+	stops("past its deadline", cb, func() { time.Sleep(grantResendFor) })
+
+	grantResendFor = time.Hour
+	cb = &vfstest.RecordingCallbacks{Answer: silent}
+	id, gen, err := s.Connect(t.Context(), signedIn(alice, 2), smb("bob-pc", 1), cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, true)
+	stops("released", cb, func() {
+		if _, err := s.Disconnect(t.Context(), signedIn(alice, 2), id, vfs.SessionRef{ID: 2}, vfs.SessionEnd{Last: true, Gen: gen}); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// An NLM host's grant is never given up for a silence: it is still sent
+// again past grantResendFor.
+func TestAnNLMLockGrantIsResentPastTheBound(t *testing.T) {
+	fastRetry(t)
+	d := grantResendFor
+	t.Cleanup(func() { grantResendFor = d })
+	grantResendFor = 20 * time.Millisecond
+	s := newShares(t, nil, nil)
+	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	cb := &vfstest.RecordingCallbacks{Answer: func(context.Context, vfstest.Callback) error { return context.DeadlineExceeded }}
+	id, _, err := s.Connect(t.Context(), claimed(1000, inLab), nlmHost("build01", 1), cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, true)
+	time.Sleep(grantResendFor + 20*time.Millisecond)
+	n := len(cb.Calls())
+	time.Sleep(50 * time.Millisecond)
+	if m := len(cb.Calls()); m == n {
+		t.Error("an NLM host's grant stopped being sent past grantResendFor")
+	}
+	s.ClientEnded(id, nil, openstate.RevokedLeaseExpired)
+}
+
+// A repeat of a last Disconnect that open state already released answers
+// StaleClient, which the adapter counts as success, and drops the Callbacks
+// a first call that failed before its release check left registered.
+func TestARepeatedLastDisconnectDropsTheCallbacks(t *testing.T) {
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	ctx, as := t.Context(), signedIn(alice.Principal, 1)
+	id, gen, err := s.Connect(ctx, as, smb("idle-pc", 1), &vfstest.RecordingCallbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	end := vfs.SessionEnd{Last: true, Gen: gen}
+	if _, err := s.clients.Disconnect(ctx, id, vfs.SessionRef{ID: 1}, end); err != nil {
+		t.Fatal(err) // released in open state, as a first call that failed after it
+	}
+	if _, err := s.Disconnect(ctx, as, id, vfs.SessionRef{ID: 1}, end); !stateKind(err, vfs.StateStaleClient) {
+		t.Fatalf("the repeated last Disconnect: %v, want StaleClient", err)
+	}
+	if _, ok := s.reg.cb[id]; ok {
+		t.Error("a repeated last Disconnect answering StaleClient kept the client's Callbacks")
 	}
 }

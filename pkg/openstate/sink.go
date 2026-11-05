@@ -98,6 +98,7 @@ type outbox struct {
 	recalls []recallOut
 	full    []entity.ClientID // clients that reached their grant budget
 	notes   []noteOut
+	idle    []entity.ClientID // clients a Timeout close may have left holding nothing
 }
 
 // recallOut is one RecallGrant, and the recall it hands over: gen names it

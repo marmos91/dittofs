@@ -97,7 +97,7 @@ func benchClient(b *testing.B, tab *Table, name string) Caller {
 	if err != nil {
 		b.Fatal(err)
 	}
-	id, err := tab.Clients().Connect(ctx, c, &p)
+	id, _, err := tab.Clients().Connect(ctx, c, &p)
 	if err != nil {
 		b.Fatal(err)
 	}

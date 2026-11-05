@@ -65,20 +65,24 @@ type Table struct {
 	// proposals it answered, the shards it serves and the lifecycle. It is
 	// held only to read or change those maps, never across a store call or
 	// a Sink call, and may be taken under idx, never the other way.
-	cmu     sync.Mutex
-	leases  map[entity.ClientID]time.Duration // the Elapsed reading each client's lease ends at; zero: no lease
-	known   map[entity.ClientID]known         // what the table reads of each client's record, with its lease
-	pending map[nameKey]pending
-	sources map[netip.Prefix]int              // pending proposals per source
-	fenced  map[entity.ClientID]time.Duration // the Elapsed reading until which each client is offered no grant
-	adopted map[entity.ClientID]struct{}      // the clients install made known here, until they come back or hold nothing
-	shards  map[ShardID]*served
-	sink    Sink // nil before Start and after Stop
-	stopped bool
-	stop    func()
+	cmu      sync.Mutex
+	leases   map[entity.ClientID]time.Duration // the Elapsed reading each client's lease ends at; zero: no lease
+	known    map[entity.ClientID]known         // what the table reads of each client's record, with its lease
+	pending  map[nameKey]pending
+	sources  map[netip.Prefix]int              // pending proposals per source
+	fenced   map[entity.ClientID]time.Duration // the Elapsed reading until which each client is offered no grant
+	adopted  map[entity.ClientID]struct{}      // the clients install made known here, until they come back or hold nothing
+	shards   map[ShardID]*served
+	shardUp  chan struct{} // closed, then cleared, as ServeShard installs a shard; nil while no Served waits
+	sink     Sink          // nil before Start and after Stop
+	epoch    uint64        // the node epoch Start raised: a Reach.Sessions entry under an earlier one counts as absent
+	stopped  bool
+	starting bool // set by Start before it raises the epoch, so a second Start changes nothing
+	stop     func()
 
 	order Order          // set by Start, before the timer runs
 	timer sync.WaitGroup // the timer and the steps it starts
+	later sync.WaitGroup // the serving each CloneClose leaves to run after its clone is answered
 }
 
 // capped is a kind of state each client holds a bounded count of here.
@@ -262,7 +266,8 @@ func (t *Table) Recovery() Recovery { return recovery{t} }
 // or a deadline must fire on the instant.
 const sweepEvery = 10 * time.Second
 
-// Start starts the timer and takes the service's Sink and admission lock.
+// Start raises the node epoch, starts the timer and takes the service's Sink
+// and admission lock.
 // Before Start and after Stop every mutating call is ErrStopped, and a table
 // starts once. The timer outlives ctx: only Stop ends it.
 //
@@ -274,15 +279,37 @@ const sweepEvery = 10 * time.Second
 // asked for, which may be never: a record leaked, never state or a name. Arm
 // a lease here for every NFSv4 record this node owns, which needs a store
 // call listing a node's client records, if such records are seen to pile up.
+// An SMB record whose sessions ended with the process that held them leaks
+// the same way: it holds only older-epoch entries and no state, which RFC
+// 14 §2.1 counts as released, but nothing reads it again unless its client
+// connects. Release such records at Start, with that same listing.
 func (t *Table) Start(ctx context.Context, sink Sink, order Order) error {
 	if sink == nil || order == nil {
 		return errors.New("openstate: Start needs a Sink and an Order")
 	}
+	started := func() bool { return t.sink != nil || t.stopped || t.starting }
 	t.cmu.Lock()
-	defer t.cmu.Unlock()
-	if t.sink != nil || t.stopped {
+	if started() {
+		t.cmu.Unlock()
 		return errors.New("openstate: table already started")
 	}
+	t.starting = true // a second Start is refused before it changes the store
+	t.cmu.Unlock()
+	epoch, err := t.d.Records.RaiseNodeEpoch(ctx)
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	if err != nil {
+		t.starting = false
+		return err
+	}
+	// ponytail: the epoch rises only here, at a start, when this node holds
+	// no session: each client's next session lists the node again through
+	// Connect or AddSession, replacing its older-epoch entry. A node epoch
+	// rising under live sessions, at a lease a takeover renewed, is a
+	// cluster's; then list the node again for each client it holds a session
+	// of, Connect for SMB and AddSession with the current Adapter as both
+	// prev and next for NFSv4.1.
+	t.epoch = epoch
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	t.order = order
 	t.timer.Go(func() {
@@ -295,12 +322,13 @@ func (t *Table) Start(ctx context.Context, sink Sink, order Order) error {
 			}
 		}
 	})
-	t.sink, t.stop = sink, func() { cancel(); t.timer.Wait() }
+	t.sink, t.stop = sink, func() { cancel(); t.timer.Wait(); t.later.Wait() }
 	return nil
 }
 
-// Stop stops the timer, and waits for the steps it started. Open state is left as it is, for the next
-// start's grace.
+// Stop stops the timer, and waits for the steps it started and for the
+// serving each CloneClose left to run after its clone is answered. Open state
+// is left as it is, for the next start's grace.
 //
 // decision: Stop waits for the timer, not for calls already past running():
 // such a call still finishes and may raise ClientEnded after Stop returns.

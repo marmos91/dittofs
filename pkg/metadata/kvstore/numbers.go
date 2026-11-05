@@ -66,6 +66,35 @@ const (
 // raises it in its own transaction, never in ranges, so NextID refuses it.
 const idShard = 7
 
+// idNodeEpoch is the node epoch's counter: one, as a single node has one
+// node.
+//
+// ponytail: one installation-wide counter stands in for the node record's
+// epoch, which each node raises with its lease. Move it there when the node
+// record lands.
+const idNodeEpoch = 8
+
+// RaiseNodeEpoch raises the node epoch by one, from zero, in its own
+// transaction, and returns the raised value: every start's is above every
+// earlier start's, so what a start records under it is told from what an
+// earlier process left.
+func (s *Store) RaiseNodeEpoch(ctx context.Context) (epoch uint64, err error) {
+	err = s.kv.Update(ctx, func(tx kv.Txn) error {
+		b, ok, err := get(tx, idKey(idNodeEpoch))
+		if err != nil {
+			return err
+		}
+		if epoch = 0; ok {
+			if epoch, err = decodeCounter(b); err != nil {
+				return err
+			}
+		}
+		epoch++
+		return tx.Set(idKey(idNodeEpoch), encodeCounter(epoch))
+	})
+	return epoch, err
+}
+
 // maxOpenID bounds open IDs below 2^40: with the shard, an open ID fills
 // SMB's 8-byte persistent FileId.
 //

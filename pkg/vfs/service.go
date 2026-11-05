@@ -31,21 +31,55 @@ type Clients interface {
 	// Propose is a two-step client's first call; it changes no state and is
 	// held by the node that answered it.
 	Propose(ctx context.Context, c Call, info ClientInfo) (Proposal, error)
-	// Connect registers info, confirming info.Proposal where set, with cb as its
-	// callback path. Again on another node it moves the path there; for an
-	// NFSv4 client, refused StateError ClientInUse for any principal but the
-	// client's own. An SMB client is connected by each authenticated session,
-	// whatever its principal, as its breaks go by open.
-	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, error)
-	// AddSession records this node's session and writes next as the
+	// Connect registers info, confirming info.Proposal where set, with cb as
+	// the client's one Callbacks, the latest Connect's replacing any earlier.
+	// Again on another node it moves them there; for an NFSv4 client, refused
+	// StateError ClientInUse for any principal but the client's own. An SMB
+	// client is connected once per node, at its first authenticated session
+	// there, whatever its principal, and never by a null or guest one, and
+	// again at each new node epoch while the node holds a session of it:
+	// that lists the node in the record's sessions and answers the entry's
+	// Gen, which the last session's Disconnect passes back; any other
+	// client's is zero. Each time it answers a Gen, a re-list's included,
+	// the adapter decides again under its per-client step, and if the node
+	// then holds no session of the client, its last having ended or the
+	// setup's connection having dropped while the call ran, it sends
+	// Disconnect with Last and that Gen itself.
+	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, uint64, error)
+	// AddSession records this node's session, listing the node in the
+	// record's sessions with its entry's Gen raised, and writes next as the
 	// record's adapter bytes if they still equal prev; otherwise it writes
 	// nothing and answers StateError RecordChanged with the current record.
+	// On its success the adapter reads its node's entry's Gen from the
+	// record answered and decides again, as after Connect: if the node then
+	// holds no session of the client, it sends Disconnect with Last and that
+	// Gen.
 	AddSession(ctx context.Context, c Call, cl ClientID, prev, next []byte) (ClientRecord, error)
 	// Record is the record as written, its adapter bytes included.
 	Record(ctx context.Context, c Call, cl ClientID) (ClientRecord, error)
 	Renew(ctx context.Context, c Call, cl ClientID) (ClientStatus, error)
-	// Disconnect is the end of an SMB session's last channel.
-	Disconnect(ctx context.Context, c Call, cl ClientID, s SessionRef) error
+	// Disconnect ends one session of client cl as end says: SMB LOGOFF or
+	// a failed re-authentication's teardown with Logoff, closing every open
+	// of the session; the end of its last channel without, keeping its
+	// durable opens for their Timeout; NFSv4.1 DESTROY_SESSION, whose
+	// session names no open, with Last only. Its closes run as a Close's do:
+	// locks released, waiters served, delete-on-close and orphaned content
+	// released. Last marks this node's last session of cl: once the closes
+	// have run, it removes the node from the record's sessions in the same
+	// call if the entry's Gen is still end.Gen, so a Destroy is no longer
+	// refused for it. A listing since keeps the node listed, and Disconnect
+	// answers that entry's newer Gen; it answers zero once the entry is
+	// gone, and StateError StaleClient once the record is released.
+	//
+	// The adapter decides first and last under a per-client step of its own,
+	// held only around that decision and never across this call or Connect.
+	// On a non-zero Gen it stores that Gen and decides again under its step,
+	// repeating the Disconnect with it if the node still holds no session of
+	// the client, and stopping otherwise. An error leaves the node listed:
+	// the adapter repeats the call until it succeeds, and a repeat finds the
+	// closed opens gone and closes nothing twice; StaleClient, a repeat's
+	// answer once the record is released, it counts as success.
+	Disconnect(ctx context.Context, c Call, cl ClientID, s SessionRef, end SessionEnd) (uint64, error)
 	// Destroy ends a client holding no state, StateError ClientBusy
 	// otherwise; a revoked reference is not state it holds.
 	Destroy(ctx context.Context, c Call, cl ClientID) error
@@ -224,7 +258,8 @@ const (
 
 var opNames = [...]string{
 	OpPropose: "Propose", OpConnect: "Connect", OpAddSession: "AddSession", OpRecord: "Record",
-	OpRenew: "Renew", OpDisconnect: "Disconnect", OpDestroy: "Destroy", OpReclaimComplete: "ReclaimComplete",
+	OpRenew: "Renew", OpDisconnect: "Disconnect",
+	OpDestroy: "Destroy", OpReclaimComplete: "ReclaimComplete",
 	OpFreeState: "FreeState", OpTestState: "TestState", OpReleaseLockOwner: "ReleaseLockOwner",
 	OpHostRestarted: "HostRestarted",
 	OpLookup:        "Lookup", OpReadDir: "ReadDir", OpCreate: "Create", OpLink: "Link", OpUnlink: "Unlink",
@@ -256,8 +291,9 @@ func (op Op) String() string {
 // decision: the calls that change nothing are exactly the twenty in the
 // switch below, the service contract's list of calls a handler may repeat.
 // Record and Spell are on it: an NFSv4 GETATTR asking for owner and
-// owner_group spells twice, and a READDIR asking for them once per entry. A
-// call added here must change nothing, as the one-call check stops seeing it.
+// owner_group spells twice, and a READDIR asking for them once per entry.
+// A call added here must change nothing, as the one-call
+// check stops seeing it.
 func Mutates(op Op) bool {
 	switch op {
 	case OpPropose, OpTestState, OpLookup, OpReadDir, OpGetAttr, OpGetACL, OpXattrs, OpStreams,

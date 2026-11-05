@@ -50,6 +50,7 @@ type (
 	WatchID      = openstate.WatchID
 	ClientStatus = openstate.ClientStatus
 	ClientRecord = openstate.Client
+	SessionEnd   = openstate.SessionEnd
 	Proposal     = openstate.Proposal
 	GraceRef     = openstate.GraceRef
 	Revocation   = openstate.Revocation

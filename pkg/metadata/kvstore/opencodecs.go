@@ -12,9 +12,9 @@ func encodeClient(c entity.ClientRecord) []byte {
 	putPrincipal(w, c.Owner).Bool(c.Protect).Uint8(uint8(c.Recovery)).
 		Fixed(c.Lease.Node[:]).Fixed(c.Reach.Callback[:]).Bool(c.Reach.Down).Len(len(c.Reach.Sessions))
 	for _, n := range c.Reach.Sessions {
-		w.Fixed(n[:])
+		w.Fixed(n.Node[:]).Uint64(n.Epoch).Uint64(n.Gen)
 	}
-	return w.Bool(c.Ended).Bytes(c.Adapter).Encode()
+	return w.Uint64(c.Reach.Gen).Bool(c.Ended).Bytes(c.Adapter).Encode()
 }
 
 // decodeClient reads a client record's value; its shard marks are keys of
@@ -31,11 +31,14 @@ func decodeClient(id entity.ClientID, b []byte) (entity.ClientRecord, error) {
 	copy(c.Reach.Callback[:], r.Fixed(16))
 	c.Reach.Down = r.Bool()
 	if n := r.Len(); n > 0 {
-		c.Reach.Sessions = make([]entity.NodeID, n)
+		c.Reach.Sessions = make([]entity.ReachNode, n)
 		for i := range c.Reach.Sessions {
-			copy(c.Reach.Sessions[i][:], r.Fixed(16))
+			copy(c.Reach.Sessions[i].Node[:], r.Fixed(16))
+			c.Reach.Sessions[i].Epoch = r.Uint64()
+			c.Reach.Sessions[i].Gen = r.Uint64()
 		}
 	}
+	c.Reach.Gen = r.Uint64()
 	c.Ended, c.Adapter = r.Bool(), r.Bytes()
 	return c, r.Done()
 }

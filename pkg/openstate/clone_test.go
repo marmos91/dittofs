@@ -1,7 +1,9 @@
 package openstate
 
 import (
+	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -67,7 +69,7 @@ func TestCloneHoldsItsSource(t *testing.T) {
 
 	r.Access, r.DeleteOnClose = rd|del, true
 	oa := f.mustOpen(t, a, src, r)
-	if _, err := f.Opens().CloneClose(ctx, oa.ID); !errors.Is(err, ErrBadState) {
+	if err := f.Opens().CloneClose(ctx, oa.ID); !errors.Is(err, ErrBadState) {
 		t.Errorf("CloneClose of a client's open: %v, want ErrBadState", err)
 	}
 	if res := f.close(t, a, oa); res.Unlink == nil {
@@ -82,10 +84,19 @@ func TestCloneHoldsItsSource(t *testing.T) {
 	if got := f.stored(t, src); len(got) != 0 {
 		t.Errorf("stored after the last batch %+v, want the hold gone", got)
 	}
-	if res, err := f.Opens().CloneClose(ctx, id); err != nil || !res.Orphan {
-		t.Errorf("CloneClose %+v, %v; want the unlinked source reported an orphan", res, err)
+	f.sink.mu.Lock()
+	f.sink.closed = nil
+	f.sink.mu.Unlock()
+	if err := f.Opens().CloneClose(ctx, id); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := f.Opens().CloneClose(ctx, id); !errors.Is(err, ErrBadState) {
+	f.sink.mu.Lock()
+	got := slices.Clone(f.sink.closed)
+	f.sink.mu.Unlock()
+	if len(got) != 1 || got[0].f != src.ID || !got[0].r.Orphan {
+		t.Errorf("CloneClose raised Closed %+v; want the unlinked source reported an orphan, once", got)
+	}
+	if err := f.Opens().CloneClose(ctx, id); !errors.Is(err, ErrBadState) {
 		t.Errorf("CloneClose again: %v, want ErrBadState", err)
 	}
 }
@@ -112,7 +123,7 @@ func TestCloneHoldOutlivesGrace(t *testing.T) {
 		t.Fatalf("grace's end closed a clone's hold: %+v, %+v", g.stored(t, src), g.stored(t, unheld))
 	}
 	g.lastBatch(t, dst)
-	if _, err := g.Opens().CloneClose(ctx, id); err != nil {
+	if err := g.Opens().CloneClose(ctx, id); err != nil {
 		t.Errorf("CloneClose after a restart: %v", err)
 	}
 }
@@ -130,7 +141,7 @@ func TestUnlinkAfterLastBatchLeavesNoHold(t *testing.T) {
 	}
 	f.lastBatch(t, dst)
 	f.unlink(t, src, "src")
-	if _, err := f.Opens().CloneClose(ctx, id); err != nil {
+	if err := f.Opens().CloneClose(ctx, id); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.stored(t, src); len(got) != 0 {
@@ -158,5 +169,157 @@ func TestCloneHoldAdmitsReplaceOfItsSource(t *testing.T) {
 	}
 	if err := f.Checks().CheckChange(ctx, s, src, nil, ChangeRename|ChangeReplace); err != nil {
 		t.Errorf("an SMB rename replacing a source only a clone holds: %v, want nil", err)
+	}
+}
+
+// heldWaiter holds src for a clone onto dst and queues h's callback waiter on
+// src behind a poll waiter's lapsed reservation, so serving src's waiters
+// grants h, and runs the clone to its last batch. It answers the hold.
+func (f *fixture) heldWaiter(t *testing.T) (FileKey, entity.OpenID) {
+	t.Helper()
+	a, b, h := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.host(t, "b", 1), f.host(t, "h", 1)
+	src, r := f.fileIn(t, "src")
+	dst, _ := f.fileIn(t, "dst")
+	id, err := f.Opens().CloneOpen(ctx, src, f.cloned(t, src, dst))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Access = rd | wr
+	o := f.mustOpen(t, a, src, r)
+	f.mustLock(t, b, src, LockReq{Owner: owner(b, "b"), Ranges: []LockRange{x(0, 10)}})
+	if _, err := f.lock(a, src, LockReq{Owner: owner(a, "lo"), Open: refOf(o), Ranges: []LockRange{x(0, 10)}, Wait: WaitPoll}); !errors.Is(err, ErrLocked) {
+		t.Fatalf("lo's poll: %v, want ErrLocked", err)
+	}
+	f.mustLock(t, h, src, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	f.unlock(t, b, src, owner(b, "b"), br(0, 10))
+	if ws := f.sink.takeWaits(); len(ws) != 0 {
+		t.Fatalf("the range freed under lo's poll granted %+v, want it reserved", ws)
+	}
+	f.clock.mu.Lock()
+	f.clock.now += leasePeriod + time.Second // lo's reservation lapses, with no sweep run
+	f.clock.mu.Unlock()
+	f.lastBatch(t, dst)
+	f.order.mu.Lock()
+	f.order.files = nil
+	f.order.mu.Unlock()
+	return src, id
+}
+
+// grantedWithin waits up to d for the sink to report grants, and answers
+// them.
+func (f *fixture) grantedWithin(t *testing.T, d time.Duration) []string {
+	t.Helper()
+	for end := time.Now().Add(d); ; time.Sleep(time.Millisecond) {
+		if ws := f.sink.takeWaits(); len(ws) != 0 || time.Now().After(end) {
+			return granted(t, ws)
+		}
+	}
+}
+
+// CloneClose names a file but is called holding no admission lock, so the
+// file's waiters are served under it: a callback waiter queued behind a poll
+// waiter's lapsed reservation is granted, with the file's admission lock
+// taken.
+func TestCloneCloseServesWaitersUnderOrder(t *testing.T) {
+	f := newFixture(t)
+	src, id := f.heldWaiter(t)
+	if err := f.Opens().CloneClose(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.grantedWithin(t, time.Second); len(got) != 1 || got[0] != "h" {
+		t.Fatalf("after CloneClose: granted %v, want h", got)
+	}
+	if !f.ordered(src) {
+		t.Error("CloneClose granted the waiter without the file's admission lock")
+	}
+}
+
+// CloneClose returns once the hold is closed, and the freed file is served
+// after the clone is answered (RFC 14 L70): with the source's admission lock
+// held across the answer, as the clone's call holds it, CloneClose returns at
+// once and grants nothing until the lock is let go, then the waiter is
+// granted.
+func TestCloneCloseServesTheSourceAfterTheAnswer(t *testing.T) {
+	f := newFixture(t)
+	src, id := f.heldWaiter(t)
+	answer := f.order.order(src.ID) // the clone's call, holding the source until it is answered
+	closed := make(chan error, 1)
+	go func() { closed <- f.Opens().CloneClose(ctx, id) }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		answer()
+		t.Fatal("CloneClose did not return within 1s while the clone's call held the source")
+	}
+	if got := f.grantedWithin(t, 50*time.Millisecond); len(got) != 0 {
+		t.Fatalf("before the clone is answered: granted %v, want nothing", got)
+	}
+	answer()
+	if got := f.grantedWithin(t, time.Second); len(got) != 1 || got[0] != "h" {
+		t.Fatalf("after the answer: granted %v within 1s, want h", got)
+	}
+}
+
+// Stop joins the serving a CloneClose left to run: it returns only once the
+// freed file has been served.
+func TestStopJoinsACloneClosesServing(t *testing.T) {
+	f := newFixture(t)
+	src, id := f.heldWaiter(t)
+	answer := f.order.order(src.ID)
+	if err := f.Opens().CloneClose(ctx, id); err != nil {
+		answer()
+		t.Fatal(err)
+	}
+	stopped := make(chan struct{})
+	go func() { f.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+		answer()
+		t.Fatal("Stop returned with the freed file's serving still waiting")
+	case <-time.After(50 * time.Millisecond):
+	}
+	answer()
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return within 1s of the serving's lock being let go")
+	}
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "h" {
+		t.Errorf("by Stop's return: granted %v, want h", got)
+	}
+}
+
+// Served returns once ServeShard has installed the shard, at once for one
+// already served, and with ctx's error when ctx ends first.
+func TestServedWaitsForServeShard(t *testing.T) {
+	f := newFixture(t)
+	if err := f.Recovery().Served(ctx, testShards[0]); err != nil {
+		t.Errorf("Served of a shard already served: %v", err)
+	}
+	served := make(chan error, 1)
+	go func() { served <- f.Recovery().Served(ctx, 9) }()
+	select {
+	case err := <-served:
+		t.Fatalf("Served before ServeShard returned %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := f.Recovery().ServeShard(ctx, f.fs.Share.ID, 9, instances.Add(1)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Errorf("Served after ServeShard: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Served did not return within 1s of ServeShard")
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := f.Recovery().Served(cctx, 11); !errors.Is(err, context.Canceled) {
+		t.Errorf("Served of a shard never served, ctx cancelled: %v, want context.Canceled", err)
 	}
 }

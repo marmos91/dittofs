@@ -18,7 +18,7 @@ import (
 // a caller of it.
 func (f *fixture) host(t *testing.T, name string, boot byte) Caller {
 	t.Helper()
-	id, err := f.Connect(ctx, Client{ClientRecord: entity.ClientRecord{
+	id, _, err := f.Connect(ctx, Client{ClientRecord: entity.ClientRecord{
 		Protocol: entity.ProtocolNLM, Name: []byte(name), Boot: [8]byte{boot}, Recovery: entity.RecoverNotice,
 	}}, nil)
 	if err != nil {
@@ -633,7 +633,7 @@ func TestConnectGrantsWaitersUnderOrder(t *testing.T) {
 			f.order.mu.Lock()
 			f.order.files = nil
 			f.order.mu.Unlock()
-			if _, err := f.Connect(ctx, nfs("host-a", tc.boot, alice), nil); err != nil {
+			if _, _, err := f.Connect(ctx, nfs("host-a", tc.boot, alice), nil); err != nil {
 				t.Fatal(err)
 			}
 			if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "h" {

@@ -139,6 +139,22 @@ func TestWaiterOfParkedOpenGoes(t *testing.T) {
 	}
 }
 
+// A parked open is listed among its lease's openers with no session: the
+// one it was opened on has ended, so a break goes to none of its.
+func TestOpenersListAParkedOpenWithNoSession(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smb("pc-a"))
+	res, err := f.Opens().Open(ctx, a, anyFile(), keep(OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh}, entity.DurabilityDurable, s1, time.Minute, 1))
+	if err != nil || res.Grant == nil {
+		t.Fatalf("the durable open: %+v, %v", res.Grant, err)
+	}
+	f.disconnect(t, a, s1)
+	opens, err := f.Grants().Openers(ctx, res.Grant.ID)
+	if err != nil || len(opens) != 1 || opens[0].Session != (entity.SessionRef{}) {
+		t.Errorf("the parked open's openers %+v, %v; want it listed with no session", opens, err)
+	}
+}
+
 // A durable open whose lease a break took handle caching from is closed at
 // its disconnect.
 func TestDurableWithoutHandleClosesAtDisconnect(t *testing.T) {
@@ -531,7 +547,10 @@ func TestReconnectWaitsForItsShard(t *testing.T) {
 }
 
 // A client install made known is forgotten once it holds nothing, unless it
-// came back, by connecting or renewing, which makes it its own again.
+// came back, by connecting or renewing, which makes it its own again. The
+// SMB client that came back lists the node, so the Timeout close that leaves
+// it holding nothing keeps its record; one that only renewed, listing no
+// node at this epoch, is released then (RFC 14 §2.1).
 func TestInstalledClientIsForgottenUnlessItCameBack(t *testing.T) {
 	f := newFixture(t)
 	gone, back, renewed := f.caller(t, smbMachine("pc-gone")), smbMachine("pc-back"), f.caller(t, smbMachine("pc-renew"))
@@ -552,10 +571,11 @@ func TestInstalledClientIsForgottenUnlessItCameBack(t *testing.T) {
 	if _, known := g.known[gone.Client]; known {
 		t.Error("the client that never came back is known once it holds nothing")
 	}
-	for name, c := range map[string]entity.ClientID{"connected": cb.Client, "renewed": renewed.Client} {
-		if _, known := g.known[c]; !known {
-			t.Errorf("the client that %s is forgotten once its installed open closed", name)
-		}
+	if _, known := g.known[cb.Client]; !known {
+		t.Error("the client that connected is forgotten once its installed open closed")
+	}
+	if _, err := g.Record(ctx, renewed.Client); !errors.Is(err, ErrStaleClient) {
+		t.Errorf("the SMB client that only renewed, holding nothing and listing no node: %v, want it released", err)
 	}
 }
 

@@ -42,7 +42,7 @@ func byID(o Open) OpenRef {
 
 func (f *fixture) disconnect(t *testing.T, who Caller, s entity.SessionRef) {
 	t.Helper()
-	if err := f.Disconnect(ctx, who.Client, s); err != nil {
+	if _, err := f.Disconnect(ctx, who.Client, s, SessionEnd{}); err != nil {
 		t.Fatalf("Disconnect: %v", err)
 	}
 }
@@ -108,6 +108,58 @@ func TestDisconnectEndsOneSession(t *testing.T) {
 	}
 	if _, err := f.reconnect(a, od, m(od, 1), s3); err != nil {
 		t.Errorf("a reconnect of the durable open under a batch oplock: %v", err)
+	}
+}
+
+// A logoff closes every open of its session in the one call, a durable one
+// under a batch oplock and a persistent one included, and leaves another
+// session's open attached.
+func TestLogoffClosesTheSessionsOpens(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smb("pc-a"))
+	durable, other := anyFile(), anyFile()
+	batch := OpenRequest{Access: rd | wr, Deny: wr, Want: rwh}
+	od := f.mustOpen(t, a, durable, keep(batch, entity.DurabilityDurable, s1, time.Minute, 1))
+	persistent, r := f.fileIn(t, "disk")
+	r.Access = rd | wr
+	op := f.mustOpen(t, a, persistent, keep(r, entity.DurabilityPersistent, s1, time.Minute, 2))
+	oo := f.mustOpen(t, a, other, keep(batch, entity.DurabilityDurable, s2, time.Minute, 3))
+	if _, err := f.Disconnect(ctx, a.Client, s1, SessionEnd{Logoff: true}); err != nil {
+		t.Fatal(err)
+	}
+	for name, o := range map[string]Open{"durable": od, "persistent": op} {
+		if _, held := f.byID[o.ID]; held {
+			t.Errorf("the %s open of the logged-off session is still held", name)
+		}
+	}
+	if _, held := f.byID[oo.ID]; !held {
+		t.Error("another session's open was closed by the logoff")
+	}
+}
+
+// A logoff's closes release what a Close would: the lock its persistent open
+// held goes, and the waiter behind it is granted, under the file's admission
+// lock.
+func TestALogoffReleasesTheSessionsLocks(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd | wr
+	op := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 1))
+	f.mustLock(t, a, file, LockReq{Owner: smbOwner(a, op), Open: byID(op), Ranges: []LockRange{x(0, 10)}})
+	bo := f.mustOpen(t, b, file, OpenRequest{Access: rd})
+	if res, err := f.lock(b, file, LockReq{Owner: smbOwner(b, bo), Open: byID(bo), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}); err != nil || !res.Waiting {
+		t.Fatalf("b's lock behind a's: %+v, %v; want waiting", res, err)
+	}
+	f.ordered(file)
+	if _, err := f.Disconnect(ctx, a.Client, s1, SessionEnd{Logoff: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 {
+		t.Errorf("waiters granted by the logoff: %v, want b's", got)
+	}
+	if !f.ordered(file) {
+		t.Error("the waiter the logoff freed was served without the file's admission lock")
 	}
 }
 
@@ -308,6 +360,12 @@ func TestPersistentOpenSurvivesARestart(t *testing.T) {
 	}
 	if err := anon(5); err != nil {
 		t.Errorf("an anonymous read across the unlocked range: %v", err)
+	}
+	// The machine's new session lists the node at this start's epoch, as
+	// its SESSION_SETUP does before it reconnects: listed, it stays known
+	// after its open times out.
+	if again, _, err := g.Connect(ctx, smbMachine("pc-a"), nil); err != nil || again != a.Client {
+		t.Fatalf("pc-a's session after the restart: client %d, %v; want %d", again, err, a.Client)
 	}
 	back, err := g.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s2)
 	if err != nil {
@@ -878,5 +936,30 @@ func TestParkServesTheWaitersItFrees(t *testing.T) {
 	}
 	if want := fmt.Sprintf("%s false", smbOwner(a, o).Name); len(got) != 2 || got[0] != want || got[1] != "h true" {
 		t.Errorf("the disconnect raised %q, want a's waiter not granted, then h's granted", got)
+	}
+}
+
+// An SMB client whose last session ended with a durable open parked keeps its
+// record until that open's Timeout closes it, and then is released, as a
+// last Disconnect releases a client holding nothing (RFC 14 §2.1).
+func TestATimeoutClosingAClientsLastOpenReleasesIt(t *testing.T) {
+	f := newFixture(t)
+	c := smb("pc-a")
+	id, gen, err := f.Connect(ctx, c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	who := Caller{Client: id, Principal: c.Owner, Protocol: c.Protocol}
+	this := entity.SessionRef{ID: 1}
+	f.mustOpen(t, who, anyFile(), keep(OpenRequest{Access: rd | wr, Want: rwh}, entity.DurabilityDurable, this, time.Minute, 1))
+	if _, err := f.Disconnect(ctx, id, this, SessionEnd{Last: true, Gen: gen}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Record(ctx, id); err != nil {
+		t.Fatalf("with a durable open parked: %v, want the record kept", err)
+	}
+	f.idle(2 * time.Minute)
+	if _, err := f.Record(ctx, id); !errors.Is(err, ErrStaleClient) {
+		t.Errorf("after the Timeout closed its last open: %v, want the record released, ErrStaleClient", err)
 	}
 }

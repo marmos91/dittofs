@@ -32,6 +32,10 @@ type Recovery interface {
 	// the service answers no NLM request until it has begun every shard it
 	// serves.
 	ServeShard(ctx context.Context, share entity.ShareID, s ShardID, instance uint64) error
+	// Served returns once ServeShard has installed s's durable opens, at
+	// once if it already has, or at ctx's end with ctx's error. It changes
+	// nothing.
+	Served(ctx context.Context, s ShardID) error
 	// ReclaimComplete ends the caller's reclaim in the grace instances it
 	// was shown, and in no later one of the same shard. A client that does
 	// not recover by status never finishes this way: its call ends nothing.
@@ -128,6 +132,27 @@ func (v recovery) ServeShard(ctx context.Context, share entity.ShareID, s ShardI
 	return nil
 }
 
+func (v recovery) Served(ctx context.Context, s ShardID) error {
+	t := v.t
+	for {
+		t.cmu.Lock()
+		if t.shards[s] != nil {
+			t.cmu.Unlock()
+			return nil
+		}
+		if t.shardUp == nil {
+			t.shardUp = make(chan struct{})
+		}
+		up := t.shardUp
+		t.cmu.Unlock()
+		select {
+		case <-up:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
 // beginShard is ServeShard under the client step; the clients to tell, and
 // what the installed leases raise, go to out.
 func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID, instance uint64, out *outbox) error {
@@ -207,6 +232,10 @@ func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID,
 	sh.ends = t.d.Clock.Elapsed() + leasePeriod
 	sh.settle()
 	t.shards[s] = sh
+	if t.shardUp != nil {
+		close(t.shardUp)
+		t.shardUp = nil
+	}
 	t.cmu.Unlock()
 	out.revoked = append(out.revoked, told...)
 	return nil

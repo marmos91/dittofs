@@ -29,7 +29,7 @@ func TestRecordingCallbacksAnswerAsSet(t *testing.T) {
 	if err := cb.RecallAny(ctx, 2); err != failed {
 		t.Fatalf("RecallAny = %v, want %v", err, failed)
 	}
-	want := []vfstest.Callback{{"LockWaitOver", []any{w, true}}, {"RecallAny", []any{2}}}
+	want := []vfstest.Callback{{Method: "LockWaitOver", Args: []any{w, true}}, {Method: "RecallAny", Args: []any{2}}}
 	if got := cb.Calls(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Calls = %v, want %v", got, want)
 	}

@@ -225,6 +225,7 @@ func checked(t *testing.T, tab *Table) {
 		if _, raw := unchecked.Load(tab); stopped || raw || t.Failed() {
 			return
 		}
+		tab.later.Wait() // the serving a CloneClose left to run is a step like any call
 		if err := tab.check(); err != nil {
 			t.Error(err)
 		}

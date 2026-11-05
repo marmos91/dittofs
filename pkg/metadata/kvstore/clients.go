@@ -157,8 +157,12 @@ func (c Clients) Put(ctx context.Context, prev, next entity.ClientRecord) (cur e
 // as its Adapter bytes, if they still equal prev, the bytes the caller last
 // read; otherwise it writes nothing and returns ErrRecordChanged with the
 // current record. So a replayed setup call, on any node or after a restart,
-// finds the first call's bytes rather than recording a second session.
-func (c Clients) AddSession(ctx context.Context, id entity.ClientID, node entity.NodeID, prev, next []byte) (cur entity.ClientRecord, err error) {
+// finds the first call's bytes rather than recording a second session. The
+// node is listed once, under the epoch node names, replacing the entry it
+// had, under an earlier epoch or this one, with one whose Gen is the
+// record's Reach.Gen raised by one, so no Gen repeats across an entry's
+// removal; node.Gen is not read.
+func (c Clients) AddSession(ctx context.Context, id entity.ClientID, node entity.ReachNode, prev, next []byte) (cur entity.ClientRecord, err error) {
 	if len(next) > MaxAdapter {
 		return entity.ClientRecord{}, merrs.NewInvalidArgumentError(fmt.Sprintf("adapter bytes over %d", MaxAdapter))
 	}
@@ -171,9 +175,9 @@ func (c Clients) AddSession(ctx context.Context, id entity.ClientID, node entity
 		}
 		up := cur
 		up.Adapter = next
-		if !slices.Contains(cur.Reach.Sessions, node) {
-			up.Reach.Sessions = append(slices.Clip(cur.Reach.Sessions), node)
-		}
+		up.Reach.Gen++
+		node.Gen = up.Reach.Gen
+		up.Reach.Sessions = append(slices.DeleteFunc(slices.Clone(cur.Reach.Sessions), func(n entity.ReachNode) bool { return n.Node == node.Node }), node)
 		if err := setClient(tx, cur, up); err != nil {
 			return err
 		}
@@ -225,6 +229,24 @@ func (c Clients) Delete(ctx context.Context, id entity.ClientID) error {
 		}
 		return dropClient(tx, cl, true)
 	})
+}
+
+// DeleteUnreached deletes a client record as Delete does, but only while its
+// Reach.Sessions is empty, read in the delete's own transaction; a record a
+// node is listed in is kept and ErrRecordChanged returned with it. So a
+// session listed after the caller decided to delete is not lost with the
+// record.
+func (c Clients) DeleteUnreached(ctx context.Context, id entity.ClientID) (cur entity.ClientRecord, err error) {
+	err = c.s.kv.Update(ctx, func(tx kv.Txn) error {
+		if cur, err = clientIn(tx, id); err != nil {
+			return err
+		}
+		if len(cur.Reach.Sessions) > 0 {
+			return ErrRecordChanged
+		}
+		return dropClient(tx, cur, true)
+	})
+	return cur, err
 }
 
 // ByShard lists every client with a mark in shard s, its marks included:

@@ -74,7 +74,7 @@ func (n *names) smbClient(t *testing.T, name string, p entity.Principal) vfs.Cal
 	c := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte(name), Boot: [8]byte{1}}}
 	pr, err := n.tab.Clients().Propose(t.Context(), c, inLab)
 	n.must(t, err)
-	id, err := n.tab.Clients().Connect(t.Context(), c, &pr)
+	id, _, err := n.tab.Clients().Connect(t.Context(), c, &pr)
 	n.must(t, err)
 	call := proven(p, inLab)
 	call.Protocol, call.Client = entity.ProtocolSMB, id
@@ -683,7 +683,7 @@ func TestARefusedRenameRecallsNoLease(t *testing.T) {
 	n.must(t, err)
 	n.create(t, n.admin, tmp.Handle, "target", vfs.CreateRegular)
 	cb := &vfstest.RecordingCallbacks{}
-	holder, err := n.Connect(ctx, signedIn(n.fs.Admin.Principal, 1), smb("holder", 1), cb)
+	holder, _, err := n.Connect(ctx, signedIn(n.fs.Admin.Principal, 1), smb("holder", 1), cb)
 	n.must(t, err)
 	leased(t, n.shares, holder, n.fs.Admin.Principal, 1, src.File.ID, 1)
 	if _, err := n.Rename(ctx, bob, vfs.Target{H: tmp.Handle}, []byte("src"), tmp.Handle, []byte("target"), false); !errors.Is(err, vfs.ErrAccess) {
@@ -746,7 +746,7 @@ func TestARenameToTheSameSpellingRecallsNoLease(t *testing.T) {
 	root := n.fs.Root
 	a := n.create(t, n.admin, root, "a", vfs.CreateRegular)
 	cb := &vfstest.RecordingCallbacks{}
-	holder, err := n.Connect(ctx, signedIn(n.fs.Admin.Principal, 1), smb("holder", 1), cb)
+	holder, _, err := n.Connect(ctx, signedIn(n.fs.Admin.Principal, 1), smb("holder", 1), cb)
 	n.must(t, err)
 	leased(t, n.shares, holder, n.fs.Admin.Principal, 1, a.File.ID, 1)
 	if _, err := n.Rename(ctx, n.admin, vfs.Target{H: root}, []byte("a"), root, []byte("a"), false); err != nil {

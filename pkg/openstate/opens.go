@@ -292,9 +292,11 @@ type Opens interface {
 	// and answers the hold's ID, the same for a hold already held.
 	CloneOpen(ctx context.Context, src FileKey, c CloneSource) (entity.OpenID, error)
 	// CloneClose drops the hold o, once the clone's last batch deleted its
-	// record, and reports a source it left with no entry and no open as an
-	// orphan.
-	CloneClose(ctx context.Context, o entity.OpenID) (CloseResult, error)
+	// record. A source it leaves with no entry and no open, or with a
+	// pending unlink, reaches Sink.Closed, as a close the table makes itself
+	// does. It serves the file's waiters under the file's admission lock,
+	// which it takes itself: the caller must not hold it.
+	CloneClose(ctx context.Context, o entity.OpenID) error
 	// Channel admits a request through open o carrying channel sequence
 	// seq, flagged a replay or not, and counts it in flight until done is
 	// called as it leaves. A newer seq becomes the open's, written first for

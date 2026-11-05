@@ -20,8 +20,8 @@ func (Null) Propose(ctx context.Context, c vfs.Call, info vfs.ClientInfo) (vfs.P
 	return vfs.Proposal{}, nil
 }
 
-func (Null) Connect(ctx context.Context, c vfs.Call, info vfs.ClientInfo, cb vfs.Callbacks) (vfs.ClientID, error) {
-	return 0, nil
+func (Null) Connect(ctx context.Context, c vfs.Call, info vfs.ClientInfo, cb vfs.Callbacks) (vfs.ClientID, uint64, error) {
+	return 0, 0, nil
 }
 
 func (Null) AddSession(ctx context.Context, c vfs.Call, cl vfs.ClientID, prev []byte, next []byte) (vfs.ClientRecord, error) {
@@ -36,8 +36,8 @@ func (Null) Renew(ctx context.Context, c vfs.Call, cl vfs.ClientID) (vfs.ClientS
 	return vfs.ClientStatus{}, nil
 }
 
-func (Null) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientID, s vfs.SessionRef) error {
-	return nil
+func (Null) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientID, s vfs.SessionRef, end vfs.SessionEnd) (uint64, error) {
+	return 0, nil
 }
 
 func (Null) Destroy(ctx context.Context, c vfs.Call, cl vfs.ClientID) error {

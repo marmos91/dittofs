@@ -199,11 +199,11 @@ func kindOf(s uint8) GrantKind {
 	return k
 }
 
-func (v clients) Disconnect(ctx context.Context, c entity.ClientID, s entity.SessionRef) error {
+func (v clients) Disconnect(ctx context.Context, c entity.ClientID, s entity.SessionRef, end SessionEnd) (uint64, error) {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	// A disconnect names a client, not a file, so the waiters its closes
 	// free are served after it, under each file's admission lock.
@@ -221,7 +221,7 @@ func (v clients) Disconnect(ctx context.Context, c entity.ClientID, s entity.Ses
 		_ = t.step(h.file, func(e *entry) error {
 			switch o := e.opens[h.ref.Token]; {
 			case o == nil || o.Session != s || o.parked != 0:
-			case o.Durability == entity.DurabilityNone, !o.persistent() && !e.handleCached(o):
+			case end.Logoff, o.Durability == entity.DurabilityNone, !o.persistent() && !e.handleCached(o):
 				// decision: a durable open without handle caching, which it
 				// was granted with and a break may have taken, is closed at
 				// disconnect, not parked: MS-SMB2 3.3.5.9.7 refuses to
@@ -236,7 +236,88 @@ func (v clients) Disconnect(ctx context.Context, c entity.ClientID, s entity.Ses
 	}
 	out.raise(t, sink)
 	t.serveFiles(ctx, sink, out.serve)
-	return nil
+	// The closes run before the node is unlisted, so a failure before this
+	// point leaves the entry for the caller's repeat, which finds the closed
+	// opens gone and closes nothing twice.
+	//
+	// ponytail: this node is every primary of the client's state and its
+	// lease owner, so the closes above are every primary's. With the cluster,
+	// send the end to each primary holding the client's state first, and
+	// unlist here only once each has acknowledged.
+	if !end.Last {
+		return 0, nil
+	}
+	return t.leaveReach(ctx, c, nodeOf(s), end.Gen)
+}
+
+// leaveReachHook, set only by tests, runs in leaveReach between its Reach
+// write and its delete, where a listing outside the client step can land.
+var leaveReachHook func()
+
+// leaveReach takes node's entry at gen, and every entry under an earlier
+// epoch, out of c's Reach.Sessions, under the client step; an entry at
+// another Gen was listed again since, and stays, and its Gen is returned.
+// An SMB record left with no live node and no state is released: nothing
+// else ends it.
+//
+// ponytail: an entry under an earlier epoch is dropped whatever its node,
+// as liveReach counts it absent: on a single node every entry is this
+// node's. With the cluster, drop only this node's older entries and let
+// each node's own Start or departure clear its own.
+func (t *Table) leaveReach(ctx context.Context, c entity.ClientID, node entity.NodeID, gen uint64) (uint64, error) {
+	t.cstep.Lock()
+	defer t.cstep.Unlock()
+	t.cmu.Lock()
+	epoch := t.epoch
+	t.cmu.Unlock()
+	var kept uint64
+	rec, err := t.setReach(ctx, c, func(r *entity.Reach) {
+		kept = 0
+		r.Sessions = slices.DeleteFunc(slices.Clone(r.Sessions), func(n entity.ReachNode) bool {
+			if n.Epoch < epoch {
+				return true
+			}
+			if n.Node == node && n.Gen != gen {
+				kept = n.Gen
+			}
+			return n.Node == node && n.Gen == gen
+		})
+	})
+	if err != nil {
+		return 0, err
+	}
+	if kept != 0 || rec.Protocol != entity.ProtocolSMB || len(rec.Reach.Sessions) > 0 || t.holdsAny(c) {
+		return kept, nil
+	}
+	// A parked open is held, so a durable open's Timeout still running
+	// keeps the record too. A session listed since, which its listing does
+	// outside the client step, keeps it as well, and the Gen it listed this
+	// node at is returned.
+	if leaveReachHook != nil {
+		leaveReachHook()
+	}
+	if cur, err := t.d.Records.Clients().DeleteUnreached(ctx, c); errors.Is(err, ErrRecordChanged) {
+		return cur.Reach.GenOf(node), nil
+	} else if err != nil {
+		return 0, staleIfGone(err)
+	}
+	t.cmu.Lock()
+	delete(t.leases, c)
+	delete(t.known, c)
+	t.cmu.Unlock()
+	t.unreclaim(c)
+	t.dropRevoked(c)
+	return 0, nil
+}
+
+// releaseIfIdle releases SMB client c's record if it now holds no state and
+// no live node lists it, as a last Disconnect's release does: after a
+// durable open's Timeout closed its last state, no Disconnect comes to end
+// it (RFC 14 §2.1). Gen zero names no entry, so a listed node keeps it.
+func (t *Table) releaseIfIdle(ctx context.Context, c entity.ClientID) {
+	if _, err := t.leaveReach(ctx, c, entity.NodeID{}, 0); err != nil && !errors.Is(err, ErrStaleClient) {
+		t.d.Logger.Warn("openstate: releasing an idle client failed", "client", c, "err", err)
+	}
 }
 
 // park keeps o, of e, disconnected until its Timeout passes. Its waiters
@@ -355,7 +436,11 @@ func (t *Table) timeouts(ctx context.Context, e *entry, out *outbox) {
 		switch {
 		case o.parked == 0:
 		case now >= o.parked:
-			kept = !t.closeByTable(ctx, e, o, out) || kept
+			if t.closeByTable(ctx, e, o, out) {
+				out.idle = append(out.idle, o.Client)
+			} else {
+				kept = true
+			}
 		default:
 			kept = true
 		}
@@ -841,29 +926,53 @@ func (v opens) CloneOpen(ctx context.Context, src FileKey, c CloneSource) (entit
 // restart is not known so: its pending release, written with the unlink,
 // runs at the next start instead. Have the last batch report the orphan if
 // such releases are seen waiting for a start.
-func (v opens) CloneClose(ctx context.Context, id entity.OpenID) (CloseResult, error) {
+func (v opens) CloneClose(ctx context.Context, id entity.OpenID) error {
 	t := v.t
-	if _, err := t.running(); err != nil {
-		return CloseResult{}, err
+	sink, err := t.running()
+	if err != nil {
+		return err
 	}
 	t.idx.Lock()
 	k, ok := t.byID[id]
 	f := t.refs[k].file
 	t.idx.Unlock()
 	if !ok {
-		return CloseResult{}, ErrBadState
+		return ErrBadState
 	}
-	var res CloseResult
-	err := t.step(f, func(e *entry) error {
+	out := outbox{timer: true} // the engine holds no admission lock: the file's waiters are served under it, after the clone is answered
+	err = t.step(f, func(e *entry) error {
 		o := e.opens[k.token]
 		if o == nil || o.ID != id || o.Clone == nil {
 			return ErrBadState
 		}
-		t.dropOpen(e, o)
-		res.Orphan = e.unlinked && len(e.opens) == 0
+		r := CloseResult{Unlink: t.closeOpen(ctx, e, o, &out)}
+		r.Orphan = e.unlinked && len(e.opens) == 0
+		out.close(f, r)
 		return nil
 	})
-	return res, err
+	if err != nil {
+		return err
+	}
+	out.raise(t, sink)
+	t.serveLater(ctx, f)
+	return nil
+}
+
+// serveLater serves f's waiters as serveFiles does, on a goroutine Stop
+// joins, so the call returns at once: CloneClose returns once its own step
+// has closed the hold, and the file is served under its admission lock once
+// the clone is answered and the clone's call lets that lock go (RFC 14
+// §11.2, RFC 8 §9.1 step 6). After Stop it serves nothing; the next start's
+// grace does.
+func (t *Table) serveLater(ctx context.Context, f entity.FileID) {
+	ctx = context.WithoutCancel(ctx)
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	sink := t.sink
+	if sink == nil {
+		return
+	}
+	t.later.Go(func() { t.serveFiles(ctx, sink, []entity.FileID{f}) })
 }
 
 // decision: a sequence exactly 0x8000 from the open's is stale on either

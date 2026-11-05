@@ -2,6 +2,7 @@ package openstate
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -92,13 +93,16 @@ type Clients interface {
 	// reboot: the old ID ends as the new one appears, and a known name whose
 	// lease has lapsed ends its old ID first. The waiters the ended ID's
 	// release frees are served under each file's admission lock, which the
-	// table takes itself: the service must not hold one when calling.
-	Connect(ctx context.Context, c Client, p *Proposal) (entity.ClientID, error)
+	// table takes itself: the service must not hold one when calling. An
+	// SMB client's Connect also lists this node in its Reach.Sessions, as
+	// AddSession does, and returns the entry's Gen; any other's gen is zero.
+	Connect(ctx context.Context, c Client, p *Proposal) (id entity.ClientID, gen uint64, err error)
 	// Record is the record as written, Adapter included; it changes nothing.
 	Record(ctx context.Context, c entity.ClientID) (Client, error)
-	// AddSession records node's session and writes next as Adapter if it
-	// still equals prev; otherwise it writes nothing and returns
-	// ErrRecordChanged with the current record.
+	// AddSession records node's session, listing node in Reach.Sessions
+	// under this node's epoch with its Gen raised, replacing the entry it
+	// had, and writes next as Adapter if it still equals prev; otherwise it
+	// writes nothing and returns ErrRecordChanged with the current record.
 	AddSession(ctx context.Context, c entity.ClientID, node entity.NodeID, prev, next []byte) (Client, error)
 	// Renew renews a client's lease for another period, writing nothing.
 	Renew(ctx context.Context, c entity.ClientID) (ClientStatus, error)
@@ -131,18 +135,66 @@ type Clients interface {
 	// ChannelDown records that c's back channel is lost: it sets
 	// Reach.Down, and c is offered no grant until it rebinds.
 	ChannelDown(ctx context.Context, c entity.ClientID) error
-	// Disconnect is the loss of session s of client c's last connection:
-	// each volatile open s made or last reconnected closes, as does a
-	// durable one no longer under handle caching, and each other durable
-	// or persistent one is kept, with every lock, deny mode and lease it
-	// holds, until its Timeout passes without a reconnect; the timer then
-	// closes it. Its waiters go, answered not granted. Another session's
-	// opens are left alone, and no open is attached to s again. A logoff is
-	// not a disconnect: it closes every open of its session, durable ones
-	// included, which the service does by Close. The waiters the closes free
-	// are served under each file's admission lock, which the table takes
-	// itself: the service must not hold one when calling.
-	Disconnect(ctx context.Context, c entity.ClientID, s entity.SessionRef) error
+	// Disconnect ends session s of client c as end says. With Logoff,
+	// every open s made or last reconnected closes, durable and persistent
+	// ones included. Otherwise s's last connection was lost: each volatile
+	// open of s closes, as does a durable one no longer under handle
+	// caching, and each other durable or persistent one is kept, with every
+	// lock, deny mode and lease it holds, until its Timeout passes without
+	// a reconnect; the timer then closes it. Either way the kept opens'
+	// waiters go, answered not granted, another session's opens are left
+	// alone, and no open is attached to s again. Each close releases the
+	// open's locks, and raises Closed for an orphan or a pending unlink it
+	// leaves, as any close the table makes does. With Last, once the closes
+	// have run, s's node leaves c's Reach.Sessions if its entry's Gen is
+	// still end.Gen, and entries under an earlier epoch leave with it; an SMB
+	// record then left with no node and no state is released, as nothing
+	// else ends it. An entry at another Gen, a later listing's, stays, and
+	// its Gen is returned for the caller to decide again on; gen is zero
+	// once the entry is gone, and a Last on a released record is
+	// ErrStaleClient. The waiters the closes free are served under each
+	// file's admission lock, which the table takes itself: the service must
+	// not hold one when calling.
+	Disconnect(ctx context.Context, c entity.ClientID, s entity.SessionRef, end SessionEnd) (gen uint64, err error)
+}
+
+// SessionEnd is how Disconnect ends one session.
+type SessionEnd struct {
+	Logoff bool   // a logoff or a failed re-authentication's teardown: every open of the session closes
+	Last   bool   // the node's last session of the client: the node leaves Reach.Sessions in the same call, at Gen
+	Gen    uint64 // with Last: the node's entry's Gen when its last session was decided; a later listing's keeps the entry, and Disconnect returns its Gen
+}
+
+// nodeOf is the node a session ref names, as Reach.Sessions lists it: its
+// number in the ID's low eight bytes.
+//
+// ponytail: a session names its node by a number, a reach entry by a node
+// ID; a single node is node zero in both. Carry the node ID in SessionRef
+// when the cluster gives nodes IDs.
+func nodeOf(s entity.SessionRef) entity.NodeID {
+	var n entity.NodeID
+	binary.BigEndian.PutUint64(n[8:], s.Node)
+	return n
+}
+
+// liveReach is how many of sessions are under this node's current epoch or
+// a later one; one under an earlier epoch is a restarted node's, and counts
+// as absent.
+//
+// ponytail: every node's current epoch is taken to be this one's, which
+// holds on a single node, where every entry is this node's. Read each node's
+// epoch from its node record when the cluster lands.
+func (t *Table) liveReach(sessions []entity.ReachNode) int {
+	t.cmu.Lock()
+	epoch := t.epoch
+	t.cmu.Unlock()
+	n := 0
+	for _, r := range sessions {
+		if r.Epoch >= epoch {
+			n++
+		}
+	}
+	return n
 }
 
 type clients struct{ t *Table }
@@ -254,19 +306,29 @@ func (v clients) Propose(ctx context.Context, c Client, from netip.Addr) (Propos
 	return Proposal{p.ID, p.Confirm}, nil
 }
 
-func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.ClientID, error) {
+func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.ClientID, uint64, error) {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	rec, err := admit(c)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	out := outbox{timer: true}
+	var gen uint64
 	t.cstep.Lock()
 	ended, err := t.connect(ctx, &rec, p, &out)
+	if err == nil && rec.Protocol == entity.ProtocolSMB {
+		// Listed under the client step, so a last Disconnect's release, which
+		// holds it, runs wholly before or after: a session set up while the
+		// last one ends never finds its record deleted (RFC 14 §2.1).
+		if connectListHook != nil {
+			connectListHook()
+		}
+		gen, err = v.listNode(ctx, rec.ID)
+	}
 	t.cstep.Unlock()
 	if ended != nil {
 		sink.ClientEnded(ended.ID, shardsOf(*ended), RevokedLeaseExpired)
@@ -274,9 +336,32 @@ func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.Cli
 	out.raise(t, sink)
 	t.serveFiles(ctx, sink, out.serve)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return rec.ID, nil
+	return rec.ID, gen, nil
+}
+
+// connectListHook, set only by tests, runs in an SMB Connect between its
+// connect and its listing of the node.
+var connectListHook func()
+
+// listNode lists this node in client id's Reach.Sessions, keeping the
+// record's adapter bytes, and returns the entry's Gen.
+//
+// decision: this node is listed under the zero node ID, as a session ref
+// names node zero on a single node. Name the node's own ID with the cluster.
+func (v clients) listNode(ctx context.Context, id entity.ClientID) (uint64, error) {
+	rec, err := v.t.d.Records.Clients().Get(ctx, id)
+	for err == nil {
+		var cl Client
+		if cl, err = v.AddSession(ctx, id, entity.NodeID{}, rec.Adapter, rec.Adapter); err == nil {
+			return cl.Reach.GenOf(entity.NodeID{}), nil
+		}
+		if errors.Is(err, ErrRecordChanged) {
+			rec, err = cl.ClientRecord, nil
+		}
+	}
+	return 0, staleIfGone(err)
 }
 
 // connect makes rec current, under the client step, and returns the record a
@@ -453,7 +538,10 @@ func (v clients) AddSession(ctx context.Context, c entity.ClientID, node entity.
 	if len(next) > kvstore.MaxAdapter {
 		return Client{}, ErrInvalid
 	}
-	rec, err := v.t.d.Records.Clients().AddSession(ctx, c, node, prev, next)
+	v.t.cmu.Lock()
+	epoch := v.t.epoch
+	v.t.cmu.Unlock()
+	rec, err := v.t.d.Records.Clients().AddSession(ctx, c, entity.ReachNode{Node: node, Epoch: epoch}, prev, next)
 	if err != nil && !errors.Is(err, ErrRecordChanged) {
 		return Client{}, staleIfGone(err)
 	}
@@ -714,16 +802,18 @@ func (v clients) ChannelDown(ctx context.Context, c entity.ClientID) error {
 	}
 	t.cstep.Lock()
 	defer t.cstep.Unlock()
-	return t.setReach(ctx, c, func(r *entity.Reach) { r.Down = true })
+	_, err := t.setReach(ctx, c, func(r *entity.Reach) { r.Down = true })
+	return err
 }
 
 // setReach applies set to c's record's Reach, and to what the table reads of
-// it, under the client step. A racing AddSession's bytes are kept: the write
-// is retried over the record it committed.
-func (t *Table) setReach(ctx context.Context, c entity.ClientID, set func(*entity.Reach)) error {
+// it, under the client step, and returns the record as written. A racing
+// AddSession's bytes are kept: the write is retried over the record it
+// committed.
+func (t *Table) setReach(ctx context.Context, c entity.ClientID, set func(*entity.Reach)) (entity.ClientRecord, error) {
 	rec, err := t.d.Records.Clients().Get(ctx, c)
 	if err != nil {
-		return staleIfGone(err)
+		return entity.ClientRecord{}, staleIfGone(err)
 	}
 	for {
 		next := rec
@@ -734,7 +824,7 @@ func (t *Table) setReach(ctx context.Context, c entity.ClientID, set func(*entit
 			continue
 		}
 		if err != nil {
-			return staleIfGone(err)
+			return entity.ClientRecord{}, staleIfGone(err)
 		}
 		t.cmu.Lock()
 		defer t.cmu.Unlock()
@@ -742,7 +832,7 @@ func (t *Table) setReach(ctx context.Context, c entity.ClientID, set func(*entit
 			k.down = next.Reach.Down
 			t.known[c] = k
 		}
-		return nil
+		return next, nil
 	}
 }
 
@@ -760,7 +850,8 @@ func (v clients) Rebind(ctx context.Context, who Caller, node entity.NodeID) err
 	case rec.Protect && who.Principal != rec.Owner:
 		return ErrNotYours
 	}
-	return t.setReach(ctx, who.Client, func(r *entity.Reach) { r.Callback, r.Down = node, false })
+	_, err = t.setReach(ctx, who.Client, func(r *entity.Reach) { r.Callback, r.Down = node, false })
+	return err
 }
 
 func (v clients) Destroy(ctx context.Context, who Caller) error {
@@ -776,7 +867,7 @@ func (v clients) Destroy(ctx context.Context, who Caller) error {
 		return staleIfGone(err)
 	case rec.Protect && who.Principal != rec.Owner:
 		return ErrNotYours
-	case len(rec.Reach.Sessions) > 0 || t.holdsAny(who.Client):
+	case t.liveReach(rec.Reach.Sessions) > 0 || t.holdsAny(who.Client):
 		return ErrClientBusy
 	}
 	if err := t.d.Records.Clients().Delete(ctx, who.Client); err != nil {

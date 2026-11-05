@@ -33,7 +33,7 @@ func testClients(t *testing.T, kvo Opener) {
 	n1, n2 := entity.NodeID{15: 1}, entity.NodeID{15: 2}
 	nfs := entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolNFSv4, Name: []byte("host-a"), Boot: [8]byte{1},
 		Owner: alice, Protect: true, Recovery: entity.RecoverRefusal, Lease: entity.ClientLease{Node: n1},
-		Reach: entity.Reach{Callback: n2, Down: true, Sessions: []entity.NodeID{n1}}, Adapter: []byte{1, 2, 3}}
+		Reach: entity.Reach{Callback: n2, Down: true, Sessions: []entity.ReachNode{{Node: n1, Epoch: 1}}}, Adapter: []byte{1, 2, 3}}
 	must(t, cs.Create(ctx, nfs))
 	nfs.Shards = []entity.ShardMark{{Shard: 1, Done: 4}}
 	must(t, cs.MarkShard(ctx, nfs.ID, nfs.Shards[0]))
@@ -152,9 +152,9 @@ func testClientAddSession(t *testing.T, kvo Opener) {
 	cs := s.Clients()
 	cl := entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolNFSv4, Name: []byte("h"), Adapter: []byte("v0")}
 	must(t, cs.Create(ctx, cl))
-	n1, n2 := entity.NodeID{15: 1}, entity.NodeID{15: 2}
+	n1, n2 := entity.ReachNode{Node: entity.NodeID{15: 1}, Epoch: 1}, entity.ReachNode{Node: entity.NodeID{15: 2}, Epoch: 1}
 	got, err := cs.AddSession(ctx, cl.ID, n1, []byte("v0"), []byte("first"))
-	if err != nil || !bytes.Equal(got.Adapter, []byte("first")) || !slices.Equal(got.Reach.Sessions, []entity.NodeID{n1}) {
+	if n1.Gen = 1; err != nil || !bytes.Equal(got.Adapter, []byte("first")) || !slices.Equal(got.Reach.Sessions, []entity.ReachNode{n1}) {
 		t.Fatalf("the first session: %+v, %v", got, err)
 	}
 
@@ -165,14 +165,47 @@ func testClientAddSession(t *testing.T, kvo Opener) {
 		t.Errorf("a replay after a restart: %+v, %v", cur, err)
 	}
 	if got, err := cs.AddSession(ctx, cl.ID, n1, []byte("first"), []byte("third")); err != nil ||
-		!slices.Equal(got.Reach.Sessions, []entity.NodeID{n1}) {
-		t.Errorf("a node's second session: %+v, %v", got, err)
+		!slices.Equal(got.Reach.Sessions, []entity.ReachNode{{Node: n1.Node, Epoch: 1, Gen: 2}}) {
+		t.Errorf("a node's second session: %+v, %v; want its one entry, its Gen raised", got, err)
+	}
+	restarted := entity.ReachNode{Node: n1.Node, Epoch: 2, Gen: 3}
+	if got, err := cs.AddSession(ctx, cl.ID, restarted, []byte("third"), []byte("third")); err != nil ||
+		!slices.Equal(got.Reach.Sessions, []entity.ReachNode{restarted}) {
+		t.Errorf("a session of the node after its restart: %+v, %v; want its entry under the new epoch", got, err)
 	}
 	if _, err := cs.AddSession(ctx, cl.ID, n2, []byte("third"), make([]byte, 4<<10+1)); !invalid(err) {
 		t.Errorf("adapter bytes over 4 KiB: %v", err)
 	}
 	if got, err := cs.Get(ctx, cl.ID); err != nil || !bytes.Equal(got.Adapter, []byte("third")) || len(got.Reach.Sessions) != 1 {
 		t.Errorf("after a replay and a refusal: %+v, %v", got, err)
+	}
+}
+
+// RFC 14 §2.1: DeleteUnreached keeps a record a node is listed in,
+// returning it with ErrRecordChanged, and deletes one no node is, its name
+// row included.
+func testClientDeleteUnreached(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cs := s.Clients()
+	cl := entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolSMB, Name: []byte("h")}
+	must(t, cs.Create(ctx, cl))
+	n := entity.ReachNode{Node: entity.NodeID{15: 1}, Epoch: 1}
+	_, err := cs.AddSession(ctx, cl.ID, n, nil, nil)
+	must(t, err)
+	if cur, err := cs.DeleteUnreached(ctx, cl.ID); !errors.Is(err, kvstore.ErrRecordChanged) || cur.Reach.GenOf(n.Node) != 1 {
+		t.Errorf("a delete of a listed client: %+v, %v; want ErrRecordChanged with the record", cur, err)
+	}
+	got, err := cs.Get(ctx, cl.ID)
+	must(t, err)
+	next := got
+	next.Reach.Sessions = nil
+	_, err = cs.Put(ctx, got, next)
+	must(t, err)
+	if _, err := cs.DeleteUnreached(ctx, cl.ID); err != nil {
+		t.Fatalf("a delete of an unlisted client: %v", err)
+	}
+	if _, err := cs.ByName(ctx, entity.ProtocolSMB, []byte("h")); !merrs.IsNotFoundError(err) {
+		t.Errorf("an unlisted client after its delete: %v, want it gone", err)
 	}
 }
 

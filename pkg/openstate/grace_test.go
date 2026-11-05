@@ -615,7 +615,7 @@ func TestEndedClientEndsGraceEarly(t *testing.T) {
 		return err
 	}
 	xc.Boot = [8]byte{2}
-	if _, err := g.Connect(ctx, xc, nil); err != nil {
+	if _, _, err := g.Connect(ctx, xc, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := free(); !errors.Is(err, ErrGrace) {
@@ -1302,7 +1302,7 @@ func TestServeLeasesOnlyUnleasedNFSv4Clients(t *testing.T) {
 func TestCollisionBeforeServeLeavesAStatefulClient(t *testing.T) {
 	for name, take := range map[string]func(f *fixture, c Client) error{
 		"Propose": func(f *fixture, c Client) error { _, err := f.Propose(ctx, c, addr); return err },
-		"Connect": func(f *fixture, c Client) error { _, err := f.Connect(ctx, c, nil); return err },
+		"Connect": func(f *fixture, c Client) error { _, _, err := f.Connect(ctx, c, nil); return err },
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
@@ -1328,7 +1328,7 @@ func TestSilentClientsNameLapsesAfterARestart(t *testing.T) {
 	for _, restart := range []bool{false, true} {
 		for name, take := range map[string]func(f *fixture, c Client) error{
 			"Propose": func(f *fixture, c Client) error { _, err := f.Propose(ctx, c, addr); return err },
-			"Connect": func(f *fixture, c Client) error { _, err := f.Connect(ctx, c, nil); return err },
+			"Connect": func(f *fixture, c Client) error { _, _, err := f.Connect(ctx, c, nil); return err },
 		} {
 			t.Run(fmt.Sprintf("%s restart=%v", name, restart), func(t *testing.T) {
 				f := newFixture(t)
