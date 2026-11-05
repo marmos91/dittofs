@@ -235,7 +235,7 @@ func (t *tracker) syncFail() {
 	t.syncFailed = true
 }
 
-// clockBox holds the clock the idle sealer installs on a stream. IdleClock
+// clockBox holds the clock the idle sealer installs on a stream. idleClock
 // below is an atomic pointer, so the interface value it stores needs a box
 // to point at: the box is the unit the pointer's loads and stores trade in,
 // published whole by one Store.
@@ -552,10 +552,14 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 	// The idle stamp's time is read here, before the lock, so appendMu is
 	// never held across Clock.Elapsed — the decision comment at appendMu
 	// holds for the clock's own mutex too. The stamp taken below therefore
-	// names the call's arrival, not its reservation: waiting on the lock can
-	// only make the name earlier than the reservation, which shortens the
-	// idle time by that wait — harmless, for it errs toward sealing sooner,
-	// never toward stranding a segment past its age.
+	// names the call's arrival, not its reservation: the lock's wait, a
+	// drain park while a seal runs, and the roll's own segment-sealing I/O
+	// can each sit between the reading here and the reservation below, and
+	// only shorten the measured idle time by the span, never lengthen it —
+	// harmless, for it errs toward sealing sooner, never toward stranding a
+	// segment past its age. A seal's pass that reads the stream while this
+	// append is in flight can therefore see a stamp below its own now by
+	// that same span; the pass's own wait bound comment covers that side.
 	var now time.Duration
 	stamp := false
 	if b := s.idleClock.Load(); b != nil {
@@ -1100,10 +1104,10 @@ func (s *Stream) Seal(early bool) (SealResult, error) {
 }
 
 // sealLocked is Seal under the append lock: the caller enters holding
-// appendMu and this body releases it on every path, exactly as Seal's own
-// body did before the split, so a caller that has the lock — the idle seal's
-// check-and-take below — can run the whole seal without releasing it between
-// deciding and acting. Behaviour, error values and comments are Seal's own.
+// appendMu and this body releases it on every path, exactly as Seal does,
+// so a caller that has the lock — the idle seal's check-and-take below —
+// can run the whole seal without releasing it between deciding and acting.
+// Behaviour, error values and comments are Seal's own.
 func (s *Stream) sealLocked(early bool) (SealResult, error) {
 	if s.closed {
 		s.appendMu.Unlock()
