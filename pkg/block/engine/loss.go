@@ -28,6 +28,58 @@ type losses struct {
 	// has not yet reached a Sync of theirs: that Sync's SyncError raises them
 	// no further.
 	windows map[entity.FileID]bool
+
+	// kept is each file's loss events that found no pending write of it:
+	// the write may be between the journal's WriteAt and its insert, which
+	// checks here. It is read and written only under the file's entry lock,
+	// and keptMu, taken after that lock, guards the map itself.
+	//
+	// ponytail: an event of a file never written again, as of a write
+	// already committed, stays until the process ends. Prune it with the
+	// store-side loss path (#3734), which takes the events of committed writes.
+	keptMu sync.Mutex
+	kept   map[entity.FileID][]journal.LossEvent
+}
+
+// keep keeps ev, which found no pending write of f. The caller holds f's
+// entry lock.
+func (l *losses) keep(f entity.FileID, ev journal.LossEvent) {
+	l.keptMu.Lock()
+	defer l.keptMu.Unlock()
+	if l.kept == nil {
+		l.kept = map[entity.FileID][]journal.LossEvent{}
+	}
+	l.kept[f] = append(l.kept[f], ev)
+}
+
+// unmatched is the kept event naming f's write at version v, which is being
+// inserted, taken out, and found reports one was kept. The caller holds f's
+// entry lock.
+func (l *losses) unmatched(f entity.FileID, v journal.Version) (ev journal.LossEvent, found bool) {
+	l.keptMu.Lock()
+	defer l.keptMu.Unlock()
+	evs := l.kept[f]
+	if len(evs) == 0 {
+		return journal.LossEvent{}, false
+	}
+	// decision: a kept event below v belongs to a write already committed
+	// and is discarded, since a file's writes reach the engine in version
+	// order under its accept lock (see insert), so any earlier write was in
+	// the entry, where markLost would have found it, until it committed.
+	// Withdrawn with insert's own marker.
+	evs = slices.DeleteFunc(evs, func(e journal.LossEvent) bool {
+		if e.Version == v && !found {
+			ev, found = e, true
+			return true
+		}
+		return e.Version.Compare(v) < 0
+	})
+	if len(evs) == 0 {
+		delete(l.kept, f)
+	} else {
+		l.kept[f] = evs
+	}
+	return ev, found
 }
 
 // seqOf is f's loss sequence. The caller holds mu.
@@ -163,27 +215,28 @@ func (e *Engine) drain(b *binding) {
 		(*h)()
 	}
 	for _, ev := range lost {
-		dones = append(dones, e.markLost(entity.FileID(ev.File.Bytes()), ev)...)
+		dones = append(dones, e.markLost(l, entity.FileID(ev.File.Bytes()), ev)...)
 	}
 }
 
 // markLost applies ev to the pending write of f whose record it dropped, the
 // one at ev's version: a corrupt loss marks it lost; a failed window's drops
 // it, out of the entry, or, when a batch claimed it, out of that batch, which
-// neither commits it nor calls its Done. It answers the Done of a dropped
-// write, which the caller runs once its locks are released. The caller holds
-// the journal's loss lock, which is taken before an entry's.
-func (e *Engine) markLost(f entity.FileID, ev journal.LossEvent) (dones []func()) {
-	fe := e.files.lockOf(f)
-	if fe == nil {
-		return nil
-	}
+// neither commits it nor calls its Done. An event that finds no pending write
+// is kept, under the entry's lock, for the write's insert, which applies it.
+// It answers the Done of a dropped write, which the caller runs once its
+// locks are released. The caller holds the journal's loss lock, which is
+// taken before an entry's.
+func (e *Engine) markLost(l *losses, f entity.FileID, ev journal.LossEvent) (dones []func()) {
+	fe := e.files.lockFor(f)
 	defer e.files.unlock(f, fe)
+	found := false
 	for i := 0; i < len(fe.ops); i++ {
 		op := &fe.ops[i]
 		if op.kind != opWrite || op.dropped || op.version != ev.Version || !overlaps(op.extent, ev.Extent) {
 			continue
 		}
+		found = true
 		if ev.Reason != journal.LossFailedWindow {
 			op.lost = true
 			continue
@@ -198,6 +251,9 @@ func (e *Engine) markLost(f entity.FileID, ev journal.LossEvent) (dones []func()
 		}
 		fe.ops = slices.Delete(fe.ops, i, i+1)
 		i--
+	}
+	if !found {
+		l.keep(f, ev)
 	}
 	return dones
 }

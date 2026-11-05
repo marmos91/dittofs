@@ -190,3 +190,39 @@ func TestALossMarksOnlyItsRecordsWrite(t *testing.T) {
 		t.Errorf("size %d, charged %d; want the older write committed as written, size 8 charging 8", got.Size, got.Charged)
 	}
 }
+
+// A corrupt loss drained between a write's WriteAt and its insert finds no
+// pending write to mark, so the insert applies it: the batch commits the
+// write lost, charging nothing, a read answers ErrLost, and Done runs once.
+func TestALossBeforeTheWritesInsertCommitsItLost(t *testing.T) {
+	u := newUnit(t)
+	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
+	f := made.ID
+	var once sync.Once
+	u.e.OnWritten(func() {
+		once.Do(func() {
+			u.lose(f, 0, 4)
+			u.e.LossSeq(u.share.ID, f) // drains the loss
+		})
+	})
+	var dones atomic.Int32
+	if _, err := u.e.Write(t.Context(), u.share.ID, f, 0, []byte("lost"), engine.WriteOpts{Done: func() { dones.Add(1) }}); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Size != 4 || got.Charged != 0 {
+		t.Errorf("size %d, charged %d; want size 4 charging nothing", got.Size, got.Charged)
+	}
+	if _, err := u.e.Read(t.Context(), u.share.ID, f, 0, make([]byte, 4)); !errors.Is(err, vfserr.ErrLost) {
+		t.Errorf("a read of the lost write: %v, want ErrLost", err)
+	}
+	if n := dones.Load(); n != 1 {
+		t.Errorf("Done ran %d times, want once", n)
+	}
+}
