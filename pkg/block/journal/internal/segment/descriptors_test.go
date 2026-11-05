@@ -2638,3 +2638,52 @@ func TestDescriptorsAWriteUnderTheParkedSyncStaysUncovered(t *testing.T) {
 		t.Fatalf("segment 1's descriptor count is %d after a covering sync and reads past the bound, want it evicted", got)
 	}
 }
+
+// TestDescriptorsTruncateNumbersTheCut checks Ref.Truncate's pin: a cut
+// through a reference numbers the descriptor as a write does, so the cut
+// stays pinned until a sync covers it — an acquire of another segment under
+// the bound is refused ErrNoDescriptor while the cut is unsynced, and passes
+// once a sync has covered it. It catches a Truncate that does not number
+// itself, whose descriptor a later read would close and hand a truncated
+// file to whoever reopens it.
+func TestDescriptorsTruncateNumbersTheCut(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 1) // a bound of one: every later acquire needs the slot back
+	e.stock(t, 2)
+	shutRegister(t, e.c)
+
+	r, err := e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("acquiring segment 1: %v", err)
+	}
+	if err := r.Truncate(1024); err != nil {
+		t.Fatalf("truncating segment 1: %v", err)
+	}
+	r.Release()
+
+	// The cut is unsynced, so the descriptor stays pinned: the bound of
+	// one has nothing to give the next acquire.
+	if _, err := e.c.Acquire(2); !errors.Is(err, segment.ErrNoDescriptor) {
+		t.Fatalf("acquiring segment 2 with the truncation unsynced = %v, want ErrNoDescriptor", err)
+	}
+	if got := e.openCount(1); got != 1 {
+		t.Fatalf("segment 1's descriptor count is %d with an unsynced cut, want it held", got)
+	}
+
+	// A sync through the descriptor covers the cut, so the descriptor
+	// becomes evictable once its reference drops and the next acquire
+	// takes the slot.
+	r, err = e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("reacquiring segment 1: %v", err)
+	}
+	if err := r.Sync(); err != nil {
+		t.Fatalf("syncing the cut: %v", err)
+	}
+	r.Release()
+	e.read(t, 2)
+	if got := e.openCount(1); got != 0 {
+		t.Fatalf("segment 1's descriptor count is %d after the covering sync, want it evicted", got)
+	}
+}
