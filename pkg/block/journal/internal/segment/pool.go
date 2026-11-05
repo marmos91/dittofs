@@ -88,11 +88,10 @@ type PoolCounters struct {
 // ready to be taken by a roll that costs no I/O, and the worker that keeps
 // each class at its target by making spares off the write path.
 //
-// decision: ready, held, pending, incoming, started, stopped, deviceFull and
-// retirer
-// sit under the capacity domain of RFC 1 §8.2 — store-wide counters, no I/O
-// under p.mu, no lock acquired while it is held, and never held across a Maker
-// or a Set call: those take locks of this same domain, and no two locks of one
+// decision: ready, held, pending, incoming, started, stopped, closing,
+// deviceFull and retirer sit under the capacity domain of RFC 1 §8.2 —
+// store-wide counters, no I/O under p.mu, no lock acquired while it is held,
+// and never held across a Maker or a Set call: those take locks of this same domain, and no two locks of one
 // domain are held at once. spareRefusals is a store-wide counter of the same
 // domain kept in an atomic without p.mu, for the roll counts it outside any
 // lock the pool might hold. Withdrawn the day a recorder of the domain's order
@@ -109,6 +108,7 @@ type Pool struct {
 	incoming   [Reserve + 1]int              // recycles in flight, reserved per class; guarded by mu
 	started    bool                          // guarded by mu
 	stopped    bool                          // guarded by mu
+	closing    bool                          // guarded by mu
 	deviceFull bool                          // guarded by mu
 	retirer    *Retirer                      // the source of recycled spares, nil when none; guarded by mu
 
@@ -565,6 +565,16 @@ func (p *Pool) Stop() {
 	p.wg.Wait()
 }
 
+// Closing tells the refill to make nothing more, without joining it: the close
+// of the set calls it before the retirement queue is dropped, whose wake would
+// otherwise send a pool that is short into a make on a set being closed. Stop
+// still joins the worker. It does not refuse takes or recycles; only Stop does.
+func (p *Pool) Closing() {
+	p.mu.Lock()
+	p.closing = true
+	p.mu.Unlock()
+}
+
 // worker is the refill: on each kick it makes spares, one at a time, until
 // every class is at its target or a make fails — then it waits for the next
 // kick, which every take, refused or not, sends. Making a segment never
@@ -632,10 +642,18 @@ func (p *Pool) refill() bool {
 		// retirement queue's emptying, or an unlink's own kick, starts the
 		// next. Ceiling: one queued full segment stalls every make even when
 		// the pool is short by more than one, and so does a queued segment
-		// whose claim another path holds, for as long as that claim lasts.
+		// whose claim another path holds, for as long as that claim lasts, a
+		// queued segment held by a read-only interval, and one whose
+		// retirement keeps failing and is requeued.
 		// Withdrawn when spare refusals show rolls refused while a queued
 		// recycle stays stuck.
 		if p.retiredToHand() {
+			return true
+		}
+		p.mu.Lock()
+		closing := p.closing
+		p.mu.Unlock()
+		if closing {
 			return true
 		}
 

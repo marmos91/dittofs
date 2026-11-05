@@ -6,14 +6,15 @@ import (
 )
 
 // fullToHand reports whether a full-size sealed segment is queued for a
-// retirement the worker will run: the retirer is started and not stopped, and
-// the queue holds a segment that recycles. A retirer that is not started
-// counts nothing to hand, because its queue never drains. It takes r.mu and
+// retirement the worker will run: the retirer is started and the queue holds a
+// segment that recycles (Stop empties the queue, so a stopped retirer holds
+// none). A retirer that is not started counts nothing to hand, because its
+// queue never drains. It takes r.mu and
 // nothing else, and is called with no lock of the pool held.
 func (r *Retirer) fullToHand() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.started && !r.stoppedLocked() && len(r.full) > 0
+	return r.started && len(r.full) > 0
 }
 
 // retiredToHand asks the attached retirer whether a full-size retired segment
@@ -78,8 +79,9 @@ func NewGroup(c GroupConfig) *Group {
 // the idle sealer, the retirer and the pool, so every background worker is
 // joined before the segments it touches are closed; last the cache, whose
 // Shutdown waits for every reader's reference and then closes every
-// descriptor. The retirer stops before the pool, so no recycle lands in a
-// stopped pool mid-close. Errors are joined. Close is idempotent and safe
+// descriptor. The pool is told to make nothing before the retirer stops, whose
+// drop of its queue wakes it, and the retirer is joined before the pool, so no
+// recycle lands in a stopped pool mid-close. Errors are joined. Close is idempotent and safe
 // concurrently: a second call waits for the first and returns nil.
 func (g *Group) Close() error {
 	first := false
@@ -90,6 +92,7 @@ func (g *Group) Close() error {
 		if g.cfg.Idle != nil {
 			g.cfg.Idle.Stop()
 		}
+		g.cfg.Pool.Closing()
 		if g.cfg.Retirer != nil {
 			g.cfg.Retirer.Stop()
 		}

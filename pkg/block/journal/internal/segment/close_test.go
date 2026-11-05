@@ -3,6 +3,7 @@ package segment_test
 import (
 	"errors"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -249,9 +250,10 @@ func TestRollENOSPCAsksRetirementQueue(t *testing.T) {
 // all of them.
 type groupEnv struct {
 	rollEnv
-	ss *segment.Streams
-	r  *segment.Retirer
-	g  *segment.Group
+	ss   *segment.Streams
+	r    *segment.Retirer
+	idle *segment.IdleSealer
+	g    *segment.Group
 }
 
 // groupBuild builds a group over a fresh seam. Its stream, retirer and pool
@@ -269,8 +271,11 @@ func groupBuild(t *testing.T) groupEnv {
 	r.Start()
 	t.Cleanup(r.Stop)
 	t.Cleanup(func() { _ = ss.Close() })
-	g := segment.NewGroup(segment.GroupConfig{Streams: ss, Pool: e.pool, Retirer: r, Cache: e.cache})
-	return groupEnv{rollEnv: e, ss: ss, r: r, g: g}
+	idle := segment.NewIdleSealer(ss, journaltest.NewStopwatchClock(), 1<<20, nil, nil)
+	idle.Start()
+	t.Cleanup(idle.Stop)
+	g := segment.NewGroup(segment.GroupConfig{Streams: ss, Idle: idle, Pool: e.pool, Retirer: r, Cache: e.cache})
+	return groupEnv{rollEnv: e, ss: ss, r: r, idle: idle, g: g}
 }
 
 // appendOne appends a 64-byte write through the group's stream and returns
@@ -509,5 +514,85 @@ func TestGroupCloseIdempotent(t *testing.T) {
 	g := segment.NewGroup(segment.GroupConfig{Streams: ss, Pool: bare.pool, Cache: bare.cache})
 	if err := g.Close(); err != nil {
 		t.Fatalf("Close without idle sealer or retirer = %v, want nil", err)
+	}
+}
+
+// goroutinesIn counts the goroutines whose stack holds frame.
+func goroutinesIn(frame string) int {
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	return strings.Count(string(buf), frame)
+}
+
+// TestGroupCloseJoinsIdleSealerAndPool: when Close returns, the idle sealer's
+// and the refill's goroutines are gone and the pool refuses a take, before any
+// cleanup of the test runs. It catches a close that leaves either worker
+// running.
+func TestGroupCloseJoinsIdleSealerAndPool(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := groupBuild(t)
+	if got := goroutinesIn("(*IdleSealer).run"); got == 0 {
+		t.Fatal("the idle sealer's worker is not running before Close")
+	}
+	if err := e.g.Close(); err != nil {
+		t.Fatalf("Close = %v, want nil", err)
+	}
+	if got := goroutinesIn("(*IdleSealer).run"); got != 0 {
+		t.Fatalf("%d idle sealer workers outlived Close, want none", got)
+	}
+	if got := goroutinesIn("(*Pool).worker"); got != 0 {
+		t.Fatalf("%d refill workers outlived Close, want none", got)
+	}
+	if _, err := e.pool.Take(segment.Content); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("a take after Close = %v, want core.ErrClosed", err)
+	}
+}
+
+// TestGroupCloseMakesNoSpare: a short pool with a full-sealed segment queued
+// for a retirement that cannot run makes no spare while the group closes; the
+// close's own drop of the queue must not wake the refill into a make. It
+// catches a close that creates a segment file on a set it is closing.
+func TestGroupCloseMakesNoSpare(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	for range 20 {
+		var ro readOnlyFlag
+		ro.set(true)
+		e, _ := retirer(t, segment.Targets{Content: 1}, ro.check)
+		id := e.segment(true)
+		e.r.Start()
+		e.r.Enqueue(id, segment.NotHeld)
+		e.p.Start()
+		quietPool(e.p)
+		creates := e.seam.Calls(journaltest.OpCreate)
+
+		ss := segment.NewStreams(1, streamIdentity, e.set, e.p, e.c)
+		g := segment.NewGroup(segment.GroupConfig{Streams: ss, Pool: e.p, Retirer: e.r, Cache: e.c})
+		if err := g.Close(); err != nil {
+			t.Fatalf("Close = %v, want nil", err)
+		}
+		if got := e.seam.Calls(journaltest.OpCreate); got != creates {
+			t.Fatalf("Close created %d files with a full segment queued, want none", got-creates)
+		}
+	}
+}
+
+// TestGroupCloseSecondCallAnswersNilAfterFailure: when the first Close fails,
+// the error reaches that call alone and every later call answers nil. It
+// catches a close that hands its error to each caller.
+func TestGroupCloseSecondCallAnswersNilAfterFailure(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := groupBuild(t)
+	p := e.appendOne(t, 1)
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpClose, streamSegName(p.Loc.Segment), 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if err := e.g.Close(); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the first Close = %v, want the descriptor close's EIO", err)
+	}
+	if err := e.g.Close(); err != nil {
+		t.Fatalf("the second Close = %v, want nil", err)
 	}
 }

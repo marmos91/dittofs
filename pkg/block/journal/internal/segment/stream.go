@@ -385,11 +385,10 @@ var ErrBadRoll = errors.New("segment: the roll options do not fit the record")
 // caller's to drain and a full device is the operator's, and the two must not
 // be answered alike (R21). It is not counted. When such a segment is queued
 // the recycle is what clears the shortage, so the refusal is the counted
-// `spare` one below. Otherwise the refusal
-// naming `spare` is counted once and returned unchanged (R20, R22). Every
-// other answer passes through unchanged and uncounted: a stopped pool's
-// core.ErrClosed, when it carries no NoSpaceError, and a header-only roll's
-// headroom-named refusal.
+// `spare` one below. Otherwise the refusal naming `spare` is counted once and
+// returned unchanged (R20, R22). Every other answer passes through unchanged
+// and uncounted: a stopped pool's core.ErrClosed, when it carries no
+// NoSpaceError, and a header-only roll's headroom-named refusal.
 //
 // It runs with no lock held and makes no I/O: the takes go to the pool and
 // the hold, which reach the ledger alone, so a roll costs only the take
