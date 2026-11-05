@@ -314,8 +314,8 @@ func TestTheVerifierAndAFlushAcrossALoss(t *testing.T) {
 
 // A flush whose sync fails answers the engine's error and still records
 // the loss it was across for its open, so the next flush answers no ErrLost
-// for that loss again; one answered a retry records nothing, so its retry
-// answers ErrLost.
+// for that loss again; one answered a retry, or cancelled, records
+// nothing, so its retry answers ErrLost.
 func TestAFailedFlushRecordsTheLoss(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
@@ -348,6 +348,23 @@ func TestAFailedFlushRecordsTheLoss(t *testing.T) {
 	s.engine.commitErr = nil
 	if _, err := s.Commit(ctx, pc, other, 0, 0); !errors.Is(err, vfs.ErrLost) {
 		t.Errorf("the retried flush across the loss: %v, want ErrLost", err)
+	}
+
+	// A flush cancelled during its sync records nothing either.
+	third := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
+	s.engine.mu.Lock()
+	s.engine.loss = 3
+	s.engine.mu.Unlock()
+	cctx, cancel := context.WithCancel(ctx)
+	s.engine.committing = func(entity.FileID) { cancel() }
+	s.engine.commitErr = context.Canceled
+	if _, err := s.Commit(cctx, pc, third, 0, 0); err == nil || errors.Is(err, vfs.ErrLost) {
+		t.Errorf("a flush cancelled during its sync: %v, want the cancellation", err)
+	}
+	s.engine.committing = nil
+	s.engine.commitErr = nil
+	if _, err := s.Commit(ctx, pc, third, 0, 0); !errors.Is(err, vfs.ErrLost) {
+		t.Errorf("the flush after a cancelled one across the loss: %v, want ErrLost", err)
 	}
 }
 

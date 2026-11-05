@@ -141,6 +141,12 @@ func (fs *Filesystem) Commit(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 		if errors.Is(err, vfs.ErrDelay) || ctx.Err() != nil {
 			return vfs.Verifier{}, err
 		}
+		// decision: any other failure counts as the report of the file's
+		// loss, since the engine does not name a failed window's error. So a
+		// flush failing for another reason, after a loss from a corrupt
+		// record that failed no sync, marks that loss seen without ErrLost.
+		// Overturned once the engine's Commit names the failed window's
+		// error, when only that one should record the loss.
 		loss = fs.engine.LossSeq(f.Share, f.ID)
 	}
 	if c.Protocol == entity.ProtocolSMB && ref.Kind == openstate.RefOpened {
