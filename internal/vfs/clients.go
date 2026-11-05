@@ -155,6 +155,12 @@ func (fs *Filesystem) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientI
 	}
 	defer done()
 	gen, err := fs.clients.Disconnect(ctx, cl, sess, end)
+	if errors.Is(err, openstate.ErrStaleClient) && end.Last {
+		// A repeat after the release, which the adapter counts as success: the
+		// Callbacks a failed first call left go too.
+		fs.reg.unregister(cl)
+		return 0, openErr(err)
+	}
 	if err != nil || !end.Last || gen != 0 {
 		return gen, openErr(err)
 	}

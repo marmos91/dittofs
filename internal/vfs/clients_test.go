@@ -1330,3 +1330,26 @@ func TestAnNLMLockGrantIsResentPastTheBound(t *testing.T) {
 	}
 	s.ClientEnded(id, nil, openstate.RevokedLeaseExpired)
 }
+
+// A repeat of a last Disconnect that open state already released answers
+// StaleClient, which the adapter counts as success, and drops the Callbacks
+// a first call that failed before its release check left registered.
+func TestARepeatedLastDisconnectDropsTheCallbacks(t *testing.T) {
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	ctx, as := t.Context(), signedIn(alice.Principal, 1)
+	id, gen, err := s.Connect(ctx, as, smb("idle-pc", 1), &vfstest.RecordingCallbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	end := vfs.SessionEnd{Last: true, Gen: gen}
+	if _, err := s.clients.Disconnect(ctx, id, vfs.SessionRef{ID: 1}, end); err != nil {
+		t.Fatal(err) // released in open state, as a first call that failed after it
+	}
+	if _, err := s.Disconnect(ctx, as, id, vfs.SessionRef{ID: 1}, end); !stateKind(err, vfs.StateStaleClient) {
+		t.Fatalf("the repeated last Disconnect: %v, want StaleClient", err)
+	}
+	if _, ok := s.reg.cb[id]; ok {
+		t.Error("a repeated last Disconnect answering StaleClient kept the client's Callbacks")
+	}
+}
