@@ -1451,3 +1451,256 @@ func TestPoolAHoldClosedDuringAMakeLeavesTheTarget(t *testing.T) {
 		func(c segment.PoolCounters) bool { return c.Spares == 2 })
 	p.Stop()
 }
+
+// TestPoolWantRecycleReservesTheShortestClassFirst: a recycle's spare is
+// reserved in the first class short of its target, in the refill's own order —
+// headroom, then reserve, then content — and the reservation counts against
+// the next one, so two reservations against a target of one give one true and
+// one false. No class short and a stopped pool answer false.
+func TestPoolWantRecycleReservesTheShortestClassFirst(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	t.Run("the refill's order", func(t *testing.T) {
+		// No class is short: nothing to reserve.
+		_, _, _, empty := poolOf(t, segment.Targets{Content: 0, Headroom: 0, Reserve: 0}, noMax, 0, nil)
+		if _, ok := empty.WantRecycleForTest(); ok {
+			t.Fatal("a recycle was wanted over a pool at its targets, want none")
+		}
+
+		// The headroom alone is short: it is wanted first, and a second
+		// reservation against the one-spare headroom is refused — the
+		// reservation counts against the next one, so a target of one holds
+		// exactly one recycle.
+		_, _, _, head := poolOf(t, segment.Targets{Content: 0, Headroom: 1, Reserve: 0}, noMax, 0, nil)
+		if c, ok := head.WantRecycleForTest(); !ok || c != segment.Headroom {
+			t.Fatalf("a recycle was wanted for %v over a short headroom, want Headroom", c)
+		}
+		if _, ok := head.WantRecycleForTest(); ok {
+			t.Fatal("a second recycle was wanted against a headroom one reservation fills, want none")
+		}
+		// The failure gives the slot back, so the headroom is short again.
+		head.RecycleFailedForTest(segment.Headroom)
+		if c, ok := head.WantRecycleForTest(); !ok || c != segment.Headroom {
+			t.Fatalf("after the giveback no recycle was wanted for the headroom, want it short again: %v", c)
+		}
+
+		// The reserve is wanted after the headroom, which the outstanding
+		// reservation above fills: over targets the headroom's and the
+		// reserve's, the reserve answers once the headroom's slot is taken.
+		_, _, _, res := poolOf(t, segment.Targets{Content: 0, Headroom: 1, Reserve: 2}, noMax, 0, nil)
+		if c, ok := res.WantRecycleForTest(); !ok || c != segment.Headroom {
+			t.Fatalf("a recycle was wanted for %v over a short headroom, want Headroom", c)
+		}
+		res.RecycleFailedForTest(segment.Headroom)
+		c, ok := res.WantRecycleForTest()
+		if !ok || c != segment.Headroom {
+			t.Fatalf("after the giveback a recycle was wanted for %v, want the short headroom again", c)
+		}
+		// The headroom's slot stays reserved: the reserve answers next.
+		c, ok = res.WantRecycleForTest()
+		if !ok || c != segment.Reserve {
+			t.Fatalf("a recycle was wanted for %v over a short reserve the headroom's reservation leaves, want Reserve", c)
+		}
+
+		// Content rides last: once the headroom's and the reserve's slots are
+		// reserved against them, the content class answers.
+		_, _, _, con := poolOf(t, segment.Targets{Content: 2, Headroom: 1, Reserve: 1}, noMax, 0, nil)
+		if c, ok := con.WantRecycleForTest(); !ok || c != segment.Headroom {
+			t.Fatalf("a recycle was wanted for %v over a short headroom, want Headroom", c)
+		}
+		if c, ok := con.WantRecycleForTest(); !ok || c != segment.Reserve {
+			t.Fatalf("a recycle was wanted for %v over the reserve the headroom's reservation leaves, want Reserve", c)
+		}
+		c, ok = con.WantRecycleForTest()
+		if !ok || c != segment.Content {
+			t.Fatalf("a recycle was wanted for %v with the headroom and the reserve reserved, want Content", c)
+		}
+	})
+
+	t.Run("the content class", func(t *testing.T) {
+		_, _, _, p := poolOf(t, segment.Targets{Content: 1, Headroom: 1, Reserve: 1}, noMax, 0, nil)
+		p.Start()
+		awaitCounters(t, "all three classes filled", p,
+			func(c segment.PoolCounters) bool {
+				return c.Spares == 1 && c.HeadroomBytes == segCap && c.RepackReserveBytes == segCap
+			})
+
+		// One spare is taken from the content class, leaving it short while
+		// the other two stand at their targets.
+		if _, err := p.Take(segment.Content); err != nil {
+			t.Fatalf("the content take: %v", err)
+		}
+		c, ok := p.WantRecycleForTest()
+		if !ok || c != segment.Content {
+			t.Fatalf("a recycle was wanted for %v over a short content class, want Content", c)
+		}
+
+		// A recycled spare lands in the class its reservation chose, and the
+		// landing cleared the reservation: the class holds its target now. A
+		// real recycle minted the spare in the ledger before it landed here,
+		// so the test carries that step too: the spare the recycle answers is
+		// adopted into the ledger, then handed to the pool.
+		id := core.SegmentID(99)
+		if err := p.Adopt(id, segment.Content); err != nil && !errors.Is(err, segment.ErrStarted) {
+			t.Fatalf("the adopted landing of the recycled spare: %v", err)
+		}
+		p.RecycledForTest(id, segment.Content)
+		if c := p.Counters(); c.Spares != 1 {
+			t.Fatalf("after the recycled spare landed the pool holds %d content spares, want 1", c.Spares)
+		}
+		if _, ok := p.WantRecycleForTest(); ok {
+			t.Fatal("a recycle was wanted after one landed in the short class, want none")
+		}
+		p.Stop()
+	})
+
+	t.Run("false once stopped", func(t *testing.T) {
+		_, _, _, p := poolOf(t, segment.Targets{Content: 0, Headroom: 2, Reserve: 0}, noMax, 0, nil)
+		p.Stop()
+		if _, ok := p.WantRecycleForTest(); ok {
+			t.Fatal("a recycle was wanted over a stopped pool, want none")
+		}
+	})
+}
+
+// TestPoolRefillMakesNoSpareForAnIncomingRecycle: the refill counts a
+// recycle's reservation against the class it reserved in — all three of them,
+// not the content class alone — so the worker makes no spare for a slot a
+// recycle is filling.
+//
+// The take that empties the class kicks on its own, and that kick is a race
+// the test cannot hold — it may wake the worker before the reservation stands.
+// So the first wake is spent deterministically first: makes fail at their
+// allocate for the take's kick alone, and the pool's own Warn at the failed
+// make is the gate that proves the pass ran and returned. With the worker
+// parked at its select and no wake queued, the reservation is taken with the
+// class provably empty, and the pass the test then kicks is the first that
+// can make anything: it must make nothing, for the slot a recycle is filling
+// is short only to the reservation. The passing code leaves the class empty
+// over every kick; a refill that misses the reservation makes the spare, and
+// the counter fills against the check.
+func TestPoolRefillMakesNoSpareForAnIncomingRecycle(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	for _, tc := range []struct {
+		class   segment.Class
+		targets segment.Targets
+	}{
+		{segment.Headroom, segment.Targets{Content: 0, Headroom: 1, Reserve: 0}},
+		{segment.Reserve, segment.Targets{Content: 0, Headroom: 0, Reserve: 1}},
+		{segment.Content, segment.Targets{Content: 1, Headroom: 0, Reserve: 0}},
+	} {
+		t.Run(tc.class.String(), func(t *testing.T) {
+			h := &logRecorder{}
+			seam, _, _, p := poolOf(t, tc.targets, noMax, 0, slog.New(h))
+			p.Start()
+			full := func(c segment.PoolCounters) bool {
+				switch tc.class {
+				case segment.Headroom:
+					return c.HeadroomBytes == segCap
+				case segment.Reserve:
+					return c.RepackReserveBytes == segCap
+				default:
+					return c.Spares == 1
+				}
+			}
+			awaitCounters(t, "the class filled", p, full)
+
+			// The next make fails at its allocate: the take's own kick below
+			// starts one that can only fail, whatever the wake's timing, and
+			// the Warn it fails with is the gate that proves the worker is
+			// parked again with the wake spent and the class empty.
+			if err := seam.Schedule(journaltest.Failing(journaltest.OpAllocate, "*", 1, syscall.EIO)); err != nil {
+				t.Fatalf("Schedule: %v", err)
+			}
+			if _, err := p.Take(tc.class); err != nil {
+				t.Fatalf("the %s take: %v", tc.class, err)
+			}
+			awaitLogged(t, h, slog.LevelWarn, "did not make a spare", 1)
+			if c := p.Counters(); full(c) {
+				t.Fatalf("the take-kick's failed make left the %s class full: %+v", tc.class, c)
+			}
+
+			// The reservation is taken with the class provably empty and the
+			// worker parked, so the passes the kicks below drive are the
+			// first that could make anything for the open slot.
+			class, ok := p.WantRecycleForTest()
+			if !ok || class != tc.class {
+				t.Fatalf("no recycle was wanted for the emptied %s class: got (%v, %v), want (%v, true)", tc.class, class, ok, tc.class)
+			}
+
+			// The reservation holds the slot: no pass may make a spare for a
+			// class a recycle is filling. A refill that misses the
+			// reservation makes one and the counter fills against this
+			// check.
+			for range 16 {
+				p.Kick()
+				for range 1 << 10 {
+					runtime.Gosched()
+				}
+				if c := p.Counters(); full(c) {
+					t.Fatalf("with the recycle's reservation held a pass refilled the empty %s class: %+v, want the slot still held", tc.class, c)
+				}
+			}
+
+			// The recycle fails and gives the slot back: the class is short
+			// again. The fault is cleared too, so the next kick's make both
+			// begins and lands — a refill that counts the reservation makes
+			// only this one, and the class holds exactly one spare.
+			if err := seam.Schedule(); err != nil {
+				t.Fatalf("the give-back's cleared Schedule: %v", err)
+			}
+			p.RecycleFailedForTest(tc.class)
+			awaitCounters(t, "the class refilled once the recycle gave the slot back", p, full)
+			p.Stop()
+		})
+	}
+}
+
+// TestPoolARecycledContentSparePaysTheDemandLevel: a recycled content spare
+// pays the demand level down exactly as a made one does — the landed spare
+// stands above the content target, and the level a refused Hold recorded is
+// demand the refill served, not demand that must be served twice. It catches
+// a recycled spare that leaves the level standing, whose next refused take
+// would make one spare the pool does not owe.
+func TestPoolARecycledContentSparePaysTheDemandLevel(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	p.Start()
+	awaitCounters(t, "the content spare ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 1 })
+
+	// Park the worker's makes, so the refused Hold below records its
+	// shortfall as a level while its demand's make is still parked at the
+	// create and nothing else lands in between.
+	park := seam.Hold(t, journaltest.OpCreate, "*")
+	_, err := p.Hold(2)
+	assertSpareRefusal(t, "the Hold(2) over one ready spare", err, 1)
+	if got := p.PendingForTest(); got != 1 {
+		t.Fatalf("the refused Hold recorded the demand level %d, want 1", got)
+	}
+
+	// A recycle reserves the open content slot — below the target plus the
+	// level — and the recycled spare lands above the target, paying the
+	// level down as a made one would.
+	class, ok := p.WantRecycleForTest()
+	if !ok || class != segment.Content {
+		t.Fatalf("no recycle was wanted for the content class: (%v, %v), want (Content, true)", class, ok)
+	}
+	p.RecycledForTest(core.SegmentID(99), segment.Content)
+	if got := p.PendingForTest(); got != 0 {
+		t.Fatalf("after the recycled spare landed the demand level stands at %d, want 0: a recycled content spare pays the level down exactly as a made one does", got)
+	}
+
+	// The parked make was drawn for the level the refill owed: released, it
+	// lands and the settle must not run the level negative — the pool
+	// settles, not stores one spare per refusal.
+	park.Release()
+	awaitCounters(t, "the demand's make landed", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+	if got := p.PendingForTest(); got != 0 {
+		t.Fatalf("after the parked make landed the demand level is %d, want 0", got)
+	}
+	p.Stop()
+}

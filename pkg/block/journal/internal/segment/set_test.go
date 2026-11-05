@@ -40,6 +40,22 @@ func (c *capturing) WithAttrs([]slog.Attr) slog.Handler { return c }
 func (c *capturing) WithGroup(string) slog.Handler { return c }
 
 // attr returns the value the record carries for key, or nil when it has none.
+// warns returns every Warn record so far whose message contains sub, so a
+// test can count the ledger's own double-retire log without racing the
+// goroutine that wrote it once the mutex inside Handle has settled.
+func (c *capturing) warns(sub string) []slog.Record {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var recs []slog.Record
+	for _, r := range c.recs {
+		if r.Level == slog.LevelWarn && strings.Contains(r.Message, sub) {
+			recs = append(recs, r)
+		}
+	}
+	return recs
+}
+
 func (c *capturing) attr(rec slog.Record, key string) any {
 	var val any
 	rec.Attrs(func(a slog.Attr) bool {
@@ -1175,4 +1191,156 @@ func TestAdoptSpareRefusals(t *testing.T) {
 	if err := s.Check(); err != nil {
 		t.Fatalf("after the refusals: %v", err)
 	}
+}
+
+// TestClaimRetirement: one call resolves whether a segment can be retired and
+// takes its claim as one step, so two retirements of one segment serialise on
+// it. Each row of its table serves or refuses exactly once: the absent id
+// counts a double retire and logs at Warn; a spare and an Active segment are
+// refused uncounted; a claimed segment is refused with ErrClaimed; a Sealed
+// segment answers its state and the seal's own full word; an Ended one answers
+// its state with no full word. After a successful Retire the claim is gone
+// with the entry, so nothing releases it.
+func TestClaimRetirement(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+
+	sealedFull := func(t *testing.T) (*Set, core.SegmentID) {
+		t.Helper()
+		s := NewSet(segCap, nil)
+		id := core.SegmentID(1)
+		if err := s.AddSpare(id, noMax); err != nil {
+			t.Fatalf("AddSpare: %v", err)
+		}
+		if err := s.Take(id); err != nil {
+			t.Fatalf("Take: %v", err)
+		}
+		if err := s.Seal(id, true); err != nil {
+			t.Fatalf("Seal: %v", err)
+		}
+		return s, id
+	}
+
+	t.Run("each row of the table", func(t *testing.T) {
+		var logs capturing
+		s := NewSet(segCap, slog.New(&logs))
+
+		absent := core.SegmentID(9)
+		st, full, err := s.ClaimRetirement(absent)
+		if !errors.Is(err, ErrNotInSet) {
+			t.Fatalf("the claim of the absent id: %v, want %v", err, ErrNotInSet)
+		}
+		if c := s.Counters(); c.DoubleRetires != 1 {
+			t.Fatalf("the claim of the absent id counted %d double retires, want 1", c.DoubleRetires)
+		}
+		if n := len(logs.warns(absentMessage)); n != 1 {
+			t.Fatalf("the claim of the absent id logged %d Warns, want 1", n)
+		}
+		if st != 0 || full {
+			t.Fatalf("the claim of the absent id answered (%d, %v), want the zero state and no full word", st, full)
+		}
+
+		spare := core.SegmentID(1)
+		if err := s.AddSpare(spare, noMax); err != nil {
+			t.Fatalf("AddSpare of the pool's spare: %v", err)
+		}
+		if st, full, err := s.ClaimRetirement(spare); !errors.Is(err, ErrWrongState) {
+			t.Fatalf("the claim of a spare: %v, want %v", err, ErrWrongState)
+		} else if st != 0 || full {
+			t.Fatalf("the claim of a spare answered (%d, %v), want the zero state and no full word", st, full)
+		}
+
+		active := core.SegmentID(2)
+		if err := s.AddSpare(active, noMax); err != nil {
+			t.Fatalf("AddSpare of the active segment: %v", err)
+		}
+		if err := s.Take(active); err != nil {
+			t.Fatalf("Take of the active segment: %v", err)
+		}
+		if st, full, err := s.ClaimRetirement(active); !errors.Is(err, ErrWrongState) {
+			t.Fatalf("the claim of an Active segment: %v, want %v", err, ErrWrongState)
+		} else if st != 0 || full {
+			t.Fatalf("the claim of an Active segment answered (%d, %v), want the zero state and no full word", st, full)
+		}
+
+		// A live claim is refused uncounted, whatever path took it: two
+		// retirements select one segment, or a repack holds its claim.
+		sealed := core.SegmentID(3)
+		if err := s.AddSpare(sealed, noMax); err != nil {
+			t.Fatalf("AddSpare of the sealed segment: %v", err)
+		}
+		if err := s.Take(sealed); err != nil {
+			t.Fatalf("Take of the sealed segment: %v", err)
+		}
+		if err := s.Seal(sealed, true); err != nil {
+			t.Fatalf("Seal: %v", err)
+		}
+		if !s.Claim(sealed) {
+			t.Fatal("the first Claim on the sealed segment was refused, want it held")
+		}
+		if st, full, err := s.ClaimRetirement(sealed); !errors.Is(err, ErrClaimed) {
+			t.Fatalf("the claim of a claimed segment: %v, want %v", err, ErrClaimed)
+		} else if st != 0 || full {
+			t.Fatalf("the claim of a claimed segment answered (%d, %v), want the zero state and no full word", st, full)
+		}
+
+		if c := s.Counters(); c.DoubleRetires != 1 {
+			t.Fatalf("the refusals counted %d double retires, want the one absent-id claim alone", c.DoubleRetires)
+		}
+		s.Release(sealed)
+		st, full, err = s.ClaimRetirement(sealed)
+		if err != nil {
+			t.Fatalf("the claim after the release: %v", err)
+		}
+		if st != Sealed || !full {
+			t.Fatalf("the claim of a full-sealed segment answered (%d, %v), want (Sealed, true)", st, full)
+		}
+
+		ended := core.SegmentID(4)
+		if err := s.AddSpare(ended, noMax); err != nil {
+			t.Fatalf("AddSpare of the ended segment: %v", err)
+		}
+		if err := s.Take(ended); err != nil {
+			t.Fatalf("Take of the ended segment: %v", err)
+		}
+		if err := s.End(ended); err != nil {
+			t.Fatalf("End: %v", err)
+		}
+		st, full, err = s.ClaimRetirement(ended)
+		if err != nil {
+			t.Fatalf("the claim of an Ended segment: %v", err)
+		}
+		if st != Ended || full {
+			t.Fatalf("the claim of an Ended segment answered (%d, %v), want (Ended, false)", st, full)
+		}
+
+		// The one spare the ended segment's making added is the only change
+		// beside the double retire: every refusal and every served claim
+		// left the footprint and the counts alone.
+		c := s.Counters()
+		if c.DoubleRetires != 1 || c.UsedBytes != 4*segCap || c.Spares != 1 || c.Segments != 3 || c.Sealed != 1 {
+			t.Fatalf("after the claims the counters are %+v, want four caps in 3 segments, 1 sealed, 1 spare and one double retire", c)
+		}
+		if err := s.Check(); err != nil {
+			t.Fatalf("%v", err)
+		}
+	})
+
+	t.Run("the claim dies with the segment", func(t *testing.T) {
+		s, id := sealedFull(t)
+		if st, full, err := s.ClaimRetirement(id); err != nil || st != Sealed || !full {
+			t.Fatalf("the claim of the full-sealed segment answered (%d, %v, %v), want (Sealed, true, nil)", st, full, err)
+		}
+		if _, err := s.Retire(id); err != nil {
+			t.Fatalf("the retire under the claim: %v", err)
+		}
+		s.Release(id) // gone with the entry: a no-op
+		if st, _, err := s.ClaimRetirement(id); !errors.Is(err, ErrNotInSet) {
+			t.Fatalf("the claim after the retire: (%d, %v), want the %v double retire", st, err, ErrNotInSet)
+		}
+		if c := s.Counters(); c.UsedBytes != 0 {
+			t.Fatalf("after the retire the footprint is %d, want 0", c.UsedBytes)
+		}
+	})
 }
