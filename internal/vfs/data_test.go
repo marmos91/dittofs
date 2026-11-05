@@ -277,6 +277,29 @@ func TestTheVerifierAndAFlushAcrossALoss(t *testing.T) {
 	}
 }
 
+// A flush whose sync fails answers the engine's error and still records
+// the loss it was across for its open, so the next flush answers no ErrLost
+// for that loss again.
+func TestAFailedFlushRecordsTheLoss(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	s.file(t, "f", s.alice.Principal, 0o666)
+	pc := s.smb(t, "pc", s.alice.Principal)
+	ref := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
+	s.engine.mu.Lock()
+	s.engine.loss = 1
+	s.engine.mu.Unlock()
+	failed := errors.New("sync failed")
+	s.engine.commitErr = failed
+	if _, err := s.Commit(ctx, pc, ref, 0, 0); err == nil || errors.Is(err, vfs.ErrLost) {
+		t.Errorf("a flush whose sync fails: %v, want the sync's failure", err)
+	}
+	s.engine.commitErr = nil
+	if _, err := s.Commit(ctx, pc, ref, 0, 0); err != nil {
+		t.Errorf("the flush after a failed one across the same loss: %v", err)
+	}
+}
+
 // V22: an unprivileged write or deallocate clears setuid and setgid, the
 // owner's included, in a change committed before the engine stages it, so
 // GetAttr shows them clear before anything commits, and so does the change's

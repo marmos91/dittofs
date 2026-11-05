@@ -103,7 +103,9 @@ func stable(a *admitted, ref vfs.OpenRef, st vfs.Stability) bool {
 // completed, which runs holding none of the file's locks. Through an SMB open
 // it is a flush: open state answers ErrLost, once for the open, when content
 // written while it was open was lost, judged under the admission lock taken
-// again once the sync completed.
+// again once the sync completed. A failed sync answers its own error, and
+// still records the file's loss sequence for the open, so a loss is answered
+// at most once, whether as ErrLost or as the failure.
 //
 // decision: a commit decides no right and asks open state nothing but an SMB
 // flush's loss: it changes no content, only makes what was staged durable,
@@ -133,17 +135,20 @@ func (fs *Filesystem) Commit(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 	}
 	v, loss, err := fs.engine.Commit(ctx, f.Share, f.ID, off, length)
 	if err != nil {
-		return vfs.Verifier{}, storeErr(err)
+		loss = fs.engine.LossSeq(f.Share, f.ID)
 	}
 	if c.Protocol == entity.ProtocolSMB && ref.Kind == openstate.RefOpened {
-		unlock, err := fs.locks.Take(ctx, lockorder.Set{Admit: []lockorder.Key{lockorder.Key(f.ID)}})
-		if err != nil {
+		unlock, lerr := fs.locks.Take(ctx, lockorder.Set{Admit: []lockorder.Key{lockorder.Key(f.ID)}})
+		if lerr != nil {
 			return vfs.Verifier{}, errContended
 		}
 		defer unlock()
-		if err := fs.opens.Flushed(ctx, a.who(), ref.Open, loss); err != nil {
-			return vfs.Verifier{}, openErr(err)
+		if ferr := fs.opens.Flushed(ctx, a.who(), ref.Open, loss); err == nil && ferr != nil {
+			return vfs.Verifier{}, openErr(ferr)
 		}
+	}
+	if err != nil {
+		return vfs.Verifier{}, storeErr(err)
 	}
 	return v, nil
 }
