@@ -603,6 +603,9 @@ func (e *Engine) settle(g *groupCommit, c captured, ok bool, retry time.Time) (d
 	}
 	clear(fe.ops[len(kept):])
 	fe.ops = kept
+	if through != (journal.Version{}) {
+		e.files.removals.Add(1) // committed operations left the entry: see Allocation
+	}
 	fe.inBatch = false
 	close(fe.batchDone)
 	fe.batchDone = nil
