@@ -1273,6 +1273,12 @@ after a loss, each client resends its recent unstable writes once.
   recoverable (**proposal**: 1 s, the `existence_age` setting), and always before
   an offer captures the file, before a removal's first transaction, before a size
   or time set ([RFC 7 §9.5](rfc-7-namespace-metadata.md#9.5%20An%20explicit%20time%20outlives%20the%20writes%20staged%20before%20it)), before an owner or group change ([RFC 17 §5.5](rfc-17-vfs.md#5.5%20Size%20changes)), and behind a snapshot cut's closed gate.
+- **A committed file's journal is settled.** Once a group commit's transaction
+  commits a file's pending existence, the engine calls `Settle(id, v)`
+  ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)) at the newest version that transaction committed for the
+  file, never above it: a write staged after the batch claimed the file's
+  operations is not settled by it, and stays for the next commit or for
+  recovery ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 - **`Done` is called exactly once for every write `Write` accepted.** The
   existence commit that commits a write also records the usage it adds
   ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)) and then calls the write's `Done`, so the filesystem
@@ -2454,7 +2460,10 @@ which calls the journal's `Delete`, never its `Release`, which evicts
 - Its first transaction commits the file's pending existence with it, and syncs
   the file first ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)). It is admitted through the share's cut gate: behind a
   closed gate it waits for the gate to reopen, so no removal commits existence
-  above a cut point ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)).
+  above a cut point ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)). The store may commit that existence in a transaction
+  of its own just before phase 1, under the same guard: nothing lands between
+  the two, and a crash between them leaves the removal above `applied` for
+  recovery ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 - The refs it drops are dropped later, in batches of bounded size, by version,
   never by position; until they are, the removal masks them from every read.
 - After the first transaction commits, the engine calls `Settle(id, v)` at the
@@ -2491,6 +2500,16 @@ which calls the journal's `Delete`, never its `Release`, which evicts
   staying marked and the release left for the next start ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)),
   and when `Drop` does, after which no start runs it, the share being gone
   ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)).
+- **Once its journal step is done, a removal does not fail.** The extent is
+  gone from the journal, and releasing the guard would leave the removal's
+  operation in front of every capture of the file. So a phase 1 its call
+  cannot commit is retried from the scheduler with the guard held, as a
+  pending release's is, and a truncate or deallocate answers `ErrDelay`:
+  `DelayConflict` for a conflict, `DelayCommit` otherwise; the client asks
+  again. Only a terminal failure ends it: the file found gone, or the removal
+  refused by the store as invalid. Then the removal's own pending operation
+  leaves the file's state, the guard is released, and the journal's marker
+  stays for recovery ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 
 **Steps.**
 
@@ -2520,7 +2539,12 @@ which calls the journal's `Delete`, never its `Release`, which evicts
    pending release, aborting if an open has arrived ([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)) — a backstop
    behind step 1's mark, reached only by a durable open no table of this primary
    admitted, and then handled as start handles it ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 3), the service's
-   `done(false)` clearing the mark; writes a pending
+   `done(false)` clearing the mark. A release reads its holders before it
+   commits the file's pending existence, so one a holder refuses leaves that
+   existence uncommitted; the transaction's own re-check stays the authority,
+   and a holder that arrives between the read and it aborts the release with
+   that existence committed, as a commit a moment earlier would have left it.
+   It also writes a pending
    release for each of the file's named streams; and deletes its File record,
    FileData fields included ([RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)). Phase 1 writes no ref and drops
    none, whatever the extent's size: every ref over the extent is dropped or
@@ -2810,13 +2834,16 @@ refusal of the first chunk returns the error.
    copy drawn from it is refused part-way.
 4. **Phase 1**, still under the destination's guard and through the cut gate,
    or behind a closed one as part of a pre-cut commit ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)):
-   one transaction commits the destination's pending existence — the copies
-   included — and records the removal, kind clone, with the clone spec and the
+   two transactions. The first commits the destination's pending existence
+   below *v*, as a group commit run early. The second raises the destination's
+   `applied` to the newest copy, so the copies' existence is born with the
+   removal, and records the removal, kind clone, with the clone spec and the
    destination's existence over the extent, its holes — the source's at `asOf`
    — left to phase 2's batches ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)), and raises the destination's
    `MaxSpan` to the extent's length, the longest hole a batch can write
-   there, joined holes included. Release the guard and
-   `Settle(dst, v)`.
+   there, joined holes included. A crash between the two leaves the clone's
+   journal marker, from which start rebuilds the clone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). Release the
+   guard and `Settle(dst, v)`.
 5. **Phase 2**, once `Hold` has taken over the source's open ([§2.6](#2.6%20Dependencies%20and%20wiring)), batches within the key budget `K` through `Resume`, metadata only:
    each resolves its source extent by the covering lookup ([RFC 6 §8.1](rfc-6-block-metadata.md#8.1%20Covering%20lookup)).
    - **Carved:** drop the destination's refs below *v* there, write the source's
