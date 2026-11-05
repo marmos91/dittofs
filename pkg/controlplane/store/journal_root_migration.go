@@ -10,7 +10,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/marmos91/dittofs/internal/pathutil"
+	"github.com/cubbit/dittofs/internal/pathutil"
 )
 
 // ErrJournalRootMismatch reports that the shares on disk do not live under the

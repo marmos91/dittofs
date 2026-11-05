@@ -29,8 +29,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/identity"
-	"github.com/marmos91/dittofs/pkg/identity/ldap"
+	"github.com/cubbit/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/pkg/identity/ldap"
 )
 
 const (

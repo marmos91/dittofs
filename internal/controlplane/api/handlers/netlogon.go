@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/auth/netlogon"
+	"github.com/cubbit/dittofs/internal/auth/netlogon"
 )
 
 // NetlogonHandler serves the admin-only NETLOGON machine-account API: it reports

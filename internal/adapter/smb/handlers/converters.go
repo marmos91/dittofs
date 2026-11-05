@@ -7,10 +7,10 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/mfsymlink"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/smb/smbenc"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/mfsymlink"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // Filesystem geometry constants for SMB reporting purposes.

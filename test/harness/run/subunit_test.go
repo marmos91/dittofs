@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/test/harness/known"
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/known"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // subunitKnown is the known-failure list of parse-results_test.sh: a name, a

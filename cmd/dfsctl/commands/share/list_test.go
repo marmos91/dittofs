@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/cli/output"
+	"github.com/cubbit/dittofs/internal/cli/output"
 )
 
 // TestShareList_Headers_IncludesEnabled asserts the table headers grew an

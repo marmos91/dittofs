@@ -5,7 +5,7 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
+	"github.com/cubbit/dittofs/internal/adapter/smb/changenotify"
 )
 
 // newTestNotifyRegistry returns a registry whose flush timer will not fire

@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/registry"
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // goModule is a module with tests that pass, fail, skip and fail in a
@@ -238,7 +238,7 @@ func TestIntegrationRunsTheKMIPTests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const keyProvider = "github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
+	const keyProvider = "github.com/cubbit/dittofs/pkg/block/middleware/encryption/keyprovider"
 	if !slices.Contains(pkgs, keyProvider) {
 		t.Errorf("integration's packages leave out %s: %q", keyProvider, pkgs)
 	}

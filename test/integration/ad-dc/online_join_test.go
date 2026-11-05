@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/auth/netlogon"
+	"github.com/cubbit/dittofs/internal/auth/netlogon"
 	"github.com/oiweiwei/go-msrpc/ssp/credential"
 	"github.com/oiweiwei/go-msrpc/ssp/ntlm"
 )

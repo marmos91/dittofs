@@ -1,7 +1,7 @@
 package smb
 
 import (
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // ExtractRequestFileID returns the 16-byte FileID carried by the request body

@@ -12,8 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/config"
 	"github.com/fsnotify/fsnotify"
-	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/spf13/cobra"
 )
 

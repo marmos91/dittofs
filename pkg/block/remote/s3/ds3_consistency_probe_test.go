@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // ds3ProbeConfig builds an s3.Config from the DS3_* env vars used by the

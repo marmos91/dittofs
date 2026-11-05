@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/metadata/acl"
 )
 
 // hasGranteeACE reports whether a root ACL carries an ACE naming the principal.

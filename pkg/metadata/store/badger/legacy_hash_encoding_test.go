@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cubbit/dittofs/pkg/block"
 	badgerdb "github.com/dgraph-io/badger/v4"
-	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // legacyArrayHashRow renders a FileChunk row the way builds without a custom

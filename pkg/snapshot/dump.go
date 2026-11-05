@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // WriteMetadataDumpAtomic invokes write against a temp file (path + ".tmp"),

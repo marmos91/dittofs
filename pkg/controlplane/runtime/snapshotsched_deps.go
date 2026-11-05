@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/snapshotsched"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/snapshotsched"
 )
 
 // SetSnapshotSchedulerConfig configures the background snapshot scheduler

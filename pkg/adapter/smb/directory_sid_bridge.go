@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/internal/adapter/smb/handlers"
+	"github.com/cubbit/dittofs/pkg/identity"
 )
 
 // directorySIDBridge adapts the centralized identity.Resolver to the handlers

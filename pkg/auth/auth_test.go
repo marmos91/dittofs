@@ -3,7 +3,7 @@ package auth
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // Result carries metadata.Identity directly rather than a parallel type, so

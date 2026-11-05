@@ -1,4 +1,4 @@
-module github.com/marmos91/dittofs/k8s/dittofs-operator
+module github.com/cubbit/dittofs/k8s/dittofs-operator
 
 go 1.26.0
 

@@ -4,10 +4,10 @@ import (
 	"encoding/binary"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
 	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/gssapi"
 	krbTypes "github.com/jcmturner/gokrb5/v8/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 )
 
 // ============================================================================

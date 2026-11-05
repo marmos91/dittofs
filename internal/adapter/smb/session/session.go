@@ -43,10 +43,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/smb/signing"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // Session represents an SMB2 session with both identity and credit tracking.

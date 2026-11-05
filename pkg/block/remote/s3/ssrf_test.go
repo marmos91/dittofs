@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // localhostURL rewrites a test server's URL to reach it through the DNS name

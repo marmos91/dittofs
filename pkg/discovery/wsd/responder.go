@@ -13,8 +13,8 @@ import (
 
 	"golang.org/x/net/ipv4"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/discovery/hostinfo"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/discovery/hostinfo"
 )
 
 const (

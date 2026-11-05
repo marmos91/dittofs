@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	nfs_types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	nfs_types "github.com/cubbit/dittofs/internal/adapter/nfs/types"
 )
 
 // dispatchThroughDRC models the dispatch wiring: a cacheable request flows

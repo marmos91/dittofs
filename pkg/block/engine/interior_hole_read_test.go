@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // TestReadAt_InteriorHoleHydratesRatherThanServingZeros pins the read path over

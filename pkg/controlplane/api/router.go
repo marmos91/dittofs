@@ -9,12 +9,12 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/marmos91/dittofs/internal/controlplane/api/auth"
-	"github.com/marmos91/dittofs/internal/controlplane/api/handlers"
-	apiMiddleware "github.com/marmos91/dittofs/internal/controlplane/api/middleware"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/internal/controlplane/api/auth"
+	"github.com/cubbit/dittofs/internal/controlplane/api/handlers"
+	apiMiddleware "github.com/cubbit/dittofs/internal/controlplane/api/middleware"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
 )
 
 // passwordChangePath is the one endpoint a must-change-password user may reach

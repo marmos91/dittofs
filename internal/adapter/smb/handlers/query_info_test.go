@@ -7,10 +7,10 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 func TestFileCompressionInformation(t *testing.T) {

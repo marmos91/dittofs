@@ -9,9 +9,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/sysreg"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/portmap/sysreg"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/portmap/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
 )
 
 func TestSysregPingRegisterUnregister(t *testing.T) {

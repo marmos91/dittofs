@@ -12,9 +12,9 @@ import (
 
 	"lukechampine.com/blake3"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	"github.com/marmos91/dittofs/pkg/snapshot"
+	"github.com/cubbit/dittofs/pkg/block"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/snapshot"
 )
 
 // fakeLocators is a HashLocatorResolver backed by a static map.

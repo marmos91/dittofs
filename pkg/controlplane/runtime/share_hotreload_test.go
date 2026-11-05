@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	cpstore "github.com/cubbit/dittofs/pkg/controlplane/store"
 )
 
 // addShareViaRuntime creates a share in the DB and adds it to the runtime.

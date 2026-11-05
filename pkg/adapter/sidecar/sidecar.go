@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // ErrAlreadyRunning is returned by Start when a service with the same Name is

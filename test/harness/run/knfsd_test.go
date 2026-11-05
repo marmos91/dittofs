@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // A knfsd cell starts the kernel's server, and builds no dfs, which it

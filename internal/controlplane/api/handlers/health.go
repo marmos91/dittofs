@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 )
 
 // HealthCheckTimeout is the maximum time allowed for health check operations.

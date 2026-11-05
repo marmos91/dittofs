@@ -4,8 +4,8 @@ import (
 	goerrors "errors"
 	"fmt"
 
+	"github.com/cubbit/dittofs/pkg/metadata"
 	badgerdb "github.com/dgraph-io/badger/v4"
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // mapBadgerError maps a BadgerDB error to a metadata.StoreError: the badger

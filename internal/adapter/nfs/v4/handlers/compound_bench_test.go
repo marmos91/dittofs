@@ -3,7 +3,7 @@ package handlers
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
 )
 
 // BenchmarkEncodeCompoundResponse measures allocations of the COMPOUND reply

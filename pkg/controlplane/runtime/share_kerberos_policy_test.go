@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	cpstore "github.com/cubbit/dittofs/pkg/controlplane/store"
 )
 
 // persistRequireKerberosShare writes a share row plus the NFS adapter config

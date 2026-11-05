@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/engine"
 )
 
 // These benchmarks measure the per-op cost of resolving a share's block store,

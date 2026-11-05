@@ -707,4 +707,4 @@ dittofs-ha        1          1       1           Running   1h
 
 - [Installation Guide](INSTALL.md) - How to install the operator
 - [Percona Integration](PERCONA.md) - Detailed Percona PostgreSQL setup
-- [DittoFS Documentation](https://github.com/marmos91/dittofs) - Main project documentation
+- [DittoFS Documentation](https://github.com/cubbit/dittofs) - Main project documentation

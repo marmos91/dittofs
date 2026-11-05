@@ -7,7 +7,7 @@ import (
 
 	badgerdb "github.com/dgraph-io/badger/v4"
 
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 func newDurableStoreForTest(t *testing.T) *badgerDurableStore {

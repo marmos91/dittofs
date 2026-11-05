@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/marmos91/dittofs/internal/dfsbench/exec"
-	"github.com/marmos91/dittofs/internal/dfsbench/fio"
+	"github.com/cubbit/dittofs/internal/dfsbench/exec"
+	"github.com/cubbit/dittofs/internal/dfsbench/fio"
 )
 
 // NewListCmd builds the `list` subcommand, which prints the registered

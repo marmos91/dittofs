@@ -3,7 +3,7 @@ package handlers
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/auth/netlogon"
+	"github.com/cubbit/dittofs/internal/auth/netlogon"
 )
 
 func TestRIDFromSID(t *testing.T) {

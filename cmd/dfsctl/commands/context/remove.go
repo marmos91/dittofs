@@ -3,8 +3,8 @@ package context
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/marmos91/dittofs/internal/cli/credentials"
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/cubbit/dittofs/internal/cli/credentials"
 	"github.com/spf13/cobra"
 )
 

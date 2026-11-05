@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // ErrNotDurableYet is returned by CommitBlockStore ONLY when a share has

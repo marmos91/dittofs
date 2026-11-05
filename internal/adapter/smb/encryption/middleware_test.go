@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/header"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/header"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // testSession is a minimal mock that provides the crypto methods needed by the middleware.

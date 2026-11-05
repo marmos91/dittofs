@@ -5,7 +5,7 @@ package shares
 import (
 	"errors"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // ErrShareAlreadyDisabled is returned when DisableShare is called on a

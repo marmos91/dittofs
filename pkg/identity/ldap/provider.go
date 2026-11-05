@@ -24,9 +24,9 @@ import (
 
 	ldapv3 "github.com/go-ldap/ldap/v3"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/auth/sid"
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/auth/sid"
+	"github.com/cubbit/dittofs/pkg/identity"
 )
 
 const ProviderName = "ldap"

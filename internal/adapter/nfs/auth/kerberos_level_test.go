@@ -3,8 +3,8 @@ package auth
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc/gss"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 func TestMeetsMinKerberosLevel(t *testing.T) {

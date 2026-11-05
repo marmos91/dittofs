@@ -1,7 +1,7 @@
 // register_v40.go — NFSv4.0 (RFC 7530) operation handler registration.
 package handlers
 
-import "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+import "github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
 
 // registerV40Ops registers every implemented NFSv4.0 operation (op numbers
 // 3-39) into v40DispatchTable. These are reachable from v4.0, v4.1 and v4.2

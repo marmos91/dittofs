@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
+	xdr "github.com/cubbit/dittofs/internal/adapter/nfs/xdr/core"
 )
 
 // delegationArmFromOpenResult skips past OPEN4resok's fixed prefix and returns

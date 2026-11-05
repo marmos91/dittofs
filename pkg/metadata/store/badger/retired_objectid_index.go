@@ -5,7 +5,7 @@ import (
 
 	badgerdb "github.com/dgraph-io/badger/v4"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // prefixRetiredObjectID is the key prefix of the retired ObjectID index:

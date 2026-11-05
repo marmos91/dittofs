@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // newRAsyncer builds a RemoteSync exercising only planWindow (no queue/remote).

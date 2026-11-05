@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 )
 
 // emptyCmd purges every recycled root from a share's recycle bin.

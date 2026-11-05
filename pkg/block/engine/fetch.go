@@ -11,9 +11,9 @@ import (
 	"golang.org/x/sync/errgroup"
 	"lukechampine.com/blake3"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // inFlightKey returns the deterministic per-block dedup key used by

@@ -17,7 +17,7 @@ import (
 	"github.com/gemalto/kmip-go/kmip14"
 	"github.com/gemalto/kmip-go/ttlv"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // kmipDefaultTimeout bounds a single Get round-trip against the KMIP

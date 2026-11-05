@@ -8,7 +8,7 @@ package handlers
 import (
 	"net"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/xdr"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/portmap/xdr"
 )
 
 // PortmapRegistry defines the operations the handler needs from a service registry.

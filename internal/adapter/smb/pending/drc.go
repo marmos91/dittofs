@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // SMB3 replay protection (MS-SMB2 §3.3.5.2.5, §3.3.5.9).

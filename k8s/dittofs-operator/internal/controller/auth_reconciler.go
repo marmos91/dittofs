@@ -27,8 +27,8 @@ import (
 	"strings"
 	"time"
 
-	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
-	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/conditions"
+	dittoiov1alpha1 "github.com/cubbit/dittofs/k8s/dittofs-operator/api/v1alpha1"
+	"github.com/cubbit/dittofs/k8s/dittofs-operator/utils/conditions"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"

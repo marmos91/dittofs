@@ -3,8 +3,8 @@ package session
 import (
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/signing"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // ChannelTransport is the minimal interface a channel exposes to senders

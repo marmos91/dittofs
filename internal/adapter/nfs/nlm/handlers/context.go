@@ -8,7 +8,7 @@ package handlers
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/auth"
 )
 
 // NLMHandlerContext contains context for NLM procedure handlers.

@@ -16,7 +16,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // UserStore provides user CRUD and credential operations.

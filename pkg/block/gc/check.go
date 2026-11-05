@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // maxManifestCheckFindings bounds how many damaged payloads are reported in

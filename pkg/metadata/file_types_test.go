@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // TestFileAttr_BlocksRoundTrip exercises the reintroduction of

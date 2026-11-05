@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/dfsbench/exec"
-	"github.com/marmos91/dittofs/pkg/block/chunker"
+	"github.com/cubbit/dittofs/internal/dfsbench/exec"
+	"github.com/cubbit/dittofs/pkg/block/chunker"
 )
 
 // benchDataMount is the isolated data volume `dfsbench setup --data-volume-gb`

@@ -7,7 +7,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
 )
 
 // TestHandleRPCCall_UnknownProgram_ReturnsProgUnavail verifies that an RPC

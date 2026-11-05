@@ -1,9 +1,9 @@
 package handlers
 
 import (
-	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/smb/smbenc"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // TreeDisconnect handles SMB2 TREE_DISCONNECT command [MS-SMB2] 2.2.11, 2.2.12.

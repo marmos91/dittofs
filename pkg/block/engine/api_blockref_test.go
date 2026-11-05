@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // TestCopyPayload_O1_IncrementsRefCountPerUniqueHash asserts the Plan

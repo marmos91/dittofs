@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // DecodeFileHandleFromReader decodes an XDR opaque file handle from an io.Reader.

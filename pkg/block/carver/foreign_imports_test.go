@@ -81,7 +81,7 @@ func TestNoForeignImports(t *testing.T) {
 // stdlib path from a module path.
 func importAllowed(path string) bool {
 	switch path {
-	case "lukechampine.com/blake3", "github.com/marmos91/dittofs/pkg/block/chunker":
+	case "lukechampine.com/blake3", "github.com/cubbit/dittofs/pkg/block/chunker":
 		return true
 	}
 	first, _, _ := strings.Cut(path, "/")

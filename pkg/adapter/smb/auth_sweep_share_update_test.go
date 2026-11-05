@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/testruntime"
-	cpauth "github.com/marmos91/dittofs/internal/controlplane/api/auth"
-	cpapi "github.com/marmos91/dittofs/pkg/controlplane/api"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
-	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	"github.com/cubbit/dittofs/internal/adapter/testruntime"
+	cpauth "github.com/cubbit/dittofs/internal/controlplane/api/auth"
+	cpapi "github.com/cubbit/dittofs/pkg/controlplane/api"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
+	cpstore "github.com/cubbit/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/metadata/acl"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestDefaultPermissionUpdateSchedulesOneSweep counts the sweeps a single

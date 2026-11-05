@@ -3,7 +3,7 @@ package memory
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // TestStore_Durable verifies the in-memory remote backend reports NOT durable

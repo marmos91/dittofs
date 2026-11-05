@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/middleware/encryption"
-	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
-	s3store "github.com/marmos91/dittofs/pkg/block/remote/s3"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/middleware/encryption"
+	"github.com/cubbit/dittofs/pkg/block/middleware/encryption/keyprovider"
+	s3store "github.com/cubbit/dittofs/pkg/block/remote/s3"
 )
 
 // ValidateBlockStoreConfig validates a block store config at configuration

@@ -53,7 +53,7 @@ install() {
     mkdir -p "$SECRETS"
     chmod 700 "$SECRETS"
     test -d "$CHECKOUT/.git" ||
-        git clone -q --branch "${BRANCH:-develop}" https://github.com/marmos91/dittofs "$CHECKOUT"
+        git clone -q --branch "${BRANCH:-develop}" https://github.com/cubbit/dittofs "$CHECKOUT"
 }
 
 cron() {

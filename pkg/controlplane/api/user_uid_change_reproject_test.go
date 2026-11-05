@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // TestUserUIDChangeReprojectsRootACL pins the root-ACL projection to the

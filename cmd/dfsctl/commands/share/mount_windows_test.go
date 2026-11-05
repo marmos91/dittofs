@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 func TestValidateMountPoint_DriveLetters(t *testing.T) {

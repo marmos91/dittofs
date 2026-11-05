@@ -6,7 +6,7 @@ import (
 	badger "github.com/dgraph-io/badger/v4"
 	"github.com/dgraph-io/badger/v4/options"
 
-	"github.com/marmos91/dittofs/internal/sysinfo"
+	"github.com/cubbit/dittofs/internal/sysinfo"
 )
 
 // Badger cache sizing (#1245 Bug D).

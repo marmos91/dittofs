@@ -5,7 +5,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
 
 // TestWriteAt_SparseDest_ReadsLeadingGapAsZeros reproduces the data-plane

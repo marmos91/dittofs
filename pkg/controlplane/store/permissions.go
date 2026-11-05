@@ -8,7 +8,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 func (s *GORMStore) GetUserSharePermission(ctx context.Context, username, shareName string) (*models.UserSharePermission, error) {

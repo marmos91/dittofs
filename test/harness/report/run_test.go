@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/test/harness/registry"
-	"github.com/marmos91/dittofs/test/harness/report"
-	"github.com/marmos91/dittofs/test/harness/run"
+	"github.com/cubbit/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/run"
 )
 
 // A real run's summary.json is CTRF 0.1.0 by CTRF's own schema, with a

@@ -23,8 +23,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/apiclient"
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // Share is the fixture's share, the default one when no shares file is given.

@@ -12,10 +12,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/marmos91/dittofs/internal/dfsbench/backend"
-	"github.com/marmos91/dittofs/internal/dfsbench/cloud"
-	"github.com/marmos91/dittofs/internal/dfsbench/report"
-	"github.com/marmos91/dittofs/internal/dfsbench/run"
+	"github.com/cubbit/dittofs/internal/dfsbench/backend"
+	"github.com/cubbit/dittofs/internal/dfsbench/cloud"
+	"github.com/cubbit/dittofs/internal/dfsbench/report"
+	"github.com/cubbit/dittofs/internal/dfsbench/run"
 )
 
 func newRootCmd() *cobra.Command {

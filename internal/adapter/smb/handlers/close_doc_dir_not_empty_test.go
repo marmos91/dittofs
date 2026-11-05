@@ -22,8 +22,8 @@ import (
 	"testing"
 	"unicode/utf16"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // secRightsFileAll is SEC_RIGHTS_FILE_ALL: every file-specific right plus the

@@ -14,11 +14,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/marmos91/dittofs/test/harness/history"
-	"github.com/marmos91/dittofs/test/harness/known"
-	"github.com/marmos91/dittofs/test/harness/plan"
-	"github.com/marmos91/dittofs/test/harness/registry"
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/history"
+	"github.com/cubbit/dittofs/test/harness/known"
+	"github.com/cubbit/dittofs/test/harness/plan"
+	"github.com/cubbit/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // lastRuns is how many past runs dt history and dt known prune read unless

@@ -7,7 +7,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // ErrExportAccessDenied is returned by CheckShareAccess when a request fails a

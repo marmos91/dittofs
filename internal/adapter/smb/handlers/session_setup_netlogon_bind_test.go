@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/auth/netlogon"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	pkgidentity "github.com/marmos91/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/auth/netlogon"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	pkgidentity "github.com/cubbit/dittofs/pkg/identity"
 )
 
 // seedPassthroughSession creates a primary session for a directory-resolved

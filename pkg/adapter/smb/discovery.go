@@ -3,12 +3,12 @@ package smb
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/adapter/sidecar"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/discovery/hostinfo"
-	"github.com/marmos91/dittofs/pkg/discovery/mdns"
-	"github.com/marmos91/dittofs/pkg/discovery/wsd"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/adapter/sidecar"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/discovery/hostinfo"
+	"github.com/cubbit/dittofs/pkg/discovery/mdns"
+	"github.com/cubbit/dittofs/pkg/discovery/wsd"
 )
 
 // This file wires the SMB adapter's network-discovery advertisers

@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // TestMain runs this test binary as dt when a test starts it so, to stop a

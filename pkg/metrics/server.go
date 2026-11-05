@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // ServerOptions configures the dedicated metrics listener. It is decoupled from

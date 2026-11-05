@@ -5,10 +5,10 @@ import (
 	"context"
 	"sync"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/callback"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/handlers"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nsm/callback"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nsm/handlers"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // NotifyResult contains the result of notifying a single client.

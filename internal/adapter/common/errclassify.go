@@ -3,9 +3,9 @@ package common
 import (
 	goerrors "errors"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 )
 
 // ClassifyBlockStoreError maps a block-store error to the metadata error code

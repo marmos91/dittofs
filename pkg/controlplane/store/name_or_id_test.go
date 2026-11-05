@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // TestStoreAndShareNameOrIDResolution locks the docker-style addressing
