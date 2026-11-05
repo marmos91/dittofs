@@ -597,10 +597,11 @@ storage, the probe constant of [RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%
 unread range, which waits on a device rather than a probe. An unread range
 also ends when an operator acknowledges it ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)): the retry then
 runs `AcknowledgeUnreadable`, opens the journal, drops what metadata cannot show
-current before step 3 — as a start that finds an acknowledgement running and
-not yet marked done does too, even when its open succeeds, failing then every
-snapshot with a live hold on the journal; one marked done retries only the
-drops it recorded pending ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)) — marks `failed` the snapshots its `AckResult` names
+current before step 3 — as a start that finds an acknowledgement running with
+a range nothing names not yet marked done does too, even when its open
+succeeds; a start that finds any range not yet marked done fails every
+snapshot with a live hold on the journal, and one that finds every range done
+retries only the drops they recorded pending ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)) — marks `failed` the snapshots its `AckResult` names
 ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads), [RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)) — every snapshot of each `HoldFiles`
 file's share with a live hold on the journal, and with `Unnamed` every one with
 a live hold on it — raises the loss sequence of every file of its
