@@ -872,8 +872,9 @@ retired ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20
 the journal: two journals' acknowledgements run at once. A request for a
 journal whose acknowledgement is running is not refused `operation_running`:
 it adds its ranges to that operation and answers `202` with its ID, so a range
-found while one runs never waits on it, the operation running until the
-journal's shares attach. `check=true` is not an
+found while one runs never waits on it, the operation running until the end
+condition of [RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads): its journal's shares attached with their loss
+sequences raised, no drop pending, and every segment it names unlinked. `check=true` is not an
 operation: it writes nothing, answers `200` with what the ranges affect — the
 held extents and their files, the files made unread, and for a part nothing
 names its segment and range, and the files whose held extents the drop of

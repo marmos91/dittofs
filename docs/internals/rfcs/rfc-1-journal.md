@@ -1010,8 +1010,11 @@ done changes nothing. Each drop of a file's extents, with its loss records,
 runs under that file's serialised append ([§8.2](#8.2%20Lock%20domains)), so a repack copy whose held check
 ran before it is abandoned. A segment that also holds a live unread record
 outside the acknowledgement cannot be retired, so it is not repacked: the
-files with extents to drop in it are made unread instead, and it is returned
-in `pending` until that record reads or is acknowledged; the engine calls it only after an operator acknowledges an unnamed
+files with extents to drop in it are made unread instead, and their extents
+are returned in `pending`. Those files stay unread until a later call drops
+those extents, not when the pinning record reads, so none serves the
+superseded content; while that record is live and unread a repeat returns them
+in `pending` again and makes the files unread again after a restart. The engine calls it only after an operator acknowledges an unnamed
 unreadable range, for the held extents, in any segment, that metadata cannot show current ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)).
 
 ### 3.4 Fill

@@ -1406,7 +1406,8 @@ the two do the same:
    > rather than repacking around the record or refusing the request: the
    > record pins the segment, so the reserve cannot come back from it, and the
    > operator should not have to declare a range lost that may still read. The
-   > operation stays running until that record reads or is acknowledged.
+   > operation stays running until that record reads, is acknowledged or dies
+   > and the drop it held up is done.
    > Overturned by repack learning to carry a segment forward around an unread
    > record.
 
@@ -1415,9 +1416,13 @@ the two do the same:
    segment gives back the repack reserve its copies spent, as `DropSuperseded`
    states. A segment the drop must repack that also holds an unread record
    outside the acknowledgement is not repacked: the files whose extents it
-   would drop are made unread until that record reads or is acknowledged too,
-   so they serve nothing stale, and the operation stays running and names the
-   segment. Otherwise the drop finishes at the journal's maximum, and an interrupted
+   would drop are made unread, and the operation records those extents as
+   pending, names the segment and stays running. It calls `DropSuperseded`
+   again for them once that record reads, is acknowledged or dies — when the
+   segment is no longer suspect ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)) — and at every start
+   that finds it running; each file serves again only after that drop, never
+   when the pinning record alone reads, so it serves nothing stale. Otherwise
+   the drop finishes at the journal's maximum, and an interrupted
    operation resumes with the extents still pending. Each is dropped with `DropSuperseded` ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)), with a loss record of reason
    *acknowledged* ([§2.3](#2.3%20Records)), which raises the loss generation for dirty content
    as a corrupt loss does. Re-apply then commits a dropped write's existence
@@ -1438,20 +1443,47 @@ the two do the same:
    the unlink; the space comes back, and a journal full of
    suspect segments drains.
 
-The acknowledgement is an operation ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations)), resumed after a crash, and
-it stays running until the journal's shares are attached with their loss
-sequences raised; a start that finds it running raises them, as past an
-acknowledged device loss. It also runs step 2's check of every held extent
-before re-apply, whether or not its open fails, and marks `failed` every
-snapshot with a live hold on the journal, as for a range nothing names: an
-`AckResult` returned before the stop is not kept, and once the segment is
-unlinked nothing on disk says what the range held. Over-failing a snapshot is
-the safe direction, as over-raising a loss sequence is. A start that finds it running raises every file's
-sequence even where only named records were dropped: over-reporting costs an
-SMB open one failed flush, and under-reporting a loss is the failure the
-sequence exists to prevent. A crash before the unlink leaves the range on disk
-and the open failing until the operation resumes; a record already turned into
-a loss is not unread, so resuming changes nothing done.
+The acknowledgement is an operation ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations)), resumed after a crash.
+Before step 1 it records its ranges and whether any part is one nothing names.
+Once steps 1 and 2 have run and the engine has marked `failed` the snapshots
+the `AckResult` names, it records them **done**, with the extents step 2 left
+pending, by file. **It stays running until** the journal's shares are attached
+with their loss sequences raised, no extent is left pending, and every segment
+holding a range it names is unlinked; every other statement of when it ends
+points here. A start that finds it running raises the loss sequences, as past
+an acknowledged device loss, and re-runs steps 1 and 3 for its ranges. What
+else it does depends on the mark:
+
+- **Not done.** For a part nothing names, it runs step 2's check of every held
+  extent before re-apply, whether or not its open fails; and it marks `failed`
+  every snapshot with a live hold on the journal, as for a range nothing names,
+  since an `AckResult` returned before the stop is not kept, and once the
+  segment is unlinked nothing on disk says what the range held. No share of the
+  journal has served since the acknowledgement began, where a part is unnamed:
+  the retried open attaches them only after the mark.
+- **Done.** It runs no check and fails no snapshot. Step 2 judged every extent
+  held before the shares served, and every write since is newer than anything
+  the range held. It calls `DropSuperseded` for the recorded pending extents
+  before re-apply, which makes their files unread again while a live unread
+  record still pins their segment.
+
+Over-failing a snapshot is the safe direction, as over-raising a loss sequence
+is, and both are bounded to a stop inside the acknowledgement's own calls. A
+start that finds it running raises every file's sequence even where only named
+records were dropped: over-reporting costs an SMB open one failed flush, and
+under-reporting a loss is the failure the sequence exists to prevent. A crash
+before the unlink leaves the range on disk and the open failing until the
+operation resumes; a record already turned into a loss is not unread, so
+resuming changes nothing done.
+
+> decision: a resume re-runs step 2 only while the mark is not done, rather
+> than at every start that finds the operation running. A pinned segment or a
+> header-only record awaiting its unlink can keep the operation running for
+> days while the shares serve, and step 2 over a serving journal drops every
+> stable write whose existence has not committed and fails every snapshot with
+> a live hold, at each restart. Overturned by a range whose content can be
+> superseded by a write made after the acknowledgement began, which no record
+> kind allows.
 
 **(cluster)** A shard whose journal is replicated never waits for this: it
 rejoins from its replicas ([RFC 10](rfc-10-journal-replication.md)), as for a lost device.
@@ -1629,6 +1661,8 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) resume after the unlink | Acknowledge an unnamed range holding a write W2 over a committed W1 and file X's hold for cut 1 while Y's reads; crash after `AcknowledgeUnreadable` has unlinked the segment and before the drop. Restart; assert the start runs the drop before re-apply, `ReadAt` never returns W1, and cut 1 is `failed`. |
 | [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a drop races a repack copy | Make a deallocate D of F at v5 unread, its catalog entry readable, over W0 at v3 in another segment; start a repack of W0's segment and hold its copy of W0 after its held check; acknowledge D. Assert the copy is abandoned, and after a restart the deallocated range never reads W0. |
 | [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) partial drops at the maximum | Fill the journal to its maximum with segments interleaving dirty records of many files; acknowledge an unnamed range whose partial drops' kept parts exceed the repack reserve. Assert the drop finishes, each touched segment is retired before the next is taken, and the shares attach. |
+| [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a resume scoped by the mark | On an open journal, make F's truncate T unread with its catalog entry readable; give G a synced append W, answered stable, its existence not committed. Acknowledge T and crash before the unlink; restart. Assert W still reads, no loss record names it, and T's drop is done. Repeat with an unnamed range whose acknowledgement is marked done and a segment still pinned, a stable uncommitted append W of G written after the shares attached; restart. Assert W still reads, no snapshot cut after the mark is failed, and the pending drop runs before re-apply. A design that re-runs step 2 at every start drops W as **Lost**. |
+| [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a drop held up by a pinned segment | Put E over [2, 6) MiB of F in segment S2 beside G's live unread write Y, outside the acknowledgement; make an unnamed range hold F's truncate to 3 MiB, phase 2 done, with F grown past 6 MiB after it; acknowledge it. Assert F is unread and the operation stays running naming S2. Let Y read; assert `ReadAt(F, 4 MiB)` never returns E's bytes, the drop runs before F serves, and the operation ends once S2 is unlinked. Repeat with G overwriting Y so it dies unread, and again with a restart while Y is still unread: assert F is unread after the restart and never returns E. |
 | [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a partial drop survives a restart | Write dirty E over [2 MiB, 6 MiB), outside the range; truncate to 3 MiB, phase 2 done, and grow F past 6 MiB with no write to [3 MiB, 6 MiB), the truncate in an unnamed unreadable range; acknowledge it: assert E's [3 MiB, 6 MiB) is dropped and reads **Lost**, never E's bytes or zeros, and E's [2 MiB, 3 MiB) still reads. Crash and reopen; assert the same, and that an older synced E0 under [2 MiB, 3 MiB) is never served. Crash again at each point of the drop — after the copy's append and before its sync, after the copy's sync and before the loss record, and after the loss record's sync; assert each reopen reads E's [2 MiB, 3 MiB), never E0, and the last also reads [3 MiB, 6 MiB) as **Lost**. |
 | [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a removal from offset 0 | Write dirty E at 1 MiB, outside the range; truncate to 0, phase 2 done; write W at 1 MiB growing F to 4 MiB; truncate to 3 MiB, the removals and W in an unnamed unreadable range; acknowledge it: assert `RemovedFrom` stays 0 and `ReadAt(F, 1 MiB)` fails as **Lost**, never returns E. |
 | [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a header-only record by version | Write W0 of F at v3 in one segment; make a deallocate D of F at v5 unread in another; repack W0's segment so its copy takes a sequence number above D's. Acknowledge D; assert the copy of W0 is dropped with a loss record and a read at the punched offset never returns W0. Repeat with an unread forget record; assert every extent of its tag is dropped. |

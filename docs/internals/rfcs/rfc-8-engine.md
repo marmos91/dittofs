@@ -597,13 +597,15 @@ storage, the probe constant of [RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%
 unread range, which waits on a device rather than a probe. An unread range
 also ends when an operator acknowledges it ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)): the retry then
 runs `AcknowledgeUnreadable`, opens the journal, drops what metadata cannot show
-current before step 3 — as a start that finds an acknowledgement running does
-too, even when its open succeeds, failing then every snapshot with a live hold
-on the journal ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)) — marks `failed` the snapshots its `AckResult` names
+current before step 3 — as a start that finds an acknowledgement running and
+not yet marked done does too, even when its open succeeds, failing then every
+snapshot with a live hold on the journal; one marked done retries only the
+drops it recorded pending ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)) — marks `failed` the snapshots its `AckResult` names
 ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads), [RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)) — every snapshot of each `HoldFiles`
 file's share with a live hold on the journal, and with `Unnamed` every one with
-a live hold on it — and raises the loss sequence of every file of its
-shares, as below for a device lost whole. An I/O error reading the journal's
+a live hold on it — raises the loss sequence of every file of its
+shares, as below for a device lost whole, and records the acknowledgement
+done, all before the shares attach. An I/O error reading the journal's
 `format` file is unreadable at open, never a journal found missing or not the
 one recorded, and is retried the same way; an acknowledgement naming `format`
 runs `RebuildFormat` with the generation the store records and the ranges the
@@ -630,6 +632,22 @@ range at 60 s, raising that cause's condition and clearing the other — so a
 journal whose cause changes between opens is never held on the wrong one. A recovery import
 whose adopted journal is refused publishes nothing, since it cannot raise the
 tag counter above that journal's tags ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)).
+
+> decision: an acknowledgement fails snapshots only from its `AckResult` — a
+> lost `hold` record, a dropped extent at or below a live hold mark, or every
+> snapshot with a live hold on the journal for a range nothing names — and no
+> more of the snapshot side is specified. Deferred, until snapshots are
+> designed in detail: a cut whose *retained* extent, or a held extent above
+> every live hold mark, the acknowledgement drops; a `hold` record unread
+> across its cut's completion; the snapshot-store call the engine uses to mark
+> a snapshot `failed`, which [§2.1](#2.1%20Content%20composition) does not declare; and keeping the
+> `AckResult` across a crash, for which a resume not yet marked done fails
+> every snapshot with a live hold on the journal instead. The ceiling: a
+> snapshot can reach `complete` with a file read at a version the
+> acknowledgement dropped from under it, where none of the three paths names
+> that file. Overturned by RFC 12's retention and completion being specified
+> against the journal's unread and acknowledged states, or by a snapshot seen
+> completing over a dropped extent.
 
 1. **Open the journal.** Read the version floor and the version limit for
    every share the device journal may serve ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)), and the journal identity the metadata store
