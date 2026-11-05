@@ -52,6 +52,25 @@ type FakeJournal struct {
 	seq       uint64                  // the stream's last record's sequence number
 	synced    entity.SyncMark         // the mark of the stream's last sync; zero before one
 	recorded  [][]entity.SyncMark     // what MarksRecorded was handed, in order
+
+	refuseReserve error           // RefuseReserve's error: the next Reserve answers it
+	reserved      []Reserved      // every Reserve, in order
+	cloneTargets  []CloneTargeted // every CloneTarget, in order
+	reservedAt    []journal.Version
+}
+
+// Reserved is one Reserve: the bytes and writes it asked.
+type Reserved struct {
+	N      int64
+	Writes int
+}
+
+// CloneTargeted is one CloneTarget: the file, its spec and the version it
+// was given.
+type CloneTargeted struct {
+	File    journal.FileID
+	Spec    journal.CloneSpec
+	Version journal.Version
 }
 
 // fakeFile is one file: its tag, its held pieces in offset order, and its
@@ -597,10 +616,103 @@ func (h *FakeHandle) Close() error {
 	return nil
 }
 
-func (h *FakeHandle) CloneTarget(context.Context, journal.FileID, journal.CloneSpec) (journal.Version, error) {
-	return journal.Version{}, journal.ErrNotImplemented
+// CloneTarget stops holding spec's destination extent of file id, as
+// Deallocate does, under a new version, and leaves a marker carrying spec,
+// which Since yields as Change.Clone.
+func (h *FakeHandle) CloneTarget(_ context.Context, id journal.FileID, spec journal.CloneSpec) (journal.Version, error) {
+	if spec.Len == 0 {
+		return journal.Version{}, journal.ErrZeroLength
+	}
+	v, err := h.remove(id, journal.ChangeCloneTarget, spec.DstOff, spec.DstOff+spec.Len)
+	if err != nil {
+		return journal.Version{}, err
+	}
+	j := h.j
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	f := j.files[id]
+	f.changes[len(f.changes)-1].Clone = &spec
+	j.cloneTargets = append(j.cloneTargets, CloneTargeted{File: id, Spec: spec, Version: v})
+	return v, nil
 }
 
-func (h *FakeHandle) Reserve(int64, int) (engine.Reservation, error) {
-	return nil, journal.ErrNotImplemented
+// Reserve takes n bytes and writes for a clone's copies: refused with the
+// error RefuseReserve armed, once; else a reservation whose writes are held
+// as WriteAt holds them, never refused by the share's limit.
+func (h *FakeHandle) Reserve(n int64, writes int) (engine.Reservation, error) {
+	j := h.j
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if h.closed {
+		return nil, journal.ErrClosed
+	}
+	j.reserved = append(j.reserved, Reserved{N: n, Writes: writes})
+	if err := j.refuseReserve; err != nil {
+		j.refuseReserve = nil
+		return nil, err
+	}
+	return &fakeReservation{h: h, left: writes}, nil
+}
+
+// RefuseReserve arms the next Reserve to answer err.
+func (j *FakeJournal) RefuseReserve(err error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.refuseReserve = err
+}
+
+// Reserves is every Reserve so far, in order.
+func (j *FakeJournal) Reserves() []Reserved {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return slices.Clone(j.reserved)
+}
+
+// CloneTargets is every CloneTarget so far, in order.
+func (j *FakeJournal) CloneTargets() []CloneTargeted {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return slices.Clone(j.cloneTargets)
+}
+
+// ReservedWrites is the version of every reservation's write so far.
+func (j *FakeJournal) ReservedWrites() []journal.Version {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return slices.Clone(j.reservedAt)
+}
+
+// fakeReservation is what Reserve took: writes it may still take.
+type fakeReservation struct {
+	h      *FakeHandle
+	left   int
+	closed bool
+}
+
+// WriteAt holds p at off as the handle's WriteAt does, past the share's
+// limit, while the reservation holds a write; past its writes it is refused
+// by the index, as a write the reservation no longer covers can be.
+func (r *fakeReservation) WriteAt(ctx context.Context, id journal.FileID, off int64, p []byte, mtime int64) (journal.Version, error) {
+	if r.left == 0 {
+		return journal.Version{}, &journal.NoSpaceError{Limit: journal.LimitIndex, Missing: 1, Unit: journal.UnitEntries}
+	}
+	r.left--
+	h := *r.h
+	h.limit = 0
+	v, err := h.WriteAt(ctx, id, off, p, mtime)
+	if err == nil {
+		r.h.j.mu.Lock()
+		r.h.j.reservedAt = append(r.h.j.reservedAt, v)
+		r.h.j.mu.Unlock()
+	}
+	return v, err
+}
+
+// Close gives back what the reservation did not use.
+func (r *fakeReservation) Close() error {
+	if r.closed {
+		return journal.ErrClosed
+	}
+	r.closed = true
+	return nil
 }

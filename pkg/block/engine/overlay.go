@@ -24,8 +24,8 @@ func (e *Engine) Overlay(ctx context.Context, s entity.ShareID, f entity.FileID)
 }
 
 // replay is the overlay ops leave, replayed in their order, which is version
-// order: a truncate sets Size and SizeSet, each later write raises Size to its
-// end, and Version is the last operation's. pending false: ops is empty.
+// order: a truncate sets Size and SizeSet, each later write or clone raises Size
+// to its end, and Version is the last operation's. pending false: ops is empty.
 //
 // decision: the journal records one time per write, its mtime, zero when
 // suspended, so the overlay's times are the entry's clock times: Ctime the
@@ -43,7 +43,7 @@ func replay(ops []pendingOp) (o Overlay, pending bool) {
 		switch op.kind {
 		case opTruncate:
 			o.Size, o.SizeSet = op.extent.Off, true
-		case opWrite:
+		case opWrite, opClone:
 			o.Size = max(o.Size, opEnd(op.extent))
 		}
 		o.Ctime = op.at

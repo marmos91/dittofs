@@ -58,6 +58,7 @@ type removalLoop struct {
 	items   []*loopItem
 	closed  bool
 	dropped map[entity.ShareID]bool // shares dropped: an item of one, running or enqueued, is ended
+	steps   atomic.Int64            // items run, for a test to wait on a run
 	wake    chan struct{}
 	stop    chan struct{}
 	done    chan struct{}
@@ -141,6 +142,7 @@ func (l *removalLoop) step(it *loopItem) {
 	ctx, end := l.e.d.Tracer(l.ctx, "engine.removal_batch", slog.String("kind", it.kind.String()))
 	a := it.run(ctx)
 	end(nil)
+	l.steps.Add(1)
 	log := l.e.d.Logger
 	switch a {
 	case itemDone:
@@ -212,6 +214,14 @@ func (l *removalLoop) dropShare(s entity.ShareID) {
 			it.end()
 		}
 	}
+}
+
+// isDropped reports whether share s was dropped: nothing of it is noted for
+// a commit again.
+func (l *removalLoop) isDropped(s entity.ShareID) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.dropped[s]
 }
 
 // pending is the count of items on the loop and the oldest one's age:

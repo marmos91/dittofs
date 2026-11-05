@@ -25,10 +25,12 @@ type removal struct {
 }
 
 // guard takes file f's guard for a removal of x and marks x in flight,
-// waiting, within ctx, for a removal of f already holding it. A truncate or
-// deallocate into a clone's registration is answered at once, with nothing
-// taken: one overlapping a source extent, or of a file holding a destination
-// extent, is delayClone(). The guard keeps the entry alive.
+// waiting, within ctx, for a removal of f already holding it. A removal into
+// a clone's registration is answered at once, with nothing taken: a truncate
+// or deallocate overlapping a source extent, or of a file holding a
+// destination extent, is delayClone(); a release of a file holding any is
+// errRegistered. A clone's own guard, on its destination, passes its own
+// registration. The guard keeps the entry alive.
 //
 // decision: the registration check and the in-flight mark sit in one
 // section under the entry's lock. A removal that checked before a clone
@@ -38,7 +40,17 @@ type removal struct {
 // own snapshot.
 func (e *Engine) guard(ctx context.Context, b *binding, f entity.FileID, kind entity.RemovalKind, x extent) (*removal, error) {
 	fe := e.files.lockFor(f)
-	for fe.guardDone != nil {
+	for {
+		// The registrations are checked before any wait, so a removal of a
+		// file a clone holds, whose guard the clone may hold too, is answered
+		// at once rather than behind that guard.
+		if err := fe.refuseRemoval(kind, x); err != nil {
+			e.files.unlock(f, fe)
+			return nil, err
+		}
+		if fe.guardDone == nil {
+			break
+		}
 		ch := fe.guardDone
 		e.files.unlock(f, fe)
 		select {
@@ -48,19 +60,33 @@ func (e *Engine) guard(ctx context.Context, b *binding, f entity.FileID, kind en
 		}
 		fe = e.files.lockFor(f)
 	}
-	if kind != entity.RemoveRelease {
-		for _, r := range fe.regs {
-			if r.dst || r.overlaps(x.off, x.end) {
-				e.files.unlock(f, fe)
-				return nil, delayClone()
-			}
-		}
-	}
 	fe.guardDone = make(chan struct{})
 	fe.guarded.Store(true)
 	fe.removing = &x
 	e.files.unlock(f, fe)
 	return &removal{b: b, f: f, x: x, kind: kind, at: e.d.Clock.Now()}, nil
+}
+
+// refuseRemoval is a removal of kind over x refused by the clones
+// registered on the file: errRegistered for a release of a file any holds,
+// delayClone() for a truncate or deallocate overlapping a source extent or
+// of a file holding a destination extent; nil for a clone's own guard. The
+// caller holds the entry's lock.
+func (fe *fileEntry) refuseRemoval(kind entity.RemovalKind, x extent) error {
+	switch kind {
+	case entity.RemoveClone:
+	case entity.RemoveRelease:
+		if len(fe.regs) > 0 {
+			return errRegistered
+		}
+	default:
+		for _, r := range fe.regs {
+			if r.dst || r.overlaps(x.off, x.end) {
+				return delayClone()
+			}
+		}
+	}
+	return nil
 }
 
 // guardOf is the channel closed when f's guard is released, nil when no
@@ -96,7 +122,7 @@ func (e *Engine) release(r *removal, settle bool) {
 	if settle {
 		r.b.h.Settle(fileID(r.f), r.v)
 	}
-	if !oldest.IsZero() {
+	if !oldest.IsZero() && !r.b.gc.removals.isDropped(r.b.share.ID) {
 		_ = r.b.gc.note(r.b, r.f, oldest) // refused only once closed or lost, when nothing commits
 	}
 }
@@ -186,7 +212,8 @@ func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 // is pending: it answers a channel and nil, the loop retries it keeping the
 // guard, and the channel yields its outcome once: nil once it commits,
 // vfserr.ErrFileOpen if a holder aborts it, vfserr.ErrUnavailable if the loop
-// ends first.
+// ends first. A release of a file a running clone holds is pending before
+// the journal's Delete, which it never reaches: see behindClone.
 //
 // decision: a release holds no lock across the journal's Delete and stages
 // no pending operation, unlike a truncate: the filesystem service marks the
@@ -205,6 +232,9 @@ func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) 
 		return nil, err
 	}
 	r, err := e.guard(ctx, b, f, entity.RemoveRelease, extent{0, entity.EndOfFile})
+	if errors.Is(err, errRegistered) {
+		return e.behindClone(b, f), nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -233,6 +263,44 @@ func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) 
 	ch := make(chan error, 1) // buffered: the loop never blocks on a caller gone
 	e.retryLater(r, op, func(err error) { ch <- err })
 	return ch, nil
+}
+
+// errRegistered is guard's answer to a release of a file a clone holds.
+var errRegistered = errors.New("engine: a clone holds the file")
+
+// behindClone answers a release of file f that a running clone holds,
+// before the journal's Delete: a pending channel, which yields
+// ErrDelay(DelayClone) once no clone holds f, for the filesystem service to
+// run the release again, or vfserr.ErrUnavailable if f's journal's loop ends
+// first. The loop looks again at its backoff and counts no stall: the clone
+// holds the file, not a failure.
+//
+// ponytail: the loop polls the registrations at its backoff rather than the
+// clone's end waking the release, so a release behind a clone answers up to
+// one backoff late. Wake it from the clone's end if that delay shows.
+func (e *Engine) behindClone(b *binding, f entity.FileID) <-chan error {
+	ch := make(chan error, 1) // buffered: the loop never blocks on a caller gone
+	b.gc.removals.enqueue(&loopItem{b: b, f: f, kind: entity.RemoveRelease,
+		run: func(context.Context) answer {
+			if e.registered(f) {
+				return itemRetryUncounted
+			}
+			ch <- delayClone()
+			return itemDone
+		},
+		end: func() { ch <- errLoopEnded },
+	})
+	return ch
+}
+
+// registered reports whether a clone holds file f.
+func (e *Engine) registered(f entity.FileID) bool {
+	fe := e.files.lockOf(f)
+	if fe == nil {
+		return false
+	}
+	defer e.files.unlock(f, fe)
+	return len(fe.regs) > 0
 }
 
 // abort ends release r that a holder refused: the file's pending writes
@@ -323,7 +391,7 @@ func replaySize(committed int64, ops []pendingOp) int64 {
 		case op.dropped:
 		case op.kind == opTruncate:
 			size = op.extent.Off
-		case op.kind == opWrite:
+		case op.kind == opWrite, op.kind == opClone:
 			size = max(size, opEnd(op.extent))
 		}
 	}
@@ -511,8 +579,9 @@ func (e *Engine) unclaim(r *removal) {
 }
 
 // committed removes from r's file's entry, after its phase 1 committed, the
-// operations it claimed and its own, before the guard is released, so no
-// batch captures either: it answers the claimed writes' Dones. A claimed
+// operations it claimed and its own, and a clone's copies, which its phase 1
+// recorded through Copied, before the guard is released, so no batch
+// captures any: it answers the claimed writes' Dones. A claimed
 // write a failed window dropped leaves too, its Done having run then.
 func (e *Engine) committed(r *removal) (dones []func()) {
 	fe := e.files.lockFor(r.f)
@@ -527,7 +596,7 @@ func (e *Engine) committed(r *removal) (dones []func()) {
 				}
 				e.pendingApplied.Add(1)
 			}
-		case op.version == r.v:
+		case op.version == r.v, op.copy:
 		default:
 			kept = append(kept, op)
 		}

@@ -305,8 +305,22 @@ func (e *Engine) Failing(j Journal, f entity.FileID) bool {
 func SetConflictBound(d time.Duration) { conflictBound.Store(d) }
 
 // SetAfterRegister makes h run once each clone's registrations are
-// installed, before the clone's next step.
+// installed; the clone then stops, its registrations undone, answering
+// ErrUnbuilt: a test of admission alone.
 func (e *Engine) SetAfterRegister(h func()) { e.afterRegister = h }
+
+// FakeCloneDone has a clone whose phase 1 committed drop its registrations
+// and answer, standing in for its hold, its phase 2 and its done signal.
+func (e *Engine) FakeCloneDone() { e.fakeCloneDone.Store(true) }
+
+// LoopSteps is the count of items the share's journal's removal loop ran.
+func (e *Engine) LoopSteps(s entity.ShareID) int64 {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return 0
+	}
+	return b.gc.removals.steps.Load()
+}
 
 // Registrations is the count of f's source and destination registrations.
 func (e *Engine) Registrations(f entity.FileID) (src, dst int) {

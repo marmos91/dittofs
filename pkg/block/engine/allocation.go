@@ -153,7 +153,8 @@ type allocation struct {
 // apply paints op over the runs: a write makes data, extending the file and
 // leaving a hole between its end and the write; a deallocate makes a hole
 // within the file; a truncate moves the end of file, a hole filling any
-// extension.
+// extension; a clone's journal step makes its extent a hole, extending the
+// file to its end, which its copies then paint.
 func (a *allocation) apply(op pendingOp) {
 	o, e := op.extent.Off, opEnd(op.extent)
 	switch op.kind {
@@ -167,6 +168,17 @@ func (a *allocation) apply(op pendingOp) {
 		}
 	case opDeallocate:
 		a.paint(o, min(e, a.eof), true)
+	case opClone:
+		// The extent reads as a hole until its copies, each a write after
+		// it, are painted over it; the file reaches the extent's end, a hole
+		// filling any gap before the extent.
+		if o > a.eof {
+			a.paint(a.eof, o, true)
+		}
+		a.paint(o, e, true)
+		if a.eof != math.MaxInt64 {
+			a.eof = max(a.eof, e)
+		}
 	case opTruncate:
 		if o > a.eof {
 			a.paint(a.eof, o, true)

@@ -67,6 +67,7 @@ func TestCloneAdmission(t *testing.T) {
 	if err := u.e.Bind(t.Context(), u.share); err != nil {
 		t.Fatal(err)
 	}
+	u.e.SetAfterRegister(func() {}) // an admitted clone stops once registered
 	f, g := entity.NewFileID(), entity.NewFileID()
 	same := u.bindShare(t, "same", entity.NamespaceID{})
 	other := u.bindShare(t, "other", entity.NewNamespaceID())

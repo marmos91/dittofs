@@ -17,6 +17,7 @@ const (
 	opWrite opKind = iota + 1
 	opTruncate
 	opDeallocate
+	opClone // a clone's journal step: its extent, the size raised to the extent's end
 )
 
 // pendingOp is one operation the journal holds and block metadata has not
@@ -33,6 +34,7 @@ type pendingOp struct {
 	lost      bool           // the journal dropped it after its sync: its existence commits lost
 	claimed   bool           // a batch claimed it: no other path commits it or calls its Done
 	dropped   bool           // a failed window dropped it while claimed: it no longer exists, its Done has run
+	copy      bool           // a clone's copy of a source run: its clone's phase 1 records it, through Copied
 	done      func()         // the write's WriteOpts.Done, called once its existence commits or it is dropped
 }
 
