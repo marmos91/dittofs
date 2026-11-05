@@ -2050,8 +2050,9 @@ written again until it is closed and reopened, and that open's recovery
 - the sequence number of every record it failed is kept per journal directory
   in the process, as the loss generation is ([§3.8](#3.8%20Loss%20events)), and the next open of
   that directory in the process drops each such record it finds before it
-  serves, appending an unsynced loss record for it, as a failed window does
-  ([§5.3](#5.3%20A%20failed%20sync)); the loss record reaches nothing else, so a dropped write's
+  serves, appending an unsynced loss record for it, or, past the open reserve,
+  leaving it out of the copy that empties its segment ([§6](#6.%20Capacity)), as a failed
+  window does ([§5.3](#5.3%20A%20failed%20sync)); the loss record reaches nothing else, so a dropped write's
   superseded content is held, as when the window failed. It publishes no new
   event and raises neither the loss generation nor a file's loss sequence: the
   window's failure was already reported, and a removal's failure reached its
