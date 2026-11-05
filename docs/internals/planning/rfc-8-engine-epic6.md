@@ -12,13 +12,13 @@ unsuitable, `Bind`'s attach, stop steps 1 to 5), §2.7, §12.1 (`Start`, `Close`
 §3.1 and §3.4, for the floor and `expect`; [RFC 14](../rfcs/rfc-14-open-state.md) §4.4, for
 what a raised incarnation does to the grace instance.
 **Track:** C.
-**Epic 6 estimate: 10 subtasks, 36.25 man-days.**
+**Epic 6 estimate: 11 subtasks, 39.75 man-days.**
 **Depends on:** sync point **S2, red suite in CI**: E1's surface (`Engine`, `Deps`,
 `Journal`, `Handle`, `Lifecycle`, `Share`, `ShareState`, `Stats`) and E2's fixture and fake
 journal. T6.1 also needs the RFC 8 §2.1 and RFC 16 §3 text that settles #3631 and #3632, and
 the source of a share's journal (§9 point 14), since it changes E1's frozen `Lifecycle`.
 T6.2 extends the share table epic 3's T3.1 declares, already on epic 3's branch. T6.4 needs
-E2's fault-injecting `kv.KV` (T2.3), which is not built yet, to fail the start transaction.
+E2's fault-injecting `kv.KV` (T2.3), which is not built yet, to fail a start transaction.
 T6.7 needs epic 3's `Write` and `Draw` (T3.2, T3.3), where a version is issued, and the same
 `kv.KV` to block the raise. T6.5 needs epic 4's per-file existence commit (T4.3) and epic
 5's abort routine (T5.4); T6.6 and T6.8 epic 5's removal loop (T5.3); T6.9 epic 4's due set
@@ -38,7 +38,7 @@ integration epic, which cannot run the filesystem over an engine that does not s
 
 Epic 6 gives the engine its life. `Start` opens each device's journal with the floor and
 identity the store records, refuses by name the shares of a journal that is missing or
-foreign, raises every shard's incarnation in one transaction, re-applies from the journal
+foreign, raises every shard's incarnation in transactions of at most `K` keys, re-applies from the journal
 every existence a crash left uncommitted before any file is served, resumes the unfinished
 removals and strands the tags no share claims. `Bind` attaches a share above its floor;
 `Unbind` and `Drop` end a removed share's work and its tag. The version limit is written
@@ -194,7 +194,7 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| 1 Unit tests | all | T6.2 to T6.10 test over E2's fake journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition until T6.2's `Bind` replaces its hook; T6.1 over `kvstoretest`'s suite. T6.3 extends the fake with `Open`'s refusals, `Forget`, `Strand` and `Stats`' tags and versions; T6.5 with `Files`, `Since` and `Settle`; T6.7 with `SetVersionLimit` and a counter that issues against it |
+| 1 Unit tests | all | T6.2 to T6.10 test over E2's fake journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition until T6.2's `Bind` replaces its hook; T6.1 and T6.11 over `kvstoretest`'s suite. T6.3 extends the fake with `Open`'s refusals, `Forget`, `Strand` and `Stats`' tags and versions; T6.5 with `Files`, `Since` and `Settle`; T6.7 with `SetVersionLimit` and a counter that issues against it |
 | 2 Fuzz | none | no parser. The `ponytail:` marker at the read-resolution table already says why |
 | 3 Observability | T6.3, T6.5, T6.6, T6.7, T6.10 | no new counter and no new span: RFC 8 §14 names none for start, bindings or the version limit. Conditions through `Stats`: a share refused at start, named with its device (T6.3); `journal_lost` (T6.3, T6.10) and `journal_unsuitable` (T6.10), each per journal. Logs: a refused share and a stranded tag at `Warn`, with held and dirty bytes for the tag (T6.3, T6.6); a release marker settled as data loss at `Error`, naming the file (T6.5); a version-limit raise that fails at `Warn` (T6.7). |
 | 4 Profiling | all | the unit composition's `prof.Watch` covers every test: a raise goroutine (T6.7), a retry loop (T6.10) or a loop left running past `Close` (T6.8) fails it |
@@ -202,7 +202,7 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
 | 6 Known failures | T6.2 to T6.10 | E2 delivered four of its rows; the rows this epic owns are written here, over E2's fixture, red in `known.yaml` naming this epic's issue until the journal calls they need exist, and removed in the change that turns them green |
 | 7 v2 ignores v1 | all | nothing new is imported; `kvstore` is not v1 |
 | 8 Real dependencies | T6.1, T6.3, T6.5, T6.7, T6.9, T6.10 | the identity, limits and incarnations from the real `kvstore`; the floor, the refusal of a missing or foreign journal, the recovery, the version limit, `Drop`'s `Forget` and the retried open over the real journal and its crash seam. Every §15 row runs over the fixture; the fake keeps the unit tests (the retry loop's, the content calls' answers after `Unbind`) |
-| 9 Comments | all | epic 3's copy-on-write share table `decision:`, kept at the `bindings` type (T6.2); `kvstore`'s `decision:` at `RaiseIncarnations`, rewritten for `RaiseAtStart` (T6.1); the version-limit headroom `decision:` and burst `ponytail:` (T6.7), RFC 8 §2.5's `decision:` on an error a check meets (T6.3), and the markers of §4 |
+| 9 Comments | all | epic 3's copy-on-write share table `decision:`, kept at the `bindings` type (T6.2); `kvstore`'s `decision:` at `RaiseIncarnations`, rewritten for `RaiseAtStart` (T6.1); the `ponytail:` markers at `RaiseAtStart`, `Tags` and `VersionLimits` removed (T6.11); the version-limit headroom `decision:` and burst `ponytail:` (T6.7), RFC 8 §2.5's `decision:` on an error a check meets (T6.3), and the markers of §4 |
 | 10 Tests can fail | all | each test below names the change it catches |
 | 11 Exports | T6.1, T6.3 | `Lifecycle` changes shape (D4) and gains `Tags` (D2), as RFC 16 §3 declares them (§9 points 1 and 2); `Tags`' record type is declared in `entity`, beside the store's other records, so `kvstore` imports no engine, and `entity.Shard` gains the primary's journal identity (D10, §9 point 14); `kvstore` gains `RecordJournal` on the opened store (D3, §9 point 5), the `JD` key kind and `Lifecycle()`; `Stats` gains the refused shares and the journal conditions (T6.3). Test hooks live in `export_test.go` |
 | 12 Creates only what it declares | all | each fake journal call lands with the subtask that first calls it; `RecordJournal` with T6.1, whose fixture is its first caller; `kv.Counting`'s count of Updates and of the most keys one Update wrote with T6.1; the fixture's second share with T6.2 and its second device with T6.10 |
@@ -247,7 +247,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | R19 | A share whose removal has reached its offload step is never attached at start; once the journal is open and before any share attaches, `Forget` runs for every tag `Stats` names whose share's removal reads forgotten | invariant | §2.5 step 1, §2.3 | T6.3 |
 | R20 | Before any version is issued, every served share's limit is written at the journal's next version plus one block, and passed with `SetVersionLimit` only once every write of it has committed; the floor at `Open` and every mark keep the epoch half zero | MUST | §2.5 step 1, §2.7, RFC 1 §4.3 | T6.3, T6.7 |
 | R21 | An error a check meets at `Open`, rather than a refusal it makes, fails `Start` as any failing step does | invariant | §2.5 (`decision:`) | T6.3 |
-| R22 | One transaction raises the incarnation of every shard the node will serve, before any verifier is returned | MUST | §2.5 step 2, RFC 14 §4.4 | T6.4 |
+| R22 | The start raises the incarnation of every shard the node will serve, in as many transactions as `K` takes; until the last commits, no open-state request is answered, no `WRITE` or `COMMIT` returns a verifier, no NSM restart notice is sent and no grace instance begins; a start cut off between them is redone whole by the next | MUST | §2.5 step 2, RFC 14 §4.4, RFC 16 §3 | T6.4, T6.11 |
 | R23 | For each file the journal lists, the operations above its `applied` from `Since` are applied to existence in version order, each write with the `mtime` its record carries, recording the usage they add | invariant | §2.5 step 3, E15 | T6.5 |
 | R24 | Each file is synced before its re-applied existence commits, and `Settle` is called with the new `applied` only after the commit | invariant | §2.5 step 3, E19 | T6.5 |
 | R25 | A synced loss record above `applied` has the dropped write's existence committed from it, so the extent reads **Lost**, never as the file was before the write | invariant | §2.5 step 3, §5.1 | T6.5 |
@@ -352,7 +352,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   `Write` samples it for its verifier (RFC 8 §4.1) with no read after the raise. The
   verifier's other inputs from the shard record, the primary's node and node epoch (RFC 16's
   `Shard.Primary` and `PrimaryEpoch`), are written by nothing until the node record lands
-  (`kvstore`'s `ponytail:` at `RaiseIncarnations`), so the binding carries the incarnation
+  (D8), so the binding carries the incarnation
   alone, and the process instance tells one start from the next. RFC 16 §3 declares both
   forms (§9 point 2).
 - **D5, the floor at `Open`.** One number per journal: the largest of every share's version
@@ -396,10 +396,13 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   it, is left open (R43). 30 s matches the server's `shutdown_timeout` default, which the
   node's stop has to fit in. A `decision:` marker at `Close` says so, withdrawn if RFC 8 or
   RFC 23 sets the bound.
-- **D8, the start transaction is not split.** Step 2 raises every shard in one transaction,
-  as RFC 14 §4.4 requires, though E40 bounds every engine transaction by `K`. `kvstore`'s
-  `ponytail:` at `RaiseIncarnations` already names the ceiling; this epic adds none (§9
-  point 3).
+- **D8, the start raise is split by `K` inside the store.** Settled by #3633 (2026-11-05):
+  `RaiseAtStart` writes at most `K` keys a transaction (RFC 16 §3), so its signature and its
+  callers (T6.2's `Bind`, T6.4, the service's stand-in raise) do not change. A failure part
+  way leaves the shards already raised; `Start` fails, and the next start raises every shard
+  again. The node epoch rises before, in its own transaction, as `openstate.Start` already
+  does. T6.4 holds every answer that carries a verifier until the call returns; T6.11 builds
+  the batches (§9 point 3).
 - **D9, a dropped share stays known.** `Drop` keeps the binding in the table in a removed
   state, holding no handle, so a content call naming the share answers `ErrStale` rather
   than `DelayFrozen` (R12) for as long as `Tags` names the share: a later start puts it back
@@ -423,8 +426,8 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   place, rewrites the primary journal identity of every shard naming the old identity in
   `RecordJournal`'s transaction, as a compare-and-swap on each shard record; until then
   the device's shares are refused by name. A `ponytail:` marker at `RecordJournal` names
-  the ceiling, more shards on one device than `K` in that one transaction, as D8's does for
-  the start transaction. A `decision:` marker at the match says so, withdrawn if RFC 8 §2.1
+  the ceiling, more shards on one device than `K` in that one transaction, as D8's did for
+  the start transaction until #3633. A `decision:` marker at the match says so, withdrawn if RFC 8 §2.1
   or §12.1 settles another source (§9 point 14).
 
 ## 5. Target tree
@@ -439,10 +442,14 @@ pkg/metadata/entity/
 pkg/metadata/kvstore/
   lifecycle.go       T6.1  Lifecycle(): JournalID, VersionLimits, RaiseVersionLimits,
                            RaiseAtStart, RaiseAtAttach, Tags (D2 to D4, D10); RecordJournal
+                     T6.11 RaiseAtStart in batches of K, Tags in batches, VersionLimits
+                           with GetMany (D8)
   shards.go          T6.1  RaiseIncarnations split into its start and attach forms (D4);
                            the shard codec with the journal identity (D10)
   kvstoretest/
     lifecycle.go     T6.1  the view's cases
+                     T6.11 the batch cases: 3 × K shards and shares, a raise failed part way
+    shards.go        T6.11 testRaiseAtStartAllOrNone's comment, all or none per transaction
 pkg/block/engine/
   deps.go            T6.1  Lifecycle's new shape (D2, D4, D10)
   share.go           T6.2  the share table (D1), the binding, Bind
@@ -637,23 +644,29 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
 
 ### T6.4 Start step 2: the start transaction
 
-**Subtask T6.4 estimate: 1 man-days.**
+**Subtask T6.4 estimate: 1.5 man-days.**
 
-- **Track:** C. **Depends on:** T6.3; E2's T2.3 (the fault-injecting `kv.KV`).
+- **Track:** C. **Depends on:** T6.3, T6.11; E2's T2.3 (the fault-injecting `kv.KV`).
 - **Covers:** R22.
 - **Deliverables:** `RaiseAtStart` over every served shard in one call, after step 1 and
-  before step 3, so before any `Write` can return a verifier; each shard's new incarnation
+  before step 3, so before any `Write` or `Commit` can return a verifier and before any
+  file is served; each shard's new incarnation
   put on its share's binding before any file is served (D4); its failure fails `Start`; the
-  shards raised recorded in D4's set. This is the node's start transaction that RFC 14 has
+  shards raised recorded in D4's set. These are the node's start transactions that RFC 14 has
   the filesystem service read the `GraceInstance` from: once the engine composes with the
   service, it replaces the stand-in raise #3606 puts in the service's `serve` (§9 point 12).
 - **Acceptance criteria:** the incarnation of every served shard rises once per `Start`, in
-  one transaction.
+  transactions of at most `K` keys, and nothing that carries a verifier is answered before
+  the last commits.
 - **Tests:** over the fixture, §15.1's "incarnation at start", the engine half: every
-  shard's incarnation and grace instance rose, in one Update by T6.1's count, and the
-  verifier changed across the restart (catches a start that raises only at attach); the
-  fault-injecting `kv.KV` fails the transaction: `Start` returns the error and every journal
-  is closed. E2's `TestRFC8A_Verifier`, which restarts and expects a new verifier, stays red
+  shard's incarnation and grace instance rose, no Update wrote more than `K` keys by T6.1's
+  count, and the verifier changed across the restart (catches a start that raises only at
+  attach); over an in-memory `kv.KV` whose limits make `K` small and more shards than one
+  transaction holds, the fault-injecting `kv.KV` fails the second raise transaction:
+  `Start` returns the error and every journal is closed, and a `Write` issued meanwhile
+  never returned a verifier; a restart then raises every shard strictly above its value
+  before the first start (catches a start that skips shards an earlier attempt raised, and
+  a verifier answered before the last batch, R22). E2's `TestRFC8A_Verifier`, which restarts and expects a new verifier, stays red
   in `known.yaml` until this subtask, T6.8 and epic 4's commit are in and the journal has
   `Init`, `Open` and `WriteAt`. The `RECLAIM_COMPLETE` half is open state's and the
   adapters'.
@@ -897,7 +910,7 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   attaches, its content reads back, its shard's incarnation is higher than when `Start`
   returned and its `GraceInstance` above its value before the restart, the write verifier
   differs from before the restart and the condition clears; `Close` with the retry pending,
-  then the check cleared: nothing opens the directory; the start transaction failed: `Start`
+  then the check cleared: nothing opens the directory; a start transaction failed: `Start`
   returns its error and nothing opens the directory later; the directory emptied before the
   check clears: `journal_lost` in place of `journal_unsuitable` and nothing created; `Unbind`
   on the refused share answers `ErrDelay` and succeeds once it serves; a retry whose recovery
@@ -910,6 +923,36 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   `Open` held, `Close` called, then `Open` released: no removal loop starts, the journal is
   closed, and `Close` returns (catches a late attach that outlives stop step 2, E13).
 
+### T6.11 Start at scale: batched raise and batched reads
+
+**Subtask T6.11 estimate: 3 man-days.**
+
+- **Track:** C. **Depends on:** T6.1; the RFC 8 §2.5 step 2, RFC 14 §4.4 and RFC 16 §3 text
+  that settles #3633.
+- **Covers:** R22 (the store half), #3741.
+- **Deliverables:** in `kvstore/lifecycle.go`, `RaiseAtStart` split into transactions of at
+  most `K` keys, each reading its shard records with one `GetMany`, its signature and its
+  sort and dedup unchanged (1 man-day); `Tags` read in batches, each share whole in one
+  `View`, resuming after the last `ShareID` read (1 man-day); `VersionLimits` read with
+  `GetMany` in batches of `K` shares (0.5 man-day); the three `ponytail:` markers at
+  `RaiseAtStart`, `Tags` and `VersionLimits` removed, the first naming the
+  one-transaction start, and the comment of `testRaiseAtStartAllOrNone` rewritten to
+  all or none per transaction (0.5 man-day, with the tests).
+- **Acceptance criteria:**
+  - No `RaiseAtStart` Update writes more than `K` keys.
+  - A raise that fails part way leaves the earlier transactions' shards raised once and the
+    rest unchanged; a second call raises every shard again.
+  - `Tags` and `VersionLimits` answer every share at 3 × `K` shares, no transaction holding
+    more than `K` of them.
+- **Tests:** 3 × `K` shards raised: at least 3 Updates, none over `K` keys by T6.1's count
+  (catches one transaction over every shard); the fault-injecting `kv.KV` fails the second
+  raise transaction, then a second call: every shard strictly above its value before the
+  first call (catches a raise that skips the shards that look done); 3 × `K` shares, one
+  removed and one retired: `Tags` answers each once with its own state (catches a share
+  lost or repeated at a batch edge); `VersionLimits` over 3 × `K` shares: one `GetMany` per
+  batch by a counting `kv.KV` (catches one read per share, the round trips #3741 counts).
+  FoundationDB's five seconds are not tested here: no unit test runs `fdbkv`.
+
 ## 7. Order of work
 
 ```mermaid
@@ -918,7 +961,9 @@ flowchart TD
   rfc(["RFC 8 §2.1 and RFC 16 §3 text for #3631, #3632"]):::sync -.-> T6_1
   T6_1 --> T6_2["T6.2 Share table and Bind"]
   T6_2 --> T6_3["T6.3 Start step 1"]
-  T6_3 --> T6_4["T6.4 Start step 2"]
+  T6_1 --> T6_11["T6.11 Start at scale"]
+  rfc3633(["RFC text for #3633"]):::sync -.-> T6_11
+  T6_3 & T6_11 --> T6_4["T6.4 Start step 2"]
   T6_4 --> C1(["after T6.4: shares bound and journals opened, no recovery"]):::sync
   ep3(["epic 3: Write, Draw"]):::sync -.-> T6_7
   T6_3 --> T6_7["T6.7 Version limit"]
@@ -934,8 +979,8 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-T6.1 to T6.4 need only the RFC text for #3631, #3632 and §9 point 14, epic 3's table (T3.1)
-and E2's `kv.KV` (T2.3), and fill the wait for epics 4 and 5; T6.7 follows as soon as epic
+T6.1 to T6.4 and T6.11 need only the RFC text for #3631, #3632, #3633 and §9 point 14, epic
+3's table (T3.1) and E2's `kv.KV` (T2.3), and fill the wait for epics 4 and 5; T6.7 follows as soon as epic
 3's `Write` and `Draw` land. T6.5 is the riskiest, for the order of sync, commit and
 `Settle` across a crash, and starts once epic 4's T4.3 and epic 5's T5.4 exist. Checkpoint
 after T6.4: a share bound and served over the fake journal; the fixture's `Start` gets past
@@ -946,13 +991,15 @@ T6.6: a restart over the fake journal recovers every file.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T6.1, T6.2, T6.3, T6.4 | 13.25 | S2; T3.1, T2.3; the RFC text for #3631 and #3632 and §9 point 14 | the store view, the table, `Bind` and the journals opened: what needs only epic 3's table and E2's `kv.KV` |
-| 2 | T6.7 | 3.75 | PR 1; T3.2, T3.3, T2.3 | the version limit while serving, on the paths that issue versions |
-| 3 | T6.5, T6.6 | 7.5 | PR 1; T4.3, T5.3, T5.4 | recovery: existence re-applied, removals resumed, tags stranded |
-| 4 | T6.8, T6.9 | 8 | PR 2, PR 3; T4.7; T8.6 for the `Served` wait's test | the ends of the engine and of a share: `Close`, `Unbind`, `Drop` |
-| 5 | T6.10 | 3.75 | PR 3, PR 4; `ErrUnsuitableStorage` | the retried open and the late attach, which reuse steps 1 to 5 and call `Close` and `Unbind` |
+| 1 | T6.1, T6.2, T6.3 | 12.25 | S2; T3.1; the RFC text for #3631 and #3632 and §9 point 14 | the store view, the table, `Bind` and the journals opened: what needs only epic 3's table |
+| 2 | T6.11, T6.4 | 4.5 | PR 1; T2.3; the RFC text for #3633 | the start at scale in `kvstore`, then step 2 over it: the batched raise and its caller |
+| 3 | T6.7 | 3.75 | PR 1; T3.2, T3.3, T2.3 | the version limit while serving, on the paths that issue versions |
+| 4 | T6.5, T6.6 | 7.5 | PR 2; T4.3, T5.3, T5.4 | recovery: existence re-applied, removals resumed, tags stranded |
+| 5 | T6.8, T6.9 | 8 | PR 3, PR 4; T4.7; T8.6 for the `Served` wait's test | the ends of the engine and of a share: `Close`, `Unbind`, `Drop` |
+| 6 | T6.10 | 3.75 | PR 4, PR 5; `ErrUnsuitableStorage` | the retried open and the late attach, which reuse steps 1 to 5 and call `Close` and `Unbind` |
 
-A suggestion only: one pull request per subtask works as well. PR 2 can be open beside PR 3.
+A suggestion only: one pull request per subtask works as well. PR 3 can be open beside PR 2
+and PR 4.
 
 ## 9. Open points
 
@@ -965,10 +1012,10 @@ A suggestion only: one pull request per subtask works as well. PR 2 can be open 
    returning the incarnations written; RFC 8 §2.5 step 2 takes the attach form only when
    the node holds the shard's open state, and the start form otherwise (RFC 14 §4.4): D4's
    rule.
-3. **The start transaction against `K`** (D8), pending #3633. RFC 8 §2.5 step 2, RFC 0 and RFC 14 §4.4 put
-   every shard in one transaction; E40 and §2.7 bound every engine transaction by `K`, and
-   §2.7 takes 10⁴ shares' 2 × 10⁴ keys as past it. On a node serving more shards than `K`,
-   the two cannot both hold.
+3. **The start transaction against `K`** (D8), settled by #3633. RFC 8 §2.5 step 2, RFC 0,
+   RFC 14 §4.4 and RFC 16 §3 now raise the shards in transactions of at most `K` keys,
+   holding every answer that carries a verifier until the last commits, so E40 holds with no
+   exception. T6.11 builds it in `kvstore`, with the batched reads #3741 asks for.
 4. **The floor at `Open`** (D5), settled by #3710. RFC 8 §2.5 step 1 and §2.7, RFC 28 §3.1
    and RFC 1 §3 now take the largest of every served share's version floor and version
    limit, as D5 does. `journal`'s doc for `Open` still names the smallest limit, which is
@@ -1005,14 +1052,14 @@ A suggestion only: one pull request per subtask works as well. PR 2 can be open 
 12. **Who raises the incarnations once the engine composes with the filesystem service.**
     #3606's `serve` raises every share's shard in its own transaction, "standing in for the
     node's start transaction", and RFC 14 §4.4 has the service read the `GraceInstance` the
-    node's start transaction raised. T6.4's raise is that transaction, so the integration
+    node's start transactions raised. T6.4's raise is those transactions, so the integration
     epic drops the stand-in; a shard bound after `Start` is raised by `Bind`, in the form D4
     picks. The binding carries the incarnation alone (D4), while RFC 0's glossary derives
     the write verifier from "the node, its node epoch, the process instance, the shard's
     incarnation and the journal's loss generation". That holds while nothing writes
     `PrimaryEpoch` and each start is a new process instance. When the node record lands,
-    the start transaction raises the node epoch too (`kvstore`'s `ponytail:` at
-    `RaiseIncarnations`), and the binding then carries the node and its epoch beside the
+    the node epoch moves into it, still raised in its own transaction before the start's
+    raise (D8), and the binding then carries the node and its epoch beside the
     incarnation.
 13. **A failed open at `Start` stops the node** (R21, RFC 8 §2.5's `decision:`). #3585
     proposes leaving such a journal closed and retrying it, as T6.10 does for an unsuitable
