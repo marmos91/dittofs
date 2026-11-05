@@ -83,7 +83,7 @@ part can pass.
   `ErrDelay`): epic 4's, which answers stability points. This epic adds only the fence of
   the row below it.
 - A read-only journal (§11.2's journal-sync row, `ErrReadOnly`, `journal_read_only`, the
-  reopen): it needs RFC 1 §5.4's read-only state, which `journalv2` does not have; epic 6's
+  reopen): it needs RFC 1 §5.4's read-only state, which `journal` does not have; epic 6's
   §9 point 8.
 - A node started from a copied image (§11.2's last row, `Fenced` bindings, `copied_image`):
   RFC 27's claim, out.
@@ -94,7 +94,7 @@ part can pass.
 
 ### 1.3 Names used here
 
-- **E1**, epic 1, interfaces: `pkg/block/enginev2`'s exported surface, `Deps` and its
+- **E1**, epic 1, interfaces: `pkg/block/engine`'s exported surface, `Deps` and its
   interfaces, frozen at S1.
 - **E2**, epic 2, red e2e suite and test foundations: `engine-conformance` with its
   `known.yaml`, the fixture over the real journal, `kvstore` and the real open-state table,
@@ -145,15 +145,15 @@ part can pass.
    passes to the journal or the store is asserted where they read it, over the real journal
    and `kvstore`, not where the engine builds it.
 6. **Known failures shrink.** An e2e test that turns green leaves the suite's `known.yaml`
-   (`test/enginev2/known.yaml`) in the same change: `dt` fails the run if a listed test
+   (`test/engine/known.yaml`) in the same change: `dt` fails the run if a listed test
    passes, so the change that turns it green removes it, a journal pull request included. A
    test over the real journal that starts red sits in that suite behind its build tag, never
    in `unit`, which keeps no known list.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1, enforced by
-   the engine's one import test, a walk over every package of `pkg/block/enginev2` with
-   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/engine`,
-   `pkg/block/journal`, `pkg/block/syncer`, `pkg/block/carver`, `pkg/block/remote` or the
-   v1 metadata service `pkg/metadata`. The walk checks every package on its own, so its
+   the engine's one import test, a walk over every package of `pkg/block/engine` with
+   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/syncer`,
+   `pkg/block/carver`, `pkg/block/remote` or the v1 metadata service `pkg/metadata`; v1's
+   engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
    allowlist names each package an exception applies to, test packages included. v1 is not
    touched: it is deleted at the cutover.
 8. **Real dependencies for properties of those dependencies.** No fake stands in for a
@@ -176,7 +176,7 @@ part can pass.
     stays a review rule.
 11. **A symbol is exported only if the RFC's interface uses it.** Everything exported is
     frozen at S1. Helpers the engine's own files need stay unexported or move to an
-    `internal/` package of `enginev2`.
+    `internal/` package of `engine`.
 12. **Each subtask creates only what it declares.** No empty package and no stub without a
     caller. A package, an option or a test helper lands with its first consumer.
 
@@ -377,7 +377,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 ## 5. Target tree
 
 ```text
-pkg/block/enginev2/
+pkg/block/engine/
   capacity.go        T7.1a  the refusal table (D1, D3) and the refusal path on Write, Draw,
                             header-only records and Reserve
                      T7.1b  the table's last step (D4); repack at a refusal, the scope sync,
@@ -389,14 +389,14 @@ pkg/block/enginev2/
                             that raises a condition
   types.go           T7.3   Stats, ShareStats, JournalStats; Condition with the condition set
   export_test.go     T7.2   the fence's clock; T7.3 a file's state lock held
-  enginev2test/
+  enginetest/
     fake.go          T7.1a  NoSpaceError per limit, a full device
                      T7.1b  Repack over a scope, the seal, D4's unreclaimed figure in Stats
   conformance/
     rfc8_a_test.go   T7.1a, T7.1b  the refusal cases: racing refusals, a failed window, an
                             unsynced overwrite, nothing left to free
     rfc8_b_test.go   T7.1b, T7.2, T7.4  the rows of §15.2 this epic owns
-test/enginev2/known.yaml  T7.1a to T7.4  each new red row, naming this epic's issue
+test/engine/known.yaml    T7.1a to T7.4  each new red row, naming this epic's issue
 ```
 
 ## 6. Subtasks
@@ -408,7 +408,7 @@ test/enginev2/known.yaml  T7.1a to T7.4  each new red row, naming this epic's is
 - **Track:** A. **Depends on:** S2; epic 3's T3.2 and T3.3; epic 6's T6.7; the RFC 8 text
   that settles D1 (§9 point 5).
 - **Covers:** R1 to R10.
-- **Deliverables:** the refusal table as D1, table-driven over every limit `journalv2`
+- **Deliverables:** the refusal table as D1, table-driven over every limit `journal`
   names (`LimitShare`, `LimitJournal`, `LimitIndex`, `LimitHeadroom`, `LimitVersion`,
   `LimitSpare`) and a full device; the refusal path in `capacity.go`, which takes the refused
   journal call so it can retry it, called where epic 3's D4 maps a `NoSpaceError` today.
@@ -425,10 +425,10 @@ test/enginev2/known.yaml  T7.1a to T7.4  each new red row, naming this epic's is
   Epic 3's D4 `decision:` marker is withdrawn, and T3.2's test of a journal-limit refusal is
   rewritten for the table.
 - **Acceptance criteria:**
-  - Every `journalv2` limit has a row in the refusal table: the table test walks the `Limit`
+  - Every `journal` limit has a row in the refusal table: the table test walks the `Limit`
     values from `LimitShare` up to the first whose `String()` has no name, and fails on one
     without a row.
-  - No caller of the refusal path sees a `journalv2` type.
+  - No caller of the refusal path sees a `journal` type.
 - **Tests:** the refusal table: one row per limit and step, the answer and its cause
   (catches a version-limit refusal answered `DelayCapacity` or `ErrNoSpace`, R3); a full
   device answers `ErrNoSpace` at once without a repack (R5); a spare refusal answers
@@ -626,7 +626,7 @@ flowchart TD
   ep6(["epic 6: T6.7 version-limit raise"]):::sync -.-> T7_1a & T7_4
   T7_1a --> T7_1b["T7.1b Repack and the last step"]
   ep4(["epic 4: T4.6 failed-window report"]):::sync -.-> T7_1b
-  J(["journalv2: Repack seals, unreclaimed figure in Stats"]):::sync -.-> T7_1b
+  J(["journal: Repack seals, unreclaimed figure in Stats"]):::sync -.-> T7_1b
   rfc(["RFC text: D1, #3651, #3653, #3654, #3665"]):::sync -.-> T7_1a & T7_1b & T7_2
   S2 --> T7_2["T7.2 Self-fence"]
   tx(["red rows: T4.3, T5.3, T6.2, T6.7 write transactions"]):::sync -.-> T7_2
@@ -692,13 +692,13 @@ A suggestion only: one pull request per subtask works as well.
 6. **E1's frozen `Stats`, and the journal's figure for D4.** `Stats` is an empty struct
    frozen at S1 and RFC 8 §12.1 names no field (D8); adding them is to be agreed with the
    filesystem service's owner, who reads it. D4 reads the unreclaimed bytes of the scope's
-   segments that take no further append: `journalv2`'s `UnreclaimedBytes` counts active
+   segments that take no further append: `journal`'s `UnreclaimedBytes` counts active
    segments too, and its per-segment `SegmentInfo` has neither an unreclaimed field nor a
-   tag, so it cannot give a share's scope. `journalv2.Stats` and `ShareStats` each gain that
+   tag, so it cannot give a share's scope. `journal.Stats` and `ShareStats` each gain that
    figure, once RFC 1 §3.7 names it (RFC 1 §10 question 6, which today asks it of §4.4's
    per-segment breakdown), and the engine reads it through the `Stats` call RFC 8 §2.1
    already gives it. `Deps.Journal` does not change.
-7. **The journal's `Repack`** is not built (`journalv2` returns `ErrNotImplemented`), and
+7. **The journal's `Repack`** is not built (`journal` returns `ErrNotImplemented`), and
    RFC 1 does not yet require it to seal or to report that figure (§10 questions 5 and 6).
    Question 5 asks the seal only of a pass scoped to a share, while R12 needs it from the
    zero scope too, for the journal's own limits, as RFC 8 §10.2 step 4 words it; its answer
