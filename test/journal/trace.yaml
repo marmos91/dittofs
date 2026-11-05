@@ -372,3 +372,6 @@ rfc1 / 9.4 / B / "read-only stops the drain":
   pending: 2.10
 rfc28 / 4.2 / C / "an ended segment is emptied once":
   pending: 2.13b
+rfc28 / 4.2 / C / "an open at an exhausted headroom":
+  owner: epic 7
+  reason: 'the open''s headroom reserve and the deferred loss records are not built yet'
