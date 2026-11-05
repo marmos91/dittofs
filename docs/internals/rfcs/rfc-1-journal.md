@@ -976,7 +976,7 @@ nothing is held there. The engine drops the removed refs at commit
 ```go
 MarkOffloaded(ctx context.Context, id FileID, extents []Extent, oldest, newest Version) error
 Unmark(ctx context.Context, id FileID, extents []Extent) error
-DropSuperseded(ctx context.Context, id FileID, extents []Extent) (pending []Extent, err error)
+DropSuperseded(ctx context.Context, id FileID, extents []Extent, through Version) (pending []Extent, err error)
 ```
 
 `MarkOffloaded` sets the offloaded bit of the held extents of `id` that `extents`
@@ -989,14 +989,15 @@ call either on any file at any time. The engine uses them after a restart, to
 reseed the bits from its refs and to clear one no ref justifies
 ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). How the records are rebuilt, and what a version outside the range
 does, are [RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)'s. `DropSuperseded` drops the held extents of `id` that
-`extents` names, each as a loss event of reason *acknowledged* with a loss
+`extents` names whose content version is at or below `through`, so a write made
+after the caller chose them is kept, each as a loss event of reason *acknowledged* with a loss
 record ([§3.8](#3.8%20Loss%20events)). A loss record drops a whole record, so where `extents` names only
 part of a record, `DropSuperseded` first appends the part kept as a content
 copy — a new sequence number, the original's version — makes the copies durable, and only then appends the loss
 record, whose extent is the dropped part alone, so it never outranks the
 copy; it always carries the synced flag ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)). A crash between the
 two leaves the copy and the whole original, the copy winning its part by
-sequence number. For example, on E over [2, 6) MiB, `DropSuperseded(F, [3, 6))`
+sequence number. For example, on E over [2, 6) MiB, `DropSuperseded(F, [3, 6), v)`, with v at or above E's version,
 copies [2, 3), syncs it, then appends a loss record for [3, 6) naming E. It
 works one source segment at a time, as a repack of that segment: it carries
 every live record of the segment forward with the kept parts, each copy under
