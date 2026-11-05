@@ -22,7 +22,7 @@ precede; epic 6, whose recovery commits each file's existence through T4.3's per
 commit, whose `Drop` takes a share's files out of T4.3's due set, and whose tests count
 `Done` with T4.7's reservation counter; epic 7, whose capacity sync feeds T4.6's per-file
 report, whose `Stats` exposes T4.4's `existence_commit_failing` and this epic's counters, and
-whose self-fence watches the group commit's transactions; epic 8, whose clone commits its
+whose self-fence watches the group commit's transactions through T4.4's retrying-owner mark; epic 8, whose clone commits its
 source's pending existence through T4.3's per-file commit before it reads `asOf`.
 
 ---
@@ -196,7 +196,7 @@ the engine test package's `newUnitOver`.
 | 9 Comments | all | the markers of §4 at their code sites, and three of RFC 8 §5.1's: the loss sequence's floor (`ponytail:`, T4.5), the lazy existence of appends (`decision:`, T4.2) and the stable-overwrite cost (`ponytail:`, T4.2) |
 | 10 Tests can fail | all | each test below names the change it catches |
 | 11 Exports | all | nothing new is exported from `engine`; the test hooks live in `export_test.go`, the reservation counter in `enginetest`. `kvstore.PendingOp`'s new fields and `OpLost` are `kvstore`'s own, used by its caller |
-| 12 Creates only what it declares | all | the per-file commit lands in T4.3 with its first consumer, `Commit` (T4.2); the sync function lands in T4.5 with its first consumer, the drain |
+| 12 Creates only what it declares | all | the per-file commit lands in T4.3 with its first consumer, `Commit` (T4.2); the sync function lands in T4.5 with its first consumer, the drain; the retrying-owner mark lands in T4.4 with its first setter, the group commit, ahead of its reader, epic 7's T7.2, since epic 4 blocks epic 7 and a dependency the other way would be a cycle |
 
 ## 3. Requirements and invariants
 
@@ -396,7 +396,7 @@ pkg/block/engine/
   commit.go         T4.1  the verifier's five inputs and the derivation (D1, D2)
                     T4.2  Commit
   groupcommit.go    T4.3  the group commit per journal: due set, batch, in-batch mark, commitNow, commitThrough, commitAll, closeGroupCommits, dropShare (D4, D5, D10)
-                    T4.4  the split, the failing file's backoff, existence_commit_failing (D7)
+                    T4.4  the split, the failing file's backoff, existence_commit_failing, the retrying-owner mark (D7)
                     T4.7  the claim and its release
   loss.go           T4.5  the sync function, the drain, the loss sequence and its floor, LossSeq, a device lost whole (D8, D9, D11, D12)
                     T4.6  the failed window's report in the sync function
@@ -539,9 +539,11 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   `kvstore.ErrConflict`, since its import rule forbids `kv`; `existence_commit_failing`
   cleared too when a capture finds the file's entry gone, on `lostWhole` and on
   `dropShare`; `engine_group_commit_splits_total`; RFC 8 §15's `ponytail:` at the split
-  table; every store call the group commit retries made under epic 7's retrying-owner
-  context mark (epic 7 D7), so a whole-call failure counts as failing for the self-fence and
-  a file's own failure does not. In the engine's test package, `newUnitOver`, which composes the unit over a given
+  table; the retrying-owner context mark, an unexported context value with its setter and
+  reader, which this subtask builds because it is the first to need it, and under which every
+  store call the group commit retries is made, so that epic 7's self-fence (T7.2, its D7),
+  which reads the mark and reuses it, counts a whole-call failure as failing and a file's
+  own failure not; epic 5's removal loop sets the same mark. In the engine's test package, `newUnitOver`, which composes the unit over a given
   `kv.KV`, for a wrapper that fails or conflicts on chosen keys; E2's fault-injecting
   `kv.KV` does not exist.
 - **Acceptance criteria:**
@@ -562,7 +564,10 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   other files commit, that file fails alone: catches a split on conflicts only, RFC 8
   §5.2); a store stalled past the bound, or closed, does not split (catches 2G−1 bounded
   calls on a store-wide failure, or a commit left retrying until the caller's deadline); the condition cleared on `dropShare` and on `lostWhole`
-  (catches a condition naming a file nothing will commit). The §5.2 group commit row, a conformance row over the real
+  (catches a condition naming a file nothing will commit); a `kv.KV` wrapper through
+  `newUnitOver` that records the mark on each call sees it on every group-commit call and on
+  no `Existence.Overwrites` call of a `Commit` (catches a retried call left unmarked, which
+  the self-fence would never count). The §5.2 group commit row, a conformance row over the real
   journal and `kvstore`: 64 writers flushing while `chmod` writes random File records, no
   flush waiting beyond the split bound, red until the journal's `Sync` exists.
 

@@ -24,7 +24,7 @@ journal; epic 3, built: T3.1's per-file entries, whose pending-operation kinds f
 and deallocate T3.4 to T3.6 already replay; epic 4's T4.3 (the capture this epic's guard
 makes skip a file, the in-batch mark phase 1 waits out, and `dropShare`), T4.5 (the one sync
 function phase 1 syncs through) and T4.7 (the claim phase 1 takes a file's pending writes
-with, and the reservation counter); epic 8's T8.1a (admission and registrations), built, whose
+with, and the reservation counter), and T4.4 (the retrying-owner mark T5.3's loop sets); epic 8's T8.1a (admission and registrations), built, whose
 registrations T5.1's entry-lock section checks; epic 8's T8.1b (the removal checks) lands
 with T5.1. Neither `Delete`'s retry channel nor
 `vfserr.ErrFileOpen` is on `feat/storage-v2` or #3609: T5.4 lands them, from the code on
@@ -451,7 +451,7 @@ test/engine/known.yaml  T5.2, T5.3, T5.5  their entries
 
 **Subtask T5.3 estimate: 3 man-days.**
 
-- **Track:** B. **Depends on:** T5.1.
+- **Track:** B. **Depends on:** T5.1; epic 4's T4.4 (the retrying-owner mark).
 - **Covers:** R14–R18.
 - **Deliverables:** `removals.go`: the loop per journal (D5), joined at `Close`, which ends
   its pending releases' channels with `ErrUnavailable`; phase 2 through `Content.Resume`,
@@ -460,8 +460,8 @@ test/engine/known.yaml  T5.2, T5.3, T5.5  their entries
   retry-uncounted); `enqueue` for epic 6's start step 4 and epic 8's clone items; the loop's
   part of epic 4's `dropShare(s)`, ending the share's items with their pending releases'
   channels yielding `ErrUnavailable`, built here and tested in epic 6's T6.9; the series of
-  §2.1 and each batch's root span; every store call the loop retries made under epic 7's
-  retrying-owner context mark (epic 7 D7), so the self-fence counts a phase 1 or batch that
+  §2.1 and each batch's root span; every store call the loop retries made under epic 4's
+  retrying-owner context mark, which T4.4 builds and epic 7's self-fence reads (its D7), so the self-fence counts a phase 1 or batch that
   fails at the store as a whole.
 - **Acceptance criteria:**
   - a truncate's masked refs are gone once the loop has run, and its removal record pruned;

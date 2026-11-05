@@ -927,7 +927,8 @@ Sections owned: RFC 8 §10 (the two measures, as far as repack goes), §10.2, §
   the one at which the node last went from none outstanding or failing to one; 30 s after
   the later of the two with one still outstanding or failing, writes and stability points
   `ErrDelay`, reads continue; cleared by the next commit, or once none is outstanding or
-  failing. Failing is D7's: the latest attempt of an owner that retries (the group commit, a
+  failing. Failing is D7's, read from the retrying-owner context mark T4.4 builds and the
+  other owners set: the latest attempt of an owner that retries (the group commit, a
   removal's batches, the version limit's raise, the late attach, a resumed clone's phase 1)
   failed at the store as a whole; a file's own failure (RFC 8 §5.2) is not one, a failed
   one-shot call counts only while it runs, and a call ended by its caller's context is
