@@ -375,16 +375,16 @@ harness (`journalv2test/prof`) wired to the fixture.
 | 1 | **Interfaces** ⛔ | `pkg/block/enginev2`'s surface, `Deps` narrowed to this part, the engine over `pkg/vfs/vfserr`; the `Content` contract agreed with stage 2 | 5 | 8 | team | **everything** |
 | 2 | **Red e2e suite and test foundations** ⛔ | `engine-conformance` registered red, 45 rows, the fixture, a fault-injecting `kv.KV`, the fake journal | 9 | 28.5 | team | **all testing** in 3 to 10 |
 | 3 | **Write, read and overlay** ⛔ | per-file state, `Write`, `Draw`, `Overlay`, `Read`'s resolution, `Allocation` | 6 | 13 | A | 4, 8 |
-| 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 21 | B | 5, 6, 7, 8 |
+| 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 22 | B | 5, 6, 7, 8 |
 | 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 15.25 | B | 6, 8 |
 | 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 10 | 36.25 | C | 7, 8 |
 | 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 5 | 14.5 | C | 9 |
 | 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 7 | 19.5 | A | 5, 9 |
 | 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over stage 2's fake and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
 | 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 4 | 12.5 | team | the second part |
-| | **Total** | | **63** | **180** | | |
+| | **Total** | | **63** | **181** | | |
 
-**Plan estimate: 63 subtasks, 180 man-days.**
+**Plan estimate: 63 subtasks, 181 man-days.**
 
 RFC 8 is 3,627 lines, which gives N = 8. This part covers about half of it, and its cohesive
 areas are six: the data path, the stability point, removals, the lifecycle, capacity and
@@ -636,7 +636,7 @@ Sections owned: RFC 8 §1.1 (the request path), §4.1, §7.1, §7.5, §7.6, §12
 
 ### Epic 4 — Commit, group commit and losses ⛔
 
-**Epic 4 estimate: 7 subtasks, 21 man-days.**
+**Epic 4 estimate: 7 subtasks, 22 man-days.**
 
 The stability point and everything that commits existence. Appends and hole fills are
 answered after the sync; an overwrite of committed content waits for the group commit
@@ -680,7 +680,9 @@ owned: RFC 8 §4.1 (the verifier), §5.1, §5.2, §11.3. Counters: `engine_stabi
 - T4.5 The loss sequence: a journal-wide floor plus per-file entries, the ring drained when
   the generation is above the last applied, every file raised on missed events or a lost
   device; `LossSeq`; `Done`, with nothing charged, for every uncommitted write of a journal
-  whose device is lost whole.
+  whose device is lost whole. A loss drained between a write's `WriteAt` and its insert is
+  kept per file and checked by the insert, so the write is committed as `OpLost`, or for a
+  failed window dropped (T4.6), never committed as written.
 - T4.6 A failed window reported once per file, the next `Commit` succeeding. The report is
   per file and fed by every `Sync` the engine makes, the capacity sync's included (T7.1),
   so a `SyncError` that a sync other than `Commit`'s takes still fails that file's next

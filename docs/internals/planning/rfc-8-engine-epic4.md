@@ -10,7 +10,7 @@ and §5.8, for `Done` and the verifier the service hands its clients.
 **Track:** B.
 **Package paths:** `feat/storage-v2`'s, after #3645 renamed `enginev2` to `engine` and
 `journalv2` to `journal`.
-**Epic 4 estimate: 7 subtasks, 21 man-days.**
+**Epic 4 estimate: 7 subtasks, 22 man-days.**
 **Depends on:** sync point **S2, red suite in CI**: E1's surface (`Commit`, `LossSeq`,
 `WriteOpts.Done`, `Settings`, `Deps.Existence`) and E2's fake journal; epic 3, built:
 T3.1's per-file entries and their drop of an empty entry marked dead, T3.2's `Write`, which
@@ -568,7 +568,7 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
 
 ### T4.5 The loss sequence
 
-**Subtask T4.5 estimate: 3.5 man-days.**
+**Subtask T4.5 estimate: 4 man-days.**
 
 - **Track:** B. **Depends on:** T4.3.
 - **Covers:** R5, R27–R32, R36 (the loss event's and the lost device's paths).
@@ -577,7 +577,16 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   marker); the last generation applied and the last event seen; the drain (D8), run by the
   sync function and by `LossSeq`; `LossSeq`; the commit of a synced pending write from its
   loss event as `OpLost` through T4.3's batch, and its `Done` from that commit; `lostWhole`
-  (D11), the halted journal's refusal in `Write` (D12), and its hook. `kvstore`'s `OpLost` (D6),
+  (D11), the halted journal's refusal in `Write` (D12), and its hook. The unmatched loss:
+  `Write` takes its version from `WriteAt` before it inserts the operation under the entry's
+  lock, so a drain in that gap finds no write to mark. `markLost`, finding no pending write
+  for an event, keeps it per file in the journal's loss state, under the lock the insert
+  takes, and the insert checks it: a write whose version it names is inserted marked lost,
+  and its batch commits it as `OpLost` (R32); a kept event below the write's version is a
+  committed write's (§9, point 8), discarded, since a file's writes arrive in version order
+  (epic 3's D3). A `ponytail:` marker: a kept event of a file never written again stays
+  until the process ends, one per such loss; prune it with point 8's store-side loss path.
+  `kvstore`'s `OpLost` (D6),
   with its own test. E2's fake journal gains a `Report` method that injects a loss event,
   an offloaded one included, and a gap in the ring, which the tests below need.
 - **Acceptance criteria:**
@@ -587,13 +596,19 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   - a group commit whose sync follows a loss event drains it before it commits, so it never
     commits the dropped write as data;
   - a synced append dropped before its existence commit reads **Lost** once committed, its
-    `Done` runs once, and the file's `Charged` does not move.
+    `Done` runs once, and the file's `Charged` does not move;
+  - a corrupt loss drained between a write's `WriteAt` and its insert is committed as
+    `OpLost`, never as the write.
 - **Tests:** over the fake's loss ring, through `Report`: one event raises one file (catches
   a journal-wide raise for every loss); an event marked `Offloaded`, or a `LossStale` one,
   raises nothing (catches R5's "nothing else"); a gap raises a file with no event (catches a drain that trusts the ring);
   `LossSeq` after a loss without a `Commit` is raised (catches a drain only in `Commit`); a
   corrupt loss reported between a batch's capture and its sync is committed as `OpLost`, not
-  as the write (catches a store operation built at capture, before the drain, R29). Over the real `kvstore`: the loss event's commit
+  as the write (catches a store operation built at capture, before the drain, R29). A hook
+  between `Write`'s `WriteAt` and its insert reports a corrupt loss of that write and runs
+  `LossSeq`: the next batch commits the write as `OpLost`, a `Read` answers `ErrLost` and its
+  `Done` runs once (catches an event the drain advances past unmarked, committed as data,
+  R32). Over the real `kvstore`: the loss event's commit
   leaves the extent uncarved, a `Read` answers `ErrLost`, and `Charged` and the usage
   counters are unchanged (catches a hole committed instead, or an `OpWrite` that charges,
   R32). `lostWhole` under `-race` with writers: every uncommitted write's `Done` once, every
@@ -603,7 +618,7 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
 
 ### T4.6 The failed window, per file
 
-**Subtask T4.6 estimate: 2.5 man-days.**
+**Subtask T4.6 estimate: 3 man-days.**
 
 - **Track:** B. **Depends on:** T4.2, T4.3, T4.5.
 - **Covers:** R6 (verifier after a loss), R33–R35, R36 (the failed window's path).
@@ -612,14 +627,19 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   `losses.windows`, used by every engine sync, epic 7's capacity sync included; in
   `groupcommit.go`: the claim's and the drop's marks on an operation, made under the entry's
   lock, so a `LossFailedWindow` event drops the matching pending write from its entry and
-  from any batch that claimed it, its `Done` charging nothing (R38); `Commit`
+  from any batch that claimed it, its `Done` charging nothing (R38); a `LossFailedWindow`
+  event that finds no matching pending write, its write between `WriteAt` and the insert,
+  kept as T4.5 keeps an unmatched corrupt loss, and the insert dropping the write it names
+  instead of inserting it, its `Done` charging nothing, so it is never committed as written
+  (R32, R38); `Commit`
   answering it with the new verifier and sequence, never mapped to `ErrUnavailable` (epic
   3's D4 left an unnamed journal error so).
 - **Acceptance criteria:**
   - a window failed by the group commit's sync, with no `Commit` waiting, makes the file's
     next `Commit` answer a verifier other than its writes' and a raised sequence, and the one
     after answer the writes' verifier;
-  - another file's `Commit` in the same journal is unaffected beyond the new generation.
+  - another file's `Commit` in the same journal is unaffected beyond the new generation;
+  - a write whose window fails between its `WriteAt` and its insert is never committed.
 - **Tests:** over the fake, a `SyncError` returned to the group commit's sync names file A:
   A's next `Commit` answers the new verifier and a raised sequence, A's following one after a
   new write matches that write's (catches a report lost when no `Commit` waited, and a file
@@ -628,7 +648,10 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   the sequence once (catches a double raise); a `SyncError` followed by a successful sync
   answers only after the second (catches a sync that returns at the failure); a batch
   claims a write, then its window fails before the batch commits: the committed size
-  excludes it (catches a batch that keeps the dropped write). E2's fake journal gains
+  excludes it (catches a batch that keeps the dropped write); a hook between `Write`'s
+  `WriteAt` and its insert reports a `LossFailedWindow` event of that write and runs
+  `LossSeq`: the committed size excludes it and its `Done` runs once, charging nothing
+  (catches an unmatched failed window whose write is committed as written, R38). E2's fake journal gains
   `FailSync(also)` and `Durable`, and its fixture `FailNextSync`, for these tests and the
   conformance row over the real journal for §5.1 failed window and §4.1 verifier after a
   loss, red until the journal fails windows.
@@ -683,8 +706,8 @@ T4.7: `Done` runs exactly once on this epic's four paths.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T4.1, T4.3 | 7 | — | the verifier and the group commit, with the per-file commit the other epics call; T4.1 needs nothing of T4.3 and can open alone, as a 2 man-day pull request, leaving T4.3 as a 5 man-day one |
-| 2 | T4.5, T4.2 | 6.5 | PR 1 | the sync function and its drain, and the stability point that syncs through it |
-| 3 | T4.4, T4.6, T4.7 | 7.5 | PR 2 | the split, the failed window and `Done` |
+| 2 | T4.5, T4.2 | 7 | PR 1 | the sync function and its drain, and the stability point that syncs through it |
+| 3 | T4.4, T4.6, T4.7 | 8 | PR 2 | the split, the failed window and `Done` |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -732,8 +755,3 @@ A suggestion only: one pull request per subtask works as well.
    below `applied`, driven from `markLost` when it finds no pending write, and for a gap from the
    journal's `Since(id, 0)` loss records. It needs a `kvstore` call and an RFC 6 line, and has no
    owner yet. `Settle` needs no change: it never passes a write metadata does not hold.
-9. **A loss drained between `WriteAt` and the insert is unmarked.** `Write` takes its version
-   from `WriteAt` before it inserts the operation under the entry's lock, so a drain in that gap
-   finds no write to mark and advances past the event. T4.5's `markLost` must remember an
-   unmatched event per file, and the insert check it, with a test that places a corrupt loss in
-   that gap.
