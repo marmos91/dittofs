@@ -80,8 +80,9 @@ jobs:
       fixed: ${{ steps.plan.outputs.fixed }}
     steps:
       # Full history: on a pull request, dt plan --base compares the branch
-      # with where it left its base, and in the merge queue with the queue's
-      # base commit, so a docs-only change plans no cell.
+      # with where it left its base, so a docs-only change plans no cell. In
+      # the merge queue it gets no base and plans every cell of the tier, so
+      # gate never passes on a change it did not test.
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -109,7 +110,7 @@ jobs:
       - name: Plan the cells
         id: plan
         env:
-          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event_name == 'merge_group' && github.event.merge_group.base_sha || '' }}
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
           SUITE: ${{ inputs.suite }}
         run: |
           set -o pipefail
