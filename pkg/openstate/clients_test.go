@@ -988,3 +988,77 @@ func TestRefusedConfirmMayBeRetried(t *testing.T) {
 		t.Errorf("the same confirm retried: %d, %v; want %d", id, err, p.Client)
 	}
 }
+
+// An SMB Connect that a node's last Disconnect lands inside, between its
+// connect and its listing, is not refused: the listing is under the client
+// step, so the Disconnect runs after it, finds the node listed again and
+// keeps the record (RFC 14 §2.1, L52).
+func TestAConnectRacingTheLastDisconnectIsListed(t *testing.T) {
+	f := newFixture(t)
+	id, first, err := f.Connect(ctx, smb("pc-a"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	this := entity.SessionRef{ID: 1}
+	type result struct {
+		gen uint64
+		err error
+	}
+	done := make(chan result, 1)
+	connectListHook = func() {
+		connectListHook = nil
+		go func() {
+			gen, err := f.Disconnect(ctx, id, this, SessionEnd{Last: true, Gen: first})
+			done <- result{gen, err}
+		}()
+		select { // gives an unlocked listing the time to lose the race
+		case r := <-done:
+			done <- r
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	t.Cleanup(func() { connectListHook = nil })
+	again, second, err := f.Connect(ctx, smb("pc-a"), nil)
+	if err != nil {
+		t.Fatalf("a Connect racing the last Disconnect: %v, want it listed", err)
+	}
+	r := <-done
+	if r.err != nil || again != id || r.gen != second {
+		t.Fatalf("the racing Disconnect: Gen %d, %v (client %d, Connect's %d); want the record kept at Gen %d", r.gen, r.err, id, again, second)
+	}
+	if rec, err := f.Record(ctx, id); err != nil || rec.Reach.GenOf(nodeOf(this)) != second {
+		t.Errorf("after the race: sessions %v, %v; want the node listed at Gen %d", rec.Reach.Sessions, err, second)
+	}
+}
+
+// Session setups racing a node's last logoff through the public calls never
+// fail: each Connect lists its node whichever way the race goes (L52).
+func TestConnectsRacingLastDisconnectsAreNeverRefused(t *testing.T) {
+	f := newFixture(t)
+	this := entity.SessionRef{ID: 1}
+	for i := range 500 {
+		id, gen, err := f.Connect(ctx, smb("pc-a"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = f.Disconnect(ctx, id, this, SessionEnd{Last: true, Gen: gen})
+		}()
+		again, _, err := f.Connect(ctx, smb("pc-a"), nil)
+		wg.Wait()
+		if err != nil {
+			t.Fatalf("round %d: a Connect racing the last Disconnect: %v", i, err)
+		}
+		rec, err := f.Record(ctx, again)
+		if err != nil || len(rec.Reach.Sessions) == 0 {
+			t.Fatalf("round %d: the racing Connect's client: sessions %v, %v; want its node listed", i, rec.Reach.Sessions, err)
+		}
+		if _, err := f.Disconnect(ctx, again, this, SessionEnd{Last: true, Gen: rec.Reach.GenOf(nodeOf(this))}); err != nil {
+			t.Fatalf("round %d: the closing Disconnect: %v", i, err)
+		}
+	}
+}
+

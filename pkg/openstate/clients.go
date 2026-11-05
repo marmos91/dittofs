@@ -317,8 +317,18 @@ func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.Cli
 		return 0, 0, err
 	}
 	out := outbox{timer: true}
+	var gen uint64
 	t.cstep.Lock()
 	ended, err := t.connect(ctx, &rec, p, &out)
+	if err == nil && rec.Protocol == entity.ProtocolSMB {
+		// Listed under the client step, so a last Disconnect's release, which
+		// holds it, runs wholly before or after: a session set up while the
+		// last one ends never finds its record deleted (RFC 14 §2.1).
+		if connectListHook != nil {
+			connectListHook()
+		}
+		gen, err = v.listNode(ctx, rec.ID)
+	}
 	t.cstep.Unlock()
 	if ended != nil {
 		sink.ClientEnded(ended.ID, shardsOf(*ended), RevokedLeaseExpired)
@@ -328,12 +338,12 @@ func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.Cli
 	if err != nil {
 		return 0, 0, err
 	}
-	if rec.Protocol != entity.ProtocolSMB {
-		return rec.ID, 0, nil
-	}
-	gen, err := v.listNode(ctx, rec.ID)
-	return rec.ID, gen, err
+	return rec.ID, gen, nil
 }
+
+// connectListHook, set only by tests, runs in an SMB Connect between its
+// connect and its listing of the node.
+var connectListHook func()
 
 // listNode lists this node in client id's Reach.Sessions, keeping the
 // record's adapter bytes, and returns the entry's Gen.
