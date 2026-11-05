@@ -37,3 +37,10 @@
   category: feature
   reason: 'Epic 6: the engine opens its journals at start. Fails at the fixture until the journal has Init, Open, WriteAt and Since.'
   issue: '#3589'
+- test: TestRFC8_FixtureRecordsItsJournal
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: the fixture records its journal through the store before the engine starts. Fails at the fixture until the journal has Init, Open and the engine has Start.'
+  issue: '#3589'

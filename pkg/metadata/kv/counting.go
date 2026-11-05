@@ -28,13 +28,21 @@ func (c *Counts) add(o Counts) {
 	c.GuardOnly += o.GuardOnly
 }
 
+// UpdateCounts is how many Updates committed or failed, and the most keys,
+// set or deleted, one of them wrote in its final attempt.
+type UpdateCounts struct {
+	Updates    int
+	MostWrites int
+}
+
 // Counting wraps a KV and counts the keys each transaction touches, so a test
 // can assert an operation's cost. Only an Update's final attempt counts:
 // retries are the store's cost, not the operation's.
 type Counting struct {
 	KV
-	mu    sync.Mutex
-	total Counts
+	mu      sync.Mutex
+	total   Counts
+	updates UpdateCounts
 }
 
 func (c *Counting) Update(ctx context.Context, fn func(Txn) error) error {
@@ -47,6 +55,12 @@ func (c *Counting) Update(ctx context.Context, fn func(Txn) error) error {
 		last.GuardOnly = 1
 	}
 	c.record(last)
+
+	c.mu.Lock()
+	c.updates.Updates++
+	c.updates.MostWrites = max(c.updates.MostWrites, last.Sets+last.Deletes)
+	c.mu.Unlock()
+
 	return err
 }
 
@@ -57,6 +71,19 @@ func (c *Counting) View(ctx context.Context, fn func(Reader) error) error {
 	})
 	c.record(last)
 	return err
+}
+
+// TakeUpdates returns the Update counts since the last TakeUpdates and
+// resets them.
+func (c *Counting) TakeUpdates() UpdateCounts {
+	c.mu.Lock()
+
+	defer c.mu.Unlock()
+
+	u := c.updates
+	c.updates = UpdateCounts{}
+
+	return u
 }
 
 // Take returns the counts since the last Take and resets them.

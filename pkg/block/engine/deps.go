@@ -16,6 +16,9 @@ import (
 // component's own type as it. Every member is required: New refuses a missing
 // one by name, so a fixture supplies stubs of the whole interface, never nil.
 type Deps struct {
+	// Node is this node's identity, from its bootstrap; JournalID looks up its
+	// devices under it.
+	Node      entity.NodeID
 	Devices   []string // one journal directory per device; Start opens each
 	Open      func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID) (Journal, error)
 	Existence Existence
@@ -80,18 +83,22 @@ type Content interface {
 	VersionFloor(ctx context.Context, shares []entity.ShareID) (entity.JournalVersion, error)
 }
 
-// Lifecycle is the store's access outside block metadata's views: a device's
-// journal identity, the shares' version limits and the shards' incarnations.
+// Lifecycle is the store's access outside block metadata's views: this
+// node's devices' journal identities, the installation's tags, the shares'
+// version limits and the shards' incarnations.
 //
-// decision: a device is named by its journal directory, the string Deps.Devices
-// holds, and the identity is the journal's sixteen bytes unnamed, so the store
-// implements this without importing the journal. Revisit if the store gains a
-// device identifier of its own.
+// decision: a device is named by its journal directory as the bootstrap
+// writes it, one of Deps.Devices, looked up under Deps.Node, and the identity
+// is the journal's sixteen bytes unnamed, so the store implements this
+// without importing the journal. Revisit if the store gains a device
+// identifier of its own.
 type Lifecycle interface {
-	JournalID(ctx context.Context, device string) ([16]byte, error)
+	JournalID(ctx context.Context, node entity.NodeID, device entity.JournalDir) ([16]byte, error)
+	Tags(ctx context.Context) (map[entity.ShareID]entity.TagRecord, error)
 	VersionLimits(ctx context.Context, shares []entity.ShareID) (map[entity.ShareID]entity.JournalVersion, error)
 	RaiseVersionLimits(ctx context.Context, to map[entity.ShareID]entity.JournalVersion) error
-	RaiseIncarnations(ctx context.Context, shards []entity.ShardID) error
+	RaiseAtStart(ctx context.Context, shards []entity.ShardID) (map[entity.ShardID]uint64, error)
+	RaiseAtAttach(ctx context.Context, shard entity.ShardID) (uint64, error)
 }
 
 // CloneHold is the part of open state a clone calls, in the engine's own

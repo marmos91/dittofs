@@ -11,6 +11,7 @@ import (
 // wrapped, in the test fixture.
 var (
 	_ Existence = kvstore.Existence{}
+	_ Lifecycle = kvstore.Lifecycle{}
 	_ Content   = kvstore.Content{}
 	_ Clock     = journal.Clock(nil)
 )

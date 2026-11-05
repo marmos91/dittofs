@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
@@ -115,31 +114,12 @@ func (s *Store) VersionLimit(ctx context.Context, share entity.ShareID) (v entit
 
 // RaiseVersionLimit raises the share's version limit to v, in its own
 // transaction, before the journal draws at or above the old one. A limit is
-// never lowered: a v at or below the stored one changes nothing.
+// never lowered: a v at or below the stored one changes nothing. A share
+// being removed or retired is refused with ErrStale, one with no record as
+// not found; Lifecycle's RaiseVersionLimits skips both instead.
 func (s *Store) RaiseVersionLimit(ctx context.Context, share entity.ShareID, v entity.JournalVersion) error {
 	return s.kv.Update(ctx, func(tx kv.Txn) error {
-		if _, ok, err := get(tx, shareKey(share, keys.SInfo)); err != nil {
-			return err
-		} else if !ok {
-			return merrs.NewNotFoundError(share.String(), "share")
-		}
-		if err := liveShare(tx, share); err != nil {
-			return err
-		}
-		b, ok, err := get(tx, versionLimitKey(share))
-		if err != nil {
-			return err
-		}
-		if ok {
-			old, err := decodeVersion(b)
-			if err != nil {
-				return err
-			}
-			if !old.Less(v) {
-				return nil
-			}
-		}
-		return tx.Set(versionLimitKey(share), encodeVersion(v))
+		return raiseVersionLimitIn(tx, share, v)
 	})
 }
 

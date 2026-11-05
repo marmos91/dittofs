@@ -40,6 +40,9 @@ var fixtureStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // under.
 var fixtureInstall = journal.InstallationID{'e', 'n', 'g', 'i', 'n', 'e'}
 
+// fixtureNode is the node the fixture's engine runs as.
+var fixtureNode = entity.NodeID{'n', 'o', 'd', 'e'}
+
 // Fixture is the engine as production composes it: one device's real journal
 // on a temporary directory, reached through the journal's crash-simulating
 // seam; the real metadata store on an in-memory kv.KV holding one share; the
@@ -56,12 +59,13 @@ type Fixture struct {
 	Seam  *journaltest.Seam
 	Clock *sim.TestClock
 	Share engine.Share // the share as the engine binds it
-	// Journal is the ID Init gave the fixture's journal, which the store's
-	// Lifecycle view answers for its directory.
+	// Journal is the ID Init gave the fixture's journal, which the store
+	// records for Node and Dir, so its Lifecycle view answers it there.
 	Journal journal.JournalID
+	Node    entity.NodeID // the node the engine runs as, its Deps.Node
+	Dir     string        // the journal's directory, the engine's one device
 
 	t      *testing.T
-	dir    string
 	logger *slog.Logger
 	starts uint64 // the processes started, each serving the shard under a new grace instance
 	// crashed fences the running engine's existence and content views: once
@@ -86,13 +90,31 @@ func New(t *testing.T) *Fixture {
 		t.Fatalf("fixture: seam: %v", err)
 	}
 	clock := sim.NewTestClock(fixtureStart)
-	f := &Fixture{Seam: seam, Clock: clock, t: t, dir: dir, logger: slog.New(slog.NewTextHandler(t.Output(), nil))}
+	f := &Fixture{
+		Seam:   seam,
+		Clock:  clock,
+		Node:   fixtureNode,
+		Dir:    dir,
+		t:      t,
+		logger: slog.New(slog.NewTextHandler(t.Output(), nil)),
+	}
 
 	if f.Journal, err = journal.Init(t.Context(), dir, fixtureInstall, journal.WithClock(clock), journal.WithStorage(seam.FS())); err != nil {
 		t.Fatalf("fixture: journal init: %v", err)
 	}
 
 	f.FS = kvstoretest.NewFS(t, memKV)
+
+	err = f.FS.Store.RecordJournal(
+		t.Context(),
+		f.Journal,
+		f.Node,
+		entity.JournalDir(f.Dir),
+	)
+	if err != nil {
+		t.Fatalf("fixture: record the journal: %v", err)
+	}
+
 	f.Share = engine.Share{
 		ID:         f.FS.Share.ID,
 		Tag:        journal.ShareTag(f.FS.Share.Tag),
@@ -180,7 +202,8 @@ func (f *Fixture) start() {
 	}
 
 	e, err := engine.New(engine.Deps{
-		Devices: []string{f.dir},
+		Node:    f.Node,
+		Devices: []string{f.Dir},
 		Open: func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID) (engine.Journal, error) {
 			j, err := journal.Open(ctx, dir, floor, expect, journal.WithClock(f.Clock), journal.WithStorage(f.Seam.FS()))
 			if err != nil {
@@ -190,7 +213,7 @@ func (f *Fixture) start() {
 		},
 		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed},
 		Content:   fencedContent{Content: f.FS.Store.Content(), crashed: f.crashed},
-		Lifecycle: unbuiltLifecycle{},
+		Lifecycle: f.FS.Store.Lifecycle(),
 		Holds:     cloneHold{opens: f.Opens.Opens(), recovery: f.Opens.Recovery()},
 		Clock:     f.Clock,
 		Logger:    f.logger,
@@ -239,34 +262,6 @@ func memKV(tb testing.TB) kv.KV {
 	}
 	tb.Cleanup(func() { _ = db.Close() })
 	return db
-}
-
-// errNoLifecycle answers every call of the fixture's Lifecycle.
-var errNoLifecycle = errors.New("fixture: the store's Lifecycle view is not built")
-
-// unbuiltLifecycle stands where the store's Lifecycle view goes, which the
-// store does not have yet: every call is refused.
-//
-// ponytail: refusing every call holds only while no row reaches the engine's
-// start past the journal's Init. The store's Lifecycle view, once built,
-// replaces it here, with Fixture.Journal recorded for the fixture's
-// directory.
-type unbuiltLifecycle struct{}
-
-func (unbuiltLifecycle) JournalID(context.Context, string) ([16]byte, error) {
-	return [16]byte{}, errNoLifecycle
-}
-
-func (unbuiltLifecycle) VersionLimits(context.Context, []entity.ShareID) (map[entity.ShareID]entity.JournalVersion, error) {
-	return nil, errNoLifecycle
-}
-
-func (unbuiltLifecycle) RaiseVersionLimits(context.Context, map[entity.ShareID]entity.JournalVersion) error {
-	return errNoLifecycle
-}
-
-func (unbuiltLifecycle) RaiseIncarnations(context.Context, []entity.ShardID) error {
-	return errNoLifecycle
 }
 
 // quietSink is open state's Sink with no client and no service behind it:

@@ -34,6 +34,9 @@ func TestKeyGolden(t *testing.T) {
 		{"share list", shareListKey, "28"},
 		{"installation", installationKey, "29"},
 		{"settings generation", cfgGenKey, "33"},
+		{"journal", journalKey(gid), "2e" + g},
+		{"journal index", journalIndexKey(entity.NodeID(pid), "/j"), "48" + p + "2f6a0001"},
+		{"removal step", shardRemovalKey(7), "2d" + "0000000000000007" + "04"},
 	} {
 		if got := hex.EncodeToString(c.key); got != c.want {
 			t.Errorf("%s:\n got %s\nwant %s", c.name, got, c.want)

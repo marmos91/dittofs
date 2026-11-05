@@ -32,6 +32,7 @@ func TestGolden(t *testing.T) {
 			"01" + hex.EncodeToString(share) + hex.EncodeToString(file) + "09" + "0000000000001000"},
 		{"N‖node‖clk", append(ID([]byte{KindN}, node), NClk), "2c" + hex.EncodeToString(node) + "02"},
 		{"NX‖share‖name", String([]byte{KindNX, NXShare}, []byte("data")), "2503646174610001"},
+		{"JD‖node‖device", String(ID([]byte{KindJD}, node), []byte("/j")), "48" + hex.EncodeToString(node) + "2f6a0001"},
 	} {
 		if got := hex.EncodeToString(c.key); got != c.want {
 			t.Errorf("%s: got %s, want %s", c.name, got, c.want)
@@ -45,7 +46,7 @@ func TestCodesUnique(t *testing.T) {
 	for name, codes := range map[string][]byte{
 		"kind": {KindStore, KindF, KindS, KindC, KindCR, KindB, KindBR, KindBD, KindBC, KindI, KindNS,
 			KindU, KindG, KindM, KindMR, KindGR, KindNX, KindNP, KindNG, KindSL, KindIN, KindNSM, KindPX,
-			KindN, KindSH, KindJ, KindRS, KindMV, KindSLOT, KindCFG, KindCFGGEN, KindSEC, KindCL, KindCLO, KindTG, KindMKP, KindIDS},
+			KindN, KindSH, KindJ, KindRS, KindMV, KindSLOT, KindCFG, KindCFGGEN, KindSEC, KindCL, KindCLO, KindTG, KindMKP, KindIDS, KindJD},
 		"F": {FAcl, FX, FS, FE, FT, FH, FRm, FOv, FRef, FHis, FFx, FFo, FRel, FOp, FDp, HisFile},
 		"S": {SInfo, SSt, SNsg, SG, SXp, SSnap, SCut, SLive, SSc, SHd, SHr, SUse, SRh, SOr, SUt, SPu,
 			SPj, SUd, SQt, SQx, SVf, SFnc, SVl, SShs, SPr, SRr, SDo},
@@ -137,7 +138,7 @@ func TestVersion(t *testing.T) {
 func TestDescribeNamesEveryCode(t *testing.T) {
 	for _, k := range []byte{KindStore, KindF, KindS, KindC, KindCR, KindB, KindBR, KindBD, KindBC, KindI, KindNS,
 		KindU, KindG, KindM, KindMR, KindGR, KindNX, KindNP, KindNG, KindSL, KindIN, KindNSM, KindPX,
-		KindN, KindSH, KindJ, KindRS, KindMV, KindSLOT, KindCFG, KindCFGGEN, KindSEC, KindCL, KindCLO, KindTG, KindMKP, KindIDS} {
+		KindN, KindSH, KindJ, KindRS, KindMV, KindSLOT, KindCFG, KindCFGGEN, KindSEC, KindCL, KindCLO, KindTG, KindMKP, KindIDS, KindJD} {
 		if _, ok := kindNames[k]; !ok {
 			t.Errorf("kind 0x%02x has no name", k)
 		}

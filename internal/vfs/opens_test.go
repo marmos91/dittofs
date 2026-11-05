@@ -982,7 +982,7 @@ func (r *failRecovery) set(serve, drop error) {
 // each shard served once.
 func TestEachFailedStartStepLeavesItBuilt(t *testing.T) {
 	boom := errors.New("boom")
-	for _, step := range []string{"List", "Removing", "RaiseIncarnations", "ServeShard", "DropShare"} {
+	for _, step := range []string{"List", "Removing", "RaiseAtStart", "ServeShard", "DropShare"} {
 		t.Run(step, func(t *testing.T) {
 			ctx := t.Context()
 			db := &failKV{}
@@ -1015,7 +1015,7 @@ func TestEachFailedStartStepLeavesItBuilt(t *testing.T) {
 					}
 					return nil
 				})
-			case "RaiseIncarnations":
+			case "RaiseAtStart":
 				db.failing(func(update bool) error {
 					if update {
 						return boom

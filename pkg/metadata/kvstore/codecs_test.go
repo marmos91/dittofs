@@ -12,6 +12,11 @@ import (
 )
 
 var (
+	jid  = [16]byte{0: 0xDD, 15: 0x0E}
+	jrec = journalRecord{
+		Node:   entity.NodeID{0: 0xEE, 15: 0x0F},
+		Device: "/j1",
+	}
 	pid   = entity.PrincipalID{0: 0xAA, 15: 0x01}
 	gid   = entity.PrincipalID{0: 0xBB, 15: 0x02}
 	sid   = entity.ShareID{0: 0xCC, 15: 0x03}
@@ -95,6 +100,14 @@ func codecCases() []codecCase {
 			func(b []byte) (any, error) { return decodeCounter(b) }},
 		{"setting", set, encodeSetting(set), "01" + "0176" + "0000000000000006" + "00000001",
 			func(b []byte) (any, error) { return decodeSetting(set.Scope, "k", b) }},
+		{"journal index", jid, encodeJournalIndex(jid), "01" + "dd00000000000000000000000000000e",
+			func(b []byte) (any, error) {
+				return decodeJournalIndex(b)
+			}},
+		{"journal", jrec, encodeJournal(jrec), "01" + "ee00000000000000000000000000000f" + "03" + "2f6a31",
+			func(b []byte) (any, error) {
+				return decodeJournal(b)
+			}},
 	}
 }
 
