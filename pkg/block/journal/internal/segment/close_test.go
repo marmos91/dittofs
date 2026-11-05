@@ -502,8 +502,8 @@ func TestGroupCloseIdempotent(t *testing.T) {
 		go func() { errs <- e.g.Close() }()
 	}
 	first, second := <-errs, <-errs
-	if first != nil && second != nil {
-		t.Fatalf("concurrent Close calls = %v and %v, want one nil", first, second)
+	if first != nil || second != nil {
+		t.Fatalf("concurrent Close calls = %v and %v, want both nil", first, second)
 	}
 	if err := e.g.Close(); err != nil {
 		t.Fatalf("a later Close = %v, want nil", err)
@@ -517,12 +517,20 @@ func TestGroupCloseIdempotent(t *testing.T) {
 	}
 }
 
-// goroutinesIn counts the goroutines whose stack holds frame.
+// goroutinesIn counts the goroutines whose stack holds frame. A worker is
+// matched by the line naming where it was started, which a goroutine shows
+// whether or not it has been scheduled yet; its running frame exists only
+// after that.
 func goroutinesIn(frame string) int {
 	buf := make([]byte, 1<<20)
 	buf = buf[:runtime.Stack(buf, true)]
 	return strings.Count(string(buf), frame)
 }
+
+const (
+	idleWorker = "created by github.com/cubbit/dittofs/pkg/block/journal/internal/segment.(*IdleSealer).Start"
+	poolWorker = "created by github.com/cubbit/dittofs/pkg/block/journal/internal/segment.(*Pool).Start"
+)
 
 // TestGroupCloseJoinsIdleSealerAndPool: when Close returns, the idle sealer's
 // and the refill's goroutines are gone and the pool refuses a take, before any
@@ -532,16 +540,16 @@ func TestGroupCloseJoinsIdleSealerAndPool(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	e := groupBuild(t)
-	if got := goroutinesIn("(*IdleSealer).run"); got == 0 {
+	if got := goroutinesIn(idleWorker); got == 0 {
 		t.Fatal("the idle sealer's worker is not running before Close")
 	}
 	if err := e.g.Close(); err != nil {
 		t.Fatalf("Close = %v, want nil", err)
 	}
-	if got := goroutinesIn("(*IdleSealer).run"); got != 0 {
+	if got := goroutinesIn(idleWorker); got != 0 {
 		t.Fatalf("%d idle sealer workers outlived Close, want none", got)
 	}
-	if got := goroutinesIn("(*Pool).worker"); got != 0 {
+	if got := goroutinesIn(poolWorker); got != 0 {
 		t.Fatalf("%d refill workers outlived Close, want none", got)
 	}
 	if _, err := e.pool.Take(segment.Content); !errors.Is(err, core.ErrClosed) {
