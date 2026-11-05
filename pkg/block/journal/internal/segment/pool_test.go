@@ -127,8 +127,9 @@ func (r *logRecorder) countAt(level slog.Level, sub string) int {
 // ten seconds: it proves a take's kick started the refill, so the test reads
 // what it reads with the replacement really in flight. Without the bound a
 // regression that never kicks would leave the test hanging at the channel
-// instead of failing; the hold's own Cleanup releases it on that path, so the
-// parked call is never left blocking the pool's Stop.
+// instead of failing; the hold's own Cleanup releases it on that path, so a
+// create that reaches the seam afterwards passes through instead of parking
+// the worker.
 func awaitHoldReached(t *testing.T, h *journaltest.Hold) {
 	t.Helper()
 
