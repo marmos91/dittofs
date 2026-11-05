@@ -43,7 +43,7 @@ jobs:
           fetch-depth: 0
 
       # decision: the path filter lives inside the job rather than in the
-      # workflow's `paths:`, as in unit-tests.yml. A workflow skipped by path
+      # workflow's `paths:`. A workflow skipped by path
       # filtering leaves its check pending forever, so the check could never
       # be made required; a job whose steps are skipped reports success
       # instead. A failure of the filter fails the job, so the check never goes
@@ -67,7 +67,7 @@ jobs:
           go-version: "1.26.x"
           cache: true  # Built-in caching (replaces actions/cache)
 
-      # -p 2, as in windows-build.yml: each -race test binary reserves a large
+      # -p 2: each -race test binary reserves a large
       # shadow arena, and several at once can exhaust a Windows runner's
       # commit limit. Bash on both runners, so one command serves both.
       - name: Run the journal tests
