@@ -316,6 +316,11 @@ type Stream struct {
 	// tracker or catalog, and the end's own word reaches its consumer before
 	// the segment it names is left behind (R48, R49).
 	ending *endRec
+	// onEnd is the consumer of the stream's end events; started says the
+	// stream has made a reservation, a roll or an end, so the consumer
+	// cannot be registered anymore.
+	onEnd   func(EndEvent)
+	started bool
 }
 
 // sealState is where a stream's seal stands: open, closing, closed for good,

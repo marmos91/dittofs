@@ -1,10 +1,40 @@
 package segment
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
+
+// ErrStreamStopped is returned by every append after the stream stopped,
+// wrapping the failure that stopped it; no spare is taken and nothing is
+// reserved.
+var ErrStreamStopped = errors.New("segment: the stream stopped: a second segment in a row failed, or the device is read-only")
+
+// EndEvent is the one event a stream hands its consumer per ended segment.
+type EndEvent struct {
+	// Stream is the number of the stream whose segment ended.
+	Stream uint32
+	// Segment is the ended segment itself.
+	Segment core.SegmentID
+	// Cause names why the segment was ended.
+	Cause EndCause
+	// Failed is the offset of the lowest slot whose write failed; when no
+	// write of the segment failed — a sync's failure, a requested end — it
+	// is the stream's next free slot when the segment ended, the end of
+	// every reservation the segment holds.
+	Failed int64
+	// SyncedThrough is the tracker's synced value when the event is handed
+	// over: the window is the records at or above it.
+	SyncedThrough int64
+	// Err is the failure that ended the segment: the write's error, the
+	// seal's, End's cause.
+	Err error
+	// Stopped says the stream stopped with this end and will take no
+	// further spare.
+	Stopped bool
+}
 
 // EndCause names why a segment was ended rather than sealed.
 type EndCause uint8
@@ -96,4 +126,33 @@ func (s *Stream) notifyEnd() {
 	s.ending = nil
 	s.appendMu.Unlock()
 	s.drained.Broadcast() // the roll waiting out the ended segment may pass
+}
+
+// OnEnd registers the consumer of the stream's end events. It must be called
+// before the first append — before any reservation, roll or end — for a later
+// call would hand a consumer an event whose segment's history it never asked
+// to watch; a later call panics. A nil consumer (the default) drops the
+// events.
+func (s *Stream) OnEnd(fn func(EndEvent)) {
+	s.appendMu.Lock()
+	defer s.appendMu.Unlock()
+	if s.started {
+		panic("segment: OnEnd after the stream started: the consumer is registered before the first append")
+	}
+	s.onEnd = fn
+}
+
+// End ends segment seg at the durability code's request after a failed sync,
+// with cause as its reason.
+func (s *Stream) End(seg core.SegmentID, cause error) error {
+	if cause == nil {
+		panic("segment: End with no cause: a requested end names the failure that asked for it")
+	}
+	s.appendMu.Lock()
+	if s.closed {
+		s.appendMu.Unlock()
+		return ErrStreamClosed
+	}
+	s.appendMu.Unlock()
+	return fmt.Errorf("%w: the end is not implemented in this commit", ErrWrongState)
 }
