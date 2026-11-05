@@ -1454,6 +1454,14 @@ func (s *Stream) sealLocked(early bool) (SealResult, error) {
 		// past a refused seal either. Both paths call the seal's own
 		// event to their consumer: the drain has emptied, so no slot the
 		// segment holds still writes.
+		// A failure past the seal's first step came after its record sync
+		// succeeded: that is a successful sync of the segment, so the
+		// second-refusal rule (RFC 1 §5.4) must not count the failure as one
+		// before any sync of the spare.
+		var durable recordsDurable
+		if errors.As(err, &durable) {
+			s.syncedOnce = true
+		}
 		endID, notify := s.endLocked(EndSeal, err)
 		s.drained.Broadcast() // the Syncs parked on the seal leave with the end
 		if !errors.Is(err, ErrSegmentEnded) {

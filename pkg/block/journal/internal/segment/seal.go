@@ -54,6 +54,14 @@ type SealResult struct {
 	TailErr error
 }
 
+// recordsDurable marks a WriteSeal failure that came after step 1: the
+// segment's records had been made durable by a successful sync, so the stream
+// counts that sync as a sync of the segment. It reads as the error it wraps.
+type recordsDurable struct{ err error }
+
+func (r recordsDurable) Error() string { return r.err.Error() }
+func (r recordsDurable) Unwrap() error { return r.err }
+
 // WriteSeal seals segment id, which no stream appends to anymore, at marker,
 // with entries as its catalog, and truncates the free tail when early. It is
 // the one seal writer: the stream calls it on the segment it drained, and
@@ -105,13 +113,13 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 		if unerr := set.End(id); unerr != nil {
 			err = errors.Join(err, unerr)
 		}
-		return SealResult{}, fmt.Errorf("%w: writing the marker, the footer and the trailer: %w", ErrSegmentEnded, err)
+		return SealResult{}, fmt.Errorf("%w: writing the marker, the footer and the trailer: %w", ErrSegmentEnded, recordsDurable{err})
 	}
 	if err := ref.Sync(); err != nil {
 		if unerr := set.End(id); unerr != nil {
 			err = errors.Join(err, unerr)
 		}
-		return SealResult{}, fmt.Errorf("%w: making the marker, the footer and the trailer durable: %w", ErrSegmentEnded, err)
+		return SealResult{}, fmt.Errorf("%w: making the marker, the footer and the trailer durable: %w", ErrSegmentEnded, recordsDurable{err})
 	}
 
 	// The seal is complete: the segment is sealed in the ledger from here,

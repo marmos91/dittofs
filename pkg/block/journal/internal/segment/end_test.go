@@ -1858,6 +1858,48 @@ func TestEndAFailureAfterTheSparesFirstSyncRolls(t *testing.T) {
 	}
 }
 
+// TestEndASealWhoseRecordSyncSucceededInTheSpareIsNotASecondRefusal checks
+// RFC 1 §5.4's "before any sync in that spare has succeeded" against a seal:
+// its record sync is a sync of the spare, so a marker sync that fails after
+// it is a failure past the spare's first successful sync, and the stream
+// rolls on rather than stopping.
+func TestEndASealWhoseRecordSyncSucceededInTheSpareIsNotASecondRefusal(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, rec := endStopBuilder(t)
+	if got := endStopEndsSegment(t, e, rec, syscall.EIO); got != core.SegmentID(1) {
+		t.Fatalf("the first ended segment is %d, want 1", got)
+	}
+	lh, lbody := streamWriteHeader(streamFileID(3), 0, streamTestBody(64, 0x3c), 7, core.Version{Counter: 3})
+	if p := streamAppendWrite(t, endStopStreamEnv(e), lh, lbody); p.Loc.Segment != 2 {
+		t.Fatalf("the spare's first append landed in segment %d, want the taken spare 2", p.Loc.Segment)
+	}
+
+	// The seal's record sync (the spare's first) passes; its marker sync
+	// (the second) fails.
+	if err := e.seam.Schedule(journaltest.FailingFrom(journaltest.OpSync, streamSegName(2), 2, 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if _, err := e.s.Seal(false); !errors.Is(err, segment.ErrSegmentEnded) {
+		t.Fatalf("the seal = %v, want ErrSegmentEnded from the failed marker sync", err)
+	}
+	if err := e.seam.Schedule(); err != nil {
+		t.Fatalf("disarming the sync fault: %v", err)
+	}
+	evs := rec.awaitCount(t, 2, "the failed seal's end")
+	ev := evs[len(evs)-1]
+	if ev.Segment != 2 || ev.Cause != segment.EndSeal {
+		t.Fatalf("the event is %+v, want the seal's end of segment 2", ev)
+	}
+	if ev.Stopped {
+		t.Fatal("the event names the stream stopped, want it rolling: the seal's record sync succeeded in the spare")
+	}
+	nh, nbody := streamWriteHeader(streamFileID(5), 0, streamTestBody(64, 0x13), 7, core.Version{Counter: 5})
+	if p := streamAppendWrite(t, endStopStreamEnv(e), nh, nbody); p.Loc.Segment != 3 {
+		t.Fatalf("the append after the seal landed in segment %d, want 3", p.Loc.Segment)
+	}
+}
+
 // TestEndEROFSStopsTheStream checks the read-only half of RFC 1 §5.4: a
 // failure an EROFS carries, wherever it lands, stops the stream with the
 // end — the event says so — and the next append takes no spare at all.
