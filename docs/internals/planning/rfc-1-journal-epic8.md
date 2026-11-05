@@ -308,7 +308,7 @@ sections found every one of them below, in §1.2, or in the closing note of this
 | R55 | A held extent is reported as a write, whether `WriteAt` or `Fill` made it. A fill's version is at or below the caller's `applied`, so it is not yielded | invariant | RFC 1 §3.10 | T8.9 |
 | R56 | `Since` reads a consistent view of the file and never blocks writes to it for longer than a read does | MUST NOT | RFC 1 §3.10 | T8.9 |
 | R57 | A write's modification time is read from its record when `Since` yields it, verified like any record read, and is 0 for every other kind. A record that does not verify goes to epic 6's `Corrupt`, as a read's does | invariant | RFC 28 §2.3, §2.4, §3.3 | T8.9 |
-| R58 | `Settle(id, v)` drops the markers of `id` at or below `v`. It appends nothing and is not persisted | invariant | RFC 1 §3.10 | T8.9 |
+| R58 | `Settle(id, v)` drops the markers of `id` at or below `v`, removal markers and synced loss records alike, every older unsettled one included (it works by version, not by record), and never a held extent, whatever its version. It appends nothing and is not persisted. A caller may also use it to discard a marker it will never apply; the removal's extent then reads lost wherever nothing offloaded holds it, and recovery yields the marker again after a crash (RFC 1 §3.10 as #3731 states it) | invariant | RFC 1 §3.10, RFC 8 §8.1 | T8.9 |
 | R59 | `Files` lists a file with a held extent, an unsettled removal marker or an unsettled synced loss record, in this share. `Extents` lists a file's held extents in offset order and is an answer about what the journal holds, not about what exists | invariant | RFC 1 §3.7 | T8.9 |
 | R60 | `DirtyFiles` is kept as a per-journal list of dirty files keyed by their oldest dirty byte's write time. A write that sets a file's first unset offloaded bit adds it. A removal that leaves a file no held or retained extent with an unset bit drops it, and a retained extent counts. It costs O(dirty files) | MUST | RFC 1 §3.7 | T8.9 |
 | R61 | `DirtyFiles` never walks the placement index and never reads a record | MUST NOT | RFC 1 §3.7 | T8.9 |
@@ -959,7 +959,8 @@ its counter (R75); `ReservedBytes` read at the
   yielding the extent on `UseCopy`; on `Dropped` of a synced record it yields the loss in its
   place, since the loss marker `Lose` registers postdates the view and a later `Settle` above it
   would otherwise erase a loss `Since` never reported (R53, R57, RFC 1 §3.10, RFC 28 §3.3), and ends with the context's error when the context is done (R16).
-  `Settle(id, v)` drops the markers at or below `v` through E4-5, appending nothing (R58).
+  `Settle(id, v)` drops the markers at or below `v` through E4-5, every older one too, and no held
+  extent, appending nothing (R58).
   `Extents` and `Files` report held extents in offset order and the share's files with a held
   extent, an unsettled marker or an unsettled synced loss (R59). `dirty.go`: the dirty-file list
   (D12), updated through `Account` (D16) for every change to held state: where a write sets a
@@ -969,6 +970,10 @@ its counter (R75); `ReservedBytes` read at the
   - `Since(id, 0)` yields each held extent and each marker at its version; `Since(id, v)` for a
     removal's own version does not yield it; after `Settle` it no longer does.
   - A marker running to the end of the file is yielded with `Len = MaxInt64 - Off`.
+  - `Settle` at `v` drops every marker of the file at or below `v` in one call, and a held extent
+    above a marker stays held and readable after a `Settle` above both.
+  - A marker settled without its removal being applied leaves the removal's extent reading lost
+    where nothing offloaded holds it, and recovery yields the marker again.
   - A fill's extent is not yielded above the caller's `applied`.
   - A write's `Mtime` is the one `WriteAt` was given, 0 when suspended, and 0 for every other
     kind; a record whose modification time bytes are flipped is not yielded as good.
@@ -977,7 +982,10 @@ its counter (R75); `ReservedBytes` read at the
     unset remains, and a call costs O(dirty files) with no index walk and no record read.
   - A writer to the file during a `Since` is never blocked longer than a read would block it.
 - **Tests:** `TestRFC1A_RemovalsSurviveToSince` and `RemovalMarkers` at zero after `Settle` (R53 to
-  R58); a marker to the end of file read back (R54); a fill below `applied` (R55); a lock-held
+  R58); a held extent written above a removal's marker, then a `Settle` above both, with the extent
+  still held and read (catches a `Settle` that drops what is held, R58); two markers of one file
+  and one `Settle` above both (R58); a marker discarded unapplied, a read of its extent, then a
+  crash and reopen with the marker yielded again (R58); a marker to the end of file read back (R54); a fill below `applied` (R55); a lock-held
   probe on the file during iteration, with a writer measured against a reader (R56); a flipped
   modification-time byte and the record's verification, with the extent dropped, a loss event
   published and the loss yielded in the same pass, then a `Settle` above it (catches a bad record
@@ -1357,9 +1365,11 @@ A suggestion only: one pull request per subtask works as well.
   I/O error as itself and changes nothing. If #3511 merges, T8.2's failure path follows it.
 - **Open RFC changes that touch this epic.** The merged ones (#3509 binds a record header to its
   own offset, which T8.2's header comparison uses; #3512 turns a journal read-only on its first
-  `EROFS`, which T8.5's gate follows) are in the RFCs. Open: #3511, above, and #3502 (a descriptor
-  that has written stays open until a sync covers it), which changes epic 5's cache, not this
-  epic's code.
+  `EROFS`, which T8.5's gate follows) are in the RFCs. Open: #3511, above, #3731 (RFC 1 §3.10: `Settle` never drops a
+  held extent, settles every older marker, and discards one its caller will not apply, which R58
+  and T8.9 state; RFC 8 §8.1's terminal failure that discards a marker has merged, in #3716), and
+  #3502 (a descriptor that has written stays open until a sync covers it), which changes epic 5's
+  cache, not this epic's code.
 - **`DirtyFiles` order.** RFC 1 §3.7 keys the list by write time and states no order for the
   iteration. D12 yields in no order; the engine's age tick takes the oldest, so confirm it
   sorts, or ask for the order in the RFC.
