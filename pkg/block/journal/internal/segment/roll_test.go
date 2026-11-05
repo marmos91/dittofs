@@ -2004,6 +2004,101 @@ func TestRollAStreamClosedAtItsSuccessorsHeaderIsRefusedAndTheSpareEnded(t *test
 	}
 }
 
+// TestRollAFailedSuccessorHeaderWriteEndsTheSpareAndTheNextAppendRollsAgain
+// checks the unwind of the successor's own header write — the roll's last I/O
+// before install, and the one step the closed-install check parks rather than
+// fails: a write that fails EIO after the seal has settled hands the fault to
+// the append that armed the roll, the spare it took is Ended in the ledger at
+// its cap — never Active, never a spare again — and the stream stays on the
+// segment it sealed, so the next append rolls again onto the next spare, whose
+// successor names the old segment by its settled seal as predecessor.
+// It catches a failed write that leaves its successor Active in the ledger —
+// a segment no stream appends to, whose retire would refuse it, and whose cap
+// leaks into the footprint — or a stream moved onto a segment whose header
+// never landed.
+func TestRollAFailedSuccessorHeaderWriteEndsTheSpareAndTheNextAppendRollsAgain(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := rollPin(t, 4096, segment.Targets{Content: 4}, nil).withStream(t, 1)
+	awaitCounters(t, "the content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares == 4 })
+
+	// One record fills the segment to its cap, so the next record must
+	// roll: its roll takes the next spare in id order and writes the
+	// successor's header on it — the first write the successor's own name
+	// ever sees, for its spare was made under the spare name.
+	warm := make([]byte, 3736)
+	wh, wb := streamWriteHeaderPair(streamFileID(1), 0, warm)
+	warmPlaced := streamAppendWrite(t, e.stream(t), wh, wb)
+	seg1 := warmPlaced.Loc.Segment
+	seg2 := seg1 + 1 // the pinned pool's FIFO hands the next id out
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, segmentName(seg2), 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+
+	// The rolling append: its roll seals the full segment, takes the spare
+	// and fails at the successor's header write. The fault fires on the
+	// matching call's count alone, so it is spent here and the appends
+	// below meet no fault.
+	payload := streamTestBody(1024, 0x3c)
+	h, body := streamWriteHeader(streamFileID(2), 0, payload, 7, core.Version{Counter: 2})
+	_, err := e.s.AppendRoll(h, body, segment.Roll{})
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the AppendRoll whose successor's header write failed = %v, want the fault's EIO", err)
+	}
+
+	// The spare the failed write left is Ended in the ledger, held at its
+	// cap for a retirement to unlink — never Active, which the state and
+	// the refused charge below name, and never a spare again.
+	if state, err := e.set.State(seg2); err != nil || state != segment.Ended {
+		t.Fatalf("the failed successor's state after the unwind is %v, %v, want Ended at its cap", state, err)
+	}
+	if err := e.set.AddRecord(seg2, 7, 8); !errors.Is(err, segment.ErrWrongState) {
+		t.Fatalf("charging a record to the failed successor = %v, want ErrWrongState: the segment must be Ended, never Active", err)
+	}
+	if state, err := e.set.State(seg1); err != nil || state != segment.Sealed {
+		t.Fatalf("the full segment's state after the failed roll is %v, %v, want Sealed: its seal settled before the write failed", state, err)
+	}
+	// Nothing leaked and nothing was handed back: both segments hold their
+	// caps — the sealed one whole, the unwound spare ended whole — and the
+	// pool's other two spares are untouched, for the takes drew in id order
+	// and the unwind returned none to the pool.
+	c := e.set.Counters()
+	if got := c.UsedBytes - c.Spares*4096; got != 2*4096 {
+		t.Fatalf("the segments account for %d after the failed header write, want the sealed and the ended spare's caps %d", got, 2*4096)
+	}
+	if c.Segments != 2 {
+		t.Fatalf("the ledger holds %d segments after the failed header write, want the sealed and the ended ones", c.Segments)
+	}
+	if c.Spares != 2 {
+		t.Fatalf("the ledger holds %d spares after the failed header write, want the two the takes never reached", c.Spares)
+	}
+
+	// The next append rolls again: the stream still holds the segment its
+	// failed roll sealed, so it takes the next spare and the successor's
+	// header names the old segment as its predecessor by its seal.
+	seg3 := seg2 + 1
+	h3, b3 := streamWriteHeader(streamFileID(3), 0, streamTestBody(64, 0x5a), 7, core.Version{Counter: 3})
+	p3, err := e.s.AppendRoll(h3, b3, segment.Roll{})
+	if err != nil {
+		t.Fatalf("the append after the failed header write: %v", err)
+	}
+	if p3.Loc.Segment != seg3 {
+		t.Fatalf("the append after the failed header write landed in segment %d, want the next spare %d", p3.Loc.Segment, seg3)
+	}
+	if hdr := rollHeader(t, e, p3.Loc.Segment); hdr.Predecessor != seg1 {
+		t.Fatalf("the new successor names predecessor %d, want the segment the failed roll sealed %d", hdr.Predecessor, seg1)
+	}
+	// The one spare the takes never reached is still the pool's, and the
+	// ledger's sums hold over the unlinked and the installed alike.
+	if got := e.pool.Counters().Spares; got != 1 {
+		t.Fatalf("the pool holds %d ready content spares after both rolls, want the one the takes never reached", got)
+	}
+	if err := e.set.Check(); err != nil {
+		t.Fatalf("the ledger after the failed header write: %v", err)
+	}
+}
+
 // TestRollAWriteLargerThanASegmentIsSplitAndItsRestRolls checks the split at
 // the scale of a whole segment (R2): a write whose payload exceeds even an
 // empty segment's room is not refused but split — this call places the
