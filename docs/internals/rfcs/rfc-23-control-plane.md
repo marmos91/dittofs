@@ -1237,7 +1237,9 @@ type Progress struct {
   ([RFC 27 §3.1](rfc-27-namespace-migration.md#3.1%20Interfaces)). Every other kind answers `409` `not_cancellable`: a
   share's removal is one-way, and a re-home has no cancel, only a rate of 0.
 - **One per target and kind.** A second request for the same work on the same
-  target while one runs is refused `409` `operation_running`, naming it.
+  target while one runs is refused `409` `operation_running`, naming it,
+  except an acknowledgement of unreadable ranges, which joins the running one
+  ([§3.3](#3.3%20Stores%20and%20namespaces)).
 - **Ends.** A finished operation is kept 7 days, then deleted; its audit records
   stay for the audit's own retention (§6).
 
