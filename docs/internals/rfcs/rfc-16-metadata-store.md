@@ -1193,7 +1193,7 @@ type Lifecycle interface {
 	Tags(ctx context.Context) (map[ShareID]TagRecord, error)                          // every share record's tag and its removal state, for start steps 1 and 5
 	VersionLimits(ctx context.Context, shares []ShareID) (map[ShareID]Version, error) // each share's limit, read for Open's floor
 	RaiseVersionLimits(ctx context.Context, to map[ShareID]Version) error             // a tracked max-write of S‖id‖vl, within K keys a transaction
-	RaiseAtStart(ctx context.Context, shards []ShardID) (map[ShardID]uint64, error)   // raises each incarnation and sets GraceInstance to it; returns the incarnations written
+	RaiseAtStart(ctx context.Context, shards []ShardID) (map[ShardID]uint64, error)   // raises each incarnation and sets GraceInstance to it, within K keys a transaction, so a failure part way leaves those already raised; returns the incarnations written
 	RaiseAtAttach(ctx context.Context, shard ShardID) (uint64, error)                 // raises the incarnation and keeps GraceInstance; returns the incarnation written
 }
 

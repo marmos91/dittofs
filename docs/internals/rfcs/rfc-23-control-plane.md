@@ -515,7 +515,7 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
 3. **Register the node**: its version ranges and roles in its node record
    ([RFC 13 §5.5](rfc-13-configuration.md#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap)), refused in the same transaction if an active version lies
    outside them. A refusal stops the node here, before the engine's start
-   transaction runs or any adapter serves.
+   transactions run or any adapter serves.
 4. **Read the records**: the settings, the share list and the principals
    generation, and apply the provisioning file if one is named
    ([RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)). Then `apply` (§2.3) hands identity,
