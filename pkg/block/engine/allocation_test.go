@@ -156,3 +156,97 @@ func TestAllocationMapsTheStoresRefusals(t *testing.T) {
 		})
 	}
 }
+
+// committingExistence is block metadata whose first Allocation call first
+// runs between: a commit landing between a caller's entry read and its store
+// read.
+type committingExistence struct {
+	engine.Existence
+	between func()
+}
+
+func (c *committingExistence) Allocation(ctx context.Context, share entity.ShareID, file entity.FileID, off int64) (entity.Extent, bool, error) {
+	if b := c.between; b != nil {
+		c.between = nil
+		b()
+	}
+	return c.Existence.Allocation(ctx, share, file, off)
+}
+
+// An operation staged and committed while Allocation runs is never replayed
+// over a store that already holds a later one: committed data [0, 4k) and a
+// pending truncate up to 8k, then a write [2k, 10k) commits with the
+// truncate before the store is read, so the file is data to 10k, a state the
+// stale truncate replayed over it would cut to 8k.
+func TestAllocationReadsTheEntryAfterTheStore(t *testing.T) {
+	ce := &committingExistence{}
+	u := newUnit(t, func(d *engine.Deps) { ce.Existence = d.Existence; d.Existence = ce })
+	_, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "f", kvstore.Regular(0o644))
+	f, v := made.ID, made.Version.Counter()
+	if failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: []kvstore.PendingOp{
+		{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: 4 * kib}, Time: time.Now()},
+	}}}); err != nil || failed[f] != nil {
+		t.Fatalf("commit: %v, %v", err, failed[f])
+	}
+	u.e.AddOp(f, v+2, true, 8*kib, 0)
+	ce.between = func() {
+		ops := []kvstore.PendingOp{
+			{Version: entity.VersionOf(v + 2), Kind: kvstore.OpGrow, Size: 8 * kib, Time: time.Now()},
+			{Version: entity.VersionOf(v + 3), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: 2 * kib, Length: 8 * kib}, Time: time.Now()},
+		}
+		if failed, err := u.fs.Store.Existence().Commit(context.Background(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: ops}}); err != nil || failed[f] != nil {
+			t.Errorf("commit: %v, %v", err, failed[f])
+		}
+		u.e.ClearOps(f)
+	}
+	u.allocations(t, f, run{0, 10 * kib, false})
+}
+
+// A write staged after a truncate applies after it, and only extends the end
+// of file: a truncate to 1k then a write [3k, 8k) leave a hole [1k, 3k); a
+// write [18k, 22k) then [12k, 19k) leave the file ending at 22k.
+func TestAllocationAppliesAWriteAfterATruncate(t *testing.T) {
+	u := newUnit(t)
+	f := u.committed(t, "f", 0, 17*kib)
+	u.e.AddOp(f, 1, true, kib, 0)
+	u.e.AddWriteOp(f, 2, 3*kib, 5*kib)
+	u.allocations(t, f, run{0, 3 * kib, true}, run{3 * kib, 5 * kib, false}, run{8 * kib, 0, false})
+
+	g := u.committed(t, "g", 18*kib, 18*kib)
+	u.e.AddWriteOp(g, 1, 18*kib, 4*kib)
+	u.e.AddWriteOp(g, 2, 12*kib, 7*kib)
+	u.allocations(t, g, run{12 * kib, 10 * kib, false}, run{22 * kib, 0, false})
+}
+
+// A deallocate to the end of file makes a hole to the end of file rather than
+// wrapping past it.
+func TestAllocationDeallocatesToTheEndOfFile(t *testing.T) {
+	u := newUnit(t)
+	f := u.committed(t, "f", 8*kib, 8*kib)
+	u.e.AddOp(f, 1, false, 2*kib, entity.EndOfFile)
+	u.allocations(t, f, run{0, 2 * kib, false}, run{2 * kib, 6 * kib, true}, run{8 * kib, 0, false})
+}
+
+// countingExistence is block metadata that counts its Allocation calls and
+// ignores the context.
+type countingExistence struct {
+	engine.Existence
+	calls int
+}
+
+func (c *countingExistence) Allocation(ctx context.Context, share entity.ShareID, file entity.FileID, off int64) (entity.Extent, bool, error) {
+	c.calls++
+	return c.Existence.Allocation(context.Background(), share, file, off)
+}
+
+// A cancelled call asks the store nothing and answers the context's error.
+func TestAllocationStopsOnItsContext(t *testing.T) {
+	ce := &countingExistence{}
+	u := newUnit(t, func(d *engine.Deps) { ce.Existence = d.Existence; d.Existence = ce })
+	f := u.committed(t, "f", 4*kib, 4*kib)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := u.e.Allocation(ctx, u.share.ID, f, 0); !errors.Is(err, context.Canceled) || ce.calls != 0 {
+		t.Errorf("a cancelled Allocation answered %v after %d store calls; want context.Canceled and none", err, ce.calls)
+	}
+}

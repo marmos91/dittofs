@@ -39,7 +39,7 @@ func replay(ops []pendingOp) (o Overlay, pending bool) {
 		case opTruncate:
 			o.Size, o.SizeSet = op.extent.Off, true
 		case opWrite:
-			o.Size = max(o.Size, op.extent.Off+op.extent.Len)
+			o.Size = max(o.Size, opEnd(op.extent))
 		}
 		o.Ctime = op.at
 		if op.setsMtime {

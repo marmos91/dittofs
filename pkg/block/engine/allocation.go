@@ -8,6 +8,7 @@ import (
 	"math"
 	"slices"
 
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -28,16 +29,33 @@ func (e *Engine) Allocation(ctx context.Context, s entity.ShareID, f entity.File
 	if _, err := e.bindingOf(s); err != nil {
 		return entity.Span{}, err
 	}
-	var ops []pendingOp
-	if fe := e.files.lockOf(f); fe != nil {
-		ops = slices.Clone(fe.ops)
-		e.files.unlock(f, fe)
-	}
 	cursor, class := off, -1 // class: -1 unset, 0 data, 1 hole
+	// ponytail: one store call per committed run a pending write spans, each
+	// loading the store's window, so N alternating runs under one write cost
+	// N+1 calls. Jump the cursor past the extent a pending write covers once
+	// a profile shows Allocation over fragmented files.
 	for {
+		if err := ctx.Err(); err != nil {
+			return entity.Span{}, err
+		}
 		run, hole, err := e.d.Existence.Allocation(ctx, s, f, cursor)
 		if err != nil {
-			return entity.Span{}, storeErr(err)
+			return entity.Span{}, e.storeErr(err)
+		}
+		// The pending operations are read after the store: an operation
+		// leaves the entry only once its existence commits, so every one the
+		// store does not yet hold is here, and replaying one it already holds
+		// changes nothing.
+		//
+		// decision: each pass reads the store and the entry afresh, so a
+		// commit landing between two passes is seen by the later one only; a
+		// run stitched across passes is right at each pass but not one
+		// snapshot. Hold one version across passes, as Read's asOf does, if
+		// a caller needs the run as of one instant.
+		var ops []pendingOp
+		if fe := e.files.lockOf(f); fe != nil {
+			ops = slices.Clone(fe.ops)
+			e.files.unlock(f, fe)
 		}
 		a := allocation{eof: math.MaxInt64}
 		end := run.End()
@@ -58,12 +76,9 @@ func (e *Engine) Allocation(ctx context.Context, s entity.ShareID, f entity.File
 		} else if b2i(h) != class {
 			return span(off, cursor, class == 1), nil
 		}
-		runEnd := a.runFrom(at)
-		if run.Length > 0 {
-			// Past the committed run, what the store holds is unknown here,
-			// the end of file included: the next pass reads it.
-			runEnd = min(runEnd, end)
-		}
+		// Past the committed run, what the store holds is unknown here, the
+		// end of file included: the next pass reads it.
+		runEnd := min(a.runFrom(at), end)
 		if runEnd < end || runEnd >= a.eof {
 			return span(off, min(runEnd, a.eof), class == 1), nil
 		}
@@ -104,7 +119,7 @@ type allocation struct {
 // within the file; a truncate moves the end of file, a hole filling any
 // extension.
 func (a *allocation) apply(op pendingOp) {
-	o, e := op.extent.Off, op.extent.Off+op.extent.Len
+	o, e := op.extent.Off, opEnd(op.extent)
 	switch op.kind {
 	case opWrite:
 		if o > a.eof {
@@ -122,6 +137,15 @@ func (a *allocation) apply(op pendingOp) {
 		}
 		a.eof = o
 	}
+}
+
+// opEnd is where x ends, capped as entity.Extent.End caps it, so a length to
+// the end of file does not wrap.
+func opEnd(x journal.Extent) int64 {
+	if x.Len > math.MaxInt64-x.Off {
+		return math.MaxInt64
+	}
+	return x.Off + x.Len
 }
 
 // paint makes [o, e) all of one class.
@@ -178,8 +202,8 @@ func (a *allocation) runFrom(i int) int64 {
 // its ErrStale, the file gone, as ErrStale; its ErrDelay, which block
 // metadata's reads answer only for an extent a running clone still writes,
 // as a Delay with DelayClone; the context's own error as itself; anything
-// else unavailable.
-func storeErr(err error) error {
+// else unavailable, logged at Error.
+func (e *Engine) storeErr(err error) error {
 	switch {
 	case errors.Is(err, entity.ErrStale):
 		return fmt.Errorf("engine: block metadata: %v: %w", err, vfserr.ErrStale)
@@ -188,5 +212,6 @@ func storeErr(err error) error {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return err
 	}
+	e.d.Logger.Error("block metadata call failed", "err", err)
 	return fmt.Errorf("engine: block metadata: %v: %w", err, vfserr.ErrUnavailable)
 }

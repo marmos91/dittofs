@@ -120,3 +120,17 @@ func (e *Engine) AddOp(f entity.FileID, v uint64, truncate bool, off, n int64) {
 	fe.insert(op)
 	e.files.unlock(f, fe)
 }
+
+// AddWriteOp adds a pending write of [off, off+n) to f's entry at version v.
+func (e *Engine) AddWriteOp(f entity.FileID, v uint64, off, n int64) {
+	fe := e.files.lockFor(f)
+	fe.insert(pendingOp{version: journal.Version{Counter: v}, kind: opWrite, extent: journal.Extent{Off: off, Len: n}})
+	e.files.unlock(f, fe)
+}
+
+// ClearOps drops f's pending operations, as a commit of their existence does.
+func (e *Engine) ClearOps(f entity.FileID) {
+	fe := e.files.lockFor(f)
+	fe.ops = nil
+	e.files.unlock(f, fe)
+}

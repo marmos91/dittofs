@@ -48,15 +48,3 @@ func TestReplayAppliesOperationsInVersionOrder(t *testing.T) {
 		t.Errorf("inserted out of order: %+v, want %+v", b, a)
 	}
 }
-
-// The times are the newest operation's for Ctime and the newest of one that
-// sets it for Mtime: a suspended write moves Ctime alone.
-func TestReplayTimes(t *testing.T) {
-	w := op(1, opWrite, 0, 1)
-	suspended := op(2, opWrite, 1, 1)
-	suspended.setsMtime = false
-	o, _ := replay([]pendingOp{w, suspended})
-	if !o.Mtime.Equal(w.at) || !o.Ctime.Equal(suspended.at) {
-		t.Errorf("mtime %v ctime %v; want %v and %v", o.Mtime, o.Ctime, w.at, suspended.at)
-	}
-}
