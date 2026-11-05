@@ -253,6 +253,9 @@ type Stream struct {
 	set      *Set
 	pool     *Pool
 	cache    *Descriptors
+	// sink is the durability sink the stream reports to. It is written only
+	// by NewStream and never changes, so it needs no lock domain.
+	sink Sink
 
 	// decision: every field below is guarded by appendMu, the segment append
 	// domain of RFC 1 §8.2 — next, count, entries, the tracker, the active
@@ -383,8 +386,8 @@ const (
 // it. It panics on a nil dependency, on a pool that keeps another ledger's
 // spares — its rolls would draw on storage the stream's set does not own — and
 // on a set whose cap is above MaxUint32, because a record's own offset is a
-// 32-bit column.
-func NewStream(no uint32, identity core.JournalID, set *Set, pool *Pool, cache *Descriptors) *Stream {
+// 32-bit column, and on a sink missing either of its two functions.
+func NewStream(no uint32, identity core.JournalID, set *Set, pool *Pool, cache *Descriptors, sink Sink) *Stream {
 	if set == nil {
 		panic("segment: a stream needs its ledger")
 	}
@@ -400,7 +403,10 @@ func NewStream(no uint32, identity core.JournalID, set *Set, pool *Pool, cache *
 	if set.cap > math.MaxUint32 {
 		panic("segment: the segment cap is above MaxUint32, so an offset cannot be carried in a record header")
 	}
-	s := &Stream{no: no, identity: identity, set: set, pool: pool, cache: cache, failedAt: -1}
+	if sink.Track == nil || sink.Synced == nil {
+		panic("segment: a stream needs its durability sink")
+	}
+	s := &Stream{no: no, identity: identity, set: set, pool: pool, cache: cache, sink: sink, failedAt: -1}
 	s.drained = sync.NewCond(&s.appendMu)
 	return s
 }
@@ -864,7 +870,35 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 			werr = io.ErrShortWrite
 		}
 
+		var written Written
+		if werr == nil {
+			written = Written{
+				Loc:        Location{Segment: id, Off: off, Len: size},
+				Seq:        h.Seq,
+				Version:    h.Version,
+				File:       h.File,
+				Kind:       h.Kind,
+				PayloadCRC: format.RecordPayloadCRC(buf),
+			}
+			if !hasPayload {
+				// decision: the sink keeps buf without a copy, because
+				// the append allocates its buffer per call and never reuses
+				// it. Withdraw this and copy here if the ponytail buffer-pool
+				// upgrade at the encode is ever made.
+				written.Bytes = buf
+			}
+		}
+
 		s.appendMu.Lock()
+		if werr == nil {
+			// The record is registered before its slot completes: the bytes
+			// are written, and no sync's start can cover the slot until
+			// complete runs under this same lock, so every Synced that
+			// covers the record is reported after its Track. The record is
+			// registered even if the ledger refuses it below, for it was
+			// written all the same.
+			s.sink.Track(written)
+		}
 		s.tracker.complete(slot, werr == nil)
 		// The completion ends a reservation the end's event waits on, on the
 		// failed path included — the early return below leaves through the

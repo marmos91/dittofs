@@ -1658,7 +1658,7 @@ func TestSealWriteSealTakesEntriesAsData(t *testing.T) {
 		defer pool.Stop()
 		awaitCounters(t, "a content spare ready for the acceptance", pool,
 			func(c segment.PoolCounters) bool { return c.Spares >= 1 })
-		stream := segment.NewStream(1, streamIdentity, set, pool, cache)
+		stream := segment.NewStream(1, streamIdentity, set, pool, cache, nopSink())
 		defer func() { _ = stream.Close() }()
 		defer func() {
 			if err := cache.Shutdown(); err != nil {
@@ -2477,7 +2477,7 @@ func streamOverPool(t *testing.T, e streamEnv) (set *segment.Set, pool *segment.
 	pool.Start()
 	awaitCounters(t, "the round's content spares ready", pool,
 		func(c segment.PoolCounters) bool { return c.Spares >= 4 })
-	stream = segment.NewStream(1, streamIdentity, set, pool, cache)
+	stream = segment.NewStream(1, streamIdentity, set, pool, cache, nopSink())
 	return set, pool, cache, stream
 }
 

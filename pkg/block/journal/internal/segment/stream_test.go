@@ -103,7 +103,7 @@ func streamOver(t *testing.T, cap int64, setup func(e streamEnv)) streamEnv {
 	// spares are ready, which the pinned maximum holds there.
 	awaitCounters(t, "the two content spares ready", pool,
 		func(c segment.PoolCounters) bool { return c.Spares == 2 })
-	e.s = segment.NewStream(1, streamIdentity, set, pool, cache)
+	e.s = segment.NewStream(1, streamIdentity, set, pool, cache, nopSink())
 	return e
 }
 
@@ -1253,7 +1253,7 @@ func TestStreamClosesUnderDenseAppendsRacingAppendsDoesNotPanic(t *testing.T) {
 		pool.Start()
 		budget := core.NewDescriptorBudget(64)
 		cache := segment.NewDescriptors(seam.FS(), format.SegmentName, budget)
-		s := segment.NewStream(1, streamIdentity, set, pool, cache)
+		s := segment.NewStream(1, streamIdentity, set, pool, cache, nopSink())
 		// The round settles itself, so the next round starts from an empty
 		// heap — a hundred rounds of caches held to the test's end would
 		// read as growth to the profiler.
@@ -1728,7 +1728,7 @@ func streamOverFS(t *testing.T, cap int64, fsys storage.FS, setup func(e streamE
 	pool.Start()
 	awaitCounters(t, "the two content spares ready", pool,
 		func(c segment.PoolCounters) bool { return c.Spares == 2 })
-	e.s = segment.NewStream(1, streamIdentity, set, pool, cache)
+	e.s = segment.NewStream(1, streamIdentity, set, pool, cache, nopSink())
 	return e
 }
 

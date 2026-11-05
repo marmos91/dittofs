@@ -40,7 +40,7 @@ func TestStreamOnRealStorageAllocatesNoMoreThanAccounted(t *testing.T) {
 		func(c segment.PoolCounters) bool { return c.Spares >= 1 })
 	budget := core.NewDescriptorBudget(64)
 	cache := segment.NewDescriptors(o, format.SegmentName, budget)
-	s := segment.NewStream(1, streamIdentity, set, pool, cache)
+	s := segment.NewStream(1, streamIdentity, set, pool, cache, nopSink())
 	t.Cleanup(func() {
 		if err := cache.Shutdown(); err != nil {
 			t.Errorf("the cache's Shutdown = %v, want nil", err)
