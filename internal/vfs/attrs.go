@@ -124,14 +124,15 @@ func later(a, b time.Time) time.Time {
 // of ErrInvalid on a guarded SetAttr that the adapter must tell apart.
 var errGuard = fmt.Errorf("vfs: the ctime guard no longer holds: %w", vfs.ErrInvalid)
 
-// SetAttr changes t's attributes as ch names them, under t's admission and
-// accept locks, once an owner or group change has committed the file's
-// pending existence: the ctime guard first, then the rights the change asks,
-// decided through authz, then open state, then, for an owner or group
-// change, the file's charge reserved against the new owner and group, then
-// the change, whose value the store's ownership rules decide. A size change is the engine's Truncate,
-// after an unprivileged caller's change has cleared setuid and setgid, in a
-// change committed before the truncate is staged. DeleteOnClose, Suspend and
+// SetAttr changes t's attributes as ch names them. It admits the change,
+// then, for an owner or group change, commits the file's pending existence,
+// then takes t's admission and accept locks and runs, under them, the ctime
+// guard, the rights the change asks, decided through authz, open state, for
+// an owner or group change the file's charge reserved against the new owner
+// and group, and last the change, whose value the store's ownership rules
+// decide. A size change is the engine's Truncate, after an unprivileged
+// caller's change has cleared setuid and setgid, in a change committed
+// before the truncate is staged. DeleteOnClose, Suspend and
 // Resume go to the open t names, and nowhere else.
 //
 // decision: a change through an open is decided against the file, not the
@@ -151,22 +152,29 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 		return vfs.WCC{}, err
 	}
 	defer done()
-	// An owner or group change first commits the file's pending existence,
-	// so the file's Charged holds every write staged before it rather than
-	// leaving them to charge the new owner at their own commit. The commit
-	// joins the group commit, so it runs before the admission lock is taken.
+	a, release, err := fs.admitTarget(ctx, c, t)
+	if err != nil {
+		return vfs.WCC{}, err
+	}
+	// An owner or group change, once admitted, commits the file's pending
+	// existence, so the file's Charged holds every write staged before it
+	// rather than leaving them to charge the new owner at their own commit.
+	// The commit joins the group commit, so it runs before the admission
+	// lock is taken.
 	//
-	// decision: the commit runs for any change naming the owner or group,
-	// before the change is authorised and whether or not it moves the
+	// decision: the commit runs for any admitted change naming the owner or
+	// group, before the change is authorised and whether or not it moves the
 	// charge, as the file is read only under the locks. It writes nothing a
 	// caller's COMMIT could not, so it grants nothing. Overturned if an
-	// existence commit is ever found to be visible to a client.
+	// existence commit is ever found to be visible to a client, or a caller
+	// allowed on the share is seen forcing journal syncs with refused chowns.
 	if ch.Mask&(entity.AttrOwner|entity.AttrGroup) != 0 {
-		if err := fs.engine.CommitExistence(ctx, t.H.Share(), fileOf(t.H)); err != nil {
+		if err := fs.engine.CommitExistence(ctx, a.share.ID, fileOf(t.H)); err != nil {
+			release()
 			return vfs.WCC{}, storeErr(err)
 		}
 	}
-	a, f, release, err := fs.hold(ctx, c, t)
+	a, f, release, err := fs.lockFile(ctx, a, t.H, release)
 	if err != nil {
 		return vfs.WCC{}, err
 	}
@@ -564,21 +572,38 @@ func (fs *Filesystem) change(ctx context.Context, c vfs.Call, t vfs.Target, op v
 // locks, and reads its attributes under them: what a WCC's Before is. Its
 // release drops both locks and uncounts the call.
 func (fs *Filesystem) hold(ctx context.Context, c vfs.Call, t vfs.Target) (*admitted, vfs.File, func(), error) {
-	if err := onSession(c, t.Open); err != nil {
+	a, release, err := fs.admitTarget(ctx, c, t)
+	if err != nil {
 		return nil, vfs.File{}, nil, err
+	}
+	return fs.lockFile(ctx, a, t.H, release)
+}
+
+// admitTarget admits a change to t's file, the first half of hold. On an
+// error it has already uncounted the call.
+func (fs *Filesystem) admitTarget(ctx context.Context, c vfs.Call, t vfs.Target) (*admitted, func(), error) {
+	if err := onSession(c, t.Open); err != nil {
+		return nil, nil, err
 	}
 	a, release, err := fs.admitChange(ctx, c, t.H)
 	if err != nil {
 		release()
-		return nil, vfs.File{}, nil, err
+		return nil, nil, err
 	}
-	k := lockorder.Key(fileOf(t.H))
+	return a, release, nil
+}
+
+// lockFile is hold's second half for a call a admitted, whose release
+// uncounts it: it takes h's admission and accept locks and reads h under
+// them. On an error it has already called release.
+func (fs *Filesystem) lockFile(ctx context.Context, a *admitted, h vfs.Handle, release func()) (*admitted, vfs.File, func(), error) {
+	k := lockorder.Key(fileOf(h))
 	unlock, err := fs.locks.Take(ctx, lockorder.Set{Admit: []lockorder.Key{k}, Accept: []lockorder.Key{k}})
 	if err != nil {
 		release()
 		return nil, vfs.File{}, nil, errContended
 	}
-	f, err := fs.file(ctx, a, t.H)
+	f, err := fs.file(ctx, a, h)
 	if err != nil {
 		unlock()
 		release()

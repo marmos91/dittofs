@@ -563,3 +563,32 @@ func TestAHoleFillStagedBeforeAChownCountsAgainstTheNewOwner(t *testing.T) {
 		t.Errorf("after the refused chown: owner %v, want alice", got)
 	}
 }
+
+// V37: only a change admitted to the share, naming the owner or group,
+// commits the file's pending existence: a chown refused at admission, here
+// by a quiesced share, and a chmod commit nothing.
+func TestOnlyAnAdmittedChownCommitsExistence(t *testing.T) {
+	s, _ := newQuotas(t)
+	ctx := t.Context()
+	h := s.file(t, "f", s.alice.Principal, 0o666)
+	commits := 0
+	s.engine.existence = func(entity.FileID) error {
+		commits++
+		return nil
+	}
+	admin := proven(s.fs.Admin.Principal, inLab)
+	if _, err := s.SetAttr(ctx, admin, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o600)}); err != nil {
+		t.Fatal(err)
+	}
+	if commits != 0 {
+		t.Errorf("a chmod committed the file's existence %d times, want none", commits)
+	}
+	s.must(t, s.cp.SetShareState(ctx, s.share, entity.ShareEnabled, entity.ShareQuiesced))
+	chown := vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(s.bob.Principal)}
+	if _, err := s.SetAttr(ctx, admin, vfs.Target{H: h}, chown); err == nil {
+		t.Fatal("a chown on a quiesced share succeeded")
+	}
+	if commits != 0 {
+		t.Errorf("a chown refused at admission committed the file's existence %d times, want none", commits)
+	}
+}
