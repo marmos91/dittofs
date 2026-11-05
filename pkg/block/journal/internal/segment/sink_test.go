@@ -3,6 +3,7 @@ package segment_test
 import (
 	"bytes"
 	"errors"
+	"runtime"
 	"slices"
 	"sync"
 	"syscall"
@@ -327,6 +328,7 @@ func TestSinkTrackPrecedesCoveringSynced(t *testing.T) {
 				t.Errorf("Sync: %v", err)
 				return
 			}
+			runtime.Gosched()
 		}
 	}()
 	for a := range appenders {
@@ -345,6 +347,11 @@ func TestSinkTrackPrecedesCoveringSynced(t *testing.T) {
 	wg.Wait()
 	close(stop)
 	<-syncDone
+	// One Sync after the appenders left, so the order check always has a
+	// Synced to hold, however the scheduler split the racing ones.
+	if err := e.s.Sync(); err != nil {
+		t.Fatalf("the final Sync: %v", err)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -362,14 +369,20 @@ func TestSinkTrackPrecedesCoveringSynced(t *testing.T) {
 	if tracks != appenders*each {
 		t.Fatalf("Track ran %d times for %d appends", tracks, appenders*each)
 	}
-	for i, ev := range log {
+	// Walked backwards, so minEnd holds the smallest end among the Tracks
+	// that arrived after the event, per segment: one pass, however many
+	// Synced a hot syncing goroutine logged.
+	minEnd := map[core.SegmentID]int64{}
+	for i := len(log) - 1; i >= 0; i-- {
+		ev := log[i]
 		if ev.isTrack {
+			if m, ok := minEnd[ev.seg]; !ok || ev.end < m {
+				minEnd[ev.seg] = ev.end
+			}
 			continue
 		}
-		for _, later := range log[i+1:] {
-			if later.isTrack && later.seg == ev.seg && later.end <= ev.end {
-				t.Fatalf("Synced(%d, %d) was reported before the Track of a record ending at %d", ev.seg, ev.end, later.end)
-			}
+		if m, ok := minEnd[ev.seg]; ok && m <= ev.end {
+			t.Fatalf("Synced(%d, %d) was reported before the Track of a record ending at %d", ev.seg, ev.end, m)
 		}
 	}
 }
