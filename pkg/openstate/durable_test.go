@@ -353,7 +353,7 @@ func TestPersistentOpenSurvivesARestart(t *testing.T) {
 		t.Errorf("a write open past grace, inside the Timeout: %v, want ErrShareViolation", err)
 	}
 	anon := func(off uint64) error {
-		return g.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, State: StateRef{Shard: file.Shard}, Handle: handle(file.ID)}, br(off, 1), false)
+		return g.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, State: StateRef{Shard: file.Shard}, Handle: handle(file.ID)}, br(off, 1), entity.ReadData)
 	}
 	if err := anon(25); !errors.Is(err, ErrLocked) {
 		t.Errorf("an anonymous read across the installed lock: %v, want ErrLocked", err)

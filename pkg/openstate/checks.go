@@ -38,20 +38,23 @@ const (
 // Checks is the view the service asks before I/O and before a change.
 type Checks interface {
 	// CheckIO admits I/O to f through o, an open, a lock state or a
-	// delegation. A reference that is not anonymous is ErrBadState when its
+	// delegation, needing want: ReadData for a read, WriteData for a write
+	// starting below the file's size, AppendData for one starting at or past
+	// it. A reference that is not anonymous is ErrBadState when its
 	// shard or its file is not f's; an anonymous one with no f.ID is
 	// ErrBadState.
 	// A lock state is judged as the open it was taken under: a granted open
-	// is used only by its opener and only for the access it holds, ErrAccess
-	// otherwise, and its deny modes were judged once, at open. An anonymous
-	// read or write, and one through a delegation, is judged against every
+	// is used only by its opener and only for the access it was granted,
+	// ErrAccess otherwise, so one holding append data without write data can
+	// only append; its deny modes were judged once, at open. An
+	// anonymous read or write, and one through a delegation, is judged against every
 	// deny mode held, per operation; a delegation writes only with write
 	// caching. An anonymous one is ErrDelay while f's shard is not begun,
 	// and in grace ErrGrace while the grace still waits for a client that
 	// can reclaim a deny mode or a mandatory lock. Any is refused ErrLocked across a range a
 	// mandatory lock forbids it, and recalls another holder's caching the I/O
 	// conflicts with, answering ErrDelay until the recall ends.
-	CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r ByteRange, write bool) error
+	CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r ByteRange, want entity.AccessMask) error
 	// CheckChange admits a change to f, made through via, an open of f, or
 	// through none: what the open state of f refuses. It recalls the caching
 	// grants the change conflicts with and never waits, answering ErrDelay
@@ -71,15 +74,16 @@ func (t *Table) Checks() Checks { return checks{t} }
 // ponytail: an anonymous check on a file with no state still creates and
 // frees its entry, an allocation per NFSv3 read or write. Look the entry up
 // without creating it when CheckIO shows in a profile.
-func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r ByteRange, write bool) error {
+func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r ByteRange, want entity.AccessMask) error {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
 		return err
 	}
-	want, keeps := entity.ReadData, GrantRead|GrantHandle
+	write := conflict.Of(want)&conflict.Write != 0
+	keeps := GrantRead | GrantHandle
 	if write {
-		want, keeps = entity.WriteData, GrantNone
+		keeps = GrantNone
 	}
 	others := func(*grant) GrantKind { return keeps }
 	var out outbox
@@ -87,7 +91,14 @@ func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r
 		if e.file != f.ID || !t.confirmed(op) {
 			return ErrBadState
 		}
-		if conflict.Of(want)&^conflict.Of(op.Mode.Access) != 0 {
+		// decision: write data admits a write anywhere, and append data
+		// alone only one at or past the size, so a want of append data is
+		// admitted through an open holding write data without append data,
+		// as Windows servers accept an SMB2 WRITE at the end of a file
+		// opened for write data alone. It holds while write data is the
+		// wider right, an overwrite being a superset of an append; overturned
+		// by a client found to rely on such an open being refused appends.
+		if conflict.Of(want)&^conflict.Of(op.Mode.Access) != 0 || want&^op.Mode.Access&entity.WriteData != 0 {
 			return ErrAccess
 		}
 		if err := e.lockedOut(op.Ref.Token, r, write); err != nil {

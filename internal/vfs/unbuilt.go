@@ -10,26 +10,6 @@ import (
 // not serving, as every call is, and otherwise answered errUnbuilt. Each moves
 // to its own file as it is built.
 
-func (fs *Filesystem) Read(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, dst []byte) (int, bool, error) {
-	return 0, false, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, src []byte, st vfs.Stability) (vfs.WriteResult, error) {
-	return vfs.WriteResult{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Commit(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, length int64) (vfs.Verifier, error) {
-	return vfs.Verifier{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Deallocate(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, length int64) (vfs.WCC, error) {
-	return vfs.WCC{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Seek(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, what vfs.SeekWhat) (int64, error) {
-	return 0, fs.unbuilt(ctx)
-}
-
 func (fs *Filesystem) Copy(ctx context.Context, c vfs.Call, a vfs.CopyArgs) (vfs.CopyResult, error) {
 	return vfs.CopyResult{}, fs.unbuilt(ctx)
 }

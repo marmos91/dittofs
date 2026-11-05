@@ -741,7 +741,7 @@ func TestStartAndStop(t *testing.T) {
 		"Rebind":           func() error { return g.Rebind(ctx, Caller{Client: id}, entity.NodeID{1}) },
 		"FreeState":        func() error { return g.Recovery().FreeState(ctx, Caller{Client: id}, StateRef{}) },
 		"CheckIO": func() error {
-			return g.Checks().CheckIO(ctx, Caller{Client: id}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, true)
+			return g.Checks().CheckIO(ctx, Caller{Client: id}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, entity.WriteData)
 		},
 		"CheckChange": func() error { return g.Checks().CheckChange(ctx, Caller{Client: id}, file, nil, ChangeAttrs) },
 		"Watch":       func() error { _, err := g.Watches().Watch(ctx, Caller{Client: id}, file, false, names); return err },

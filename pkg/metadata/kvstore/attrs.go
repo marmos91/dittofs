@@ -193,9 +193,11 @@ const times = entity.AttrBirth | entity.AttrAccess | entity.AttrModify
 
 // ClearSetID clears setuid and setgid on a regular file, as an unprivileged
 // caller's write clears them, and changes nothing else: unlike a chmod, it
-// merges nothing into a stored ACL. It asks write data, the right of the
-// write that clears them. A file with neither bit is left as it is.
-func (f Files) ClearSetID(ctx context.Context, id entity.Identity, h entity.Handle) (entity.File, error) {
+// merges nothing into a stored ACL. It asks the right of the change that
+// clears them: write data admits a change anywhere, and append data alone
+// one that only appends, starting at or past the size, as appends says. A
+// file with neither bit is left as it is.
+func (f Files) ClearSetID(ctx context.Context, id entity.Identity, h entity.Handle, appends bool) (entity.File, error) {
 	var out entity.File
 	err := f.s.kv.Update(ctx, func(tx kv.Txn) error {
 		share, _, err := h.Parse()
@@ -206,7 +208,11 @@ func (f Files) ClearSetID(ctx context.Context, id entity.Identity, h entity.Hand
 		if err != nil {
 			return err
 		}
-		if err := authorize(tx, id, file, entity.WriteData); err != nil {
+		err = authorize(tx, id, file, entity.WriteData)
+		if appends && (merrs.IsAccessDeniedError(err) || denied(err)) {
+			err = authorize(tx, id, file, entity.AppendData)
+		}
+		if err != nil {
 			return err
 		}
 		out = file

@@ -211,7 +211,7 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 			ref = *t.Open
 		}
 		cut := openstate.ByteRange{Offset: uint64(min(f.Size, ch.Size)), Length: ^uint64(0)}
-		if err := fs.checks.CheckIO(ctx, who, key, ref, cut, true); err != nil {
+		if err := fs.checks.CheckIO(ctx, who, key, ref, cut, entity.WriteData); err != nil {
 			return vfs.WCC{}, openErr(err)
 		}
 	}
@@ -244,9 +244,9 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 // write's does, which changes the mode alone; a change naming the mode sets
 // it explicitly instead.
 func (fs *Filesystem) truncate(ctx context.Context, a *admitted, h vfs.Handle, f vfs.File, ch vfs.Attrs) error {
-	if !a.caller.Privileged && !ch.Changes(entity.AttrMode) && f.ClearSetID() != f.Mode {
-		if _, err := fs.meta.Files().ClearSetID(ctx, a.caller.Identity, h); err != nil {
-			return storeErr(err)
+	if !ch.Changes(entity.AttrMode) {
+		if _, err := fs.clearSetID(ctx, a, h, f, false); err != nil {
+			return err
 		}
 	}
 	return storeErr(fs.engine.Truncate(ctx, f.Share, f.ID, ch.Size))

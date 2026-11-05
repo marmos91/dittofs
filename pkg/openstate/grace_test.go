@@ -138,7 +138,7 @@ func TestAnonymousIOWaitsForGrace(t *testing.T) {
 	g := f.restart(t)
 	write := func(file FileKey) error {
 		// The reference carries no shard: the file's key names it.
-		return g.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), true)
+		return g.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), entity.WriteData)
 	}
 	if err := write(file); !errors.Is(err, ErrGrace) {
 		t.Errorf("an anonymous write where an NFSv4 client held a deny mode: %v, want ErrGrace", err)
@@ -179,7 +179,7 @@ func TestAnonymousIOFreedOnceDenyHoldersFinish(t *testing.T) {
 	g := f.restart(t)
 	g.renew(t, c, z)
 	write := func() error {
-		return g.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), true)
+		return g.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), entity.WriteData)
 	}
 	if err := write(); !errors.Is(err, ErrGrace) {
 		t.Errorf("an anonymous write before c completes: %v, want ErrGrace", err)
@@ -840,7 +840,7 @@ func TestReconnectingClientHoldsNoDenyInGrace(t *testing.T) {
 	f.mustLock(t, h, in(5), LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}})
 	g := f.restart(t)
 	g.renew(t, z)
-	if err := g.Checks().CheckIO(ctx, z, file, OpenRef{Kind: RefAnonymous}, br(0, 10), true); err != nil {
+	if err := g.Checks().CheckIO(ctx, z, file, OpenRef{Kind: RefAnonymous}, br(0, 10), entity.WriteData); err != nil {
 		t.Errorf("an anonymous write on the SMB client's file in grace: %v", err)
 	}
 	if _, err := g.lock(z, in(5), LockReq{Owner: owner(z, "lo"), Ranges: []LockRange{x(0, 1)}}); !errors.Is(err, ErrGrace) {
@@ -887,7 +887,7 @@ func TestShardNotBegunDelaysIOAndChanges(t *testing.T) {
 	f.mustOpen(t, n, file, OpenRequest{Access: rd, Deny: wr})
 	f.Stop()
 	g := reopenServing(t, f.fs, f.clock, []ShardID{0})
-	if err := g.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), true); delayedFor(err) != DelayFrozen {
+	if err := g.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), entity.WriteData); delayedFor(err) != DelayFrozen {
 		t.Errorf("an anonymous write in a shard not begun: %v, want ErrDelay (DelayFrozen)", err)
 	}
 	for _, what := range []ChangeMask{ChangeRemove, ChangeAttrs} {

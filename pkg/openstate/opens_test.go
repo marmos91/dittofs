@@ -121,13 +121,13 @@ func TestDenyModesAtOpen(t *testing.T) {
 	file := anyFile()
 	held := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr, Deny: wr})
 
-	if err := f.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, true); !errors.Is(err, ErrShareViolation) {
+	if err := f.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, entity.WriteData); !errors.Is(err, ErrShareViolation) {
 		t.Errorf("an anonymous write under a deny-write: %v, want ErrShareViolation", err)
 	}
-	if err := f.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, false); err != nil {
+	if err := f.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, entity.ReadData); err != nil {
 		t.Errorf("an anonymous read under a deny-write: %v", err)
 	}
-	if err := f.Checks().CheckIO(ctx, a, file, OpenRef{Kind: RefOpened, Open: held.ID}, ByteRange{}, true); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, file, OpenRef{Kind: RefOpened, Open: held.ID}, ByteRange{}, entity.WriteData); err != nil {
 		t.Errorf("a write through the deny-write open itself: %v; a granted open is not judged again", err)
 	}
 
@@ -165,8 +165,33 @@ func TestStatOpenIsOutsideTheDenyCheck(t *testing.T) {
 	}
 	file = anyFile()
 	f.mustOpen(t, b, file, OpenRequest{Access: stat, Deny: all})
-	if err := f.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, true); err != nil {
+	if err := f.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, entity.WriteData); err != nil {
 		t.Errorf("an anonymous write beside an attributes-only deny-all: %v", err)
+	}
+}
+
+// An open holding append data without write data appends and writes nothing
+// else: I/O wanting WriteData through it is ErrAccess, wanting AppendData is
+// admitted; an open holding write data alone is admitted either.
+func TestAnAppendOnlyOpenOnlyAppends(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smb("alice-pc"))
+	file := anyFile()
+	for _, c := range []struct {
+		access  entity.AccessMask
+		want    entity.AccessMask
+		refused bool
+	}{
+		{entity.AppendData, entity.WriteData, true},
+		{entity.AppendData, entity.AppendData, false},
+		{wr, entity.WriteData, false},
+		{wr, entity.AppendData, false},
+	} {
+		o := f.mustOpen(t, a, file, OpenRequest{Access: c.access})
+		ref := OpenRef{Kind: RefOpened, State: o.Ref, Handle: handle(file.ID)}
+		if err := f.Checks().CheckIO(ctx, a, file, ref, ByteRange{}, c.want); errors.Is(err, ErrAccess) != c.refused {
+			t.Errorf("I/O wanting %v through an open holding %v: %v, refused want %v", c.want, c.access, err, c.refused)
+		}
 	}
 }
 
@@ -186,14 +211,14 @@ func TestDowngrade(t *testing.T) {
 	if _, err := f.Opens().Downgrade(ctx, a, ref, Seqs{}, rd, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Checks().CheckIO(ctx, a, file, ref, ByteRange{}, false); !errors.Is(err, ErrOldState) {
+	if err := f.Checks().CheckIO(ctx, a, file, ref, ByteRange{}, entity.ReadData); !errors.Is(err, ErrOldState) {
 		t.Errorf("the reference as it was before the downgrade: %v, want ErrOldState", err)
 	}
 	now := OpenRef{Kind: RefOpened, State: StateRef{Type: o.Ref.Type, Shard: o.Ref.Shard, Token: o.Ref.Token}, Handle: handle(file.ID)}
-	if err := f.Checks().CheckIO(ctx, a, file, now, ByteRange{}, true); !errors.Is(err, ErrAccess) {
+	if err := f.Checks().CheckIO(ctx, a, file, now, ByteRange{}, entity.WriteData); !errors.Is(err, ErrAccess) {
 		t.Errorf("a write through the open downgraded to read: %v, want ErrAccess", err)
 	}
-	if err := f.Checks().CheckIO(ctx, a, file, now, ByteRange{}, false); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, file, now, ByteRange{}, entity.ReadData); err != nil {
 		t.Errorf("a read through the open downgraded to read: %v", err)
 	}
 	if _, err := f.open(b, file, OpenRequest{Access: wr}); err != nil {
@@ -214,19 +239,19 @@ func TestOpenRefCarriesItsHandle(t *testing.T) {
 		"a handle that names no file": {Kind: RefOpened, State: o.Ref, Handle: entity.Handle{9}},
 		"no kind":                     {State: o.Ref, Handle: handle(file.ID)},
 	} {
-		if err := f.Checks().CheckIO(ctx, a, file, ref, ByteRange{}, false); !errors.Is(err, ErrBadState) {
+		if err := f.Checks().CheckIO(ctx, a, file, ref, ByteRange{}, entity.ReadData); !errors.Is(err, ErrBadState) {
 			t.Errorf("I/O through %s: %v, want ErrBadState", name, err)
 		}
 	}
-	if err := f.Checks().CheckIO(ctx, a, FileKey{}, OpenRef{Kind: RefAnonymous}, ByteRange{}, false); !errors.Is(err, ErrBadState) {
+	if err := f.Checks().CheckIO(ctx, a, FileKey{}, OpenRef{Kind: RefAnonymous}, ByteRange{}, entity.ReadData); !errors.Is(err, ErrBadState) {
 		t.Errorf("anonymous I/O naming no file: %v, want ErrBadState", err)
 	}
 	elsewhere := file
 	elsewhere.Shard = o.Ref.Shard + 1
-	if err := f.Checks().CheckIO(ctx, a, elsewhere, OpenRef{Kind: RefOpened, State: o.Ref, Handle: handle(file.ID)}, ByteRange{}, false); !errors.Is(err, ErrBadState) {
+	if err := f.Checks().CheckIO(ctx, a, elsewhere, OpenRef{Kind: RefOpened, State: o.Ref, Handle: handle(file.ID)}, ByteRange{}, entity.ReadData); !errors.Is(err, ErrBadState) {
 		t.Errorf("I/O through the open with the file in another shard: %v, want ErrBadState", err)
 	}
-	if err := f.Checks().CheckIO(ctx, a, file, OpenRef{Kind: RefOpened, State: o.Ref, Handle: handle(file.ID)}, ByteRange{}, false); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, file, OpenRef{Kind: RefOpened, State: o.Ref, Handle: handle(file.ID)}, ByteRange{}, entity.ReadData); err != nil {
 		t.Errorf("I/O through the open with its own handle: %v", err)
 	}
 }
@@ -242,13 +267,13 @@ func TestOpenUsedOnlyByItsOpener(t *testing.T) {
 	o := f.mustOpen(t, opener, file, OpenRequest{Access: rd | del})
 
 	other := Caller{Client: id, Principal: entity.NewUser()}
-	if err := f.Checks().CheckIO(ctx, other, file, refOf(o), ByteRange{}, false); !errors.Is(err, ErrNotYours) {
+	if err := f.Checks().CheckIO(ctx, other, file, refOf(o), ByteRange{}, entity.ReadData); !errors.Is(err, ErrNotYours) {
 		t.Errorf("I/O through the open by another principal: %v, want ErrNotYours", err)
 	}
 	if _, err := f.Opens().Close(ctx, other, refOf(o), Seqs{}); !errors.Is(err, ErrNotYours) {
 		t.Errorf("a close by another principal: %v, want ErrNotYours", err)
 	}
-	if err := f.Checks().CheckIO(ctx, Caller{Client: id, Principal: owner}, file, refOf(o), ByteRange{}, false); err != nil {
+	if err := f.Checks().CheckIO(ctx, Caller{Client: id, Principal: owner}, file, refOf(o), ByteRange{}, entity.ReadData); err != nil {
 		t.Errorf("I/O through the open by the protecting owner: %v", err)
 	}
 }
@@ -598,7 +623,7 @@ func TestStreamDenyModesArePerStream(t *testing.T) {
 	if _, err := f.open(n, base, OpenRequest{Access: wr}); err != nil {
 		t.Errorf("a write open of the base beside a stream's deny-write: %v", err)
 	}
-	if err := f.Checks().CheckIO(ctx, Caller{}, base, OpenRef{Kind: RefAnonymous, Handle: handle(base.ID)}, ByteRange{}, true); err != nil {
+	if err := f.Checks().CheckIO(ctx, Caller{}, base, OpenRef{Kind: RefAnonymous, Handle: handle(base.ID)}, ByteRange{}, entity.WriteData); err != nil {
 		t.Errorf("an anonymous write beside a stream's deny-write: %v", err)
 	}
 	if _, err := f.open(q, base, OpenRequest{Stream: other, Access: wr}); err != nil {
@@ -721,7 +746,7 @@ func TestIOThroughAnotherFilesRef(t *testing.T) {
 	x, y := anyFile(), anyFile()
 	ox := f.mustOpen(t, a, x, OpenRequest{Access: rd | wr})
 	f.mustOpen(t, b, y, OpenRequest{Access: rd, Deny: wr})
-	if err := f.Checks().CheckIO(ctx, a, y, refOf(ox), br(0, 1), true); !errors.Is(err, ErrBadState) {
+	if err := f.Checks().CheckIO(ctx, a, y, refOf(ox), br(0, 1), entity.WriteData); !errors.Is(err, ErrBadState) {
 		t.Errorf("a write to y through an open of x: %v, want ErrBadState", err)
 	}
 	n, z := f.caller(t, nfs("host-n", 1, entity.NewUser())), anyFile()
@@ -729,11 +754,11 @@ func TestIOThroughAnotherFilesRef(t *testing.T) {
 	if g == nil {
 		t.Fatal("no read delegation")
 	}
-	if err := f.Checks().CheckIO(ctx, n, y, delegated(g, z), br(0, 1), false); !errors.Is(err, ErrBadState) {
+	if err := f.Checks().CheckIO(ctx, n, y, delegated(g, z), br(0, 1), entity.ReadData); !errors.Is(err, ErrBadState) {
 		t.Errorf("a read of y through a delegation of z: %v, want ErrBadState", err)
 	}
 	res := f.mustLock(t, a, x, LockReq{Owner: owner(a, "lo"), Open: refOf(ox), Ranges: []LockRange{{br(0, 10), true}}})
-	if err := f.Checks().CheckIO(ctx, a, y, OpenRef{Kind: RefLocked, State: res.Ref, Handle: handle(x.ID)}, br(0, 1), true); !errors.Is(err, ErrBadState) {
+	if err := f.Checks().CheckIO(ctx, a, y, OpenRef{Kind: RefLocked, State: res.Ref, Handle: handle(x.ID)}, br(0, 1), entity.WriteData); !errors.Is(err, ErrBadState) {
 		t.Errorf("a write to y through a lock state of x: %v, want ErrBadState", err)
 	}
 }
@@ -923,7 +948,7 @@ func TestReleasingWithStateButNoOpen(t *testing.T) {
 		t.Errorf("while marked: %v", err)
 	}
 	done(false)
-	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), true); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), entity.WriteData); err != nil {
 		t.Errorf("a write under the delegation after an aborted release: %v, want it kept", err)
 	}
 	if l, err := f.Locks().TestLock(ctx, b, file, owner(b, "lt"), br(0, 1), true); err != nil || l == nil {
@@ -939,7 +964,7 @@ func TestReleasingWithStateButNoOpen(t *testing.T) {
 		t.Fatalf("Releasing again: %v", err)
 	}
 	done(true)
-	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), true); !errors.Is(err, ErrBadState) {
+	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), entity.WriteData); !errors.Is(err, ErrBadState) {
 		t.Errorf("a write under the delegation of a released file: %v, want ErrBadState", err)
 	}
 	if l, err := f.Locks().TestLock(ctx, b, file, owner(b, "lt"), br(0, 1), true); err != nil || l != nil {

@@ -12,7 +12,7 @@ import (
 
 // anon is an anonymous read of one byte at off of file, as NFSv3 reads.
 func (f *fixture) anon(file FileKey, off uint64) error {
-	return f.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, State: StateRef{Shard: file.Shard}, Handle: handle(file.ID)}, br(off, 1), false)
+	return f.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, State: StateRef{Shard: file.Shard}, Handle: handle(file.ID)}, br(off, 1), entity.ReadData)
 }
 
 // A lock a persistent open's callback waiter is granted is written before

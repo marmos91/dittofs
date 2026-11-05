@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -20,7 +21,7 @@ type fakeContent struct {
 	files    map[entity.FileID][]byte
 	shares   map[entity.FileID]entity.ShareID // the share each file was first named with
 	overlays map[entity.FileID]Overlay
-	versions uint64
+	versions uint64 // the last version drawn: store time, or one past the last, as the store draws its records'
 	verifier vfs.Verifier
 	// truncating, when set, runs as Truncate is called, before it stages
 	// anything.
@@ -33,12 +34,34 @@ type fakeContent struct {
 	overlaying func(entity.FileID)
 	// deleteErr, when set, is every Delete's answer, dropping nothing.
 	deleteErr error
+	// writing and dealloc, when set, run as Write and Deallocate are
+	// called, before either stages anything.
+	writing, dealloc func(entity.FileID)
+	// writeErr and commitErr, when set, are every Write's and every
+	// Commit's answer, staging and syncing nothing.
+	writeErr, commitErr error
+	// synced is the verifier Commit answers, sampled after its sync; loss is
+	// every file's loss sequence.
+	synced vfs.Verifier
+	loss   uint64
+	// commits is every Commit's extent, in order.
+	commits []entity.Extent
+	// committing, when set, runs as Commit is called, before it syncs.
+	committing func(entity.FileID)
+	// readErr, when set, is answered by every Read after the bytes it read.
+	readErr error
+	// reading, when set, runs as Read is called, before it reads anything.
+	reading func(entity.FileID)
 }
 
 var _ Content = (*fakeContent)(nil)
 
+// errNegative is the fake's answer to a negative offset or length, which
+// the filesystem never passes it.
+var errNegative = errors.New("fake content: a negative offset or length")
+
 func newFakeContent() *fakeContent {
-	return &fakeContent{files: map[entity.FileID][]byte{}, shares: map[entity.FileID]entity.ShareID{}, overlays: map[entity.FileID]Overlay{}, verifier: vfs.Verifier{1}}
+	return &fakeContent{files: map[entity.FileID][]byte{}, shares: map[entity.FileID]entity.ShareID{}, overlays: map[entity.FileID]Overlay{}, verifier: vfs.Verifier{1}, synced: vfs.Verifier{1}}
 }
 
 // placed answers a Delay with DelayFrozen, as the engine does for a share
@@ -62,11 +85,20 @@ func (c *fakeContent) Draw(ctx context.Context, share entity.ShareID, f entity.F
 	if err := c.placed(share, f); err != nil {
 		return entity.JournalVersion{}, err
 	}
-	c.versions++
+	c.versions = max(c.versions+1, uint64(time.Now().UnixNano()))
 	return entity.VersionOf(c.versions), nil
 }
 
 func (c *fakeContent) Write(ctx context.Context, share entity.ShareID, f entity.FileID, off int64, p []byte, o WriteOpts) (vfs.Verifier, error) {
+	if c.writing != nil {
+		c.writing(f)
+	}
+	if c.writeErr != nil {
+		return vfs.Verifier{}, c.writeErr
+	}
+	if off < 0 {
+		return vfs.Verifier{}, errNegative
+	}
 	c.mu.Lock()
 	if err := c.placed(share, f); err != nil {
 		c.mu.Unlock()
@@ -86,17 +118,34 @@ func (c *fakeContent) Write(ctx context.Context, share entity.ShareID, f entity.
 }
 
 func (c *fakeContent) Commit(ctx context.Context, share entity.ShareID, f entity.FileID, off, n int64) (vfs.Verifier, uint64, error) {
+	if c.committing != nil {
+		c.committing(f)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.placed(share, f); err != nil {
 		return vfs.Verifier{}, 0, err
 	}
-	return c.verifier, 0, nil
+	if c.commitErr != nil {
+		return vfs.Verifier{}, 0, c.commitErr
+	}
+	c.commits = append(c.commits, entity.Extent{Offset: off, Length: n})
+	return c.synced, c.loss, nil
 }
 
-func (c *fakeContent) LossSeq(share entity.ShareID, f entity.FileID) uint64 { return 0 }
+func (c *fakeContent) LossSeq(share entity.ShareID, f entity.FileID) uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.loss
+}
 
 func (c *fakeContent) Read(ctx context.Context, share entity.ShareID, f entity.FileID, off int64, dst []byte) (int, error) {
+	if c.reading != nil {
+		c.reading(f)
+	}
+	if off < 0 {
+		return 0, errNegative
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.placed(share, f); err != nil {
@@ -104,9 +153,9 @@ func (c *fakeContent) Read(ctx context.Context, share entity.ShareID, f entity.F
 	}
 	b := c.files[f]
 	if off >= int64(len(b)) {
-		return 0, nil
+		return 0, c.readErr
 	}
-	return copy(dst, b[off:]), nil
+	return copy(dst, b[off:]), c.readErr
 }
 
 func (c *fakeContent) Truncate(ctx context.Context, share entity.ShareID, f entity.FileID, size int64) error {
@@ -131,7 +180,7 @@ func (c *fakeContent) Truncate(ctx context.Context, share entity.ShareID, f enti
 // staged is f's overlay with one more operation staged: a version drawn, and
 // the times now. The caller holds mu.
 func (c *fakeContent) staged(f entity.FileID) Overlay {
-	c.versions++
+	c.versions = max(c.versions+1, uint64(time.Now().UnixNano()))
 	o := c.overlays[f]
 	o.Mtime, o.Ctime = time.Now(), time.Now()
 	o.Version = entity.VersionOf(c.versions)
@@ -139,6 +188,12 @@ func (c *fakeContent) staged(f entity.FileID) Overlay {
 }
 
 func (c *fakeContent) Deallocate(ctx context.Context, share entity.ShareID, f entity.FileID, off, n int64) error {
+	if c.dealloc != nil {
+		c.dealloc(f)
+	}
+	if off < 0 || n < 0 {
+		return errNegative
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.placed(share, f); err != nil {
@@ -152,11 +207,11 @@ func (c *fakeContent) Deallocate(ctx context.Context, share entity.ShareID, f en
 func (c *fakeContent) Delete(ctx context.Context, share entity.ShareID, f entity.FileID) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.deleteErr != nil {
-		return c.deleteErr
-	}
 	if err := c.placed(share, f); err != nil {
 		return err
+	}
+	if c.deleteErr != nil {
+		return c.deleteErr
 	}
 	delete(c.files, f)
 	return nil
@@ -193,20 +248,37 @@ func (c *fakeContent) Overlay(ctx context.Context, share entity.ShareID, f entit
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.overlayErr != nil {
-		return Overlay{}, false, c.overlayErr
-	}
 	if err := c.placed(share, f); err != nil {
 		return Overlay{}, false, err
+	}
+	if c.overlayErr != nil {
+		return Overlay{}, false, c.overlayErr
 	}
 	o, ok := c.overlays[f]
 	return o, ok, nil
 }
 
+// Allocation is the run of f's bytes from off that are all zero, a hole, or
+// all not, data; past the bytes held, a hole to the end.
 func (c *fakeContent) Allocation(ctx context.Context, share entity.ShareID, f entity.FileID, off int64) (entity.Span, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return entity.Span{}, c.placed(share, f)
+	if err := c.placed(share, f); err != nil {
+		return entity.Span{}, err
+	}
+	b := c.files[f]
+	if off >= int64(len(b)) {
+		return entity.Span{Extent: entity.Extent{Offset: off, Length: 1<<62 - off}, Class: entity.Hole}, nil
+	}
+	end := off
+	for end < int64(len(b)) && (b[end] == 0) == (b[off] == 0) {
+		end++
+	}
+	class := entity.Carved
+	if b[off] == 0 {
+		class = entity.Hole
+	}
+	return entity.Span{Extent: entity.Extent{Offset: off, Length: end - off}, Class: class}, nil
 }
 
 // grow is b, extended with zeros to at least n bytes.
