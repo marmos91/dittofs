@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
@@ -590,5 +594,50 @@ func TestOnlyAnAdmittedChownCommitsExistence(t *testing.T) {
 	}
 	if commits != 0 {
 		t.Errorf("a chown refused at admission committed the file's existence %d times, want none", commits)
+	}
+}
+
+// A create whose check for the name fails in the store, for a cause other
+// than the name being absent, fails with it, and holds no inode reserved:
+// the same create, the store recovered, fits a quota with room for one.
+func TestACreateWhoseLookupFailsReservesNothing(t *testing.T) {
+	db := &failKV{}
+	s := startShares(t, newFixtureOver(t, Deps{}, kvstoretest.NewFS(t, func(tb testing.TB) kv.KV { db.KV = memKV(tb); return db })), nil)
+	s.must(t, s.tab.Recovery().ServeShard(t.Context(), s.share, 0, 1))
+	ctx := t.Context()
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	a := &attrs{shares: s, alice: alice}
+	dir, _ := s.fs.Create(t, s.fs.Admin, s.fs.Root, "hers", kvstore.Dir(0o777))
+	a.limit(t, kvstore.QuotaTarget{Principal: alice.Principal}, entity.Limit{Files: a.usage(t, alice.Principal).Files + 1})
+	boom := errors.New("disk gone")
+	db.failing(func(update bool) error {
+		if !update && inLookup() {
+			return boom
+		}
+		return nil
+	})
+	call := proven(alice.Principal, inLab)
+	regular := vfs.CreateArgs{Kind: vfs.CreateRegular, Attrs: entity.Attrs{}.WithMode(0o644)}
+	if _, err := s.Create(ctx, call, dir, []byte("f"), regular); !errors.Is(err, vfs.ErrUnavailable) {
+		t.Fatalf("a create whose name check fails in the store: %v, want ErrUnavailable", err)
+	}
+	db.failing(nil)
+	if _, err := s.Create(ctx, call, dir, []byte("f"), regular); err != nil {
+		t.Errorf("the create once the store recovered, with room for one inode: %v", err)
+	}
+}
+
+// inLookup reports whether the store's Namespace.Lookup is on the stack.
+func inLookup() bool {
+	pc := make([]uintptr, 64)
+	frames := runtime.CallersFrames(pc[:runtime.Callers(2, pc)])
+	for {
+		f, more := frames.Next()
+		if strings.HasSuffix(f.Function, "kvstore.Namespace.Lookup") {
+			return true
+		}
+		if !more {
+			return false
+		}
 	}
 }

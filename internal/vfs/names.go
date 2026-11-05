@@ -8,6 +8,7 @@ import (
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
 	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -162,9 +163,10 @@ func creating(dir vfs.Handle) lockorder.Set {
 // the add right and open state's refusal of a delete-pending dir, then one
 // inode reserved, charged to the new file's owner and group, unless name is
 // already in dir, where the create adds no file and the store answers the
-// file an exclusive create's retry made, or ErrExist; then the store's
-// create of a file with ID id, or one the store draws when id is zero. The
-// locks held keep any other call from adding name between the two.
+// file an exclusive create's retry made, or ErrExist, and a check for name
+// failing for any other cause fails the create; then the store's create of a
+// file with ID id, or one the store draws when id is zero. The locks held
+// keep any other call from adding name between the two.
 func (fs *Filesystem) createLocked(ctx context.Context, a *admitted, c vfs.Call, op vfs.Op, dir vfs.Handle, name []byte, ca vfs.CreateArgs, id entity.FileID) (vfs.CreateResult, error) {
 	nf, err := newFile(ca)
 	if err != nil {
@@ -177,6 +179,9 @@ func (fs *Filesystem) createLocked(ctx context.Context, a *admitted, c vfs.Call,
 		return r, err
 	}
 	if _, _, err := fs.meta.Namespace().Lookup(ctx, a.caller.Identity, dir, name); err != nil {
+		if !merrs.IsNotFoundError(err) {
+			return vfs.CreateResult{}, storeErr(err)
+		}
 		owner, err := fs.newOwner(ctx, a, d, ca)
 		if err != nil {
 			return vfs.CreateResult{}, err
