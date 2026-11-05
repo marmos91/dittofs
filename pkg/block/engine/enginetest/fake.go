@@ -121,11 +121,18 @@ func (j *FakeJournal) SetVersionLimit(mark journal.Version) error {
 	return nil
 }
 
-// Stats reports the loss ring and generation, and each tag's held bytes.
+// Stats reports the loss ring and generation, each tag's held bytes, and
+// the version limit last set.
 func (j *FakeJournal) Stats() journal.Stats {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	s := journal.Stats{Losses: slices.Clone(j.losses), LossGeneration: j.gen, Shares: map[journal.ShareTag]journal.ShareStats{}}
+	s := journal.Stats{
+		Losses:         slices.Clone(j.losses),
+		LossGeneration: j.gen,
+		Shares:         map[journal.ShareTag]journal.ShareStats{},
+		VersionLimit:   journal.Version{Counter: j.limit},
+	}
+
 	for tag, n := range j.held {
 		s.Shares[tag] = journal.ShareStats{HeldBytes: n}
 		s.HeldBytes += n

@@ -11,6 +11,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -141,5 +142,70 @@ func TestRFC8A_StableWriteLazyExistence(t *testing.T) {
 	}
 	if got := read(t, f, id, 0, len(p)); !bytes.Equal(got, p) {
 		t.Errorf("after the crash: read %q, want %q", got, p)
+	}
+}
+
+// TestRFC8A_AttachAboveTheFloor, adapted: a share whose files' versions reach
+// far above the journal's counter is bound, and a write over its content is
+// given a version above them. The store stamps its own versions from the
+// clock in nanoseconds, so the floor is set relative to the store's, not at
+// 9·10⁸. With no offload or eviction in this part, a read proves nothing.
+func TestRFC8A_AttachAboveTheFloor(t *testing.T) {
+	f := enginetest.New(t)
+	ctx := t.Context()
+	_, file := f.FS.Create(t, f.FS.Admin, f.SecondRoot, "imported", kvstore.Regular(0o644))
+
+	base, err := f.FS.Store.Content().VersionFloor(ctx, []entity.ShareID{f.Second.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	imported := entity.VersionOf(base.Counter() + 1e12)
+	pending := []kvstore.PendingExistence{
+		{
+			Share: f.Second.ID,
+			File:  file.ID,
+			Ops: []kvstore.PendingOp{
+				{
+					Version: imported,
+					Kind:    kvstore.OpWrite,
+					Extent:  entity.Extent{Length: 4096},
+					Time:    f.Clock.Now(),
+				},
+			},
+		},
+	}
+
+	failed, err := f.FS.Store.Existence().Commit(ctx, pending)
+	if err != nil || failed[file.ID] != nil {
+		t.Fatalf("commit the imported content: %v, %v", err, failed[file.ID])
+	}
+
+	if err := f.E.Bind(ctx, f.Second); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	_, err = f.E.Write(ctx, f.Second.ID, file.ID, 0, []byte("new"), engine.WriteOpts{Done: func() {}})
+	if err != nil {
+		t.Fatalf("write over the imported content: %v", err)
+	}
+
+	h := f.HandleOf(f.Second.Tag)
+	changes := 0
+
+	for c, err := range h.Since(ctx, journal.NewFileID(file.ID), journal.Version{}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		changes++
+
+		if c.Version.Counter <= imported.Counter() {
+			t.Errorf("the write's version %d is not above the imported %d", c.Version.Counter, imported.Counter())
+		}
+	}
+
+	if changes == 0 {
+		t.Error("the journal holds no change of the write")
 	}
 }

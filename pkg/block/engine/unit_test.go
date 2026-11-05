@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,37 +25,81 @@ import (
 
 // unit is the engine composed for a unit test: over the fake journal, the
 // real store on an in-memory kv.KV and a test clock, with one share bound
-// through the test hook, as Bind and Start cannot yet.
+// through Bind unless the test asks for none.
 type unit struct {
 	e     *engine.Engine
 	j     *enginetest.FakeJournal
+	rec   *recJournal // the engine's view of j, which records each Share and Close
 	fs    *kvstoretest.FS
 	clock *sim.TestClock
 	share engine.Share
-	h     engine.Handle // the share's handle on the fake journal
+	h     engine.Handle // the share's handle on the fake journal, as its Share returned it
 }
 
-func newUnit(t *testing.T, opts ...func(*engine.Deps)) *unit {
+// unitLimit is the fake journal's version limit in a unit test.
+const unitLimit = 1 << 62
+
+// unitConfig is what a test asks of newUnit.
+type unitConfig struct {
+	deps    []func(*engine.Deps)
+	unbound bool
+	wrap    func(engine.Handle) engine.Handle
+}
+
+// unitOption is one thing a test asks of newUnit.
+type unitOption func(*unitConfig)
+
+// withDeps changes the engine's Deps before New.
+func withDeps(f func(*engine.Deps)) unitOption {
+	return func(c *unitConfig) {
+		c.deps = append(c.deps, f)
+	}
+}
+
+// unbound leaves the share unbound: the test binds what it needs.
+func unbound() unitOption {
+	return func(c *unitConfig) {
+		c.unbound = true
+	}
+}
+
+// wrapHandles hands the engine every handle the fake journal opens through
+// wrap.
+func wrapHandles(wrap func(engine.Handle) engine.Handle) unitOption {
+	return func(c *unitConfig) {
+		c.wrap = wrap
+	}
+}
+
+func newUnit(t *testing.T, opts ...unitOption) *unit {
 	t.Helper()
 	prof.Watch(t, prof.Options{})
-	u := &unit{j: enginetest.NewFakeJournal(), clock: sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))}
-	u.fs = kvstoretest.NewFS(t, func(tb testing.TB) kv.KV {
-		db, err := badgerkv.Open(badgerkv.Options{})
-		if err != nil {
-			tb.Fatal(err)
-		}
-		tb.Cleanup(func() { _ = db.Close() })
-		return db
-	})
+
+	var c unitConfig
+
+	for _, o := range opts {
+		o(&c)
+	}
+
+	u := &unit{
+		j:     enginetest.NewFakeJournal(),
+		clock: sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+	}
+	u.rec = &recJournal{
+		FakeJournal: u.j,
+		wrap:        c.wrap,
+	}
+	u.fs = kvstoretest.NewFS(t, memKV)
+
 	d := engine.Deps{
 		Node:    entity.NodeID{1},
 		Devices: []string{"unit"},
 		Open: func(context.Context, string, journal.Version, journal.JournalID) (engine.Journal, error) {
-			return u.j, nil
+			return u.rec, nil
 		},
 		Existence: u.fs.Store.Existence(),
 		Content:   u.fs.Store.Content(),
-		Lifecycle: noLifecycle{},
+		Lifecycle: u.fs.Store.Lifecycle(),
 		Holds:     noHolds{},
 		Clock:     u.clock,
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -62,33 +107,168 @@ func newUnit(t *testing.T, opts ...func(*engine.Deps)) *unit {
 			return ctx, func(error) {}
 		},
 	}
-	for _, o := range opts {
-		o(&d)
+
+	for _, f := range c.deps {
+		f(&d)
 	}
+
 	e, err := engine.New(d)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The version limit start raises; the fake refuses every version below
-	// none.
-	if err := u.j.SetVersionLimit(journal.Version{Counter: 1 << 40}); err != nil {
-		t.Fatal(err)
-	}
-	u.share = engine.Share{ID: u.fs.Share.ID, Tag: 1, Limit: 1 << 30, State: engine.Serving}
-	h, err := u.j.Share(u.share.Tag, u.share.Limit, journal.Version{}, u.share.SyncPolicy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	e.BindForTest(u.share, u.j, h)
-	u.h = h
+
 	u.e = e
+	e.SetJournalsForTest(u.rec)
+
+	// The version limit start raises; the fake refuses every version below
+	// none. It sits above every version the store stamps, which follow the
+	// clock in nanoseconds, so a share's floor stays below it.
+	if err := u.j.SetVersionLimit(journal.Version{Counter: unitLimit}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Do not set SyncPolicy here: the zero value is what tests that the
+	// default policy is accepted, as Bounded is the zero value.
+	u.share = enginetest.ShareOf(t, u.fs.Store, u.fs.Share.ID, 1<<30)
+
+	if c.unbound {
+		return u
+	}
+
+	if err := e.Bind(t.Context(), u.share); err != nil {
+		t.Fatal(err)
+	}
+
+	u.h = u.rec.raw(0)
+
 	return u
 }
 
-// noLifecycle and noHolds stand for views no unit test reaches: a call to
-// one is a test's bug.
-type noLifecycle struct{ engine.Lifecycle }
-type noHolds struct{ engine.CloneHold }
+// memKV is a fresh in-memory kv.KV, closed when the test ends.
+func memKV(tb testing.TB) kv.KV {
+	db, err := badgerkv.Open(badgerkv.Options{})
+	if err != nil {
+		tb.Fatal(err)
+	}
+
+	tb.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	return db
+}
+
+// recJournal is the engine's view of a fake journal: it records the floor of
+// every Share call and each handle it returned, closed or not, and hands the
+// engine each handle through wrap when a test sets one.
+type recJournal struct {
+	*enginetest.FakeJournal
+	wrap     func(engine.Handle) engine.Handle
+	closeErr error // every handle's Close answers it, after closing the handle
+
+	mu      sync.Mutex
+	floors  []journal.Version
+	handles []*recHandle
+}
+
+func (j *recJournal) Share(
+	tag journal.ShareTag,
+	limit int64,
+	floor journal.Version,
+	policy journal.SyncPolicy,
+) (engine.Handle, error) {
+	j.mu.Lock()
+	j.floors = append(j.floors, floor)
+	j.mu.Unlock()
+
+	h, err := j.FakeJournal.Share(tag, limit, floor, policy)
+	if err != nil {
+		return nil, err
+	}
+
+	rh := &recHandle{
+		Handle:   h,
+		closeErr: j.closeErr,
+	}
+
+	j.mu.Lock()
+	j.handles = append(j.handles, rh)
+	j.mu.Unlock()
+
+	if j.wrap != nil {
+		return j.wrap(rh), nil
+	}
+
+	return rh, nil
+}
+
+// shares is the count of Share calls, refused ones included.
+func (j *recJournal) shares() int {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	return len(j.floors)
+}
+
+// floor is the floor the i-th Share call passed.
+func (j *recJournal) floor(i int) journal.Version {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	return j.floors[i]
+}
+
+// open is the count of handles returned and not closed.
+func (j *recJournal) open() int {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	n := 0
+
+	for _, h := range j.handles {
+		if !h.closed.Load() {
+			n++
+		}
+	}
+
+	return n
+}
+
+// raw is the fake's own i-th handle.
+func (j *recJournal) raw(i int) engine.Handle {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	return j.handles[i].Handle
+}
+
+// recHandle records its Close.
+type recHandle struct {
+	engine.Handle
+	closed   atomic.Bool
+	closeErr error
+}
+
+func (h *recHandle) Close() error {
+	h.closed.Store(true)
+	err := h.Handle.Close()
+
+	if h.closeErr != nil {
+		return h.closeErr
+	}
+
+	return err
+}
+
+// noHolds stands for the open-state view no unit test reaches: a call to it
+// is a test's bug.
+type noHolds struct {
+	engine.CloneHold
+}
 
 // A share with no binding is ErrDelay with DelayFrozen, its binding still to
 // come, and the bound share is found.
