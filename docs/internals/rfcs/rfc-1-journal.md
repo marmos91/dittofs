@@ -2400,7 +2400,9 @@ dropped record still on disk. Until then the record that does not verify is
 still in its segment, so a crash finds the same damage, drops the same record
 and defers it again; an acknowledged unread record is still in its segment too,
 and the acknowledgement, running until that segment is unlinked, turns it into
-a loss again ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)). Nothing waits on the headroom, so deferred losses cannot
+a loss again; it unlinks that segment only after retiring every other segment
+holding an extent the record's loss dropped with a deferred loss, whose record
+nothing else on disk would name ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)). Nothing waits on the headroom, so deferred losses cannot
 hold up the reclamation that would return it: a segment holding one is a repack
 candidate like any other. Failing the open instead would keep a share down
 until an operator frees space, for a loss the open has already contained.

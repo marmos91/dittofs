@@ -1350,7 +1350,9 @@ the two do the same:
    are deferred as those are ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)): the unread record stays on disk until
    step 3 retires its segment, whose copy carries the deferred loss record, and
    a crash before then finds the operation running and turns it into a loss
-   again.
+   again. A deferred loss of a lower-version extent in another segment is owed
+   by that segment's retirement instead, and nothing on disk names it once the
+   unread record's segment is gone, so step 3 retires that segment first.
 2. **An unnamed part of the range is refused, and metadata finds what it
    superseded.** The scan refuses the range and resynchronises past it, as past
    a bad record, and the open proceeds; the segment's readable records stay
@@ -1439,7 +1441,14 @@ the two do the same:
    journal.
 3. **The segment is retired.** Once the loss records are synced, no unread
    record remains in the segment, so it is no longer suspect: repack carries its
-   readable live records forward and unlinks it ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)).
+   readable live records forward and unlinks it ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)). A segment
+   holding an extent step 1 dropped with a deferred loss is retired before it,
+   its copy carrying the loss record, and the unread record's segment is
+   unlinked only once every such copy is synced, so a crash before then finds
+   the unread record and drops the extent again. A segment that cannot be
+   retired, because it holds an unread record outside the acknowledgement,
+   keeps the unread record's segment, and the operation running, until that
+   record reads, is acknowledged or dies.
    `Acknowledge` and `AcknowledgeUnreadable` each run that repack before they
    return, so a plain open afterwards finds nothing unread; an unread
    header-only record leaves no loss record, so until its segment is unlinked a
@@ -1668,6 +1677,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§3.3](#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify) an unread file at start | Crash with a synced write of F above its `applied` whose payload is unread, in a catalogued segment, and with a truncate of G whose header is unread; restart. Assert `Start` succeeds, F and G are unread — every read fails with `ErrUnreadable`, writes are taken, `Sync` fails — the node's other files serve, and once the records read each file's re-apply runs with no restart. |
 | [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) same-commit supersession | Write W1 and W2 at one offset X of F, both above `applied`, committed in one existence commit; make W2's slot an unnamed unreadable range; acknowledge it. Assert the commit wrote an overwrite record at W2's version, `ReadAt(F, X)` fails as **Lost** and never returns W1. Repeat with a crash before that commit. |
 | [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) resume after the unlink | Acknowledge an unnamed range holding a write W2 over a committed W1 and file X's hold for cut 1 while Y's reads; crash after `AcknowledgeUnreadable` has unlinked the segment and before the drop. Restart; assert the start runs the drop before re-apply, `ReadAt` never returns W1, and cut 1 is `failed`. |
+| [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a deferred drop in another segment | Write dirty X of F over [5, 6) MiB at v1 in segment T; truncate F to 3 MiB at v2, phase 2 done, its record U in segment S; write F at [7, 8) MiB; make U unread, its catalog entry readable, and the open reserve drawn by an earlier open. Acknowledge U; assert X's loss is deferred and S is not unlinked before T is retired. Crash before T is retired and restart; assert `ReadAt(F, 5 MiB)` never returns X's bytes. Let the operation end; assert a loss record names X and S is unlinked. A design that retires S first serves X where the truncate left zeros. |
 | [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a drop races a repack copy | Make a deallocate D of F at v5 unread, its catalog entry readable, over W0 at v3 in another segment; start a repack of W0's segment and hold its copy of W0 after its held check; acknowledge D. Assert the copy is abandoned, and after a restart the deallocated range never reads W0. |
 | [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) partial drops at the maximum | Fill the journal to its maximum with segments interleaving dirty records of many files; acknowledge an unnamed range whose partial drops' kept parts exceed the repack reserve. Assert the drop finishes, each touched segment is retired before the next is taken, and the shares attach. |
 | [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a resume scoped by the mark | On an open journal, make F's truncate T unread with its catalog entry readable; give G a synced append W, answered stable, its existence not committed. Acknowledge T and crash before the unlink; restart. Assert W still reads, no loss record names it, and T's drop is done. Repeat with an unnamed range whose acknowledgement is marked done and a segment still pinned, a stable uncommitted append W of G written after the shares attached; restart. Assert W still reads, no snapshot cut after the mark is failed, and the pending drop runs before re-apply. Repeat with that acknowledgement marked done and its segment still pinned by G's unread write Y, and a stable uncommitted append W of H written after the shares attached: acknowledge Y, adding it to the running operation, and crash before its steps are done; restart. Assert W still reads and no loss record names it. A design that re-runs step 2 at every start, or whenever a range is not done, drops W as **Lost**. |
