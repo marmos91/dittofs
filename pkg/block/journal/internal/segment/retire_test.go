@@ -352,21 +352,51 @@ func TestRetireRecycleCallLogAndFootprint(t *testing.T) {
 	if e.p == nil {
 		t.Fatal("the test's pool went missing")
 	}
+	// Every create the seam sees from this schedule on fails, so nothing
+	// can land in the content class while the assertions below read it:
+	// the class reads short for good, not only while a replacement
+	// stands mid-flight, and the reservation below leans on nothing a
+	// make in flight could change. Whatever wake runs — the take's kick,
+	// or a pass Start's own kick left queued behind it — fails at its
+	// create, and a make that fails there never reaches its Allocate
+	// call, so the allocate count below stands however many passes run.
+	// The fault is armed after every create the test itself caused, the
+	// seal segment's own included, and after the retirement's recycle
+	// above, which renames and writes but creates nothing; a failing
+	// create never parks the worker either, so Stop's join is never
+	// blocked and no release is owed.
 	e.p.Start()
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpCreate, "*", 0, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	removesAtTail := e.seam.Calls(journaltest.OpRemove)
 	if id, err := e.p.Take(segment.Content); err != nil || id != res.Fresh {
 		t.Fatalf("the take of the recycled spare: (%d, %v), want %d", id, err, res.Fresh)
 	}
-	// The take empties the class again, and the completed recycle spent its
-	// reservation: the pool wants the next one. A recycled landing that
-	// never paid its slot back leaves the class reading one-short-forever,
-	// and every recycle after the first leaks its slot instead.
-	if class, ok := e.p.WantRecycleForTest(); !ok || class != segment.Content {
-		t.Fatalf("after the recycled spare was taken the pool wants no recycle: (%v, %v), want (content, true): a completed recycle must spend the slot it reserved", class, ok)
+	// A failed create cleans up the temporary spare name it never left
+	// behind — one remove per failed pass — so the count rising is the
+	// gate that proves the take's kick ran a pass and the pass returned
+	// before the reads below, and the test fails unless it does.
+	landed := false
+	for range poolAttempts {
+		if e.seam.Calls(journaltest.OpRemove) >= removesAtTail+1 {
+			landed = true
+			break
+		}
+		runtime.Gosched()
 	}
-	e.p.Stop()
+	if !landed {
+		t.Fatalf("the take never kicked a refill pass: no failed make's cleanup remove reached the seam")
+	}
+	// The take empties the class again, and the completed recycle spent its
+	// reservation: the pool wants the next one, over the class left short.
+	if class, ok := e.p.WantRecycleForTest(); !ok || class != segment.Content {
+		t.Fatalf("after the recycled spare was taken the pool wants no recycle: (%v, %v), want (content, true) over the emptied class", class, ok)
+	}
 	if got := e.seam.Calls(journaltest.OpAllocate) - allocs; got != 0 {
 		t.Fatalf("the retirement and the take allocated %d times, want none beside the segment's own making", got)
 	}
+	e.p.Stop()
 }
 
 // TestRetireFreshIDEveryNameInPlace: the id the recycle drew exceeds every id
@@ -439,17 +469,48 @@ func TestRetireDecidesAtRetirement(t *testing.T) {
 			func(c segment.PoolCounters) bool { return c.Spares == 1 })
 
 		old := e.segment(true)
+
+		// The take's kick is the only wake the fill leaves owed, and the
+		// makes it drives are made to fail at their create: every create
+		// the seam sees after this point fails, so no spare can ever land
+		// before the retirement reads the pool, which reads it below its
+		// target for good — not short only while a make is parked
+		// mid-flight, a state the reservation counts as short only
+		// because a make in flight is invisible to it. The fault is
+		// armed after every make the test itself causes, the seal
+		// segment's own included, whose create it must not catch, and
+		// the failed pass's cleanup — a remove of the temporary spare
+		// name the failed create never left behind — is the gate that
+		// proves the take's kick ran the refill and it returned. The
+		// recycle the retirement runs below renames and writes; it
+		// creates nothing, so the fault leaves it untouched.
+		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpCreate, "*", 0, syscall.EIO)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		removes := e.seam.Calls(journaltest.OpRemove)
+
 		// Take the spare the pool holds, so the retirement finds the pool
 		// below its target.
 		if _, err := e.p.Take(segment.Content); err != nil {
 			t.Fatalf("the take that empties the pool: %v", err)
+		}
+		ran := false
+		for range poolAttempts {
+			if e.seam.Calls(journaltest.OpRemove) >= removes+1 {
+				ran = true
+				break
+			}
+			runtime.Gosched()
+		}
+		if !ran {
+			t.Fatalf("the take never kicked a refill pass: no failed make's cleanup remove reached the seam")
 		}
 		res, err := e.r.Retire(old, segment.NotHeld)
 		if err != nil {
 			t.Fatalf("the retire below target: %v", err)
 		}
 		if !res.Recycled {
-			t.Fatalf("the retire below target recycled nothing: %+v, want a recycle", res)
+			t.Fatalf("the retire below target recycled nothing: %+v, want the recycle the pool below its target owes — a refill spare landing before the retire would have filled the pool and turned it into an unlink", res)
 		}
 		e.p.Stop()
 	})

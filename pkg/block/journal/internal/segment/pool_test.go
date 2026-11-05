@@ -123,6 +123,23 @@ func (r *logRecorder) countAt(level slog.Level, sub string) int {
 	return n
 }
 
+// awaitHoldReached fails t unless the hold confirms its call arrived within
+// ten seconds: it proves a take's kick started the refill, so the test reads
+// what it reads with the replacement really in flight. Without the bound a
+// regression that never kicks would leave the test hanging at the channel
+// instead of failing; the hold's own Cleanup releases it on that path, so a
+// create that reaches the seam afterwards passes through instead of parking
+// the worker.
+func awaitHoldReached(t *testing.T, h *journaltest.Hold) {
+	t.Helper()
+
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the take never kicked the worker: its refill's create never reached the seam")
+	}
+}
+
 // awaitLogged fails t unless the handler holds n records at level whose
 // message contains sub, within a bounded count of yields: the worker logs
 // from its own goroutine, the test cannot hold.
@@ -238,7 +255,7 @@ func TestPoolTakeMakesNoSeamCall(t *testing.T) {
 	}
 
 	// The take's kick woke the worker, whose own create is the held one.
-	<-hold.Reached()
+	awaitHoldReached(t, hold)
 
 	// The worker's create is the only call that moved — the take itself made
 	// no seam call — and it moved exactly once.
@@ -534,15 +551,17 @@ func TestPoolAdoptCountsTowardClassAtCap(t *testing.T) {
 // TestPoolBytesFiguresFollowTheClasses: the headroom and reserve figures
 // follow the classes' spares at the cap, as allocated now. After the fill at
 // targets {1, 2, 3}, the headroom holds two spares' worth and the reserve
-// three; a headroom take takes the figure with the spare until the refill
-// replaces it. The two classes' spares are journal-accounted: charged to no
-// share's tag, sitting in the ledger's own spare count, which holds all six.
-// It catches a figure that counts a class as bytes it no longer holds, and a
-// class spare charged to a share.
+// three; a headroom take takes the figure with the spare while the refill's
+// make is parked at the seam, so the dip is read with the replacement really
+// in flight — a poll instead could miss it, the worker refilling before the
+// poll saw the take's dip. The two classes' spares are journal-accounted:
+// charged to no share's tag, sitting in the ledger's own spare count, which
+// holds all six. It catches a figure that counts a class as bytes it no
+// longer holds, and a class spare charged to a share.
 func TestPoolBytesFiguresFollowTheClasses(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	_, set, _, p := poolOf(t, segment.Targets{Content: 1, Headroom: 2, Reserve: 3}, noMax, 0, nil)
+	seam, set, _, p := poolOf(t, segment.Targets{Content: 1, Headroom: 2, Reserve: 3}, noMax, 0, nil)
 	p.Start()
 	awaitCounters(t, "targets {1,2,3} filled", p,
 		func(c segment.PoolCounters) bool {
@@ -560,13 +579,25 @@ func TestPoolBytesFiguresFollowTheClasses(t *testing.T) {
 		}
 	}
 
+	// The take's kick is the only make the fill leaves owed, so arming the
+	// hold now parks exactly its refill: the replacement's make stands at
+	// the seam until the test releases it, holding the dip. Arming any
+	// earlier — before the fill is done — would park the fill's own make
+	// instead of the take's. Released before Stop is called, for Stop
+	// joins the worker, and a worker parked at the seam would never
+	// return.
+	hold := seam.HoldFirst(t, journaltest.OpCreate, "*")
+
 	if id, err := p.Take(segment.Headroom); err != nil || id == 0 {
 		t.Fatalf("the headroom take: (%d, %v)", id, err)
 	}
-	awaitCounters(t, "the headroom taken down to cap", p,
-		func(c segment.PoolCounters) bool { return c.HeadroomBytes == segCap })
-	// The take is still in flight with the fill: the figure rides the class
-	// back to its target once the worker has made the spare.
+	awaitHoldReached(t, hold)
+	if c := p.Counters(); c.HeadroomBytes != segCap || c.RepackReserveBytes != 3*segCap {
+		t.Fatalf("after the headroom take, with the refill's make parked at the seam, the headroom holds %d bytes and the reserve %d, want %d and %d: one spare's worth taken with the spare, the reserve untouched", c.HeadroomBytes, c.RepackReserveBytes, segCap, 3*segCap)
+	}
+	hold.Release()
+	// The figure rides the class back to its target once the worker's made
+	// spare lands: a settled end state, nothing takes after it.
 	awaitCounters(t, "the headroom refilled to two", p,
 		func(c segment.PoolCounters) bool { return c.HeadroomBytes == 2*segCap })
 	if err := set.Check(); err != nil {
@@ -1518,18 +1549,36 @@ func TestPoolWantRecycleReservesTheShortestClassFirst(t *testing.T) {
 	})
 
 	t.Run("the content class", func(t *testing.T) {
-		_, _, _, p := poolOf(t, segment.Targets{Content: 1, Headroom: 1, Reserve: 1}, noMax, 0, nil)
+		h2 := &logRecorder{}
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1, Headroom: 1, Reserve: 1}, noMax, 0, slog.New(h2))
 		p.Start()
 		awaitCounters(t, "all three classes filled", p,
 			func(c segment.PoolCounters) bool {
 				return c.Spares == 1 && c.HeadroomBytes == segCap && c.RepackReserveBytes == segCap
 			})
 
-		// One spare is taken from the content class, leaving it short while
-		// the other two stand at their targets.
+		// The take's kick is the only wake the fill leaves owed, and the
+		// makes it drives are made to fail at their create: every create
+		// the seam sees after this point fails, so no spare can ever land
+		// in the content class again and the reservation below reads a
+		// class that is short for good, not one short only while a make
+		// is parked mid-flight — a make in flight is invisible to the
+		// reservation, and nothing here leans on that. The fault is
+		// armed after the fill, the only make the test itself causes,
+		// and the pool's own Warn at the failed make is the gate that
+		// proves the take's kick ran the refill and it returned. The
+		// recycle path the landing below stands for renames and writes;
+		// it creates nothing, so the fault leaves it untouched.
+		if err := seam.Schedule(journaltest.Failing(journaltest.OpCreate, "*", 0, syscall.EIO)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+
+		// One spare is taken from the content class, leaving it short
+		// while the other two stand at their targets.
 		if _, err := p.Take(segment.Content); err != nil {
 			t.Fatalf("the content take: %v", err)
 		}
+		awaitLogged(t, h2, slog.LevelWarn, "did not make a spare", 1)
 		c, ok := p.WantRecycleForTest()
 		if !ok || c != segment.Content {
 			t.Fatalf("a recycle was wanted for %v over a short content class, want Content", c)
