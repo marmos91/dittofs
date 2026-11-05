@@ -470,21 +470,37 @@ func TestAnAppendDataOpenOnlyAppends(t *testing.T) {
 	}
 }
 
-// An anonymous append to an append-only file asks append data alone: bob,
-// whom the ACL allows read and append data but not write data, appends.
+// An anonymous write at or past a file's size is admitted by append data
+// alone, one below it only by write data: bob, whom the ACL of alice's 0600
+// file allows read and append data but not write data, appends to it, plain
+// or append-only, and is refused a write below its size, staging nothing.
 func TestAnAnonymousAppendAsksAppendData(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
-	h := s.file(t, "log", s.alice.Principal, 0o600)
 	files := s.fs.Store.Files()
-	acl := entity.ACLFromMode(0o600)
-	acl.Entries = append(acl.Entries, entity.ACE{Type: entity.ACEAllow, Mask: entity.ReadData | entity.AppendData, Who: s.bob.Principal})
-	_, err := files.SetACL(ctx, s.fs.Admin, h, acl)
-	s.must(t, err)
-	_, err = files.SetAttrs(ctx, s.fs.Admin, h, entity.Attrs{}.WithFlags(entity.FlagAppendOnly))
-	s.must(t, err)
-	if _, err := s.Write(ctx, proven(s.bob.Principal, inLab), vfs.Anonymous(h), 0, []byte("x"), vfs.Unstable); err != nil {
-		t.Errorf("an anonymous append by a caller holding append data alone: %v", err)
+	alice, bob := proven(s.alice.Principal, inLab), proven(s.bob.Principal, inLab)
+	for _, c := range []struct {
+		name  string
+		flags entity.FileFlags
+		below error
+	}{{"plain", 0, vfs.ErrAccess}, {"append-only", entity.FlagAppendOnly, vfs.ErrPerm}} {
+		h := s.file(t, c.name, s.alice.Principal, 0o600)
+		_, err := s.Write(ctx, alice, vfs.Anonymous(h), 0, []byte("hello"), vfs.Unstable)
+		s.must(t, err)
+		acl := entity.ACLFromMode(0o600)
+		acl.Entries = append(acl.Entries, entity.ACE{Type: entity.ACEAllow, Mask: entity.ReadData | entity.AppendData, Who: s.bob.Principal})
+		_, err = files.SetACL(ctx, s.fs.Admin, h, acl)
+		s.must(t, err)
+		_, err = files.SetAttrs(ctx, s.fs.Admin, h, entity.Attrs{}.WithFlags(c.flags))
+		s.must(t, err)
+		if _, err := s.Write(ctx, bob, vfs.Anonymous(h), 5, []byte("!"), vfs.Unstable); err != nil {
+			t.Errorf("%s: an anonymous append by a caller holding append data alone: %v", c.name, err)
+		}
+		s.engine.writing = func(entity.FileID) { t.Errorf("%s: a refused write below the size was staged", c.name) }
+		if _, err := s.Write(ctx, bob, vfs.Anonymous(h), 0, []byte("H"), vfs.Unstable); !errors.Is(err, c.below) {
+			t.Errorf("%s: an anonymous write below the size by a caller holding append data alone: %v, want %v", c.name, err, c.below)
+		}
+		s.engine.writing = nil
 	}
 }
 

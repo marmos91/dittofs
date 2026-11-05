@@ -214,10 +214,11 @@ func (fs *Filesystem) Seek(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off
 // append data without write data can only append, ErrAccess below the size,
 // judged against the size read under the lock that every change of size takes.
 // Anonymous or through a delegation, the chokepoint decides the caller's own
-// right on the file first, then open state judges it against every deny mode
-// and mandatory lock held, breaking or recalling what conflicts. It answers
-// the admission lock's unlock and the call's uncount apart, so a sync can run
-// counted once the lock is dropped.
+// right on the file first, by the same rule: write data admits a write
+// anywhere, and append data alone one at or past the size; then open state
+// judges it against every deny mode and mandatory lock held, breaking or
+// recalling what conflicts. It answers the admission lock's unlock and the
+// call's uncount apart, so a sync can run counted once the lock is dropped.
 func (fs *Filesystem) io(ctx context.Context, c vfs.Call, ref vfs.OpenRef, op vfs.Op, off, n int64, write bool) (*admitted, vfs.File, func(), func(), error) {
 	if off < 0 || n < 0 {
 		return nil, vfs.File{}, nil, nil, vfs.ErrInvalid
@@ -247,8 +248,17 @@ func (fs *Filesystem) io(ctx context.Context, c vfs.Call, ref vfs.OpenRef, op vf
 	}
 	if ref.Kind == openstate.RefAnonymous || ref.Kind == openstate.RefDelegated {
 		ask := want
-		if write && f.IsAppendOnly() && off >= f.Size {
-			ask = entity.AppendData
+		if write && off >= f.Size {
+			// Either right admits an append. Asking Rights, which audits
+			// nothing, which one the caller holds lets Decide audit the
+			// one decision that admits it, or append data's refusal.
+			got, err := fs.authz.Rights(ctx, a.caller, ref.Handle, nil, entity.WriteData)
+			if err != nil {
+				return fail(storeErr(err))
+			}
+			if got&entity.WriteData == 0 {
+				ask = entity.AppendData
+			}
 		}
 		if err := fs.authz.Decide(ctx, a.caller, op, ref.Handle, nil, nil, ask); err != nil {
 			return fail(storeErr(err))
