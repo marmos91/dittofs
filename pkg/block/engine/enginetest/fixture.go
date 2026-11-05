@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -66,6 +67,7 @@ type Fixture struct {
 	// crashed fences the running engine's existence and content views: once
 	// set, by Crash, that engine's closing changes nothing in the store.
 	crashed *atomic.Bool
+	handles sync.Map // journal.ShareTag → the handle the running engine opened on it
 }
 
 // New creates the journal and the store, then starts a process over them: the
@@ -135,6 +137,17 @@ func (f *Fixture) File(name string) (entity.Handle, entity.FileID) {
 	return h, file.ID
 }
 
+// Handle is the handle the running engine opened on the share's tag, for a
+// row that reads back what the journal holds.
+func (f *Fixture) Handle() engine.Handle {
+	f.t.Helper()
+	h, ok := f.handles.Load(f.Share.Tag)
+	if !ok {
+		f.t.Fatal("fixture: the engine opened no handle on the share's tag")
+	}
+	return h.(engine.Handle)
+}
+
 // Committed is file h's record as the store has committed it.
 func (f *Fixture) Committed(h entity.Handle) entity.File {
 	f.t.Helper()
@@ -173,7 +186,7 @@ func (f *Fixture) start() {
 			if err != nil {
 				return nil, err
 			}
-			return wrapJournal(j), nil
+			return wrapJournal(j, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }), nil
 		},
 		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed},
 		Content:   fencedContent{Content: f.FS.Store.Content(), crashed: f.crashed},
