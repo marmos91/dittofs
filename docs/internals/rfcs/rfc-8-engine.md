@@ -585,8 +585,8 @@ comes before `Start` ([§2.6](#2.6%20Dependencies%20and%20wiring)). `Start(ctx, 
 the steps below over the given shares, each step completing before the next
 begins. A step that fails closes in reverse what earlier steps opened and
 returns its error, so the engine is either serving or as built. A share refused
-at step 1 — its journal missing or foreign — does not fail `Start`: it is not
-attached, and `Stats` names it and its device.
+at step 1, its journal missing, foreign or not recorded for this node's device,
+does not fail `Start`: it is not attached, and `Stats` names it and its device.
 Nor, at `Start`, does a share whose journal `Open` refuses with
 `ErrUnsuitableStorage` ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)): it is not attached either, `Stats` names it,
 its device and the rule, and the engine raises `journal_unsuitable` and retries
@@ -625,8 +625,17 @@ tag counter above that journal's tags ([RFC 26 §2.3](rfc-26-catalog-backups.md#
    point a sync is proven to have reached before it serves, re-appending only
    what fails ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)). Start never creates a journal: only the explicit
    initialisation step calls `Init`, and its identity is recorded before
-   anything written to it is acknowledged ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). An `Open` that finds an
-   existing journal with nothing recorded for it reports the metadata store lost.
+   anything written to it is acknowledged ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). An `Open` with nothing
+   recorded for this node's device fails, naming the journal identity and the
+   installation ID the directory's `format` file holds ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)). The engine
+   refuses every share on that device, naming each, the device and what the
+   error names, and never reports the metadata store lost: the store is present,
+   so the journal is foreign, or of this installation and **not recorded**,
+   because the node's identity or the directory its bootstrap names changed, or
+   `Init` was interrupted ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap), [RFC 16 §3.2](rfc-16-metadata-store.md#3.2%20How%20it%20is%20assembled)). Only a
+   node's start that finds no metadata store beside its journals reports it lost
+   ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)). A journal not recorded serves only once `RecordJournal`
+   records it for this node and device, at a later start.
    **A recovery import orders its journals before its shares.** Once the import
    has rebuilt the store, it calls `Restamp` on each adopted journal with its own
    identity as `expect` ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)) and opens it, before it publishes any

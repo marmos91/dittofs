@@ -1189,13 +1189,18 @@ type Alloc struct{ UID, GID, RID bool }
 // tags, SH‖shard‖rm, S‖id‖vl and the incarnation keys.
 // Signatures are indicative; RFC 8 owns what each call carries.
 type Lifecycle interface {
-	JournalID(ctx context.Context, node NodeID, device DeviceID) (JournalID, error)  // the identity recorded for a node's device (JD‖node‖device), for Open
+	JournalID(ctx context.Context, node NodeID, device JournalDir) (JournalID, error) // the identity recorded for a node's device (JD‖node‖device), for Open
 	Tags(ctx context.Context) (map[ShareID]TagRecord, error)                          // every share record's tag and its removal state, for start steps 1 and 5
 	VersionLimits(ctx context.Context, shares []ShareID) (map[ShareID]Version, error) // each share's limit, read for Open's floor
 	RaiseVersionLimits(ctx context.Context, to map[ShareID]Version) error             // a tracked max-write of S‖id‖vl, within K keys a transaction
 	RaiseAtStart(ctx context.Context, shards []ShardID) (map[ShardID]uint64, error)   // raises each incarnation and sets GraceInstance to it; returns the incarnations written
 	RaiseAtAttach(ctx context.Context, shard ShardID) (uint64, error)                 // raises the incarnation and keeps GraceInstance; returns the incarnation written
 }
+
+// JournalDir is a journal device: the directory the node's bootstrap names for
+// it (RFC 13 §2.2), as written there, one of RFC 8's Deps.Devices. It is not a
+// device file's major and minor (RFC 7 §2.1's DeviceID).
+type JournalDir string
 
 // TagState is how far a share's removal has gone, for start (RFC 8 §2.5).
 type TagState uint8 // Serving, Offloaded, Forgotten
@@ -1363,6 +1368,7 @@ There is one concrete store, built once from a `KV`:
 ```go
 err := metadata.Init(ctx, kv, install)                     // once per installation, with the minted ID; see below
 st, err := metadata.Open(ctx, kv, metadata.Options{...}) // reads the format record first (§4.6)
+err = st.RecordJournal(ctx, id, node, device)            // the initialisation step after each journal's Init, and a recovery import for each journal it adopts; in no view
 
 var (
 	_ Namespace    = st.Namespace()
@@ -1387,11 +1393,12 @@ with the installation ID the step minted and `SL` at 0, and it refuses a store t
 holds a format record. `Open` never creates one: it reports a store with no
 format record as not initialised.
 
-`RecordJournal(ctx, id, node, device)` is the store's part of creating or
-adopting a journal, a call on the store beside `Init`, in no view: the engine
-never calls it. The initialisation step calls it after the journal's `Init` and
-before anything in the journal is acknowledged, and a recovery import calls it
-for each journal it adopts, before it publishes any share
+`RecordJournal(ctx, id JournalID, node NodeID, device JournalDir) error` is the
+store's part of creating or adopting a journal, a method of the opened store, as
+the sketch shows, and in no view: the engine never calls it. The initialisation
+step calls it after the journal's `Init` and before anything in the journal is
+acknowledged, and a recovery import calls it for each journal it adopts, before
+it publishes any share
 ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)). In one transaction it writes `J‖journal` with the node and
 device, and `JD‖node‖device` with the journal identity, which `Lifecycle`'s
 `JournalID` reads (§4.2). **Proposal:** the operator's step that re-initialises a
@@ -1403,7 +1410,11 @@ and the node in it. A device is a directory a node's bootstrap names
 ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)), so two nodes sharing one store can name the same one, and a
 lookup by device alone is then ambiguous; on a single node the node is always the
 same. A scan of the `J‖` prefix for the device would need no new key, at a cost
-that grows with the installation's journals.
+that grows with the installation's journals. A node whose bootstrap changes its
+identity, or the directory it names for a journal, is new to the store for that
+device by design: `JournalID` finds nothing under the new key, and the journal
+serves again only once `RecordJournal` records it there, never through a start
+that scans `J‖` for the device and guesses.
 
 Inside, the store is not one giant type. Each area — namespace, files, content,
 blocks, principals, control plane, open state — is its own small struct over one
@@ -1868,7 +1879,7 @@ are the prefix's. No separator byte is written.
   range of `b` is one GC partition's keys whatever the partition count
   ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)).
 - **Byte string** — an entry's folded key, an xattr name, an idempotency key (`IK`), an operation or resource kind (`OPR`, `AUX`), a user, group, share
-  or netgroup name, a path, a setting key, a SID, a Kerberos principal, a
+  or netgroup name, a path, a journal directory (`JD`'s `device`), a setting key, a SID, a Kerberos principal, a
   client owner, a backup location's name (`NS‖ns‖bk‖location`, and `NS‖ns‖keyseq‖target`, empty for the namespace's own object), a namespace key ID (up to 255 bytes, [RFC 5](rfc-5-transforms.md)), a master key ID
   (`MKP`'s `masterKeyID`, [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)): each `0x00` byte written as `0x00 0xFF`, then the two-byte
   terminator `0x00 0x01`. Inside a string `0x00` is always followed by `0xFF`,
