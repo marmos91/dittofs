@@ -1344,7 +1344,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrReadOnly` | a mutation where only reading is admitted: a share or a client rule narrowed to read-only ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)), a snapshot ([RFC 12](rfc-12-snapshots.md)), the pseudo-filesystem, a journal whose filesystem turned read-only ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)) | — |
 | `ErrNameTooLong` | a name past the share's length limit ([RFC 7 §3.2](rfc-7-namespace-metadata.md#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)); any other name the store refuses is `ErrInvalid` | — |
 | `ErrInvalid` | the arguments cannot be honoured as given: a name the store refuses, an overlapping copy or clone within one file, a clone longer than `clone_max_len`, a deny entry naming a well-known principal [RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)'s table lacks | — |
-| `ErrNoSpace` | a permanent capacity refusal: no space comes without operator action ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s second row); answered at once | — |
+| `ErrNoSpace` | a permanent capacity refusal: no space comes without operator action ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s second row), including bytes held unread after a failed bounded retry; answered at once | — |
 | `ErrQuota` | a logical quota refused; answered at once | `*QuotaError{Scope}`: `QuotaShare`, `QuotaProject`, `QuotaUser`, `QuotaGroup`, the first exceeded in that order — four, though adapters map only two classes, because the metric label and the refusal's message name the scope |
 | `ErrLocked` | a byte-range lock others hold conflicts | `*LockedError{Holder}`, RFC 14's aliased ([RFC 14 §2.3](rfc-14-open-state.md#2.3%20Lock)): `Holder` is the conflicting `Lock`, its range and its owner, which a protocol's denial reports. Of who holds it, it carries only the owner's `Client` and `Name`, which an NFSv4 `LOCK4denied` and an NLM `holder` return in a denial anyway; never the holder's principal |
 | `ErrRangeNotLocked` | an `Unlock` named a range the owner does not hold | — |
@@ -1359,6 +1359,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrIncomplete` | a read of a file a snapshot lists as incomplete, or a copy or clone from one ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)) | — |
 | `ErrInconsistent` | a store invariant the filesystem's own state breaks; the store raises a health condition naming the record ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — |
 | `ErrLost`, `ErrUnavailable`, `ErrCorrupt` | the content errors of [RFC 8](rfc-8-engine.md) | — |
+| `ErrIO` | the local journal device failed a read the bounded retry could not complete ([RFC 28 §3.3](rfc-28-journal-format.md#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify)); answered at once, never held: the device has already failed three attempts, started within 15 s and so about 30 s in all, and the bytes are kept, not lost | — |
 | `ErrPastEnd` | a `Seek` from an offset at or past the file's end | — |
 
 `StateError` kinds, each matched by `errors.Is(err, ErrState)`, are RFC 14's
@@ -1825,7 +1826,7 @@ Steps 1–3 as for a write, with read access; then the engine's `Read`, which
 resolves residency and streams verified chunks
 ([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20holds%20only%20verified%20chunks%2C%20in%20file%20order)).
 It never returns an unverified byte, but it can return `n` verified bytes and
-then an error (`ErrLost`, `ErrUnavailable`, `ErrCorrupt`) for the chunk after
+then an error (`ErrLost`, `ErrUnavailable`, `ErrCorrupt`, `ErrIO`) for the chunk after
 them. An adapter answers a short read of the `n` bytes when `n > 0` and its
 protocol allows, and the error otherwise; `ErrUnavailable` is transient
 (held, as §3.2 says). The wire statuses are

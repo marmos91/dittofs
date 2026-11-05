@@ -861,6 +861,27 @@ mode that writes nothing; each is an operation whose result lists the
 mismatches found ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)). The reverse-index rebuild sets GC's hold
 before it starts, as RFC 9 requires; the API only starts it.
 
+**Acknowledging an unreadable journal range**,
+`POST /nodes/{id}:acknowledge-unreadable` naming the journal by its device and
+a list of ranges on it, each a segment and a byte range, or `format`
+([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), and the CLI's
+`node acknowledge-unreadable`: the operator's statement that the ranges will
+never read, so their unread records become losses and their segments are
+retired ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)). It is an operation, answered
+`202`, run by the engine of the node holding the device, and its target is
+the journal: two journals' acknowledgements run at once. A request for a
+journal whose acknowledgement is running is not refused `operation_running`:
+it adds its ranges to that operation and answers `202` with its ID, so a range
+found while one runs never waits on it, the operation running until the
+journal's shares attach. `check=true` is not an
+operation: it writes nothing, answers `200` with what the ranges affect — the
+held extents and their files, the files made unread, and for a part nothing
+names its segment and range, and the files whose held extents the drop of
+RFC 28 §3.3 takes, with those extents, and any segment it touches that holds
+another unread range — and never blocks one. A range that
+reads again before the operation reaches it is dropped from the operation
+with nothing of it dropped, and the result says so.
+
 ### 3.4 Adapters
 
 An adapter is configured by settings at installation scope, which a node record
@@ -994,6 +1015,7 @@ this table is all of them:
 | `set-password` | user | `operator`; `admin` for an account with a role | no | §3.5, [RFC 18 §8](rfc-18-identity.md#8.%20Management-API%20users) |
 | `drain` | node | `operator` | yes | [RFC 30 §5.2](rfc-30-kubernetes.md#5.2%20Scale-down%20is%20a%20drain) |
 | `decommission` | node | `admin` | no | [RFC 13 §5.5](rfc-13-configuration.md#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap) |
+| `acknowledge-unreadable` | node | `admin` | yes | [RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) |
 | `declare-lost` | backup location | `admin` | yes | [RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record), [RFC 26 §4.1](rfc-26-catalog-backups.md#4.1%20Interfaces) |
 | `cancel` | operation | the role that may start its kind | no | §4.6 |
 
@@ -1292,7 +1314,7 @@ second store.
 | users and groups that hold no role | | ✓ | ✓ |
 | accounts with a role, roles, service tokens of others | | | ✓ |
 | drain a node | | ✓ | ✓ |
-| raise a format version, decommission a node, state a location lost, re-home, move, rotate the signing key | | | ✓ |
+| raise a format version, decommission a node, state a location lost or a journal range unreadable, re-home, move, rotate the signing key | | | ✓ |
 | read the audit, and the `access`, `admin` and `logon` event streams | | | ✓ |
 | read the `quota` event stream | | ✓ | ✓ |
 | own password, own tokens, sign out | ✓ | ✓ | ✓ |
