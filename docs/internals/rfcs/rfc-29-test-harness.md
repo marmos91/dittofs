@@ -764,7 +764,7 @@ suites:
 | `names` | What `{names}` holds when a run names no tests, for a tool that finds its own tests and takes their names as arguments, as pynfs takes `all` or test codes | none |
 | `known` | The suite's known failures and expected skips (§4.7) | none |
 | `shards` | Split `tests` over this many CI jobs | `1` |
-| `job` | Run in a CI job of this fixed name, outside the matrix: for checks the branch ruleset requires by name. `unit` and `integration` keep theirs only until the ruleset requires the gate (§4.8) | none: a matrix cell |
+| `job` | Run in a CI job of this fixed name, outside the matrix: for checks the branch ruleset requires by name | none: a matrix cell |
 | `parallel` | `true`: under `--parallel`, the suite's cells may run beside others (§4.4), set once someone has checked that they hold nothing else of the host's ([testing-parallel.md](../testing-parallel.md)) | `false`: they run alone |
 
 **Placeholders.** `dt` fills them once per cell, before the first test, and `{test}` again for
@@ -1714,8 +1714,7 @@ One workflow, `tests.yml`, runs every registered suite:
     into one report: its job summary is each blocking cell's `report.md`, one after another, from
     the cell's latest attempt. It
     fails unless `plan` passed and every other job it needs passed or was skipped: a `run` job
-    passes only when its cell exited 0, and a fixed job (below) is skipped when the plan has no
-    cell of its suite.
+    passes only when its cell exited 0.
   - Non-blocking cells run in a second matrix the gate doesn't wait for, so a slow non-blocking
     cell, such as the Windows unit run, doesn't lengthen the PR. Their new failures are annotated,
     and a failed job still shows on the PR. It is the job `non-blocking`, and its artifacts
@@ -1731,10 +1730,8 @@ One workflow, `tests.yml`, runs every registered suite:
     concurrency group of its own that cancels nothing, so posts run one at a time and a merge run's
     and a nightly run's never overwrite each other's. Non-blocking cells don't post: they never
     fail the gate, so they never make develop red.
-- **Moving in:** while the suites move into `tests.yml` (§8 step 3), `plan` keeps only the cells
-  of the suites that have moved, pynfs first. A suite joins by being added to that filter, less
-  the options that move later, with any step its cells need that `run` doesn't give yet, such as
-  a service or a package; the filter goes once every suite runs there.
+- **Moving in:** every suite runs in `tests.yml` (§8 step 3): `plan` keeps every cell but the
+  dedicated host's, which that host runs itself and reports as its own commit status.
 - **Concurrency:** as the other workflows: a newer run of a pull request cancels the older, and
   a scheduled run has a group of its own, so it and a push never replace each other. A push waits
   for the run in progress, and a newer push replaces it while it waits: pushes that land faster
@@ -1767,7 +1764,7 @@ One workflow, `tests.yml`, runs every registered suite:
 - **Docs-only PRs:** given `--base` (the PR's base), `dt plan` compares the branch with it, and when every changed path is documentation (`docs/**`, `*.md`, images, `LICENSE`, `.gitignore`, the paths the workflows ignore today) it returns no cells, and `gate` passes.
 
 **Merging.**
-- develop requires `Tests / gate` beside the lint and security checks (`Go Checks`, `Repo Checks`,
+- develop requires `gate`, the Tests workflow's job, beside the lint and security checks (`Go Checks`, `Repo Checks`,
   `ShellCheck`, `gitleaks`, `Analyze (go)`);
 - it requires one approving review and up-to-date branches;
 - auto-merge is enabled for the repository, so a PR that turns it on merges once it's green,
@@ -1775,7 +1772,7 @@ One workflow, `tests.yml`, runs every registered suite:
 
 From 2026-10-08 until the `pr` tier had been green for two weeks (§9), develop required
 `Unit Tests (1.26.x)` and `Integration Tests (1.26.x)` instead, with their path filters moved
-inside the jobs so they always reported (#2972). The change that made `Tests / gate` required
+inside the jobs so they always reported (#2972). The change that made `gate` required
 dropped both from the ruleset and their `job` names from the registry, so no PR waited for a check
 that no longer reports, and `integration`'s Kerberos and portmap options became cells of the plan
 again. A single gate that always runs avoids GitHub's path-filter trap by construction.
@@ -2208,7 +2205,7 @@ assumption was wrong, the design follows what was found. It records how the desi
 | Develop-red alerting was removed after floods | True: added in #1170 (e-mail and issue), removed in #1705 after flaky smbtorture subtests | `684f97f4`, `ci-health.yml:3-5` |
 | `ci-health` watches develop | Three workflows only. AD-DC failed on every develop run from #2914 (`77062d90`) to `0d8dbdd8`, 7 runs, with no signal; fixed in #2980 | `ci-health.yml:22-30`, Actions history |
 | The nightly conformance run is green | It has failed every night since at least 2026-09-10: the baseline job's push to develop is refused ("Changes must be made through a pull request"), and the summary job, which doesn't need it, stays green (#2997) | `conformance.yml:521-562` |
-| Only lint and security gate merges | Until 2026-10-08. `Unit Tests` and `Integration Tests` were required from then, with their path filters moved inside the jobs by #2972, until `Tests / gate` replaced them (§4.8); develop also needs one approval, and auto-merge is enabled | ruleset `Protect develop` |
+| Only lint and security gate merges | Until 2026-10-08. `Unit Tests` and `Integration Tests` were required from then, with their path filters moved inside the jobs by #2972, until `gate` replaced them (§4.8); develop also needs one approval, and auto-merge is enabled | ruleset `Protect develop` |
 | Enable the merge queue | Not available on a user-owned repository; up-to-date branches are required instead | GitHub docs, ruleset |
 | `smb-client-compat` tests the Windows client | Mostly not: its `net use` step skips because port 445 is owned by the runner's kernel, and the job passes, on most runs since mid-September (#2994). Its Linux job mounts SMB 2.1 while its summary says 3.1.1. The hosted Windows runner is Windows Server 2025, whose SMB client supports `net use /TCPPORT` | `smb-client-compat.yml:104, 114, 149-164` |
 | Tool versions are pinned once | Go is pinned four different ways; pjdfstest and pynfs revisions are copied from `flake.lock` | `go.mod:3`, `lint.yml:56`, `dev.Dockerfile:12, 24, 54` |

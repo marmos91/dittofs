@@ -5,7 +5,7 @@
 # Usage:
 #   sudo ./run.sh --variant v4.1 [--modules posix,lock]
 #
-# Expects a provisioned server (the suite's fixture in dt, test/suites.yaml).
+# Expects a provisioned server: baseline-knfsd.sh, its only caller, sets up knfsd.
 # nfstest mounts and unmounts the
 # export itself for every module, with the option set under test.
 #
