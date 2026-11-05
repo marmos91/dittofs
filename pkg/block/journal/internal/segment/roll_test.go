@@ -844,8 +844,14 @@ func TestRollASegmentEndedByAFailedSealSyncNamesNoPredecessor(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := rollPin(t, 4096, segment.Targets{Content: 4}, nil).withStream(t, 1)
+			// The takes below consume three content spares — the warm
+			// segment's, the spare the failed seal unwinds, and the
+			// successor the last append rolls onto — and the pinned
+			// maximum leaves no refill to rescue the last take once the
+			// Ended spare keeps its cap accounted, so all three must be
+			// ready before the first take runs.
 			awaitCounters(t, "the content spares ready", e.pool,
-				func(c segment.PoolCounters) bool { return c.Spares >= 2 })
+				func(c segment.PoolCounters) bool { return c.Spares >= 3 })
 
 			// One record nearly fills; the straddling write below rolls and
 			// its roll seals the first segment, whose sync fault takes this
@@ -1568,8 +1574,13 @@ func TestRollASegmentItsSealEndedIsReportedNotRolledPast(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	e := rollPin(t, 4096, segment.Targets{Content: 4}, nil).withStream(t, 1)
+	// The takes below consume three content spares — the warm segment's, the
+	// spare the failed seal unwinds, and the successor the last append rolls
+	// onto — and the pinned maximum leaves no refill to rescue the last take
+	// once the Ended spare keeps its cap accounted, so all three must be
+	// ready before the first take runs.
 	awaitCounters(t, "the content spares ready", e.pool,
-		func(c segment.PoolCounters) bool { return c.Spares >= 2 })
+		func(c segment.PoolCounters) bool { return c.Spares >= 3 })
 	se := e.stream(t)
 
 	// One record lands and is acknowledged; no Sync has run yet.
