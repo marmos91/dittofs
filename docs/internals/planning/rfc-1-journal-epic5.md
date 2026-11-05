@@ -734,8 +734,8 @@ pkg/block/journal/internal/
   epic 6's `Durability` passes the one that drops the segment's copy table entries), once the
   segment has left the set, on an unlink, a recycle and the fallback alike, exactly once per
   retirement. Between the set's retirement and the hook call a copy that names the segment can
-  still be looked up; epic 6 treats a copy that cannot be read as one that does not verify, so
-  that window is safe. Epic 8's constructor is what passes epic 6's hook. It has a `Stop` that
+  still be looked up; a copy whose segment is retiring reads as gone
+  (`ErrSegmentGone`), which epic 6 counts as a copy that does not verify, so that window is safe. Epic 8's constructor is what passes epic 6's hook. It has a `Stop` that
   joins it, which T5.11 calls. The hook is a call after the retirement, absorbed by the estimate.
 - **Acceptance criteria:**
   - The seam sees, per recycle, a rename, a directory sync, two zero writes and one sync, and
