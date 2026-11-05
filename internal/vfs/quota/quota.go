@@ -1,11 +1,11 @@
 // Package quota is the filesystem's one enforcer of quotas. A write that
 // grows a file, a create, and an owner or group change, reserves what it
 // adds before anything is staged, an owner or group change moving with it
-// what the file's writes hold reserved; the reservation is judged against every quota covering it, the
-// share's, the project's, the owner's and the group's, in that order, and
-// held in memory until the commit that charges it lands or the write is
-// dropped. It reads the store only through Store, and emits each quota event
-// where it decides.
+// what the file's writes hold reserved; the reservation is judged against
+// every quota covering it, the share's, the project's, the owner's and the
+// group's, in that order, and held in memory until the commit that charges
+// it lands or the write is dropped. It reads the store only through Store,
+// and emits each quota event where it decides.
 package quota
 
 import (
@@ -175,11 +175,11 @@ type judged struct {
 // Reserve reserves add, charged to c, for writer, judging it against every
 // quota covering c in scopes, in the scopes' order: share, project, user,
 // group; no scopes names all four. The reservation holds only the scopes it
-// judged, and is kept under c.File until released. A
-// quota refuses when what is committed, plus what this node holds reserved,
-// plus add, passes its hard limit, or its soft limit once its grace has run
-// from when usage first went above it; the first refusing scope is answered
-// as a *vfs.QuotaError, and a hard refusal emitted. An admitted reservation
+// judged, and is kept under c.File until released. A quota refuses when what
+// is committed, plus what this node holds reserved, plus add, passes its hard
+// limit, or its soft limit once its grace has run from when usage first went
+// above it; the first refusing scope is answered as a *vfs.QuotaError, and a
+// hard refusal emitted. An admitted reservation
 // emits the advisory and soft-limit crossings it makes and, when it finds
 // usage back under a soft limit recorded as exceeded, clears the record. A
 // zero add reserves nothing and answers a nil reservation.

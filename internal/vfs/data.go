@@ -45,9 +45,8 @@ func (fs *Filesystem) Read(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off
 // its commit will charge, the bytes it lands in holes and past the size its
 // staged writes leave, is reserved against the quotas charging the file's
 // owner, group and project before anything changes, and refused ErrQuota at
-// once past them. A
-// stable write is answered once the engine's Commit over its extent has,
-// which runs after the file's admission lock is released. A Commit answering
+// once past them. A stable write is answered once the engine's Commit over
+// its extent has, which runs after the file's admission lock is released. A Commit answering
 // another verifier means a loss may have taken the write between staging and
 // the sync, and a client does not consult a stable reply's verifier, so the
 // write is answered ErrDelay (DelayCommit) for the client to resend, never

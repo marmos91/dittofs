@@ -143,9 +143,8 @@ var errGuard = fmt.Errorf("vfs: the ctime guard no longer holds: %w", vfs.ErrInv
 // decided the same way, admitted by open state only when the open's grant
 // holds write attributes, then written as privileged, since the store's
 // owner rule cannot see the open; a change setting anything beside times
-// keeps that rule. Overturned once
-// Authorize takes an open's grant in place of the walk and SetAttrs takes
-// the open.
+// keeps that rule. Overturned once Authorize takes an open's grant in place
+// of the walk and SetAttrs takes the open.
 func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch vfs.AttrChange) (vfs.WCC, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
