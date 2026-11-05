@@ -105,7 +105,7 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
    health source exist on neither branch, so the engine exposes its counters and
    conditions as `Stats` fields, and the root that composes it adapts them. Counters are
    named for RFC 8 §14's metrics, under the `engine_` prefix (RFC 25 §2.1), never
-   `engine_`, with no share label on a per-operation series. Spans are RFC 8 §14's
+   `enginev2_`, with no share label on a per-operation series. Spans are RFC 8 §14's
    proposals, `engine.sync` and `engine.existence_commit`, and a removal batch opens a root
    span. Each epic names the counters, conditions and spans it owns; the units, labels and
    logging rules are RFC 25's, applied as written.
