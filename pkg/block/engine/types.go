@@ -33,8 +33,13 @@ const (
 	Quiesced                       // nothing new admitted
 )
 
-// Stats is the engine's counters and conditions, per share and journal.
-type Stats struct{}
+// Stats is the engine's counters and conditions, per journal, per share and
+// for the node. Every map belongs to the caller.
+type Stats struct {
+	Journals map[string]JournalStats // per device, as Deps.Devices names it
+	Shares   map[entity.ShareID]ShareStats
+	Node     NodeStats
+}
 
 // WriteOpts is what a write carries besides its bytes.
 type WriteOpts struct {

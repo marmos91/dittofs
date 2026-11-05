@@ -15,15 +15,22 @@ import (
 // errNotStarted answers a Bind while no journal is open.
 var errNotStarted = fmt.Errorf("engine: no journal open: %w", vfserr.ErrUnavailable)
 
+// errRemoved answers a content call or a Bind naming a share being removed or
+// retired (RFC 8 §12.1).
+var errRemoved = fmt.Errorf("engine: the share is being removed: %w", vfserr.ErrStale)
+
 // binding is one bound share's storage: the share as it was attached, its
 // journal and its handle there, its state, and the incarnation its attach
-// raise wrote.
+// raise wrote. A removed binding is a share being removed that start found
+// past its offload step: it holds the share's ID and tag and no journal or
+// handle.
 type binding struct {
 	share       Share // as attached: Limit is the limit the handle uses
 	j           Journal
 	h           Handle
 	state       atomic.Uint32 // a ShareState: a state change stores it and swaps nothing
 	incarnation uint64        // the shard's incarnation the attach raise wrote, for the write verifier
+	removed     bool
 }
 
 // bindings is the share table, read on every content call without a lock.
@@ -36,14 +43,19 @@ type bindings = map[entity.ShareID]*binding
 
 // bindingOf is the binding of share s, read from the share table without a
 // lock; a share with no binding is a Delay with DelayFrozen, its binding
-// still to come, and no journal is touched. A share being removed never
-// reaches it unbound, as admission answers ErrStale from the removal mark.
+// still to come, and a share with a removed binding is ErrStale. Neither
+// touches a journal.
 func (e *Engine) bindingOf(s entity.ShareID) (*binding, error) {
-	if b := e.table()[s]; b != nil {
-		return b, nil
+	b := e.table()[s]
+
+	switch {
+	case b == nil:
+		return nil, &vfserr.Delay{Cause: vfserr.DelayFrozen}
+	case b.removed:
+		return nil, errRemoved
 	}
 
-	return nil, &vfserr.Delay{Cause: vfserr.DelayFrozen}
+	return b, nil
 }
 
 // table is the share table now, nil before the first attach.
@@ -59,8 +71,9 @@ func (e *Engine) table() bindings {
 // applies a state change to one it serves (RFC 8 §2.3, §2.5). An invalid
 // share is refused before any I/O, and the binding it had is kept. A second
 // lifecycle call on a share while one runs answers ErrDelay, which its caller
-// retries. The lifecycle mutex is held only to read and swap the table, never
-// across I/O.
+// retries, and so does a Bind while Start runs, the share not attached yet; a
+// share being removed answers ErrStale. The lifecycle mutex is held only to
+// read and swap the table, never across I/O.
 func (e *Engine) Bind(ctx context.Context, s Share) error {
 	if err := validShare(s); err != nil {
 		return err
@@ -71,10 +84,18 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 	b := e.table()[s.ID]
 
 	switch {
+	case e.starting:
+		e.mu.Unlock()
+
+		return &vfserr.Delay{Cause: vfserr.DelayFrozen}
 	case busy:
 		e.mu.Unlock()
 
 		return &vfserr.Delay{Cause: vfserr.DelayConflict}
+	case b != nil && b.removed:
+		e.mu.Unlock()
+
+		return errRemoved
 	case b != nil:
 		err := b.change(s)
 		e.mu.Unlock()
