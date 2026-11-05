@@ -51,7 +51,7 @@ marked as having one, and the plan's header states each default that was used.
 | 7 | Target branch and external dependencies (PRs or other plans that must land first) | default: none known, listed as an open point | check `docs/internals/planning/` for plans this RFC depends on |
 | 8 | The programme this RFC belongs to: an umbrella issue or plan that stages the work, assigns owners, and says which existing code is being replaced | **required** | ask for the link, then read its latest decisions; if there is none, say so in the header |
 | 9 | Dashboards | default: **no**, unless the RFC asks for them | the RFC's named alerts are alert rules (RFC 25 §7) in the integration epic, not a dashboard epic |
-| 10 | Output path | default: `docs/internals/planning/rfc-<n>-<slug>-plan.md` | |
+| 10 | Output path | default: `docs/internals/planning/rfc-<n>-<slug>-plan.md` | **if any `rfc-<n>-*-plan.md` already exists, stop and ask** whether to revise it, replace it or write elsewhere: someone may be working from it, and a second plan for the RFC would reuse its epic numbers and `rfc-<n>-epic-<k>` labels |
 | 11 | RFC `status: deferred` | **ask** | plan the whole RFC, or only the hooks the RFC says must exist before it is built? |
 
 ## Step 1 — Read
@@ -83,7 +83,7 @@ one integration epic, E2E green is E(N+4); with two, E(N+5).
 | Role | Content |
 | --- | --- |
 | **E1 Interfaces** | The public surface only: the exported symbols with their exact signatures, the error set, and the injection points: options and the `Deps` fields RFC 25 §8 names (logger, metrics registry, tracer), or the RFC's own observability surface where rule 3's exception applies. Stub bodies. No behaviour, except where a type's encoding *is* the contract. An internal interface belongs here only if it has two consumers before any implementation exists (for example a storage seam that both an option and E2's crash-simulating fake consume). Every other internal package — codecs, index, state machines — is created by the middle epic that implements it, as concrete types, with its first caller (rule 12). |
-| **E2 Red e2e suite and test foundations** | E2E tests for every use case and scenario that can be named: from the RFC, from the in-scope related RFCs, and from other sources (protocol specs, past issues, v1's own bug history). Every test starts red and is listed as a known failure. **E2 registers the suite with the harness**, not E2E green, so CI runs it from the first pull request and a test pinned green stays green; registered at the end, a test an epic turned green could go red again unseen. Concretely, E2 registers the red tests where the RFC's suites paragraph (RFC 29 R11) puts them: a suite of its own only when the paragraph calls for one, as an entry in `test/suites.yaml` with `tier: pr` (the default, `merge`, keeps it off pull requests), `format: go-json` and `known:` naming its `known.yaml`, behind its own build tag so `unit` does not turn red on it, in a component group named for the component (RFC 29 §4.9); the tag joins `lint-go`'s `go vet -tags=` line, which is the only check that compiles tagged tests on a pull request; otherwise the existing suites the paragraph names. **An RFC with no suites paragraph** already fails `lint-repo`, since `dt docs --check` wants exactly one in every RFC: E2 gets a suite of its own, in that same form, and the pull request that registers it adds a minimal paragraph naming that suite, which §6 lists as an open point for the RFC's author to review. Each red test is one entry in its suite's `known.yaml`, which `dt` grades, so a listed test that passes fails the run and the epic that turns it green removes its entry. The entry is `status: fail`, `fix: planned`, `category: feature`, a `reason`, and `issue:` the programme's umbrella issue (Step 0 #8), or the RFC's roadmap epic when the programme is not an issue, written quoted as `issue: "#1234"` (unquoted, the `#` starts a YAML comment and the entry has no issue): a planned entry with no issue is refused, and one bad entry stops every `dt` command from loading the registry (`fix: wontfix` would load, and say the opposite of the truth). Where the red tests fail in a shared fixture until a later epic lands, each entry also sets `message:` to the text that fixture's failures start with (`message: 'fixture:'` in the journal's suite), so a test that fails for another reason is graded new rather than excused. A suite that keeps no `known.yaml` (`unit`, `e2e`) cannot hold a red test: a test the paragraph puts there lands green, with the epic that makes it pass. A new suite and group join the paragraph in the pull request that registers them, and that pull request runs `test/harness/bin/dt docs` so `docs/internals/testing.md` matches the registry; `lint-repo`'s `dt docs --check` compares that file with the registry and checks every RFC's paragraph: exactly one per RFC, and every code span in it naming a suite, group or option of the registry. The small test components that everything else needs (fakes for clocks and faults, a reference model, a profiling harness) also go here. **A test lands with the epic that creates the packages it imports:** at S2 only E1's packages exist, so a test that needs a middle epic's package (an encoder, a platform layer) belongs to that epic and is listed there. Format checks in E2 write their bytes by hand from the RFC, which also makes them an oracle independent of the encoder. **The catalogue holds only what can run:** a scenario that needs a host nobody provisions is parked in §6, and a system-level scenario that a component-level fake already covers is dropped. |
+| **E2 Red e2e suite and test foundations** | E2E tests for every use case and scenario that can be named: from the RFC, from the in-scope related RFCs, and from other sources (protocol specs, past issues, v1's own bug history). Every test in a suite that keeps a `known.yaml` starts red and is listed there as a known failure; one the suites paragraph puts in `unit` or `e2e` lands green with the epic that makes it pass (below). **E2 registers the suite with the harness**, not E2E green, so CI runs it from the first pull request and a test pinned green stays green; registered at the end, a test an epic turned green could go red again unseen. Concretely, E2 registers the red tests where the RFC's suites paragraph (RFC 29 R11) puts them: a suite of its own only when the paragraph calls for one, as an entry in `test/suites.yaml` with `tier: pr` (the default, `merge`, keeps it off pull requests), `format: go-json` and `known:` naming its `known.yaml`, behind its own build tag so `unit` does not turn red on it, in a component group named for the component (RFC 29 §4.9); the tag joins `lint-go`'s `go vet -tags=` line, which is the only check that compiles tagged tests on a pull request; otherwise the existing suites the paragraph names. **An RFC with no suites paragraph** already fails `lint-repo`, since `dt docs --check` wants exactly one in every RFC: E2 gets a suite of its own, in that same form, and the pull request that registers it adds a minimal paragraph naming that suite, which §6 lists as an open point for the RFC's author to review. Each red test is one entry in its suite's `known.yaml`, which `dt` grades, so a listed test that passes fails the run and the epic that turns it green removes its entry. The entry is `status: fail`, `fix: planned`, `category: feature`, a `reason`, and `issue:` the issue of the epic that turns the test green (its subtask's issue where that epic already has subtask issues), written quoted as `issue: "#1234"` (unquoted, the `#` starts a YAML comment and the entry has no issue): a planned entry with no issue is refused, and one bad entry stops every `dt` command from loading the registry (`fix: wontfix` would load, and say the opposite of the truth). So **the plan's epic issues exist before E2's pull request lands**: E2 asks for them (`epic-breakdown` Step 6.3, for a merged plan) if they are missing, and they in turn need the RFC's roadmap epic; with no roadmap epic, stop and ask for one rather than cite some other issue. Where the red tests fail in a shared fixture until a later epic lands, each entry also sets `message:` to the text that fixture's failures start with (`message: 'fixture:'` in the journal's suite), so a test that fails for another reason is graded new rather than excused. A suite that keeps no `known.yaml` (`unit`, `e2e`) cannot hold a red test: a test the paragraph puts there lands green, with the epic that makes it pass. A new suite and group join the paragraph in the pull request that registers them, and that pull request runs `test/harness/bin/dt docs` so `docs/internals/testing.md` matches the registry; `lint-repo`'s `dt docs --check` compares that file with the registry and checks every RFC's paragraph: exactly one per RFC, and every code span in it naming a suite, group or option of the registry. The small test components that everything else needs (fakes for clocks and faults, a reference model, a profiling harness) also go here. **A test lands with the epic that creates the packages it imports:** at S2 only E1's packages exist, so a test that needs a middle epic's package (an encoder, a platform layer) belongs to that epic and is listed there. Format checks in E2 write their bytes by hand from the RFC, which also makes them an oracle independent of the encoder. **The catalogue holds only what can run:** a scenario that needs a host nobody provisions is parked in §6, and a system-level scenario that a component-level fake already covers is dropped. |
 | **Integration** | Wire v2 into the system as the programme (Step 0 #8) stages it, not into code a later stage replaces. Typical shape changes: one instance per share becomes one per disk; a value read once at start becomes reloadable; an owner-local decision becomes cluster-wide. Also: the transition policy from Step 0 #3, config keys, observability wiring (the component's `Deps` from the root's logger, registry and tracer; its `health.Source` added to the evaluator; its conditions in RFC 25 §3.9's registry and its alert rules per RFC 25 §7 — or, under rule 3's exception, the bridge to them), error mapping, API and CLI. **If it depends on an interface not yet agreed** (owned by another team or stage), add a synchronisation point for that agreement, keep in this epic only what is already decided, and put the rest in a following epic that is **planned after** that point and not estimated (Step 3). |
 | **E2E green** | Burn down the suite's `known.yaml` to empty. Also soak tests, the benchmarks the RFC names, and the suite's tiers past `pr`; the suite itself was registered in E2. |
 | **Dashboards** (optional) | Only if Step 0 #9 said yes: a small number of dashboards, each with an automated test and a consumer before release. |
@@ -276,7 +276,9 @@ heading or under another epic's heading, is reported, so a deleted or misplaced 
 go unnoticed; a `**Plan estimate:**` line that differs from the sum, a second one, and a
 "not counting epic …" clause that does not name exactly the "planned after" epics are
 reported; and so are a §2 table with no total row or with two, a total cell that is not a
-plain number, and a total row whose figures differ from the sum.
+plain number, a total row whose figures differ from the sum, an epic with no §2 row or a
+§2 row with no §5 heading, and an epic's §2 row whose `Subtasks` or `Man-days` differ from
+its §5 line (or that holds a figure for an epic "planned after").
 
 `grep -E '^\*\*(Epic [0-9]+|Plan) estimate:' <plan>` then lists the whole estimate.
 
@@ -372,18 +374,14 @@ use `epic-breakdown` in the document they are reading:
 >   be named, not to hit a number.
 > - **Every subtask states how it meets each rule that applies to it.** A rule that does
 >   not apply is named, with the reason.
-> - **In the issue tracker, only when someone asks for issues:** they are not created by
->   default, but by hand when the team is ready to assign an epic's subtasks, and never
->   before the epic document has merged. They point at the epic document and copy
->   nothing: their bodies are a link to its section with a line of context, so a revision
->   of the document never leaves an issue saying something else. The epic is one issue labelled `epic`. Each subtask is its own
->   issue, created as a sub-issue of the epic issue rather than as a checklist in its body.
->   All of them join the "DittoFS" project, each subtask with its man-days in the
->   `Estimate` field. The release an epic ships in is set by the RFC's roadmap epic that
->   its epic issue sits under, never in a document and never on the epic issue on its own:
->   the epic issue and its subtask issues copy that roadmap epic's milestone, also when
->   created later, and an epic changes release only by moving under the roadmap epic of
->   the other release.
+> - **In the issue tracker, only when someone asks for issues,** following `epic-breakdown`
+>   Step 6, their one description. Issues point at the documents and copy nothing. The
+>   epic issues exist before E2's pull request lands, because each red test's
+>   `known.yaml` entry names one; subtask issues come once their epic document has
+>   merged. The release an epic ships in is set by the RFC's roadmap epic that its epic
+>   issue sits under, never in a document and never on the epic issue on its own: the epic
+>   issue and its subtask issues copy that roadmap epic's milestone, and an epic changes
+>   release only by moving under the roadmap epic of the other release.
 
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation, the implementation of an epic it depends on once
@@ -469,87 +467,25 @@ use `epic-breakdown` in the document they are reading:
   `<epic>.<n>`, with or without the `T`. Read the plan for it; a word search only suggests
   where to look, since phase, stage and milestone are also ordinary words.
 - `plan-check.awk` prints only its `TOTAL` line, which matches the `**Plan estimate: …**`
-  line and the §2 total row; every epic without a figure is "planned after Sx" and named
+  line, the §2 total row and every epic's §2 row; every epic without a figure is "planned after Sx" and named
   in the plan estimate line.
 - Nothing in the plan tracks progress: no status, no checkboxes, no placeholders.
 - §1.5 opens with the verbatim instruction: epics are expanded with `epic-breakdown`, the
   rules are copied into each epic, the epic
   stands alone and records decisions rather than progress, subtasks are not pull requests,
-  and issues, only when asked for, point at the epic document, with an `epic` label,
-  sub-issues, the project's `Estimate` field and a release that the RFC's roadmap epic
-  sets and the epic issue and its subtask issues copy.
+  and issues, only when asked for, follow `epic-breakdown` Step 6, with the epic issues
+  before E2 and a release that the RFC's roadmap epic sets and its epic and subtask issues
+  copy.
 
-## Roadmap epics: an RFC's release, before its epics have issues
+## GitHub issues, on request
 
-A **roadmap epic** says what of one RFC ships in one milestone. It is an issue that
-collects the RFC's epic issues for that release as sub-issues, and it is the milestone's
-default for the RFC: a unit of the RFC with no epic issue of its own (an epic not yet
-opened, or an estimate built on the RFC's own steps or pieces) ships with it. The burnup
-reads it that way. An RFC normally has one; an RFC split across releases has one per
-release, and every epic that ships in a later one than the first has its own epic issue,
-under that release's roadmap epic. Roadmap epics come first: they exist before any epic issue
-of the RFC is opened, made by hand or by this section when the user asks. Epic issues never
-choose a milestone; they sit under a roadmap epic and copy its.
-
-- **Look before creating.** List the RFC's roadmap epics first:
-  `gh issue list --state all --label roadmap --label rfc-<n>-<slug> --json number,title,state,milestone`.
-  If one already exists for that milestone, use it and create nothing; if it is closed, ask
-  the user before reopening it. A second roadmap epic for one RFC and milestone would make
-  the RFC read as split across releases.
-- Title `roadmap <milestone>: RFC <n> — <RFC title>`, the RFC's title as its `#` heading
-  writes it (`roadmap v1.0: RFC 17 — the filesystem service (VFS)`). One RFC per roadmap
-  epic, so the RFC label alone tells the burnup which RFC it covers.
-- Labels `roadmap` and the RFC's `rfc-<n>-<slug>`, the slug being the RFC file's
-  (`rfc-17-vfs` for `rfc-17-vfs.md`); create a missing one with color `5319E7` and
-  description `RFC <n> <title>`. **Not** `epic`, and never an `rfc-<n>-epic-<k>` label.
-- The milestone: ask the user, never guess. This is the one place a release is chosen.
-- Body, and nothing more. Every link must resolve: `<branch>` is one that holds the file,
-  not always `develop`, and each is checked first with
-  `gh api "repos/{owner}/{repo}/contents/<path>?ref=<branch>" --silent`; a 404 means
-  linking another branch, never writing a dead link. The same holds for the epic issues
-  below.
-  ```markdown
-  Roadmap epic: what of RFC <n> — <title> ships in <milestone>.
-
-  **In this release:** the whole RFC. | the whole RFC except epics <k>, …, which ship in <later milestone> (#<roadmap>). | epics <k> (<title>), …; the rest of the RFC ships in <milestone> (#<roadmap>).
-  **RFC:** [`rfc-<n>-<slug>.md`](https://github.com/{owner}/{repo}/blob/<branch>/docs/internals/rfcs/rfc-<n>-<slug>.md)
-  **Plan:** [`<plan>.md`](<link to the plan on the branch it merged into>) | none yet.
-
-  The RFC's epic issues for this release are sub-issues of this one, and each carries this milestone. A unit of the RFC with no epic issue of its own ships with this roadmap epic. The plan and the epic documents say what to build; the milestone is the only place that says when.
-  ```
-- Attach each of the RFC's epic issues for that release as a sub-issue (the
-  `sub_issues` call of `epic-breakdown` Step 6), and add the roadmap epic to the "DittoFS"
-  project with no `Estimate`.
-- Moving an epic to another release: move it under that release's roadmap epic (created
-  first if the RFC has none there) and update the milestone copy on it and its open
-  sub-issues.
-
-## Epic issues for a merged plan, on request
-
-When asked, once the plan has merged, give every epic that has none (check with
-`gh issue list --state all --label epic --label rfc-<n>-epic-<k>`) an epic issue before its
-epic document exists, so it can be placed under a roadmap epic now. The roadmap epic's
-milestone is the only place that says when an epic ships; no document names a release.
-
-- Title `<component> v2, epic <k>: <title>`; labels `epic`, `rfc-<n>-<slug>`,
-  `rfc-<n>-epic-<k>` (create a missing one as `epic-breakdown` Step 6 does).
-- Body: one sentence of goal, the "at the end of the epic" bullets condensed from §5,
-  **Depends on:** and **Blocks:** from §3.3, and **Spec:** a link to the plan's
-  `### Epic <k> — <title>` section on the branch the plan merged into, adding "No epic
-  document yet." When the
-  epic document lands, `epic-breakdown` Step 6 rewrites this body to point at it and adds
-  the subtask issues.
-- **Roadmap epic:** find the RFC's
-  (`gh issue list --state open --label roadmap --label rfc-<n>-<slug> --json number,title,milestone`).
-  One → use it, without asking; several (the RFC is split across releases) → ask the user
-  which epics go under which; none → stop and ask for one first (by hand, or with the
-  section above when asked). Make the epic issue its sub-issue and give it a copy of the
-  roadmap epic's milestone (`--milestone`), never asked for; subtask issues created later
-  copy the same one.
-- Add each to the "DittoFS" project (`gh project item-add 3 --owner marmos91 --url <url>`),
-  with no `Estimate`: its subtasks will carry it.
-- Report the issue links with their roadmap epics, and any epic placed in an earlier release
-  than an epic it depends on.
+Roadmap epics, epic issues and subtask issues are described in one place, `epic-breakdown`
+Step 6 (`.claude/skills/epic-breakdown/SKILL.md`): its lookups, labels, bodies, milestones
+and project fields apply as written. Two requests come to this skill and are carried out
+there: a **roadmap epic** for the RFC and a release (Step 6.2), and **epic issues for a
+merged plan**, one per epic that has none, before its epic document exists (Step 6.3), so
+the epics can be placed under a roadmap epic and E2's `known.yaml` entries can name them.
+The roadmap epic comes first: without one, stop and ask for it.
 
 Then report the output path, the epic count against the estimate, the plan estimate line
 (subtasks and man-days), the epics whose man-days are least certain, and the open points,
