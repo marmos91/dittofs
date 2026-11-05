@@ -377,14 +377,14 @@ harness (`journaltest/prof`) wired to the fixture.
 | 3 | **Write, read and overlay** ⛔ | per-file state, `Write`, `Draw`, `Overlay`, `Read`'s resolution, `Allocation` | 6 | 13 | A | 4, 8 |
 | 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 22 | B | 5, 6, 7, 8 |
 | 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 15.25 | B | 6, 8 |
-| 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 10 | 36.25 | C | 7, 8 |
+| 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 11 | 39.75 | C | 7, 8 |
 | 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 5 | 14.5 | C | 9 |
 | 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 7 | 19.5 | A | 5, 9 |
 | 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over stage 2's fake and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
 | 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 4 | 12.5 | team | the second part |
-| | **Total** | | **63** | **181** | | |
+| | **Total** | | **64** | **184.5** | | |
 
-**Plan estimate: 63 subtasks, 181 man-days.**
+**Plan estimate: 64 subtasks, 184.5 man-days.**
 
 RFC 8 is 3,627 lines, which gives N = 8. This part covers about half of it, and its cohesive
 areas are six: the data path, the stability point, removals, the lifecycle, capacity and
@@ -797,7 +797,7 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
 
 ### Epic 6 — Start, bindings and recovery ⛔
 
-**Epic 6 estimate: 10 subtasks, 36.25 man-days.**
+**Epic 6 estimate: 11 subtasks, 39.75 man-days.**
 
 The breakdown, `rfc-8-engine-epic6.md`, restates this epic and its estimate; the subtask list
 below is the plan's, kept for the history of the split.
@@ -825,7 +825,9 @@ and stop, §2.7. Counters: none new; conditions named by `Stats` for a refused s
   lost, until `RecordJournal` records it, the forgotten tags forgotten; every share's limit written
   before a version is issued. The operator's acknowledgement that serves such a share again
   is the second part's.
-- T6.4 Start step 2: every incarnation in one transaction.
+- T6.4 Start step 2: every incarnation raised, in transactions of at most `K` keys, with
+  nothing that carries a verifier answered before the last commits; the breakdown's T6.11
+  builds the batches in `kvstore`.
 - T6.5 Start step 3: `Files`, `Since(applied)` applied in version order with each write's
   `mtime`, each file synced before its re-applied existence commits (§5.1), a synced loss
   committed as **Lost**, a clone marker handed to epic 8, a release
