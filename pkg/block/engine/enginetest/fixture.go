@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -140,6 +141,44 @@ func (f *Fixture) Restart() {
 	f.t.Helper()
 	f.stop(true)
 	f.start()
+}
+
+// RestartAfter stops the process cleanly, runs change over the stopped
+// journal directory and store, and starts a new process over them.
+func (f *Fixture) RestartAfter(change func()) {
+	f.t.Helper()
+	f.stop(true)
+	change()
+	f.start()
+}
+
+// Reinit replaces the journal in the fixture's directory with a new, empty
+// one, as an operator re-initialising a lost device would, and returns its
+// identity. It records nothing in the store. Call it only while the process
+// is stopped, inside RestartAfter.
+func (f *Fixture) Reinit() journal.JournalID {
+	f.t.Helper()
+
+	if err := os.RemoveAll(f.Dir); err != nil {
+		f.t.Fatalf("fixture: remove the journal: %v", err)
+	}
+
+	if err := os.Mkdir(f.Dir, 0o700); err != nil {
+		f.t.Fatalf("fixture: make the journal directory: %v", err)
+	}
+
+	id, err := journal.Init(
+		f.t.Context(),
+		f.Dir,
+		fixtureInstall,
+		journal.WithClock(f.Clock),
+		journal.WithStorage(f.Seam.FS()),
+	)
+	if err != nil {
+		f.t.Fatalf("fixture: journal init: %v", err)
+	}
+
+	return id
 }
 
 // Crash simulates a power loss under the journal and starts a new process on

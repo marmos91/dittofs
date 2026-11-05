@@ -65,3 +65,17 @@
   category: feature
   reason: 'Epic 6: a saturated share slows no other share, latency only: the engine_lock_wait_seconds half the epic asks for is not written yet, and the bound (2x the base p99, or base p99 + 1 ms, over 200 samples) may be unstable on CI runners with few cores. Fails at the fixture until the journal has Init, Open, Share and WriteAt, and the engine has Start.'
   issue: '#3589'
+- test: TestRFC8A_JournalGone
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: start refuses a lost journal by name, raises journal_lost and creates nothing. Fails at the fixture until the journal has Init and Open (#3765).'
+  issue: '#3589'
+- test: TestRFC8A_AttachAfterDeviceLoss
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: a re-initialised journal is refused until RecordJournal, then the share attaches above its old limit. Fails at the fixture until the journal has Init, Open and WriteAt (#3765).'
+  issue: '#3589'
