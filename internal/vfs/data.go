@@ -238,7 +238,7 @@ func (fs *Filesystem) io(ctx context.Context, c vfs.Call, ref vfs.OpenRef, op vf
 	if err != nil {
 		return fail(err)
 	}
-	if write && a.caller.Identity.ReadOnly != entity.NotNarrowed {
+	if write && a.caller.ReadOnly != entity.NotNarrowed {
 		return fail(vfs.ErrReadOnly)
 	}
 	want := entity.ReadData
