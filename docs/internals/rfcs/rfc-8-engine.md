@@ -2482,8 +2482,10 @@ which calls the journal's `Delete`, never its `Release`, which evicts
   file's guard from the journal's `Delete` until phase 1 commits or the retry
   ends; a release held behind a clone, answered before its `Delete`, holds no
   guard while it waits. The channel
-  yields the release's outcome once: nil once phase 1 commits, the abort's
-  error, `ErrDelay` (`DelayClone`) once the clone it waited behind is done, so
+  yields the release's outcome once: nil once phase 1 commits, `ErrFileOpen`
+  when a holder aborts it, as `Delete` itself answers an abort within the call
+  (the service clears the mark for an abort and keeps it for
+  `ErrUnavailable`), `ErrDelay` (`DelayClone`) once the clone it waited behind is done, so
   the service runs the release again, or `ErrUnavailable`: when `Close` comes
   first or a journal turned read-only undoes the `Delete` (step 1), the file
   staying marked and the release left for the next start ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)),
@@ -3268,7 +3270,7 @@ func (e *Engine) LossSeq(s ShareID, f FileID) uint64                            
 func (e *Engine) Read(ctx context.Context, s ShareID, f FileID, off int64, dst []byte) (int, error)                    // n verified bytes, then the error
 func (e *Engine) Truncate(ctx context.Context, s ShareID, f FileID, size int64) error
 func (e *Engine) Deallocate(ctx context.Context, s ShareID, f FileID, off, n int64) error
-func (e *Engine) Delete(ctx context.Context, s ShareID, f FileID) (retry <-chan error, err error) // the file's release (RFC 7 §4.5), never the journal's Release, which evicts; retry non-nil only when the release is pending: it yields the release's outcome once, ErrDelay (DelayClone) to run it again, or ErrUnavailable at Close or Drop or when a read-only journal undoes it (§8.1)
+func (e *Engine) Delete(ctx context.Context, s ShareID, f FileID) (retry <-chan error, err error) // the file's release (RFC 7 §4.5), never the journal's Release, which evicts; ErrFileOpen when a holder aborts it; retry non-nil only when the release is pending: it yields the release's outcome once, nil, ErrFileOpen, ErrDelay (DelayClone) to run it again, or ErrUnavailable at Close or Drop or when a read-only journal undoes it (§8.1)
 func (e *Engine) Clone(ctx context.Context, srcShare ShareID, src FileID, dstShare ShareID, dst FileID, x Extent) error            // atomic, answered when done, at most clone_max_len; the shares differ for a clone between two shares of one namespace (§9.1)
 func (e *Engine) Copy(ctx context.Context, srcShare ShareID, src FileID, dstShare ShareID, dst FileID, xs []Extent) (int64, error) // in order, as bounded clones; short count at the deadline; the shares as for Clone
 func (e *Engine) Overlay(ctx context.Context, s ShareID, f FileID) (o Overlay, pending bool, err error) // journal only; no metadata read; pending false: the File record alone answers
@@ -3322,9 +3324,9 @@ standard library and which `pkg/vfs` re-exports as aliases
 `ErrLost` ([§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata), reported as data loss), `ErrUnavailable` ([§7.5](#7.5%20An%20unreachable%20remote%20fails%20the%20read%2C%20distinguishably), transient),
 `ErrStale` (a share being removed or retired, §12.1), `ErrCorrupt` ([§7.7](#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves), and the journal's `ErrOtherShare`, never retried), `ErrNoSpace`
 ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)), `ErrInvalid` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `ErrIncomplete` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `ErrCross` with
-`CrossNamespace` or **(cluster)** `OtherShard` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), and `ErrDelay` with its
+`CrossNamespace` or **(cluster)** `OtherShard` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `ErrDelay` with its
 `Delay` cause: `DelayCapacity`, `DelayCommit`, `DelayConflict`, `DelayClone`,
-`DelayFrozen` (a share with no binding here, §12.1).
+`DelayFrozen` (a share with no binding here, §12.1), and `ErrFileOpen`, a release a holder aborted ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), which only the service reads.
 
 ### 12.2 A retried mutation is answered, not re-applied
 

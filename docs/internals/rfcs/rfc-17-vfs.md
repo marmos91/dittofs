@@ -590,7 +590,7 @@ before `Table.Stop` — is dropped. A release it would run is a pending release,
 written with the unlink,
 which the next start's recovery runs (§5.3), and so is one a background wait
 still holds: from `Drain` on, the filesystem runs no release again, and `Stop`
-ends each wait on a retry channel without its `done`, so no waiter outlives it
+ends and joins each wait on a retry channel without its `done`, so no waiter outlives it
 (V33) or waits on a channel only the engine's later `Close` answers. A
 deferred unlink it would run is
 lost with the process: its delete pending is volatile by then, since a durable
@@ -1322,9 +1322,12 @@ cannot split an enum across two packages, so each enum moves whole, values only
 the service returns included. `Extent` moves with them because while
 `vfs.Extent` aliased the engine's, every adapter importing `pkg/vfs` compiled
 the engine. So the engine imports `vfserr` and never `pkg/vfs`, nor open state
-through it, and `pkg/vfs` re-exports every value as an alias. `vfs.Errors()`
-stays in `pkg/vfs` and returns every sentinel and one value of every typed
-kind, so an adapter's error table can be checked total
+through it, and `pkg/vfs` re-exports every value as an alias but one:
+`ErrFileOpen`, a release a holder aborted, which only the engine's `Delete`
+returns and only the service reads ([§5.3](#5.3%20Open%20and%20close)), so no
+adapter receives it. `vfs.Errors()` stays in `pkg/vfs` and returns every other
+sentinel and one value of every typed kind, so an adapter's error table can be
+checked total
 ([RFC 20 §7.3](rfc-20-adapters.md#7.3%20The%20error%20tables%20are%20total)).
 How each reaches the wire is
 [RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
@@ -1766,7 +1769,7 @@ func (s *Filesystem) writeOnce(ctx context.Context, c Caller, ref OpenRef, f Fil
 	if err = s.checks.CheckIO(ctx, c.Who(), keyOf(f), ref, span(off, src), want); err != nil { // step 3: ErrGrace, ErrLocked, ErrShareViolation, ErrDelay(DelayRecall)
 		return wr, false, err
 	}
-	res, err := s.quota.Reserve(ctx, c, ownerOf(f), f, charge(f, off, src)) // step 4: holes filled plus bytes past the size; charge reads the overlaid size (§5.7) under the lock, not f's committed one (§5.6)
+	res, err := s.quota.Reserve(ctx, c.Identity, chargeOf(f), Usage{Bytes: charge(f, off, src)}) // step 4: holes filled plus bytes past the size; charge reads the overlaid size (§5.7) under the lock, not f's committed one (§5.6)
 	if err != nil {
 		return wr, false, err
 	}
@@ -1911,6 +1914,12 @@ func (s *Filesystem) openLocked(ctx context.Context, c Caller, r OpenRequest, se
 }
 ```
 
+**An open answered an error is undone.** A failure after open state recorded
+the open, an overwrite's truncate or the file read again, undoes it with
+`Opens.Abandon` under the steps still held, on a context the call's end does
+not cancel; a file it alone held is released, as at a last close, and a
+deferred unlink it reports runs once the steps are released, as after `Close`.
+
 **A sharing violation is decided after handle caching is broken.** A request
 whose deny-mode check fails against opens that a handle-caching grant covers —
 an SMB lease with handle caching keeps handles open that its client has already
@@ -1943,8 +1952,8 @@ it.
 **The service runs every release.** It calls the engine's `Delete`
 ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches))
 at the file's primary, at four moments: when `Unlink` or `Rename` reports a file
-left with no entry and no open holds it; when open state's `Close` reports the
-last close of a file with no entry, having deleted its durable open record
+left with no entry and no open holds it; when open state's `Close` or `Abandon` reports
+the last close of a file with no entry, having deleted its durable open record
 ([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)),
 or reports through `Sink.Closed` a close the table made itself — a timeout,
 grace's end, an expiry or revoke, a `Disconnect`, a clone's `CloneClose` ([RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring));
@@ -1969,12 +1978,13 @@ error ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%
 the call that ran it is answered as if the release were done, and the service
 waits on the channel in the
 background, never inside `Sink.Closed`, keeping the mark meanwhile. The outcome
-decides the rest: committed or aborted, it goes to `done`; `ErrDelay`
-(`DelayClone`), which comes before the journal's `Delete` has dropped anything,
+decides the rest: committed, or aborted (`ErrFileOpen`), it goes to `done`;
+`ErrDelay` (`DelayClone`), which comes before the journal's `Delete` has dropped anything,
 to `done(false)`, and the service then runs the release again, marking the file
 anew through `Opens.Releasing`; `ErrUnavailable`, it is logged, and the
 release's `F‖id‖rel` record is left for the next start's recovery, or goes with
-the share after a `Drop`.
+the share after a `Drop`. `Stop` ends the wait the same way, with no `done`
+(§2.5).
 The release transaction re-checks its holders itself
 ([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)),
 so a release begun on a stale view aborts and loses nothing.
@@ -2173,43 +2183,52 @@ The service is the one enforcer of quotas. Neither the metadata store nor the
 engine refuses a write for quota.
 
 ```go
+// Charge is what a reservation charges: the share, the owner and group the
+// user and group scopes charge, the project, and the file the reservation is
+// kept under, zero for a create's inode before the file exists.
+type Charge struct {
+	Share        ShareID
+	Owner, Group Principal // the file's, or for a create those RFC 7 §2.4 gives the new file: an owner or group the create names, else the resolved caller after squashing (RFC 7 §7.4), never the parent directory's owner, and the caller's group, or the parent's under setgid
+	Project      uint64
+	File         FileID
+}
+
 // Reserve, at step 4 of a write, a create (one inode) or a copy's destination.
-// owner is whom the user and group scopes charge: the file's owner, or for a
-// create the owner the new file will have — the resolved caller after
-// squashing (RFC 7 §7.4) — never the parent directory's.
-// scopes are the scopes checked and held; none means all four.
-func (q *Quota) Reserve(ctx context.Context, c Caller, owner Owner, f File, bytes int64, scopes ...Scope) (*Reservation, error) {
+// writer is the caller a quota event names; add is the bytes and inodes
+// reserved, and a zero add reserves nothing. scopes are the scopes checked and
+// held; none means all four.
+func (q *Quota) Reserve(ctx context.Context, writer Identity, c Charge, add Usage, scopes ...Scope) (*Reservation, error) {
 	if len(scopes) == 0 {
 		scopes = []Scope{QuotaShare, QuotaProject, QuotaUser, QuotaGroup} // §4.3's order
 	}
 	for _, s := range scopes {
-		lim, ok := q.limit(ctx, s, owner, f) // a principal's own quota, else the share's default for its kind
+		lim, ok := q.limit(ctx, s, c) // a principal's own quota, else the share's default for its kind
 		if !ok {
 			continue
 		}
-		used := q.committed(ctx, s, owner, f) + q.unfolded(ctx, s, owner, f) // committed totals plus unfolded deltas (RFC 16 §4.4)
-		if used+q.reserved(s, owner, f)+bytes > lim.Hard(q.clock) {         // soft limit as hard once its grace has run
-			q.events.Quota(ctx, QuotaEvent{ /* hard refusal */ })
+		used := q.committed(ctx, s, c) + q.unfolded(ctx, s, c) // committed totals plus unfolded deltas (RFC 16 §4.4)
+		if exceeds(used+q.reserved(s, c)+add, lim.Hard(q.clock)) { // bytes or inodes; soft limit as hard once its grace has run
+			q.events.Quota(ctx, QuotaEvent{ /* hard refusal, naming writer */ })
 			return nil, &QuotaError{Scope: s}
 		}
 	}
-	return q.add(owner, f, bytes, scopes), nil // kept under f; released by the write's Done, called exactly once (RFC 8 §5.1), or on failure
+	return q.add(c, add, scopes), nil // kept under c.File; released by the write's Done, called exactly once (RFC 8 §5.1), or on failure
 }
 
 // Rehome, for a SetAttr changing owner or group (§5.5), under the file's
-// admission lock. owner is the new owner and group, each the current one
-// where it does not change; scopes are QuotaUser for a new owner and
-// QuotaGroup for a new group. bytes is the file's Charged plus one inode.
-func (q *Quota) Rehome(ctx context.Context, c Caller, owner Owner, f File, bytes int64, scopes ...Scope) (*Reservation, error) {
-	used := q.used(ctx, owner, f, scopes) // the scopes' limits, committed totals and unfolded deltas, read before q.mu: no store read holds it, so no Done waits on one
-	q.mu.Lock()                           // the tracker's own mutex, which every Done takes too: no Done lands between the read of byFile, the check and the move
+// admission lock. c names the new owner and group, each the current one where
+// it does not change; scopes are QuotaUser for a new owner and QuotaGroup for
+// a new group. add is the file's Charged plus one inode.
+func (q *Quota) Rehome(ctx context.Context, writer Identity, c Charge, add Usage, scopes ...Scope) (*Reservation, error) {
+	used := q.used(ctx, c, scopes) // the scopes' limits, committed totals and unfolded deltas, read before q.mu: no store read holds it, so no Done waits on one
+	q.mu.Lock()                    // the tracker's own mutex, which every Done takes too: no Done lands between the read of byFile, the check and the move
 	defer q.mu.Unlock()
-	writes := q.byFile[f.ID] // step 4's reservations of f not yet Done
-	if err := q.checkUsed(used, owner, f, bytes+sum(writes), scopes); err != nil { // Reserve's check, in memory
+	writes := q.byFile[c.File] // step 4's reservations of the file not yet Done
+	if err := q.checkUsed(used, c, add+sum(writes), scopes); err != nil { // Reserve's check, in memory
 		return nil, err
 	}
-	q.move(writes, owner, scopes)              // each still released once, by its write's Done, from wherever it then is
-	return q.add(owner, f, bytes, scopes), nil // released after the store's commit; on failure, Release takes q.mu, re-reads q.byFile[f.ID] and moves back only the writes still there
+	q.move(writes, c, scopes)          // each still released once, by its write's Done, from wherever it then is
+	return q.add(c, add, scopes), nil // Release once the store applied the change; on failure Revert, which takes q.mu, moves back each write it moved not yet Done, then releases its own
 }
 ```
 
@@ -2451,7 +2470,7 @@ func (s *Filesystem) createLocked(ctx context.Context, c Caller, dir Handle, nam
 	// exclusive create's retry with the file it made, or ErrExist — reserves
 	// nothing; the parent's locks keep the name from appearing between the
 	// lookup and the create.
-	res, err := s.quota.Reserve(ctx, c, ownerOf(c, a), File{}, inode) // one inode, charged to the new file's owner (§5.6)
+	res, err := s.quota.Reserve(ctx, c.Identity, newCharge(c, dir, a), Usage{Files: 1}) // one inode, charged to the new file's owner and group, the parent's group under setgid (§5.6)
 	if err != nil {
 		return CreateResult{}, err
 	}
@@ -2616,7 +2635,7 @@ something the ones above it cannot.
 
 | Tier | What runs | Proves | Runs |
 | --- | --- | --- | --- |
-| unit | `admit`, `pseudofs`, `quota`, `lockorder` and `pkg/vfs`, each over a fake of the few reads it declares | admission over (share, identity) and its cache key; pseudo-filesystem determinism (V14); quota arithmetic; the lock-order sorter; the ID codecs decode RFC 21's and RFC 22's golden bytes and refuse malformed ones; `vfs.Errors()` lists every declared error | per change |
+| unit | `admit`, `pseudofs`, `quota`, `lockorder` and `pkg/vfs`, each over a fake of the few reads it declares | admission over (share, identity) and its cache key; pseudo-filesystem determinism (V14); quota arithmetic; the lock-order sorter; the ID codecs decode RFC 21's and RFC 22's golden bytes and refuse malformed ones; `vfs.Errors()` lists every declared error an adapter can receive | per change |
 | unit | `*vfs.Filesystem` from `vfs.New`, with a fake engine (`Content`) and in-memory metadata | §5's orders by what each refusal leaves unchanged (V3) | per change |
 | unit | `*vfs.Gateway` from `vfs.NewGateway`, with a fake `Router` and `Transport` and `vfstest.Record` as the local `Service` | routing, re-routing and resending; that the gateway decides nothing (V41) | per change |
 | integration | `suite.Run` over `vfs.New` with the real engine on a temporary journal, the in-memory store, real open state and a fake clock, and no node | §5's orders, admission on every entry path, the cross-protocol rules and the V-rows of §6; with fault injection below the real components (a key-value store under the metadata store, RFC 16's `KV`; a remote tier and a small journal under the engine, RFC 8; `RecordingCallbacks` that stall or fail; the fake clock); a model of lock, write, open and unlink interleaved under `-race`; the fuzz targets below | per change; 10⁴ interleavings and each fuzz target for 10 minutes nightly |
