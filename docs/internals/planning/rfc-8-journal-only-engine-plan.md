@@ -375,18 +375,18 @@ harness (`journaltest/prof`) wired to the fixture.
 | 1 | **Interfaces** ⛔ | `pkg/block/engine`'s surface, `Deps` narrowed to this part, the engine over `pkg/vfs/vfserr`; the `Content` contract agreed with stage 2 | 5 | 8 | team | **everything** |
 | 2 | **Red e2e suite and test foundations** ⛔ | `engine-conformance` registered red, 45 rows, the fixture, a fault-injecting `kv.KV`, the fake journal | 9 | 28.5 | team | **all testing** in 3 to 10 |
 | 3 | **Write, read and overlay** ⛔ | per-file state, `Write`, `Draw`, `Overlay`, `Read`'s resolution, `Allocation` | 6 | 13 | A | 4, 8 |
-| 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 20 | B | 5, 6, 7 |
-| 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 12.5 | B | 6, 8 |
-| 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 9 | 24.75 | C | 7, 8 |
-| 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 4 | 12.5 | C | 9 |
-| 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 6 | 19 | A | 9 |
+| 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 22 | B | 5, 6, 7, 8 |
+| 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 15.25 | B | 6, 8 |
+| 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 10 | 36.25 | C | 7, 8 |
+| 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 5 | 14.5 | C | 9 |
+| 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 7 | 19.5 | A | 5, 9 |
 | 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over stage 2's fake and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
 | 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 4 | 12.5 | team | the second part |
-| | **Total** | | **60** | **162.25** | | |
+| | **Total** | | **63** | **181** | | |
 
-**Plan estimate: 60 subtasks, 162.25 man-days.**
+**Plan estimate: 63 subtasks, 181 man-days.**
 
-RFC 8 is 3,394 lines, which gives N = 8. This part covers about half of it, and its cohesive
+RFC 8 is 3,627 lines, which gives N = 8. This part covers about half of it, and its cohesive
 areas are six: the data path, the stability point, removals, the lifecycle, capacity and
 health, and clone.
 
@@ -416,7 +416,9 @@ flowchart TD
   E4 -. "group commit, for recovery's commits" .-> E6
   E5 -. "removal loop, for start step 4" .-> E6
   E4 -. "commits, for the self-fence" .-> E7
+  E4 -. "the group commit and the one sync, for the clone's phase 1" .-> E8
   E5 -. "guard and removal marker" .-> E8
+  E8 -. "T8.1a's registrations, for T5.1's check" .-> E5
   E6 -. "clone markers at start" .-> E8
   E7 & E8 --> S3(["S3 engine complete over the fake journal"]):::sync
   S3 --> E9["E9 Integration"]
@@ -497,9 +499,11 @@ flowchart TD
   epic 4's group commit and epic 5's loop exist.
 - **Where the team converges:** epics 1 and 2 before S2; epic 9 and epic 10 after S3.
 - **Where the tracks wait on each other:** the graph's cross-track edges are E3 to E4, E4
-  to E6 and E7, E5 to E6, and E5 and E6 to E8. Track B starts epic 4 on the verifier, the loss
-  sequence and the split, which need nothing of epic 3, and reaches the group commit once
-  epic 3's per-file state lands. Track C's recovery waits on epics 4 and 5, and the store
+  to E6, E7 and E8, E5 to E6, E5 and E6 to E8, and E8 to E5. Track B starts epic 4 on the verifier, which
+  replaces T3.2's stand-in, and the group commit, on epic 3's per-file state; the loss
+  sequence and the split build on the group commit. Epic 5's T5.1 also reads T8.1a's
+  registrations; T8.1a needs nothing of epic 5 and lands first, and T8.1b, the removal
+  checks, lands with T5.1, so the edge both ways is no cycle. Track C's recovery waits on epics 4 and 5, and the store
   view, the share table, start step 1 and the version limit fill that wait; epic 7 comes
   after epic 6, so the E4 edge is met by then. Track A has the one long wait: with one
   engineer per track, epic 8 waits on epic 5 for about 20 man-days after epic 3. Epic 3's
@@ -509,7 +513,7 @@ flowchart TD
   report and the fake journal, its version-limit row wired to epic 6's raise once that
   lands, and its last step built against §6 point 8's sealing `Repack` and per-segment
   figure once RFC 1 names them, so
-  track A builds it then and track C keeps the rest of epic 7. T8.1's admission checks,
+  track A builds it then and track C keeps the rest of epic 7. T8.1a's admission checks,
   which need no removal, fill the rest.
 - **The fake journal grows with the epics:** T2.4's fake covers the data path's calls only,
   and each middle epic extends `enginetest`'s fake with the journal calls it owns, so no
@@ -632,7 +636,7 @@ Sections owned: RFC 8 §1.1 (the request path), §4.1, §7.1, §7.5, §7.6, §12
 
 ### Epic 4 — Commit, group commit and losses ⛔
 
-**Epic 4 estimate: 7 subtasks, 20 man-days.**
+**Epic 4 estimate: 7 subtasks, 22 man-days.**
 
 The stability point and everything that commits existence. Appends and hole fills are
 answered after the sync; an overwrite of committed content waits for the group commit
@@ -676,7 +680,9 @@ owned: RFC 8 §4.1 (the verifier), §5.1, §5.2, §11.3. Counters: `engine_stabi
 - T4.5 The loss sequence: a journal-wide floor plus per-file entries, the ring drained when
   the generation is above the last applied, every file raised on missed events or a lost
   device; `LossSeq`; `Done`, with nothing charged, for every uncommitted write of a journal
-  whose device is lost whole.
+  whose device is lost whole. A loss drained between a write's `WriteAt` and its insert is
+  kept per file and checked by the insert, so the write is committed as `OpLost`, or for a
+  failed window dropped (T4.6), never committed as written.
 - T4.6 A failed window reported once per file, the next `Commit` succeeding. The report is
   per file and fed by every `Sync` the engine makes, the capacity sync's included (T7.1),
   so a `SyncError` that a sync other than `Commit`'s takes still fails that file's next
@@ -698,7 +704,7 @@ owned: RFC 8 §4.1 (the verifier), §5.1, §5.2, §11.3. Counters: `engine_stabi
 
 ### Epic 5 — Removals ⛔
 
-**Epic 5 estimate: 5 subtasks, 12.5 man-days.**
+**Epic 5 estimate: 5 subtasks, 15.25 man-days.**
 
 `Truncate`, `Deallocate` and `Delete`: guard, journal step, phase 1 through `Existence.Remove`
 with the file's pending existence, release the guard, `Settle(id, v)`, post. No pass is ever
@@ -752,7 +758,7 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   abort's `ErrFileOpen`, or `ErrUnavailable` when `Close` or `Drop` ends the loop mid-retry, or when a journal that turned read-only undoes the `Delete` (RFC 8 §8.1; untested until the journal has a read-only state), which leaves the marker for start
   step 3 and needs no `done(...)`. A retry that keeps failing raises `removal_stalled` for
   the file after five failures, as a phase 2 batch does, and a commit or an abort clears
-  it. Into an extent a clone registered (T8.1): pending too, answered before the journal's
+  it. Into an extent a clone registered (T8.1a): pending too, answered before the journal's
   `Delete`, so nothing is dropped, with the same channel, which yields `ErrDelay` with
   `DelayClone` once the clone drops its registration, or `ErrUnavailable` when `Close` or `Drop`
   comes first, the unlink's
@@ -760,7 +766,7 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   the release again on that `ErrDelay`. Either way `err` is nil while `retry` is pending:
   the unlink answers success, and the service waits on `retry` in the background, never
   inside `Sink.Closed`, and finishes the release with its outcome, or stops waiting at the
-  server's stop with no `done(...)` (C11). That branch reads T8.1's registration, so it is built and
+  server's stop with no `done(...)` (C11). That branch reads T8.1a's registration, so it is built and
   tested in T8.2. The routine that settles and reports an abort
   is built here, once; start step 3 reuses it (T6.5). Unit-tested over the fake journal;
   tested over the real open-state table once `Releasing` exists (§3.3): an open by handle
@@ -791,7 +797,10 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
 
 ### Epic 6 — Start, bindings and recovery ⛔
 
-**Epic 6 estimate: 9 subtasks, 24.75 man-days.**
+**Epic 6 estimate: 10 subtasks, 36.25 man-days.**
+
+The breakdown, `rfc-8-engine-epic6.md`, restates this epic and its estimate; the subtask list
+below is the plan's, kept for the history of the split.
 
 The engine's life, and the store calls it needs. RFC 8 §2.1's `Lifecycle` names six
 calls: `JournalID` for this node's device, `Tags`, `VersionLimits`, `RaiseVersionLimits`
@@ -847,7 +856,10 @@ and stop, §2.7. Counters: none new; conditions named by `Stats` for a refused s
 
 ### Epic 7 — Capacity, self-fence and health
 
-**Epic 7 estimate: 4 subtasks, 12.5 man-days.**
+**Epic 7 estimate: 5 subtasks, 14.5 man-days.**
+
+The breakdown, `rfc-8-engine-epic7.md`, restates this epic and its estimate; the subtask list
+below is the plan's, kept for the history of the split.
 
 The refusal table with no offload behind it, RFC 8 §10.2 as #3547 words it. A refused write
 gets a repack scoped by the refusal's limit, the share's segments for the share's limit and
@@ -921,7 +933,8 @@ Sections owned: RFC 8 §10 (the two measures, as far as repack goes), §10.2, §
   the one at which the node last went from none outstanding or failing to one; 30 s after
   the later of the two with one still outstanding or failing, writes and stability points
   `ErrDelay`, reads continue; cleared by the next commit, or once none is outstanding or
-  failing. Failing is D7's: the latest attempt of an owner that retries (the group commit, a
+  failing. Failing is D7's, read from the retrying-owner context mark T4.4 or T7.2 builds, whichever lands first, and the
+  other owners set: the latest attempt of an owner that retries (the group commit, a
   removal's batches, the version limit's raise, the late attach, a resumed clone's phase 1)
   failed at the store as a whole; a file's own failure (RFC 8 §5.2) is not one, a failed
   one-shot call counts only while it runs, and a call ended by its caller's context is
@@ -933,7 +946,7 @@ Sections owned: RFC 8 §10 (the two measures, as far as repack goes), §10.2, §
 
 ### Epic 8 — Clone and copy, journal-held
 
-**Epic 8 estimate: 6 subtasks, 19 man-days.**
+**Epic 8 estimate: 7 subtasks, 19.5 man-days.**
 
 A clone whose source bytes are all journal-held or uncarved: copied into the destination
 above the removal's version and synced before phase 1, with phase 2 adopting nothing. A
@@ -941,12 +954,14 @@ source run uncarved and not held is carried as uncarved and reads **Lost**. Sect
 RFC 8 §9.1 (all but adoption and the snapshot cases), §5.1's clone in a pre-cut commit
 excluded. Spans: a clone's batches as root spans.
 
-- T8.1 Admission: overlap, `clone_max_len`, namespace (an incomplete source is the
+- T8.1a Admission: overlap, `clone_max_len`, namespace (an incomplete source is the
   service's, RFC 17 §5.9); the source extent's registration, waiting for writes already
-  admitted and a removal in flight, and `ErrDelay` for writes and removals into it.
+  admitted, and `ErrDelay` for writes and clones into it.
+- T8.1b The removal checks, with epic 5's T5.1: `ErrDelay` for truncates and deallocates
+  into a registered extent, and the registration's wait for a removal in flight.
 - T8.2 `Reserve` for the bytes to copy, `CloneTarget`, the copies through the reservation,
   the sync, phase 1 through `Existence.Clone`, which writes the source's clone-kind open
-  record; the uncarved carry. Until the clone is done, T8.1's registration holds the
+  record; the uncarved carry. Until the clone is done, T8.1a's registration holds the
   source: its release is a removal into the registered extent, answered pending before
   the journal's `Delete`, so nothing is dropped, with T5.4's channel, which yields
   `ErrDelay` with `DelayClone` when the registration drops (T8.3); the service answers `done(false)` and runs the release
