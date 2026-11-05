@@ -286,6 +286,15 @@ func (q *Quotas) reserve(ctx context.Context, writer vfs.Identity, c Charge, add
 		// A record that fails to be written is forgotten here, so the next
 		// check judges against the store's record and writes it; the
 		// reservation stands either way.
+		//
+		// ponytail: the flip is decided under the mutex and written after
+		// it, so two opposite flips of one quota, racing, can reach the
+		// store in the other order: memory left above the soft limit and
+		// the store not, no later reservation flips it again, and its grace
+		// never starts until a restart rereads the store or usage crosses
+		// back. Write each flip with the sequence it was decided at, the
+		// store keeping the latest, or serialise the writes per quota,
+		// once a soft limit is seen unenforced past its grace.
 		since, err := q.store.SoftExceeded(ctx, c.Share, j.slot.t, above)
 		if err != nil {
 			q.mu.Lock()
