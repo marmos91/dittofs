@@ -2577,6 +2577,8 @@ type CommitResult map[FileID][]Extent
 // PendingExistence is one file's existence to commit (§3.4): its writes and
 // synced losses above applied, in version order, from the engine's pending
 // existence or, after a crash, the journal's Since (RFC 8 §2.5, §5.1).
+// Remove and Clone refuse a pending whose File or Epoch differs from the
+// file and epoch they are called with, so one call holds one of each.
 type PendingExistence struct {
     File   FileID
     Epoch  uint64 // primary's epoch the commit runs under (§4.1)
