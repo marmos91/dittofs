@@ -29,6 +29,8 @@ type fakeContent struct {
 	truncErr error
 	// overlayErr, when set, is every Overlay's answer.
 	overlayErr error
+	// overlaying, when set, runs as Overlay is called, before it answers.
+	overlaying func(entity.FileID)
 	// deleteErr, when set, is every Delete's answer, dropping nothing.
 	deleteErr error
 }
@@ -186,6 +188,9 @@ func (c *fakeContent) Copy(ctx context.Context, srcShare entity.ShareID, src ent
 }
 
 func (c *fakeContent) Overlay(ctx context.Context, share entity.ShareID, f entity.FileID) (Overlay, bool, error) {
+	if c.overlaying != nil {
+		c.overlaying(f)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.overlayErr != nil {

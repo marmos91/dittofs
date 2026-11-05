@@ -735,7 +735,7 @@ func TestRFC1A_Refusal(t *testing.T) {
 //
 // The record is 1 MiB, in segments of recordCap.
 func TestRFC1A_PartialReleaseKeepsRecordWhole(t *testing.T) {
-	f := journaltest.NewWithSegmentCap(t, recordCap)
+	f := journaltest.NewWithSegmentCap(t, recordCap, nil)
 	const size = 1 << 20
 
 	// File 0's record is in a segment sealed before the crash, so recovery can
@@ -1283,7 +1283,7 @@ func TestRFC1A_NeighboursAreFrozen(t *testing.T) {
 //
 // The record is 1 MiB, in segments of recordCap.
 func TestRFC1A_OfferedBytesVerified(t *testing.T) {
-	f := journaltest.NewWithSegmentCap(t, recordCap)
+	f := journaltest.NewWithSegmentCap(t, recordCap, nil)
 	const size = 1 << 20
 
 	for k := range 2 {

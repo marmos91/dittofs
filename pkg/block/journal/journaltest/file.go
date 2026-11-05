@@ -37,7 +37,8 @@ func (n *node) loseUndo() {
 	}
 }
 
-// sync makes every pending change of the file that is not lost durable.
+// sync makes every pending change of the file that is not lost durable, and
+// counts the write bytes it covered as made durable on the node.
 //
 // While no change was ever lost, the durable image is the file with its
 // pending changes undone, so clearing them is enough. Once one is lost, the
@@ -47,6 +48,11 @@ func (n *node) loseUndo() {
 func (sf *seamFile) sync() error {
 	n := sf.node
 	if n.snap == nil && !slices.ContainsFunc(n.undo, func(c change) bool { return c.lost }) {
+		for _, c := range n.undo {
+			if c.kind == changeWrite {
+				n.madeDurable += int64(len(c.data))
+			}
+		}
 		n.undo = nil
 		return nil
 	}
@@ -64,6 +70,7 @@ func (sf *seamFile) sync() error {
 		switch c.kind {
 		case changeWrite:
 			img = writeInto(img, c.off, c.data)
+			n.madeDurable += int64(len(c.data))
 		case changeResize:
 			img = resize(img, c.newSize)
 		}
