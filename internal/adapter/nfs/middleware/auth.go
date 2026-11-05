@@ -5,12 +5,12 @@ package middleware
 import (
 	"context"
 
-	nfsauth "github.com/marmos91/dittofs/internal/adapter/nfs/auth"
-	mount "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
-	nfs "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
-	"github.com/marmos91/dittofs/internal/logger"
+	nfsauth "github.com/cubbit/dittofs/internal/adapter/nfs/auth"
+	mount "github.com/cubbit/dittofs/internal/adapter/nfs/mount/handlers"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc/gss"
+	nfs "github.com/cubbit/dittofs/internal/adapter/nfs/v3/handlers"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // unixTranslator parses AUTH_UNIX credentials into an identity. It is

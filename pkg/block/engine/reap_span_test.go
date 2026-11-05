@@ -7,11 +7,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/chunker"
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/block/chunker"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // spanningReapSink fails exactly the block that carries chunks from both runs,

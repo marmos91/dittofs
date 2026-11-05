@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // The cache is generic over what it stores, so its own tests use stand-ins

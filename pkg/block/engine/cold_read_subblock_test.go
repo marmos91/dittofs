@@ -7,9 +7,9 @@ import (
 
 	"lukechampine.com/blake3"
 
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestColdReadIntegrity_SubBlockChunks reproduces the blocks-flip SMB cold-read

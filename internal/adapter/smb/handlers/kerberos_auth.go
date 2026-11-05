@@ -8,15 +8,15 @@ import (
 
 	"github.com/jcmturner/gofork/encoding/asn1"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
-	"github.com/marmos91/dittofs/internal/adapter/smb/session"
-	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
-	"github.com/marmos91/dittofs/internal/logger"
-	pkgkerberos "github.com/marmos91/dittofs/pkg/auth/kerberos"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/internal/adapter/smb/auth"
+	"github.com/cubbit/dittofs/internal/adapter/smb/session"
+	"github.com/cubbit/dittofs/internal/adapter/smb/signing"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	kerbauth "github.com/cubbit/dittofs/internal/auth/kerberos"
+	"github.com/cubbit/dittofs/internal/logger"
+	pkgkerberos "github.com/cubbit/dittofs/pkg/auth/kerberos"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/identity"
 )
 
 // handleKerberosAuth handles Kerberos authentication via SPNEGO.

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // ConnectionCryptoState holds per-connection cryptographic state for SMB 3.1.1

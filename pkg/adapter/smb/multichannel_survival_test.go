@@ -4,10 +4,10 @@ import (
 	"net"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
-	"github.com/marmos91/dittofs/internal/adapter/smb/session"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/handlers"
+	"github.com/cubbit/dittofs/internal/adapter/smb/pending"
+	"github.com/cubbit/dittofs/internal/adapter/smb/session"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // newConnWithID builds a test Connection bound to the same Adapter (so they

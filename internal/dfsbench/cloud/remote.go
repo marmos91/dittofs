@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/dfsbench/config"
-	"github.com/marmos91/dittofs/internal/dfsbench/exec"
+	"github.com/cubbit/dittofs/internal/dfsbench/config"
+	"github.com/cubbit/dittofs/internal/dfsbench/exec"
 )
 
 // Cloud orchestration primitives: provision one disposable SCW VM, drive the

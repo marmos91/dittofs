@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 func createTestStoreWithNFSAdapter(t *testing.T) (*GORMStore, *models.AdapterConfig) {

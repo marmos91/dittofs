@@ -8,7 +8,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // ErrLocalOnlyShareUnbound reports shares that reached the new model with no

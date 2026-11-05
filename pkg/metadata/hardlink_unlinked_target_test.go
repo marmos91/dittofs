@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // TestCreateHardLink_RefusesUnlinkedTarget pins that a hard link cannot be

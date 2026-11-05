@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
+	"github.com/cubbit/dittofs/internal/adapter/smb/smbenc"
 )
 
 // NegotiateContext represents a single SMB2 negotiate context as sent in

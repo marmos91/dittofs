@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // TestDestroyCache_ConcurrentReads_NoRace exercises the cache-field swap in

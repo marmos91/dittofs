@@ -12,15 +12,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
-	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
+	cpstore "github.com/cubbit/dittofs/pkg/controlplane/store"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // This file stress-tests the in-flight snapshot registry + its fences (issue

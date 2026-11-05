@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // RecentlyRecalledTTL is the duration for which a file is considered

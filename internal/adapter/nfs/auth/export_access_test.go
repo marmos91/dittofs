@@ -7,10 +7,10 @@ import (
 	"net"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc/gss"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 )
 
 // gssCtx returns a context carrying a negotiated RPCSEC_GSS service level, the

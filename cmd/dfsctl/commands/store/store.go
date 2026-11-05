@@ -2,8 +2,8 @@
 package store
 
 import (
-	"github.com/marmos91/dittofs/cmd/dfsctl/commands/store/block"
-	"github.com/marmos91/dittofs/cmd/dfsctl/commands/store/metadata"
+	"github.com/cubbit/dittofs/cmd/dfsctl/commands/store/block"
+	"github.com/cubbit/dittofs/cmd/dfsctl/commands/store/metadata"
 	"github.com/spf13/cobra"
 )
 

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/chunker"
+	"github.com/cubbit/dittofs/pkg/block/chunker"
 )
 
 // Two shares must never land in the same directory: they would interleave

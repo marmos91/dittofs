@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
-	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
+	cpstore "github.com/cubbit/dittofs/pkg/controlplane/store"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // blockingAPIServer fails on demand. Start holds until the test releases it and

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/metadata"
+	metadatabadger "github.com/cubbit/dittofs/pkg/metadata/store/badger"
 	badgerdb "github.com/dgraph-io/badger/v4"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
 
 // TestReapStrandedRows_RefusesUnreadableLinkCount covers the sibling row. The

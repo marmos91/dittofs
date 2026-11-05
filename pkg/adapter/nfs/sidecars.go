@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/adapter/sidecar"
-	"github.com/marmos91/dittofs/pkg/discovery/hostinfo"
-	"github.com/marmos91/dittofs/pkg/discovery/mdns"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/adapter/sidecar"
+	"github.com/cubbit/dittofs/pkg/discovery/hostinfo"
+	"github.com/cubbit/dittofs/pkg/discovery/mdns"
 )
 
 // This file adapts the NFS sidecar services (portmapper, system

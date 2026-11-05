@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // TestRestore_ConcurrentRejectedWhileLocked is the deterministic guard test

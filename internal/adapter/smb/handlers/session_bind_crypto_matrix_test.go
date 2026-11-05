@@ -4,9 +4,9 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/session"
-	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/session"
+	"github.com/cubbit/dittofs/internal/adapter/smb/signing"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // This file locks in the SMB2 session-bind crypto-negotiation matrix

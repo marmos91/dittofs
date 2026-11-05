@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // sweepFromSyncedIndex is the remote-tier sweep kernel. Instead of LISTing the

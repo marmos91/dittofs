@@ -12,8 +12,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/remote"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/remote"
 )
 
 // Transform is one stage of a block body's round trip. Seal runs on the way

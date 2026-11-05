@@ -5,6 +5,8 @@ on:
     branches: [develop, main, feat/storage-v2]
   pull_request:
     branches: [develop, main, feat/storage-v2]
+  merge_group:
+    types: [checks_requested]
   schedule:
     # Weekly, matching the cadence the repository previously ran on: Sunday
     # 21:43 UTC, before the nightly suites.
@@ -45,7 +47,7 @@ jobs:
         # so a finding in a workflow or a python script surfaces one merge later
         # rather than not at all. Restore them here if that one-merge window
         # ever lets something through.
-        language: ${{ github.event_name == 'pull_request' && fromJSON('["go"]') || fromJSON('["actions", "go", "python"]') }}
+        language: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && fromJSON('["go"]') || fromJSON('["actions", "go", "python"]') }}
 
     steps:
       - name: Checkout code

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // These tests cover the NFSv4.0 owner-seqid replay caches (RFC 7530 §9.1.7):

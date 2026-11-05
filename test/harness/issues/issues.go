@@ -18,7 +18,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // label marks the develop-status issue and each test's issue, and statusTitle
@@ -72,7 +72,7 @@ type Client struct {
 func FromEnv() (Client, error) {
 	c := Client{
 		API:   cmp.Or(os.Getenv("GITHUB_API_URL"), "https://api.github.com"),
-		Repo:  cmp.Or(os.Getenv("GITHUB_REPOSITORY"), "marmos91/dittofs"),
+		Repo:  cmp.Or(os.Getenv("GITHUB_REPOSITORY"), "cubbit/dittofs"),
 		Token: os.Getenv("GITHUB_TOKEN"),
 	}
 	if c.Token == "" {

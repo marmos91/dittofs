@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // numDedupGuardStripes must be a power of two so stripeFor can mask.

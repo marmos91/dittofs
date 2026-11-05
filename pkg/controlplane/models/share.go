@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // KerberosLevel constants for share security policy.

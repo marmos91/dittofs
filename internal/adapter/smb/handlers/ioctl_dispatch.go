@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/smb/smbenc"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // IOCTLHandler is the function signature for IOCTL sub-handlers.

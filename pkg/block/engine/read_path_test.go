@@ -8,11 +8,11 @@ import (
 
 	"lukechampine.com/blake3"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/middleware"
-	"github.com/marmos91/dittofs/pkg/block/middleware/compression"
-	"github.com/marmos91/dittofs/pkg/block/middleware/encryption"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/middleware"
+	"github.com/cubbit/dittofs/pkg/block/middleware/compression"
+	"github.com/cubbit/dittofs/pkg/block/middleware/encryption"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 )
 
 // TestReadPath_BlockLocator_Plaintext verifies that fetchResolvedBlock routes a

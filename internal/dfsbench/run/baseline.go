@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/marmos91/dittofs/internal/dfsbench/fio"
-	"github.com/marmos91/dittofs/internal/dfsbench/report"
+	"github.com/cubbit/dittofs/internal/dfsbench/fio"
+	"github.com/cubbit/dittofs/internal/dfsbench/report"
 )
 
 // baselineScratchRoot is where the local-disk ceiling fio runs — plain dirs on

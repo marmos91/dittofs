@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/smb/changenotify"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // StateSnapshot is a point-in-time summary of all shared Handler state.

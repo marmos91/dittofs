@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	sharesvc "github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	sharesvc "github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
 )
 
 // The directive is the only thing an operator sees before the daemon exits, so

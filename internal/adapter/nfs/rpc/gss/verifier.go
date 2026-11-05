@@ -12,9 +12,9 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
 	"github.com/jcmturner/gokrb5/v8/gssapi"
 	"github.com/jcmturner/gokrb5/v8/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 )
 
 // ComputeReplyVerifier computes the RPCSEC_GSS reply verifier for DATA requests.

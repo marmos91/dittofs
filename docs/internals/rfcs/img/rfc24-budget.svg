@@ -67,7 +67,7 @@
   <rect x="24" y="326" width="150" height="26" rx="4" class="pr"/>
   <text x="34" y="343" class="m">journal index</text>
   <text x="190" y="343" class="k">1/8</text><text x="250" y="343" class="k">none</text>
-  <text x="330" y="343" class="k">the index's own refusal, answered retry-later (RFC 1)</text>
+  <text x="330" y="343" class="k">the index's own refusal (RFC 1), answered by RFC 8 §10.2's table</text>
   <rect x="24" y="358" width="150" height="26" rx="4" class="pr"/>
   <text x="34" y="375" class="m">transfers</text>
   <text x="190" y="375" class="k">1/8</text><text x="250" y="375" class="k">8 per half</text>

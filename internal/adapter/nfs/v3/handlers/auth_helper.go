@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/auth"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/types"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // ErrShareAccessDenied is returned when a user doesn't have permission to

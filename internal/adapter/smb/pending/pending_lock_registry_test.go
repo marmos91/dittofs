@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // newTestPendingLock builds a PendingLock with a counted-Cancel for assertions.

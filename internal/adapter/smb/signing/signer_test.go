@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 func TestNewSigner_Dispatch(t *testing.T) {

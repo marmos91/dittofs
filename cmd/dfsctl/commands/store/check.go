@@ -7,10 +7,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/marmos91/dittofs/internal/cli/output"
-	"github.com/marmos91/dittofs/pkg/apiclient"
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/cubbit/dittofs/internal/cli/output"
+	"github.com/cubbit/dittofs/pkg/apiclient"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
 )
 
 // checkIncludeHoles adds the uncovered ranges no file claims to the detail

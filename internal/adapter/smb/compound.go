@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
-	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/smb/header"
-	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
-	"github.com/marmos91/dittofs/internal/adapter/smb/session"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/smb/changenotify"
+	"github.com/cubbit/dittofs/internal/adapter/smb/handlers"
+	"github.com/cubbit/dittofs/internal/adapter/smb/header"
+	"github.com/cubbit/dittofs/internal/adapter/smb/pending"
+	"github.com/cubbit/dittofs/internal/adapter/smb/session"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // compoundResponse holds a single command's response for compound batching.

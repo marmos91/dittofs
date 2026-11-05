@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cubbit/dittofs/pkg/metadata"
+	mderrors "github.com/cubbit/dittofs/pkg/metadata/errors"
 	badgerdb "github.com/dgraph-io/badger/v4"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // TestWithTransaction_RetryExhaustedConflictIsWrapped asserts that when the

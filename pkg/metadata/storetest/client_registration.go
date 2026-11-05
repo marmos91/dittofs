@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // ClientRegistrationStoreProvider is implemented by metadata stores that

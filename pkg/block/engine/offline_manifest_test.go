@@ -10,14 +10,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/remote"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/remote"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/metadata"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // keepOpenRemote hands the engine a remote it will not tear down, so the same

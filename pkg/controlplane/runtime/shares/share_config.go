@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // UpdateShare applies a partial update to a registered share's live settings.

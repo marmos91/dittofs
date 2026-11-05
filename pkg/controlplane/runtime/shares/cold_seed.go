@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // coldSeedProgressInterval is how often a seed loop whose cost scales with the

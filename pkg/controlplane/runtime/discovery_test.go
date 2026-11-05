@@ -3,7 +3,7 @@ package runtime
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/discovery/hostinfo"
+	"github.com/cubbit/dittofs/pkg/discovery/hostinfo"
 )
 
 // TestDiscoveryName_DefaultWithoutStore verifies the auto-default is used when

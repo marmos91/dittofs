@@ -13,7 +13,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 const (

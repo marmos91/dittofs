@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/remote"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/remote"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // GetBlockStoreForHandle decodes a file handle and resolves the per-share

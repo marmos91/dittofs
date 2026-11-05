@@ -5,10 +5,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
-	"github.com/marmos91/dittofs/pkg/block/remote"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/remote"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 )
 
 // sealingRemote is a block-keyed remote that is also its own ChunkSealer,

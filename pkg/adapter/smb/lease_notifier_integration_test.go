@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	smb "github.com/marmos91/dittofs/internal/adapter/smb"
-	"github.com/marmos91/dittofs/internal/adapter/smb/session"
+	smb "github.com/cubbit/dittofs/internal/adapter/smb"
+	"github.com/cubbit/dittofs/internal/adapter/smb/session"
 )
 
 // newPipeConnInfo builds a ConnInfo backed by a net.Pipe so SendFrame runs

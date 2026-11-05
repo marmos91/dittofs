@@ -6,10 +6,10 @@ import (
 	"io"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // CloneWholeFile clones the entire source into the destination at offset zero.

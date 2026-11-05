@@ -7,9 +7,9 @@ import (
 	"math"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
 
 // fakeColdReporter stands in for the local tier's residency surface so the

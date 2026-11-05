@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/middleware"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/middleware"
 )
 
 // Transform is the compression stage of a middleware pipeline. It compresses a

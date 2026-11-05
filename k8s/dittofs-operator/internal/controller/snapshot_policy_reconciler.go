@@ -25,7 +25,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
+	dittoiov1alpha1 "github.com/cubbit/dittofs/k8s/dittofs-operator/api/v1alpha1"
 )
 
 // reconcileAuthenticatedState runs the reconciliation steps that require an

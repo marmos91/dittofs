@@ -3,7 +3,7 @@ package commands
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/cli/credentials"
+	"github.com/cubbit/dittofs/internal/cli/credentials"
 	"github.com/spf13/cobra"
 )
 

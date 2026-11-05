@@ -12,12 +12,12 @@ import (
 
 	"lukechampine.com/blake3"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/blockstoretest"
-	"github.com/marmos91/dittofs/pkg/block/middleware"
-	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
-	"github.com/marmos91/dittofs/pkg/block/remote"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/blockstoretest"
+	"github.com/cubbit/dittofs/pkg/block/middleware"
+	"github.com/cubbit/dittofs/pkg/block/middleware/encryption/keyprovider"
+	"github.com/cubbit/dittofs/pkg/block/remote"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 )
 
 const testPassphrase = "correct horse battery staple"

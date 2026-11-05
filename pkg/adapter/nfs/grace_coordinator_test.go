@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
+	v4state "github.com/cubbit/dittofs/internal/adapter/nfs/v4/state"
 )
 
 // newConfirmedSM returns a StateManager with one confirmed v4 client, so

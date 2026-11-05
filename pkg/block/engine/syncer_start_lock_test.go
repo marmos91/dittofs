@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
-	"github.com/marmos91/dittofs/pkg/block/remote"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/remote"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 )
 
 // probeHookRemote runs an arbitrary function in place of the remote's health

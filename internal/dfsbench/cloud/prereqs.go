@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/marmos91/dittofs/internal/dfsbench/exec"
+	"github.com/cubbit/dittofs/internal/dfsbench/exec"
 )
 
 // NewSetupCmd builds the `setup` subcommand: provision a disposable VM and push

@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	pkgidentity "github.com/marmos91/dittofs/pkg/identity"
+	pkgidentity "github.com/cubbit/dittofs/pkg/identity"
 )
 
 // stubProvider resolves every credential to a fixed identity, so the test

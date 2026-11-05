@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
-	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/smb/pending"
+	"github.com/cubbit/dittofs/internal/adapter/smb/smbenc"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================

@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // OfflineReadiness reports whether a share could keep serving reads with its

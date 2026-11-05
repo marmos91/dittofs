@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
-	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/internal/logger"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
+	"github.com/cubbit/dittofs/pkg/health"
 )
 
 // StartScheduledIntegrityScan runs the structural manifest scan over every

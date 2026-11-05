@@ -4,8 +4,8 @@ import (
 	"context"
 	"net"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // mountRuntime is the consumer-defined role interface for the MOUNT protocol

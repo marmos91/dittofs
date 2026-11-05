@@ -3,8 +3,8 @@ package types
 import (
 	goerrors "errors"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 )
 
 // StatusFor translates a metadata error code to an SMB NT status code for

@@ -5,8 +5,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
+	xdr "github.com/cubbit/dittofs/internal/adapter/nfs/xdr/core"
 )
 
 // encCloneArgs encodes CLONE4args: src_stateid, dst_stateid, src_offset,

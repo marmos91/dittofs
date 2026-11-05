@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/middleware"
-	mount_dispatch "github.com/marmos91/dittofs/internal/adapter/nfs/mount"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/middleware"
+	mount_dispatch "github.com/cubbit/dittofs/internal/adapter/nfs/mount"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // handleMountProcedure dispatches a MOUNT procedure call to the appropriate handler.

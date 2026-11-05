@@ -3,7 +3,7 @@ package basestore
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // GenerateHandle mints a fresh UUID-based file handle for the named share.

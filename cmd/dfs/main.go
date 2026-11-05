@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/marmos91/dittofs/cmd/dfs/commands"
+	"github.com/cubbit/dittofs/cmd/dfs/commands"
 )
 
 // Build-time variables injected via ldflags

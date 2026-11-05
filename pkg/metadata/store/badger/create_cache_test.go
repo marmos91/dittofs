@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/gencache"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata/store/internal/gencache"
 )
 
 // newCreateCacheStore builds a store with a share + root directory so the dirent

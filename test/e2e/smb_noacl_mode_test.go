@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/test/e2e/framework"
-	"github.com/marmos91/dittofs/test/e2e/helpers"
+	"github.com/cubbit/dittofs/test/e2e/framework"
+	"github.com/cubbit/dittofs/test/e2e/helpers"
 )
 
 // TestSMBNoACLOpenGatedByModeOwnerAndParent checks, over the SMB wire, that

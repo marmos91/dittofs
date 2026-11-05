@@ -5,12 +5,12 @@ import (
 	"os"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
-	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
+	cpstore "github.com/cubbit/dittofs/pkg/controlplane/store"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // A share holds its journal's append log and index open for as long as it is

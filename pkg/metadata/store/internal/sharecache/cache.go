@@ -3,8 +3,8 @@
 package sharecache
 
 import (
-	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/gencache"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata/store/internal/gencache"
 )
 
 // Cache holds decoded ShareOptions keyed by share name, so the permission funnel

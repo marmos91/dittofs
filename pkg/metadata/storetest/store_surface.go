@@ -6,9 +6,9 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/health"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // runStoreSurfaceTests covers MetadataStore interface methods that previously

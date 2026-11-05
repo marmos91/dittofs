@@ -18,8 +18,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/marmos91/dittofs/test/harness/needs"
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/needs"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // sudoGrace is how long a command of a suite that runs as root, go test

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/api"
+	"github.com/cubbit/dittofs/pkg/controlplane/api"
 )
 
 func TestMetricsConfig_ApplyDefaults(t *testing.T) {

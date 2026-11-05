@@ -3,9 +3,9 @@ package handlers
 import (
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/pseudofs"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // handleLookupP implements the LOOKUPP operation (RFC 7530 Section 16.16).

@@ -22,8 +22,8 @@ import (
 	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/types"
 
-	pkgkerberos "github.com/marmos91/dittofs/pkg/auth/kerberos"
-	"github.com/marmos91/dittofs/pkg/config"
+	pkgkerberos "github.com/cubbit/dittofs/pkg/auth/kerberos"
+	"github.com/cubbit/dittofs/pkg/config"
 )
 
 func TestAuthResult_SessionKeyPreference(t *testing.T) {

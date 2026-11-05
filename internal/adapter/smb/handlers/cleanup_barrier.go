@@ -3,7 +3,7 @@ package handlers
 import (
 	"sync"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // alreadyIdle is the channel a barrier with nothing outstanding hands out.

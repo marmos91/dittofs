@@ -168,7 +168,7 @@ reads and grades it (`test/harness/known`). A second matcher would drift from it
   epic expected to turn it green, and `message:` naming the failure it is expected to
   fail with (D4).
 - *`message:` is a `dt` change, not this epic's.* Today an entry matches by name only, so a
-  listed test failing for any reason is graded `known`. [#3391](https://github.com/marmos91/dittofs/issues/3391)
+  listed test failing for any reason is graded `known`. [#3391](https://github.com/cubbit/dittofs/issues/3391)
   adds an optional `message:` to an entry, in RFC 29 §4.7 and `test/harness/known`: a
   failure counts as expected only if its message contains that text, and is graded new
   otherwise. Until it lands, entries carry no `message:` and D4's limit stands; the change
@@ -977,8 +977,9 @@ and the verifier) as well. Epic 10's rows need only a `dfs` that starts.
   two refusals with their messages); a refused start writes nothing, leaving stores,
   devices and any v1 state byte-identical; a crash between journal init and the store's
   init, after which a start reports the store lost and a re-run of initialisation wipes
-  the devices and succeeds; a crash after the store's init, after which the next start
-  completes the journal records.
+  the devices and succeeds; a crash between the store's init and the journal records,
+  after which a start reports the store lost, and once a re-run of initialisation
+  completes the records, the next start serves.
 - **Process death against power loss:** `SIGKILL` and a power cut kept distinct, and a
   long soak with capacity below the data written (the soak itself is epic 12's).
 

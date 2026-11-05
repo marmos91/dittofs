@@ -7,7 +7,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 func (s *GORMStore) GetSetting(ctx context.Context, key string) (string, error) {

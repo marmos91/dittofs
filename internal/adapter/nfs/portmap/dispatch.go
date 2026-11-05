@@ -1,8 +1,8 @@
 package portmap
 
 import (
-	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/portmap/handlers"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/portmap/types"
 )
 
 // PmapProcedureHandler defines the signature for portmap procedure handlers.

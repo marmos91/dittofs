@@ -5,11 +5,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc/gss"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/pseudofs"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // ============================================================================

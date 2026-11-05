@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // GetFileSize returns the total size of a file from the remote store.

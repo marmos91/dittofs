@@ -3,10 +3,10 @@ package handlers
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
-	"github.com/marmos91/dittofs/internal/bytesize"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/types"
+	"github.com/cubbit/dittofs/internal/bytesize"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // Request and Response Structures

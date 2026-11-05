@@ -38,8 +38,8 @@ import (
 	// directory tree (GetRootHandle, GetFile, ListChildren) and to read
 	// the backing FileChunk rows (ListFileChunks). Lifting these helpers
 	// into pkg/block would create a circular import.
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // AuditRefcountsResult is the operator-facing outcome of an audit.

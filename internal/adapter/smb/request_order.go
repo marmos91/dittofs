@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // defaultOrderWaitTimeout bounds how long a response waits for the responses

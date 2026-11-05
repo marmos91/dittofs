@@ -13,7 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // KeyPurpose identifies the purpose of a derived key.

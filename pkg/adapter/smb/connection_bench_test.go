@@ -3,9 +3,9 @@ package smb
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/pool"
-	"github.com/marmos91/dittofs/internal/adapter/smb/header"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/pool"
+	"github.com/cubbit/dittofs/internal/adapter/smb/header"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // benchRawMessage models the read-loop per-request raw-message reconstruct

@@ -3,9 +3,9 @@ package handlers
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/internal/adapter/smb/pending"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 )
 
 // TestShouldRejectUnencryptedTreeConnect_SMB2DialectRejected pins the dialect

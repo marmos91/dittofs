@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // A fixture that mounts the share gives {mount} to its cell's commands, and

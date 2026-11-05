@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/registry"
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 const head = "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\n"
@@ -409,6 +409,24 @@ func TestBase(t *testing.T) {
 		if got := base(); got != c.want {
 			t.Errorf("%+v: base %q", c, got)
 		}
+	}
+}
+
+// --base (Options.Base) names the ref for a branch whose base isn't develop,
+// and wins over the event; without it the event's base stands.
+func TestBaseOverride(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	if got := (Options{Base: "origin/y"}).base(); got != "origin/y" {
+		t.Errorf("--base: %q", got)
+	}
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITHUB_EVENT_NAME", "pull_request")
+	t.Setenv("GITHUB_BASE_REF", "main")
+	if got := (Options{Base: "origin/y"}).base(); got != "origin/y" {
+		t.Errorf("--base over the event: %q", got)
+	}
+	if got := (Options{}).base(); got != "origin/main" {
+		t.Errorf("event alone: %q", got)
 	}
 }
 

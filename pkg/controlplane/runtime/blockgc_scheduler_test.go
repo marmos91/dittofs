@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
-	"github.com/marmos91/dittofs/pkg/block/remote"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
+	"github.com/cubbit/dittofs/pkg/block/remote"
 )
 
 // TestStartScheduledGC_TicksAndStops verifies the auto-GC scheduler runs GC on

@@ -14,7 +14,7 @@ import (
 	smb2 "github.com/hirochachacha/go-smb2"
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/test/e2e/framework"
+	"github.com/cubbit/dittofs/test/e2e/framework"
 )
 
 // SMB3TestEnv holds a complete DittoFS test environment with SMB3 adapter.

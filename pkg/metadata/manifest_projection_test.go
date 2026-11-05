@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 	"github.com/stretchr/testify/require"
 )
 

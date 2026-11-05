@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
+	xdr "github.com/cubbit/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================

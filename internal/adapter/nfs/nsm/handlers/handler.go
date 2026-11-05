@@ -5,10 +5,10 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/callback"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/types"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nsm/callback"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nsm/types"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // notifyDispatcher sends a single SM_NOTIFY callback to one local monitor.

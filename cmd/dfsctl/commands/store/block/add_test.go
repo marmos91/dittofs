@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/cli/output"
-	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/internal/cli/output"
+	"github.com/cubbit/dittofs/pkg/apiclient"
 	"github.com/spf13/pflag"
 )
 

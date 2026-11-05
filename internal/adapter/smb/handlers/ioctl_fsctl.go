@@ -4,9 +4,9 @@ import (
 	"crypto/md5"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/smb/smbenc"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // handleGetCompression handles FSCTL_GET_COMPRESSION [MS-FSCC] 2.3.17 (FSCTL_GET_COMPRESSION Request).

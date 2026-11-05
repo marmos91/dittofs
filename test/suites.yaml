@@ -373,7 +373,10 @@ suites:
     cmd: { sh: 'test/scenarios/setup.sh "$(basename {test})"' }
     tests: test/scenarios/[0-9][0-9]-*.sh
     select: { merge: "[0-8]?-*.sh" }
-    env: { SLACK_DIR: /nonexistent }
+    # decision: setup.sh caps a scenario at 900 s unless told otherwise, and grades a run past its
+    # cap a fail even when every check passed. 10800 is the most any scenario asks for. dt's size
+    # limits bound the others; xxl has none in dt, so this cap is its only one.
+    env: { SLACK_DIR: /nonexistent, SCENARIO_TIMEOUT: "10800" }
     known: test/scenarios/known.yaml
     # decision: on the dedicated host alone, which sets the `system (dedicated)` status on the
     # develop commits it runs. Should it be down for long, dropping host:dedicated and putting back

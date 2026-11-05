@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // gatedPutRemote holds every PutBlock open until release is closed, and

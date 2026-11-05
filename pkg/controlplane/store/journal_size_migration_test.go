@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // openAt opens (and migrates) a file-backed store, which an upgrade test needs:

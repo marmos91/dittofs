@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/adapter/sidecar"
+	"github.com/cubbit/dittofs/pkg/adapter/sidecar"
 )
 
 // The lifecycle group reserves the sidecar name under the lock and runs Start

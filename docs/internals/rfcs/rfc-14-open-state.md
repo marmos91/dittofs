@@ -315,8 +315,9 @@ durable reconnect re-attaches an open only for its opener's principal
 When every open of the grant is disconnected, the break goes only to a session
 of that client signed in as one of the openers, which the adapter on the node
 holding it picks from its own session table
-([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)); when there is none, it is sent nowhere and runs to its deadline
-(§5.3). The nodes asked are `Reach.Sessions`: an SMB `Connect` adds its node,
+([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)); when there is none, it is sent nowhere and asked again
+at an interval, so a session signed in as an opener meanwhile takes it, until
+its deadline (§5.3). The nodes asked are `Reach.Sessions`: an SMB `Connect` adds its node,
 and the adapter calls it at each node's first authenticated session of the
 client, so no other `SESSION_SETUP` makes a mutating call; an NFSv4.1
 `AddSession` adds its node too. A node asked that holds no session of the
@@ -548,7 +549,10 @@ NFS open is named by its stateid's token and takes none.
 **An owner holds one open of a file.** Where the protocol names an owner of
 opens, as NFSv4 does, an open by an owner that already holds an open of the
 file is that open, upgraded: its modes widen, its `Seq` rises, and no second
-open is made. `OpenResult.Confirm` is set only when the owner's `Sequence` is
+open is made. An open whose answer fails once the table recorded it is undone
+with `Abandon`: an open the owner held goes back to its modes, delete mark and
+`Seq`, and a new one closes as if it never asked delete on close.
+`OpenResult.Confirm` is set only when the owner's `Sequence` is
 new and unconfirmed (§2.8), and **MUST NOT** be set on a reclaim or on an open
 offered a grant (RFC 7530 §9.1.11); an owner of a protocol whose session orders
 its requests, NFSv4.1's, is confirmed from its first open.
@@ -1118,7 +1122,10 @@ leaves no waiter, and its client retries. A recall is not a conflict: a
   answers — acknowledges, refuses, cancels — or its state ends: its host
   restarts, an administrator
   revokes it ([§4.3](#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)),
-  or `DropShare` ends its share. `WaitAnswered` returns the client's answer
+  or `DropShare` ends its share. For a client other than an NLM host, the
+  service **MAY** stop calling after one lease period unanswered: the lock stays granted and the
+  grant offered, unsent, until the client answers or its state ends. An NLM
+  host's grant is sent until it answers or its state ends. `WaitAnswered` returns the client's answer
   ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)): on an acknowledgement the
   calls stop; on a refusal or a cancel the primary releases the lock as an
   unlock would and considers the next waiter. A lock granted by callback
@@ -2974,6 +2981,7 @@ type Opens interface {
 	ConfirmOpen(ctx, who Caller, o OpenRef, q Seqs) (seq uint32, err error)                   // §2.8; the open's new Seq
 	Update(ctx, who Caller, o OpenID, u OpenUpdate) error                   // delete on close and suspended times, through the open (§2.2, §9.4)
 	Close(ctx, who Caller, o OpenRef, q Seqs) (CloseResult, error)          // CloseResult{Orphan bool; Unlink *PendingUnlink}: open state never unlinks; the service runs it
+	Abandon(ctx, who Caller, o OpenRef, prior *OpenPrior) (CloseResult, error) // §2.2: undoes an open whose answer failed, unsequenced: one the owner held goes back to prior, Seq included; a new one closes with its delete on close dropped
 	Flushed(ctx, who Caller, o OpenID, loss uint64) error                   // ErrLost once per loss (§8.1)
 	Durable(ctx, f FileKey) (recs []entity.OpenRecord, commit func(committed bool), err error) // §9.1: the unlink writes recs in its transaction
 	Releasing(ctx, f FileKey) (done func(released bool), err error)          // §9.1: under the file's admission lock, marks f releasing; ErrFileOpen if an open exists, ErrReleasing if already marked; done(false) clears the mark
@@ -3054,6 +3062,14 @@ type OpenResult struct {
 	Grant    *CachingGrant // nil: none offered
 	Replayed bool          // a replayed create answered with the open it made
 	Confirm  bool          // the owner must confirm before using it (§2.8)
+	Prior    *OpenPrior    // the owner's open before this one upgraded or reclaimed it; nil: an open this request made or replayed
+}
+
+// OpenPrior is an owner's open as it stood before an open upgraded or reclaimed it.
+type OpenPrior struct {
+	Access, Deny entity.AccessMask
+	Seq          uint32
+	Delete       DeleteMark
 }
 
 // OpenRef is what a call through an open presents; pkg/vfs aliases it.

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 func (s *GORMStore) Healthcheck(ctx context.Context) error {

@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // persistentHalf decodes the little-endian uint64 the FileID counter writes

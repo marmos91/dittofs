@@ -5,11 +5,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/snapshotsched"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/snapshotsched"
 )
 
 // blockingSchedDeps pins the first ListPolicies open, standing in for a

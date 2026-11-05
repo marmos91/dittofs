@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // XattrBackend resolves named (extended) attribute operations for the RFC 8276

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
 )
 
 type testStoreWithIDMap struct {

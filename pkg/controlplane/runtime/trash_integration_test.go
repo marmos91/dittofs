@@ -5,11 +5,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/common"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
+	"github.com/cubbit/dittofs/pkg/metadata"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestRuntimeTrash_RecycleListEmpty_EndToEnd exercises the full T7b wiring

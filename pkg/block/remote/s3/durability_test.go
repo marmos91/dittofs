@@ -3,7 +3,7 @@ package s3
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // TestStore_Durable verifies the s3 remote backend reports durable by default

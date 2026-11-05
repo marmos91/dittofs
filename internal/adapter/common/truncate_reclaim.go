@@ -3,7 +3,7 @@ package common
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // ReclaimTruncatedBlocks physically discards block data past newSize after a

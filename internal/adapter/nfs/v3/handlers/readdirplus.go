@@ -3,10 +3,10 @@ package handlers
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/xdr"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // XDR size accounting (RFC 1813 Section 3.3.17 maxcount / dircount budgets)

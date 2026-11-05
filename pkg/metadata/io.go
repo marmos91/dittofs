@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/logger"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // WriteOperation represents a validated intent to write to a file.

@@ -7,8 +7,8 @@ package state
 import (
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // NFSBreakHandler implements lock.BreakCallbacks for NFS delegation recall.

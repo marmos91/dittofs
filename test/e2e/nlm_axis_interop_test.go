@@ -5,7 +5,7 @@ package e2e
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/test/e2e/framework"
+	"github.com/cubbit/dittofs/test/e2e/framework"
 )
 
 // TestNLMAxisInterop proves DittoFS's unified lock manager coordinates
