@@ -401,7 +401,7 @@ pkg/block/journal/                package journal — public API (RFC 1 §3)
   doc.go  journal.go  handle.go  reservation.go
   types.go  errors.go  stats.go  trace.go  inspect.go
   options.go                      injection points; Clock is aliased from internal/core
-  imports_test.go                 stdlib only (x/sys in internal/platform), no pkg/block/journal
+  imports_test.go                 stdlib only (x/sys in internal/platform), no v1 import
   rfc_signatures_test.go          RFC 1 calls as written; a drifted signature stops the build
   errors_test.go                  every typed error Is its own sentinel
   internal/format/                RFC 28 §2 codecs, CRC32C, golden vectors       (E3)
