@@ -25,7 +25,7 @@ type idleRig struct {
 	seam    *journaltest.Seam
 	set     *Set
 	pool    *Pool
-	clock   *idleClock
+	clock   journaltest.DrivenClock
 	cap     int64
 }
 
@@ -70,7 +70,7 @@ func idleRigOver(t *testing.T, n int, cap int64, threshold int64, admit func() e
 	})
 	streams := NewStreams(n, probeIdentity, set, pool, cache)
 	t.Cleanup(func() { _ = streams.Close() })
-	clock := newIdleClock()
+	clock := journaltest.NewStopwatchClock()
 	r := &idleRig{
 		streams: streams,
 		seam:    seam,
