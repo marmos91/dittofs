@@ -793,23 +793,29 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
 
 **Epic 6 estimate: 9 subtasks, 24.75 man-days.**
 
-The engine's life, and the store calls it needs. RFC 8 §2.1's `Lifecycle` names
-`JournalID`, `VersionLimits` and `RaiseVersionLimits` within `K` keys a transaction, and
-`RaiseIncarnations`; `kvstore` has `RaiseIncarnations` and the per-share `VersionLimit` and
-`RaiseVersionLimit`, but no read of a device's journal identity and no view grouping them.
+The engine's life, and the store calls it needs. RFC 8 §2.1's `Lifecycle` names six
+calls: `JournalID` for this node's device, `Tags`, `VersionLimits`, `RaiseVersionLimits`
+within `K` keys a transaction, `RaiseAtStart` and `RaiseAtAttach`; `kvstore` has
+`RaiseIncarnations` (the start form) and the per-share `VersionLimit` and
+`RaiseVersionLimit`, but no read of a device's journal identity, no `RecordJournal` and no
+view grouping them.
 Sections owned: RFC 8 §1.1 (the share table's `decision:`), §2.3, §2.4, §2.5 steps 1 to 5 and 8
 and stop, §2.7. Counters: none new; conditions named by `Stats` for a refused share.
 
-- T6.1 The store's `Lifecycle` view: the `J‖journal` read, the batched version-limit calls,
-  `RaiseIncarnations`; `kvstoretest` cases. It replaces the stub `Lifecycle` T2.2's fixture
-  passes, which refuses every call, and reads the identity from `Fixture.Journal`, the
-  `JournalID` the fixture kept from `Init`.
+- T6.1 The store's `Lifecycle` view: `JournalID(ctx, node, device)` over the
+  `JD‖node‖device` index, `Tags`, the batched version-limit calls, `RaiseAtStart` and
+  `RaiseAtAttach`; `RecordJournal(ctx, id, node, device)` on the opened store, writing
+  `J‖journal` and the index in one transaction; `kvstoretest` cases. It replaces the stub
+  `Lifecycle` T2.2's fixture passes, which refuses every call, and reads the identity from
+  `Fixture.Journal`, the `JournalID` the fixture kept from `Init`.
 - T6.2 The copy-on-write share table and the bindings' states; `Bind` attaching above the
   floor, writing the share's limit as a tracked max-write, raising the shard's incarnation.
 - T6.3 Start step 1: floors and identity read, each journal opened through `Deps.Open`, a
-  missing or foreign journal's shares refused by name until an operator acknowledges, the
-  forgotten tags forgotten; every share's limit written before a version is issued. The
-  operator's acknowledgement that serves such a share again is the second part's.
+  missing or foreign journal's shares refused by name until an operator acknowledges, a
+  journal with nothing recorded for this node's device refused by name, never as the store
+  lost, until `RecordJournal` records it, the forgotten tags forgotten; every share's limit written
+  before a version is issued. The operator's acknowledgement that serves such a share again
+  is the second part's.
 - T6.4 Start step 2: every incarnation in one transaction.
 - T6.5 Start step 3: `Files`, `Since(applied)` applied in version order with each write's
   `mtime`, each file synced before its re-applied existence commits (§5.1), a synced loss

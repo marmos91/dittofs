@@ -189,7 +189,7 @@ carries #3329's, and so on to #3400 and #3399), so piece 0 lands beside pieces 2
 | `OpenRecord`, `LockRecord`, `DeleteRecord`; a stream's open keeps its base file | `Open`, `Lock`, `DeletePending` | #3335 |
 | `Clients.ByShard` (L3: tell every named client to reclaim) | `Shards(id)` only | #3362 |
 | a durable open's name and lease version; a persistent open's lock change in one transaction | none; `PutLock`, `DeleteLock`, a range each | #3399 |
-| `RaiseIncarnations` in the node's start transaction; `GraceInstance` per shard, the instance `ServeShard` is given | none | the follow-up below |
+| `RaiseAtStart` in the node's start transaction and at an attach whose open state the node does not hold, `RaiseAtAttach` at one whose open state it holds (RFC 16 §3, RFC 14 §4.4); `GraceInstance` per shard, the instance `ServeShard` is given | `RaiseIncarnations`, the start form only (#3463) | the follow-up below; the split is engine epic 6's T6.1 |
 
 `ClientRecord` is `ID`, `Protocol`, `Name`, `Boot`, `Owner`, `Protect`, `Recovery`, `Lease`,
 `Reach`, `Ended` and `Adapter`, with each shard of `Shards` a `CL‖id‖sh‖shard` key holding its
