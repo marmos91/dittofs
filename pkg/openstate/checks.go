@@ -91,6 +91,13 @@ func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r
 		if e.file != f.ID || !t.confirmed(op) {
 			return ErrBadState
 		}
+		// decision: write data admits a write anywhere, and append data
+		// alone only one at or past the size, so a want of append data is
+		// admitted through an open holding write data without append data,
+		// as Windows servers accept an SMB2 WRITE at the end of a file
+		// opened for write data alone. It holds while write data is the
+		// wider right, an overwrite being a superset of an append; overturned
+		// by a client found to rely on such an open being refused appends.
 		if conflict.Of(want)&^conflict.Of(op.Mode.Access) != 0 || want&^op.Mode.Access&entity.WriteData != 0 {
 			return ErrAccess
 		}
