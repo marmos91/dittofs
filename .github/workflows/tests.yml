@@ -139,9 +139,10 @@ jobs:
               | .job_timeout_minutes = .timeout_minutes + 15]' "$RUNNER_TEMP/plan.json" > "$RUNNER_TEMP/cells.json"
           jq . "$RUNNER_TEMP/cells.json"
           # The required checks run unit and integration, so on storage-v2 a
-          # plan that names either must keep it.
-          if [ "$V2" = true ] && ! jq -e --slurpfile kept "$RUNNER_TEMP/cells.json" \
-            '[(.cells // [])[] | select(.name == "unit" or .name == "integration") | .name] - [$kept[0][].name] == []' \
+          # plan that names either must keep it, unless a dispatch asked for
+          # another suite.
+          if [ "$V2" = true ] && ! jq -e --arg suite "$SUITE" --slurpfile kept "$RUNNER_TEMP/cells.json" \
+            '[(.cells // [])[] | select($suite == "" or .suite == $suite) | select(.name == "unit" or .name == "integration") | .name] - [$kept[0][].name] == []' \
             "$RUNNER_TEMP/plan.json" > /dev/null; then
             echo "::error::the storage-v2 plan lost unit or integration"
             exit 1
