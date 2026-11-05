@@ -65,8 +65,7 @@ var (
 	ErrNotInSet = errors.New("segment: not in the set")
 	// ErrWrongState is the refusal of an operation naming a segment in a
 	// state it does not serve: retiring a segment a stream still appends to,
-	// sealing one already sealed, accounting a record into a sealed or ended
-	// one.
+	// sealing one already sealed, accounting a record into a sealed one.
 	ErrWrongState = errors.New("segment: wrong state for the operation")
 	// ErrDuplicateID is the refusal of an add naming a segment id the ledger
 	// already owns, in the set or among the spares.
@@ -432,6 +431,19 @@ func (s *Set) Shrink(id core.SegmentID, size int64) error {
 // segment already accounts for, so they count against the share's record
 // bytes, not against the journal's allocation.
 //
+// decision: an Ended segment is served exactly as an Active one, because an
+// append failure ends its segment with appends still in flight, and the
+// record that completes after the end wrote bytes inside storage the segment
+// already covers — uncharging them would hand the share bytes the journal
+// still holds (R55). A Sealed segment is refused still, and no charge can
+// ever arrive past one, for a seal drains every appender before it seals, so
+// the ledger cannot see a legitimate charge there; a refusal that would name
+// an arrived-late charge against a sealed segment is a caller bug this
+// refusal reports rather than a state it absorbs. Withdrawn the day completion
+// carries the segment's own id through to the charge, for the id alone then
+// names the segment the reservation was made in and the state gate can carry
+// a fact rather than trust the caller's sequencing.
+//
 // ponytail: one mutex serves every append's tag accounting, so a mesh of
 // streams on many files funnels into one lock the hotter it gets. Ceiling:
 // contention on it, visible as a flat profile with every append's owner
@@ -446,7 +458,7 @@ func (s *Set) AddRecord(id core.SegmentID, tag core.ShareTag, n int64) error {
 	if !ok {
 		return ErrNotInSet
 	}
-	if e.state != Active {
+	if e.state != Active && e.state != Ended {
 		return ErrWrongState
 	}
 	if n <= 0 {

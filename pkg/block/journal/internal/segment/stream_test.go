@@ -927,10 +927,13 @@ func TestStreamAFailedTakeIsRefusedAndLeftForRetirement(t *testing.T) {
 		t.Fatalf("the ledger after the failed take: %v", err)
 	}
 	// The failed segment is Ended in the ledger — not Active, which the
-	// counters alone cannot tell: a further record charge on it is
-	// refused, and its retire runs.
-	if err := e.set.AddRecord(1, 7, 8); !errors.Is(err, segment.ErrWrongState) {
-		t.Fatalf("charging a record to the failed take's segment = %v, want ErrWrongState: the segment must be Ended, never Active", err)
+	// counters alone cannot tell: its Seal is refused — an ended segment
+	// never takes one, Active does — and its retire runs.
+	if err := e.set.Seal(1, true); !errors.Is(err, segment.ErrWrongState) {
+		t.Fatalf("sealing the failed take's segment = %v, want ErrWrongState: the segment must be Ended, never Active", err)
+	}
+	if state, err := e.set.State(1); err != nil || state != segment.Ended {
+		t.Fatalf("the failed take's segment's state is %v, %v, want Ended", state, err)
 	}
 	if freed, err := e.set.Retire(1); freed != streamCap || err != nil {
 		t.Fatalf("retiring the failed take's segment freed %d, %v, want its cap %d, nil: only a non-Active segment retires", freed, err, streamCap)

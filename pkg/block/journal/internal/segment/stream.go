@@ -257,10 +257,11 @@ type Stream struct {
 	// decision: every field below is guarded by appendMu, the segment append
 	// domain of RFC 1 §8.2 — next, count, entries, the tracker, the active
 	// segment and its ref, the roll's single-flight gate, the closed flag,
-	// the last append's idle stamp, and the seal state with its
-	// pending-drain. The lock is held for a record's reservation and its
-	// completion only — never across I/O, and nothing else is acquired under
-	// it, so no set call and no storage call sit inside it.
+	// the last append's idle stamp, the seal state with its pending-drain,
+	// and the end the stream holds for its consumer. The lock is held for a
+	// record's reservation and its completion only — never across I/O, and
+	// nothing else is acquired under it, so no set call and no storage call
+	// sit inside it.
 	appendMu sync.Mutex
 	next     int64 // the first free record slot of the active segment
 	count    int64 // records reserved in the active segment
@@ -304,8 +305,17 @@ type Stream struct {
 	// seal's ended-check before the seal writes anything.
 	pending int
 	// drained wakes the seal when pending reaches zero, and wakes the
-	// stream syncs that parked while the seal ran when it settles.
+	// stream syncs that parked while the seal ran when it settles, and
+	// wakes whoever waits out the end a failed append made.
 	drained *sync.Cond
+
+	// ended holds the record of the segment the stream ended while no
+	// successor is installed over it, from the end itself until its notifier
+	// cleared it: the roll the next append makes waits out that record, so a
+	// late completion of the ended segment never touches the successor's
+	// tracker or catalog, and the end's own word reaches its consumer before
+	// the segment it names is left behind (R48, R49).
+	ending *endRec
 }
 
 // sealState is where a stream's seal stands: open, closing, closed for good,
@@ -793,17 +803,40 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 				Kind:         h.Kind,
 				Tag:          h.Tag,
 			})
+		} else {
+			// A failed write ends its segment (R48, RFC 28 §2.2): its slot
+			// may hold bytes the zero-slot rule cannot step over, or zeros
+			// no later synced-through offset may pass, so nothing could
+			// prove a record appended after it synced. Only the active
+			// segment takes the end here: a seal already running owns the
+			// segment it drained — it sees the tracker's freeze and ends
+			// the segment itself on the paths the seal failure took — and
+			// a segment the end already covered keeps the first end's
+			// word. The id check is a guard, for a roll cannot install a
+			// successor while the segment holds any reservation in flight:
+			// the roll waits out the ended segment first.
+			if s.id == id && s.sealState == sealOpen {
+				if endID, notify := s.endLocked(EndAppend, werr); notify {
+					s.appendMu.Unlock()
+					if unerr := s.set.End(endID); unerr != nil {
+						// The end of a segment the ledger may not know is
+						// the stream's own and the write's refusal above
+						// names it; a ledger that cannot end it carries its
+						// failure here, after the write's own, so the
+						// platform's error still reads first.
+						werr = errors.Join(werr, unerr)
+					}
+					go s.notifyEnd()
+					return Placed{}, werr
+				}
+			}
 		}
 		s.appendMu.Unlock()
 
 		if werr != nil {
-			// ponytail: a failed write does not yet end its segment, and
-			// later appends go on landing in it; the slot it reserved stays
-			// as it is — never rewritten, never zeroed (R87) — and the
-			// tracker's frozen prefix keeps later records' synced-through at
-			// or below the failed slot's offset. RFC 28 §2.2 ends the
-			// segment and moves the stream to a new one, which is the
-			// durability layer's call of the roll.
+			// The failed slot stays as it is — never rewritten, never
+			// zeroed (R87) — and the tracker's frozen prefix keeps the
+			// records around it at or below its offset (R10).
 			return Placed{}, werr
 		}
 
@@ -957,6 +990,20 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	if s.closed {
 		s.appendMu.Unlock()
 		return s.endTaken(id, ref, ErrStreamClosed)
+	}
+	// decision: the wait below runs only when leaving a segment the stream
+	// ended, for a seal to a sealed segment has already drained every
+	// appender before the roll runs, while an append failure ends its
+	// segment with writes still in flight. Waiting for the end's record to
+	// clear keeps a late completion of the ended segment from touching the
+	// successor's tracker or catalog — the completion would complete and
+	// charge a record the successor never reserved — and the wait costs the
+	// in-flight writes of the ended segment alone, on the failure path
+	// only. Withdrawn the day a completion is able to reach the tracker at
+	// all once the segment it reserved in is ended, which would have to
+	// carry the segment's own id through the completion.
+	for s.ending != nil && !s.closed {
+		s.drained.Wait()
 	}
 	s.id, s.ref = id, ref
 	s.next = format.SegmentHeaderSize

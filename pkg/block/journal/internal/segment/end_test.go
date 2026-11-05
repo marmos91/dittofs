@@ -90,16 +90,28 @@ func endHeaderOf(t *testing.T, e streamEnv, id core.SegmentID) format.SegmentHea
 
 // endZeroSlotScenario runs RFC 28 §4.2's zero-slot choreography and returns
 // the environment, the three appends' results in their slot order B, C, D —
-// B held at the seam and released once D completed, C failed with the seam's
-// EIO at the slot between them — the ended segment's id, the failed slot's
-// offset and the first record's end. The record A lands and is synced
-// first, so the segment holds one synced record before the failure, and C's
-// slot is the second record slot of the segment: A's end.
+// B's and C's writes held at the seam, D completing past them, C failing
+// with the seam's EIO at the slot between B and D — the ended segment's id,
+// the failed slot's offset and the first record's end. The record A lands
+// and is synced first, so the segment holds one synced record before the
+// failure, and C's slot is the second record slot of the segment: A's end.
+//
+// The choreography the RFC's row names — hold the middle append's write and
+// let the third complete, then fail the middle one — is staged with two
+// one-shot holds: B's write parks at the first, C's at the second, and D's
+// passes both and completes. The fault is armed only once D has landed, so
+// the rule's one round fires on the first call that consults it armed:
+// C's, resumed by the second hold's release. Releasing the first hold then
+// lets B's write land into the segment the failure ended.
 func endZeroSlotScenario(t *testing.T) (e streamEnv, id core.SegmentID, b, c, d endAppendResult, cOff, aEnd int64) {
 	t.Helper()
 
 	seg := streamSegName(1)
 	e = streamOver(t, streamCap, func(streamEnv) {}).built(t)
+	// Closed by a cleanup rather than the caller's defer: a check that
+	// fails inside the scenario must not leave the stream holding the ref
+	// the cache's Shutdown waits on.
+	t.Cleanup(func() { _ = e.s.Close() })
 
 	// Record A lands and is synced, so the segment and its window have a
 	// value the later checks read back.
@@ -118,53 +130,60 @@ func endZeroSlotScenario(t *testing.T) (e streamEnv, id core.SegmentID, b, c, d 
 	bDone := endAppend(e, 2, 64, 0x55)
 	<-holdB.Reached()
 
-	// C's write — reserved after B's while B's is parked, so its slot
-	// follows B's — fails with the seam's EIO, once. The failed slot is the
-	// second record slot of the segment: A's end.
-	cOff = aEnd
+	// C's write parks at the second one-shot hold: the first is spent on
+	// B's write, so the next write the seam sees — C's, reserved after B's
+	// while B's is parked — is the one it stops.
+	holdC := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
+	cDone := endAppend(e, 3, 128, 0x7d)
+	<-holdC.Reached()
+
+	// D's write — reserved after C's, so the highest slot of the three —
+	// passes both holds and completes, acknowledged with its place.
+	dDone := endAppend(e, 4, 192, 0x13)
+	d = <-dDone
+	if d.err != nil {
+		t.Fatalf("the append past the held ones: %v", d.err)
+	}
+
+	// The middle write fails where it stands: the fault is armed once D has
+	// landed, so the rule's one round is spent on the first call that
+	// consults it — C's, resumed here. C's slot is the third record slot of
+	// the segment, right past B's: the lowest slot the failure found still
+	// unwritten above the synced record A.
 	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg, 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
-	cDone := endAppend(e, 3, 128, 0x7d)
+	holdC.Release()
 	c = <-cDone
 	if !errors.Is(c.err, syscall.EIO) {
 		t.Fatalf("the failed Append = %v, want the fault's EIO", c.err)
 	}
 
-	// D's write — reserved after C's, so the highest slot of the three —
-	// completes past the failed one.
-	if err := e.seam.Schedule(); err != nil {
-		t.Fatalf("disarming the write fault: %v", err)
-	}
-	dDone := endAppend(e, 4, 192, 0x13)
-	d = <-dDone
-	if d.err != nil {
-		t.Fatalf("the append past the failed one: %v", d.err)
-	}
-
 	// B's write lands: its record was written into the segment the failure
-	// ended, and it is acknowledged with its place.
+	// ended, and it is acknowledged with its place. Its end is the failed
+	// slot's own offset, for B holds the slot right below C's.
 	holdB.Release()
 	b = <-bDone
 	if b.err != nil {
 		t.Fatalf("the held Append: %v", b.err)
 	}
+	cOff = b.p.Loc.Off + b.p.Loc.Len
 	return e, id, b, c, d, cOff, aEnd
 }
 
 // TestEndTheZeroSlotRowWriteHalf checks RFC 28 §4.2's zero-slot row, the
 // write half (R77, R10, R48): three concurrent appends B, C and D, ordered so
-// their slots are B < C < D; B's write is held at the seam, C's write fails
-// with EIO, D completes. C returns its EIO, B and D return locations in the
-// same segment whose synced-through stays at or below C's slot offset, C's
-// slot is zeros on disk, the segment is Ended in the ledger, and the next
-// append lands in a new segment naming no predecessor — and the ended
-// segment takes no seal marker.
+// their slots are B < C < D; B's and C's writes are held at the seam, D
+// completes past them, C's write then fails with EIO at its resumed release,
+// and B's lands into the segment that failure ended. C returns its EIO, B
+// and D return locations in the same segment whose synced-through stays at
+// or below C's slot offset, C's slot is zeros on disk, the segment is Ended
+// in the ledger, and the next append lands in a new segment naming no
+// predecessor — and the ended segment takes no seal marker.
 func TestEndTheZeroSlotRowWriteHalf(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	e, id, b, c, d, cOff, _ := endZeroSlotScenario(t)
-	defer func() { _ = e.s.Close() }()
 	if c.p != (segment.Placed{}) {
 		t.Fatal("the failed append returned a location")
 	}
@@ -177,7 +196,7 @@ func TestEndTheZeroSlotRowWriteHalf(t *testing.T) {
 			t.Fatalf("append %s landed in segment %d, want the ended segment %d: a record reserved before the roll stays in the segment it reserved in", name, res.p.Loc.Segment, id)
 		}
 	}
-	if !(b.p.Loc.Off < cOff && cOff < d.p.Loc.Off) {
+	if b.p.Loc.Off >= cOff || cOff >= d.p.Loc.Off {
 		t.Fatalf("the slots came out ordered B %d, C %d, D %d: B must hold the slot below the failed one and D the slot above it", b.p.Loc.Off, cOff, d.p.Loc.Off)
 	}
 
@@ -243,7 +262,7 @@ func TestEndAShortWriteEndsTheSegment(t *testing.T) {
 	seg := streamSegName(1)
 	streamFS := &streamShortFS{FS: newSeam(t).FS(), name: seg}
 	e := streamOverFS(t, streamCap, streamFS, func(streamEnv) {}).built(t)
-	defer func() { _ = e.s.Close() }()
+	t.Cleanup(func() { _ = e.s.Close() })
 
 	// One record lands whole and is synced, so the stream has a value.
 	aPayload := streamTestBody(64, 0x42)
@@ -292,7 +311,6 @@ func TestEndAnEndedSegmentTakesNoSealAndNoAppend(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	e := endFailedAppendEnv(t)
-	defer func() { _ = e.s.Close() }()
 	id, seg := core.SegmentID(1), streamSegName(1)
 
 	// The ended segment takes no seal of either kind, and answers
@@ -331,6 +349,10 @@ func endFailedAppendEnv(t *testing.T) streamEnv {
 
 	seg := streamSegName(1)
 	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
+	// Closed by a cleanup, not the caller's defer: a refusal inside the
+	// builder must not leave the stream holding the ref the cache's
+	// Shutdown waits on.
+	t.Cleanup(func() { _ = e.s.Close() })
 
 	// One record lands and is synced; the next one's write fails.
 	aPayload := streamTestBody(64, 0x42)
@@ -366,7 +388,7 @@ func TestEndTheEndedSegmentStaysAtItsCap(t *testing.T) {
 
 	seg := streamSegName(1)
 	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
-	defer func() { _ = e.s.Close() }()
+	t.Cleanup(func() { _ = e.s.Close() })
 
 	// One landed, synced record; one failed write; the roll past the end.
 	aPayload := streamTestBody(64, 0x42)
@@ -432,7 +454,7 @@ func TestEndARecordCompletingAfterTheEndIsCharged(t *testing.T) {
 
 	seg := streamSegName(1)
 	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
-	defer func() { _ = e.s.Close() }()
+	t.Cleanup(func() { _ = e.s.Close() })
 
 	// Record A lands and is synced, so the share carries one charge.
 	aPayload := streamTestBody(64, 0x42)
@@ -534,7 +556,7 @@ func TestEndARecycledSegmentsFailedAppend(t *testing.T) {
 	awaitCounters(t, "the adopted and the made content spares ready", pool,
 		func(c segment.PoolCounters) bool { return c.Spares == 2 })
 	e.s = segment.NewStream(1, streamIdentity, set, pool, cache)
-	defer func() { _ = e.s.Close() }()
+	t.Cleanup(func() { _ = e.s.Close() })
 
 	// The first append lands in the adopted spare.
 	aPayload := streamTestBody(64, 0x42)
