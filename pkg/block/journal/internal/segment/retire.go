@@ -100,11 +100,11 @@ type RetirerConfig struct {
 //
 // decision: the executor's own state — the queue with its reasons, the set of
 // queued ids, the subset of them a recycle would take, the freed counter and
-// the extra names a failed recycle left — sits under the capacity domain of RFC 1 §8.2, as D13 asks of every piece of
-// mutable state this epic adds: no I/O under the mutex, no lock acquired
-// while it is held, and never held across a Set, Pool, Descriptors or storage
-// call. Withdrawn the day a recorder of the domain's order finds the mutex
-// held across one of those.
+// the extra names a failed recycle left — sits under the capacity domain of
+// RFC 1 §8.2, as D13 asks of every piece of mutable state this epic adds: no
+// I/O under the mutex, no lock acquired while it is held, and never held across a Set, Pool,
+// Descriptors or storage call. Withdrawn the day a recorder of the domain's
+// order finds the mutex held across one of those.
 type Retirer struct {
 	cfg RetirerConfig
 	log *slog.Logger

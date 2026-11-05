@@ -79,10 +79,11 @@ func NewGroup(c GroupConfig) *Group {
 // the idle sealer, the retirer and the pool, so every background worker is
 // joined before the segments it touches are closed; last the cache, whose
 // Shutdown waits for every reader's reference and then closes every
-// descriptor. The pool is told to make nothing before the retirer stops, whose
-// drop of its queue wakes it, and the retirer is joined before the pool, so no
-// recycle lands in a stopped pool mid-close. Errors are joined. Close is idempotent and safe
-// concurrently: a second call waits for the first and returns nil.
+// descriptor. The pool is stopped before the retirer, so the wake the retirer's
+// queue drop sends reaches a pool that makes nothing, and a retirement still
+// in flight unlinks its segment rather than reserving a slot in a stopped
+// pool. Errors are joined. Close is idempotent and safe concurrently: a second
+// call waits for the first and returns nil.
 func (g *Group) Close() error {
 	first := false
 	g.once.Do(func() {
@@ -92,11 +93,10 @@ func (g *Group) Close() error {
 		if g.cfg.Idle != nil {
 			g.cfg.Idle.Stop()
 		}
-		g.cfg.Pool.Closing()
+		g.cfg.Pool.Stop()
 		if g.cfg.Retirer != nil {
 			g.cfg.Retirer.Stop()
 		}
-		g.cfg.Pool.Stop()
 		errs = append(errs, g.cfg.Cache.Shutdown())
 		g.err = errors.Join(errs...)
 	})

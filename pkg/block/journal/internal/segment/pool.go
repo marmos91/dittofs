@@ -88,14 +88,15 @@ type PoolCounters struct {
 // ready to be taken by a roll that costs no I/O, and the worker that keeps
 // each class at its target by making spares off the write path.
 //
-// decision: ready, held, pending, incoming, started, stopped, closing,
+// decision: ready, held, pending, incoming, started, stopped,
 // deviceFull and retirer sit under the capacity domain of RFC 1 §8.2 —
 // store-wide counters, no I/O under p.mu, no lock acquired while it is held,
-// and never held across a Maker or a Set call: those take locks of this same domain, and no two locks of one
-// domain are held at once. spareRefusals is a store-wide counter of the same
-// domain kept in an atomic without p.mu, for the roll counts it outside any
-// lock the pool might hold. Withdrawn the day a recorder of the domain's order
-// finds p.mu held across one of those calls.
+// and never held across a Maker or a Set call: those take locks of this
+// same domain, and no two locks of one domain are held at once.
+// spareRefusals is a store-wide counter of the same domain kept in an atomic
+// without p.mu, for the roll counts it outside any lock the pool might hold.
+// Withdrawn the day a recorder of the domain's order finds p.mu held across
+// one of those calls.
 type Pool struct {
 	m   *Maker
 	t   Targets
@@ -108,7 +109,6 @@ type Pool struct {
 	incoming   [Reserve + 1]int              // recycles in flight, reserved per class; guarded by mu
 	started    bool                          // guarded by mu
 	stopped    bool                          // guarded by mu
-	closing    bool                          // guarded by mu
 	deviceFull bool                          // guarded by mu
 	retirer    *Retirer                      // the source of recycled spares, nil when none; guarded by mu
 
@@ -565,16 +565,6 @@ func (p *Pool) Stop() {
 	p.wg.Wait()
 }
 
-// Closing tells the refill to make nothing more, without joining it: the close
-// of the set calls it before the retirement queue is dropped, whose wake would
-// otherwise send a pool that is short into a make on a set being closed. Stop
-// still joins the worker. It does not refuse takes or recycles; only Stop does.
-func (p *Pool) Closing() {
-	p.mu.Lock()
-	p.closing = true
-	p.mu.Unlock()
-}
-
 // worker is the refill: on each kick it makes spares, one at a time, until
 // every class is at its target or a make fails — then it waits for the next
 // kick, which every take, refused or not, sends. Making a segment never
@@ -650,13 +640,6 @@ func (p *Pool) refill() bool {
 		if p.retiredToHand() {
 			return true
 		}
-		p.mu.Lock()
-		closing := p.closing
-		p.mu.Unlock()
-		if closing {
-			return true
-		}
-
 		// Make owns the pairing: an error returns no id, so the appends
 		// below never see an id of 0 named by a failure.
 		id, err := p.m.Make()
