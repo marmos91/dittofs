@@ -673,7 +673,10 @@ tag counter above that journal's tags ([RFC 26 §2.3](rfc-26-catalog-backups.md#
    reported as data loss naming the file: the journal's `Delete` already dropped
    its held extents, so bytes not offloaded read **Lost**, and the holder's last
    close runs the release again. Re-applied at every start, it would abort on
-   the same open at every start.
+   the same open at every start. A removal marker that a terminal failure ended
+   ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)) but a crash left unsettled is settled the same way: its file
+   found gone, or the removal refused as invalid, it is settled without its
+   removal and, for a file still there, reported as data loss naming the file.
 4. **Resume removals and clones.** List the shard's unfinished-removal index
    `S‖id‖rr‖shard‖file‖version` rather than scanning its files — an entry
    lives until its removal is pruned
@@ -2455,8 +2458,9 @@ which calls the journal's `Delete`, never its `Release`, which evicts
 - A removal holds the file's guard ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow)) across its journal step and its
   first metadata transaction, and returns once that transaction commits; a
   release left pending once its journal `Delete` is done (below) returns its
-  retry channel first, and keeps the guard until its retried phase 1 commits
-  or it ends.
+  retry channel first, and a truncate or deallocate whose phase 1 its call
+  cannot commit answers `ErrDelay` first (below); each keeps the guard until
+  its retried phase 1 commits or it ends.
 - Its first transaction commits the file's pending existence with it, and syncs
   the file first ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)). It is admitted through the share's cut gate: behind a
   closed gate it waits for the gate to reopen, so no removal commits existence
@@ -2508,8 +2512,8 @@ which calls the journal's `Delete`, never its `Release`, which evicts
   `DelayConflict` for a conflict, `DelayCommit` otherwise; the client asks
   again. Only a terminal failure ends it: the file found gone, or the removal
   refused by the store as invalid. Then the removal's own pending operation
-  leaves the file's state, the guard is released, and the journal's marker
-  stays for recovery ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
+  leaves the file's state, the guard is released, and the journal's marker is
+  settled without the removal, as start settles a release a holder aborted ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 3): for a file still there, bytes not offloaded read **Lost**, reported as data loss naming the file.
 
 **Steps.**
 
@@ -3563,6 +3567,8 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) **(cluster)** handover drains | Hand over a shard with 500 pending files and 3 passes in flight. Assert no pass for it starts after the drain begins, every pass returns and its intents are committed or abandoned before the record names the new primary, and none of its entries remains. |
 | [§6.1.1](#6.1.1%20The%20shared%20work%20scheduler) a stuck run | With two tenants holding work, make a `Run` of one ignore its ctx and block, in every slot that tenant may hold. Assert `work_queue_stalled` names the source and tenant within twice `RunTimeout`, `engine_work_runs_overdue_total` rises, and another tenant's work still runs. Hold every slot of a source with overdue runs, then separately lose one dispatch wakeup with entries due and a slot free: assert liveness fails within the watchdog's 60 s each time. |
 | [§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches) removal wedge | Make one file's ref record undecodable, then truncate the file, and separately clone onto another file whose source's record is undecodable. Assert both retry at the backoff cap, `removal_stalled` names each, other removals complete, and both finish once the records are repaired. |
+| [§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches) phase 1 past the journal step | Make a truncate's phase 1 conflict once its journal `Truncate` is done. Assert the call answers `ErrDelay` (`DelayConflict`) with the file's guard still held, no capture takes the file meanwhile, the retry commits the removal, and the guard is released once it does. |
+| [§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches) terminal failure | Have the store refuse a truncate's phase 1 as invalid after its journal step. Assert the removal ends: its pending operation leaves the file's state, the guard is released, the journal's marker is settled, data loss is reported naming the file, and a restart's start step 3 succeeds without re-applying the marker. |
 | [§11.4](#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable) drain names its blocker | Start `WaitOffloaded` with one file whose offered reader fails every read, and truncate another file mid-drain. Assert the wait returns at its deadline naming the failing file and `file_offload_failing`, and never the truncated one. |
 | [§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) self-fence threshold | Stall the store for 10 s: assert writes are still acknowledged. Stall it for 31 s: assert writes and stability points answer `ErrDelay`, reads are served, a condition names the store, and once a write commits, writes resume with the verifier unchanged. |
 | [§2.7](#2.7%20The%20version%20limit) version limit under sustained load | Write at the measured peak version rate (4 KiB writes at the device's peak IOPS) and stall the store just as a raise falls due, its last commit one existence age before the stall. Assert writes are acknowledged for the first 10 s and until the self-fence trips at 30 s, never refused by the version limit first. Hold the rate below the trigger, then raise it in one step: assert the raise is due on the next draw, not on a timer. A design that raises the limit only below half a block, with no rate term and a block of 2²⁰ in place of [§2.7](#2.7%20The%20version%20limit)'s, fails this check: half that block lasts about 2 s at 280 000 versions a second, so the limit refuses writes long before the fence. |
