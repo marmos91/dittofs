@@ -33,7 +33,7 @@ func TestAppendParkedAtTheLoopTopWaitsARunningSeal(t *testing.T) {
 	}
 	set := NewSet(64<<10, nil)
 	maker := NewMaker(seam.FS(), set, 1<<62, 0, nil)
-	pool := NewPool(maker, Targets{Content: 1}, nil)
+	pool := NewPool(maker, Targets{Content: 1}, nil, nil)
 	pool.Start()
 	t.Cleanup(pool.Stop)
 	cache := NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(8))

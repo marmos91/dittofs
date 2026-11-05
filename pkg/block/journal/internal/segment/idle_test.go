@@ -51,7 +51,7 @@ func idleRigOver(t *testing.T, n int, cap int64, threshold int64, admit func() e
 	}
 	set := NewSet(cap, nil)
 	maker := NewMaker(seam.FS(), set, 1<<62, 0, nil)
-	pool := NewPool(maker, Targets{Content: 2 * n}, nil)
+	pool := NewPool(maker, Targets{Content: 2 * n}, nil, nil)
 	t.Cleanup(func() { pool.Stop() })
 	pool.Start()
 	waitSpares(t, pool, int64(2*n))

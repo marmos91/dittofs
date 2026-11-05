@@ -67,9 +67,10 @@ type RetireCounters struct {
 	FreedBytes uint64
 }
 
-// RetirerConfig gathers the constructor's dependencies. Pool and ReadOnly may
-// be nil — no pool means every retirement unlinks, no check means the
-// directory is writable — the rest are a caller bug NewRetirer panics on.
+// RetirerConfig gathers the constructor's dependencies. Pool, ReadOnly and
+// Retired may be nil — no pool means every retirement unlinks, no check means
+// the directory is writable, no hook means nothing is told — the rest are a
+// caller bug NewRetirer panics on.
 type RetirerConfig struct {
 	// Set is the ledger the retirement claims through and unlinks in.
 	Set *Set
@@ -87,6 +88,13 @@ type RetirerConfig struct {
 	// a non-nil error refuses the retirement wrapped, whole. Nil means
 	// writable.
 	ReadOnly func() error
+	// Retired is the retired-segment hook: called once per completed
+	// retirement, with the retired segment's id (the old id for a recycle,
+	// never the fresh one), after the segment has left the set, whether or
+	// not the directory sync that follows succeeds. Nil does nothing. It
+	// is called holding no lock of the executor's, from the caller of
+	// Retire or from the worker goroutine.
+	Retired func(id core.SegmentID)
 	// Durable is the durable-retirement signal: called once per retirement
 	// whose directory sync returned nil. Nil means no signal.
 	Durable func(Retirement)
@@ -134,7 +142,8 @@ type Retirer struct {
 
 // NewRetirer returns the executor over c's dependencies. A nil Set, Cache,
 // Maker or FS is a caller bug and panics, as NewPool panics on its own; a nil
-// Pool or ReadOnly is a configuration the comment on RetirerConfig names.
+// Pool, ReadOnly or Retired is a configuration the comment on RetirerConfig
+// names.
 func NewRetirer(c RetirerConfig) *Retirer {
 	if c.Set == nil {
 		panic("segment: a retirer needs its ledger")
@@ -185,8 +194,12 @@ func NewRetirer(c RetirerConfig) *Retirer {
 // retire or recycle, the freed count, and the directory sync that makes the
 // whole thing durable, which the returned Retirement reports.
 func (r *Retirer) Retire(id core.SegmentID, reason Reason) (Retirement, error) {
-	// R89: the read-only check runs before anything is touched, so a
-	// read-only journal makes no ledger call and no seam call.
+	// decision: retirement unlinks and recycles nothing while read-only,
+	// because a read-only journal writes nothing it need not (RFC 1 §5.4's
+	// own rule is "takes no spare"; not unlinking is this breakdown's
+	// choice, R89). The check runs before anything is touched, so a
+	// read-only journal makes no ledger call and no seam call. Withdrawn if
+	// epic 6 needs a retirement to free space while read-only.
 	if r.cfg.ReadOnly != nil {
 		if err := r.cfg.ReadOnly(); err != nil {
 			return Retirement{}, fmt.Errorf("segment: retirement refused: %w", err)
@@ -328,6 +341,11 @@ func (r *Retirer) recycle(id core.SegmentID, class Class) (Retirement, error) {
 	r.mu.Unlock()
 
 	ret := Retirement{ID: id, Recycled: true, Fresh: fresh, Freed: r.cfg.Set.cap, Durable: true}
+	// The retired-segment hook runs before the durable signal: a recycle's
+	// retirement is complete once the segment has left the set, and the hook
+	// is the one epic 6 drops a copy table's entries with, which owes
+	// nothing to the retire's durability.
+	r.retired(id)
 	r.signal(ret)
 	return ret, nil
 }
@@ -411,6 +429,11 @@ func (r *Retirer) unlink(id core.SegmentID, st State) (Retirement, error) {
 	r.freedB += uint64(freed)
 	r.mu.Unlock()
 
+	// The hook runs before the directory sync, holding no executor lock: the
+	// retirement is done — the storage moved and the segment left the set —
+	// whatever the sync does, so a not-durable unlink calls it too.
+	r.retired(id)
+
 	if err := r.cfg.FS.SyncDir(); err != nil {
 		// The retirement is done; the removal may not be durable. Warn names
 		// it: no signal follows, in this process or a later one.
@@ -461,6 +484,16 @@ func (r *Retirer) signal(ret Retirement) {
 		return
 	}
 	r.cfg.Durable(ret)
+}
+
+// retired calls the retired-segment hook, when one is configured. The caller
+// has finished the retirement — the segment has left the set — and holds no
+// lock of the executor's.
+func (r *Retirer) retired(id core.SegmentID) {
+	if r.cfg.Retired == nil {
+		return
+	}
+	r.cfg.Retired(id)
 }
 
 // Enqueue hands a segment to the worker. The queue holds one entry per id —

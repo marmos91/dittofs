@@ -24,9 +24,9 @@ import (
 const poolAttempts = 1 << 22
 
 // poolOf is a pool over a fresh seam and ledger: the Maker seeded with last,
-// reserving against max, the pool keeping spares of t ready. The set the pool
-// reaches through the Maker is the set returned beside it, so a test reads
-// the ledger's counters directly.
+// reserving against max, the pool keeping spares of t ready under a nil
+// read-only check. The set the pool reaches through the Maker is the set
+// returned beside it, so a test reads the ledger's counters directly.
 func poolOf(t *testing.T, t2 segment.Targets, max int64, last core.SegmentID, log *slog.Logger) (
 	*journaltest.Seam, *segment.Set, *segment.Maker, *segment.Pool,
 ) {
@@ -35,7 +35,7 @@ func poolOf(t *testing.T, t2 segment.Targets, max int64, last core.SegmentID, lo
 	seam := newSeam(t)
 	set := segment.NewSet(segCap, nil)
 	m := segment.NewMaker(seam.FS(), set, max, last, log)
-	return seam, set, m, segment.NewPool(m, t2, log)
+	return seam, set, m, segment.NewPool(m, t2, nil, log)
 }
 
 // awaitCounters fails t unless what the pool reports satisfies want within a
@@ -478,7 +478,7 @@ func TestPoolAdoptCountsTowardClassAtCap(t *testing.T) {
 	// The journal's own ledger and pool, at a maximum one cap below the
 	// footprint the adoptions make: adopting is still served.
 	_, set, m := maker(t, 4, 2*segCap)
-	p := segment.NewPool(m, segment.Targets{Content: 1, Headroom: 1, Reserve: 1}, nil)
+	p := segment.NewPool(m, segment.Targets{Content: 1, Headroom: 1, Reserve: 1}, nil, nil)
 
 	classes := []struct {
 		id  core.SegmentID
@@ -1771,6 +1771,75 @@ func TestPoolARecycledContentSparePaysTheDemandLevel(t *testing.T) {
 		func(c segment.PoolCounters) bool { return c.Spares == 3 })
 	if got := p.PendingForTest(); got != 0 {
 		t.Fatalf("after the parked make landed the demand level is %d, want 0", got)
+	}
+	p.Stop()
+}
+
+// TestPoolReadOnlyMakesNoSpare: while the read-only check refuses, the refill
+// worker makes no spare below the pool's target — the seam sees no call, the
+// pool's counters and the ledger's own stay at zero — and the worker stays
+// alive, waiting: the wait for the check's call count proves the pass ran,
+// so the spare's absence is a refusal, not a worker that never woke. Once
+// the check clears, the next kick fills every class, which catches a check
+// that wedged the worker rather than ending its pass (R89).
+func TestPoolReadOnlyMakesNoSpare(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	ro := &readOnlyFlag{}
+	ro.set(true)
+	seam := newSeam(t)
+	set := segment.NewSet(segCap, nil)
+	m := segment.NewMaker(seam.FS(), set, noMax, 0, nil)
+	p := segment.NewPool(m, segment.Targets{Content: 2, Headroom: 1, Reserve: 1}, ro.check, nil)
+
+	// A counting fault on the seam proves the read-only journal makes no call
+	// at all: a make would reach the seam whatever it failed at.
+	fault := &countingFault{}
+	seam.SetFault(fault)
+	p.Start()
+
+	// The pass ran: the check was asked. Without this wait the assertions
+	// below would pass vacuously, for a worker that never woke makes no
+	// spare either.
+	for ro.count() == 0 {
+		if fault.calls > 0 {
+			t.Fatalf("the read-only journal made a seam call: %d", fault.calls)
+		}
+		runtime.Gosched()
+	}
+	for range poolAttempts {
+		if ro.count() > 0 && fault.calls == 0 {
+			break
+		}
+		if fault.calls > 0 {
+			t.Fatalf("the read-only journal made a seam call: %d", fault.calls)
+		}
+		runtime.Gosched()
+		p.Kick()
+	}
+
+	if fault.calls > 0 {
+		t.Fatalf("the read-only journal made %d seam calls, want none: a read-only pass makes no spare (RFC 1 §5.4)", fault.calls)
+	}
+	if c := p.Counters(); c.Spares != 0 || c.HeadroomBytes != 0 || c.RepackReserveBytes != 0 || c.Held != 0 {
+		t.Fatalf("over the read-only interval the pool reports %+v, want every class empty", c)
+	}
+	if c := set.Counters(); c.UsedBytes != 0 || c.Spares != 0 {
+		t.Fatalf("over the read-only interval the ledger holds %+v, want no spare accounted", c)
+	}
+
+	// The check clears: the next kick — not the clearing itself — refills,
+	// every class to its target. A worker the check wedged would leave the
+	// pool short past this wait.
+	seam.SetFault(nil)
+	ro.set(false)
+	p.Kick()
+	awaitCounters(t, "the pool filled once the journal was writable", p,
+		func(c segment.PoolCounters) bool {
+			return c.Spares == 2 && c.HeadroomBytes == segCap && c.RepackReserveBytes == segCap
+		})
+	if err := set.Check(); err != nil {
+		t.Fatalf("after the fill: %v", err)
 	}
 	p.Stop()
 }
