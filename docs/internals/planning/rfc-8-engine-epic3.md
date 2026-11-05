@@ -310,9 +310,9 @@ subtasks and tests can cite them.
   `decision:` marker names it.
 - **D12, the verifier before epic 4.** `Write` returns RFC 8 §4.1's verifier, whose inputs
   T4.1 derives, and nothing in this epic may wait for epic 4. T3.2 samples the verifier
-  through one function, `sampleVerifier`, that answers a fixed zero verifier, with a
-  `ponytail:` marker: a write's verifier, a stable one's included, means nothing until T4.1
-  replaces that function's body with the derived one, so a client comparing verifiers sees
+  through the engine's `sample` field, set to `zeroVerifier`, which answers a fixed zero
+  verifier, with a `ponytail:` marker: a write's verifier, a stable one's included, means
+  nothing until T4.1 sets that field to the derived one, so a client comparing verifiers sees
   no restart or loss until then; T4.1 replaces it, and nothing else does.
 
 ## 5. Target tree
@@ -390,7 +390,7 @@ test/engine/known.yaml    T3.2  its entry
   reports carries the clock's time, and 0 under `TimeModify`, over the fake journal and,
   behind the tag, over the real one where the journal reads it back (catches a wrong unit or
   an ignored `Suspend`); a journal wrapper that counts `WriteAt` calls, with
-  `sampleVerifier` swapped through `export_test.go` for one that records that count in a recorder
+  the `sample` field swapped through `export_test.go` for one that records that count in a recorder
   started at -1 and answers a verifier of its own: the hook ran once, the recorder reads 0,
   and `Write` returned the hook's verifier (catches sampling after staging, R8, which the
   zero stand-in alone cannot show, a `Write` that never calls it, or one answering another
