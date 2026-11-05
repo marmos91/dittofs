@@ -139,8 +139,13 @@ func (s *Stream) endLocked(cause EndCause, err error) (core.SegmentID, bool) {
 // not call Close from it, for it would wait on itself.
 //
 // The hand-over waits for every reservation the segment held — those
-// reserved before the failed one and those reserved after it alike — on the
-// stream's own cond, which drops appendMu while it waits.
+// reserved before the failed one and those reserved after it alike — and for
+// every Sync in flight on it, on the stream's own cond, which drops appendMu
+// while it waits. A Sync that took its prefix before the failure and returns
+// after it has covered records the window must not name, so the window is
+// read only once the drain count is empty. The wait ends: an ended segment
+// takes no new append or Sync (a Sync refuses before it enters the drain),
+// and the roll that could start one waits on this very record.
 //
 // decision: the wait covers the later slots, a superset of the ones before
 // the failed slot, because RFC 28 §4.2's zero-slot row and epic 6's window
@@ -173,7 +178,7 @@ func (s *Stream) notifyEnd() {
 		notifyParkHook()
 	}
 	s.appendMu.Lock()
-	for s.apending > 0 {
+	for s.apending > 0 || s.pending > 0 {
 		s.drained.Wait()
 	}
 	rec := s.ending

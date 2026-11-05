@@ -2212,10 +2212,11 @@ func TestEndCloseDuringTheRollsInstallWait(t *testing.T) {
 
 // TestEndSyncInFlightAcrossAFailureRollOwnsItsOwnSegment checks the stream's
 // own Sync against the failure path's roll: a Sync of the ended segment that
-// returns after the successor is installed owns nothing of the successor — its
-// fsync covered the old segment alone, so the successor's tracker takes no
-// window it never made durable (R10) and its second-refusal word stays blank
-// until a sync of the successor itself succeeds.
+// is in flight when the failure lands holds the roll back — the event's
+// hand-over waits for it, and the roll waits for the event — so the
+// successor starts blank: its tracker takes no window the old segment's fsync
+// made durable (R10) and its second-refusal word stays blank until a sync of
+// the successor itself succeeds.
 func TestEndSyncInFlightAcrossAFailureRollOwnsItsOwnSegment(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -2236,7 +2237,8 @@ func TestEndSyncInFlightAcrossAFailureRollOwnsItsOwnSegment(t *testing.T) {
 	go func() { syncDone <- e.s.Sync() }()
 	<-holdS.Reached()
 
-	// C's write fails, ending segment 1 while the sync is in flight; the
+	// C's write fails, ending segment 1 while the sync is in flight. The
+	// event and the roll wait for the sync, so it returns first; then the
 	// event hands over, and D rolls onto segment 2 and lands there.
 	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg1, 1, syscall.EIO)); err != nil {
 		t.Fatal(err)
@@ -2247,19 +2249,18 @@ func TestEndSyncInFlightAcrossAFailureRollOwnsItsOwnSegment(t *testing.T) {
 	if err := e.seam.Schedule(); err != nil {
 		t.Fatal(err)
 	}
+	holdS.Release()
+	if err := <-syncDone; err != nil {
+		t.Fatalf("the straddling sync = %v, want nil", err)
+	}
 	rec.awaitCount(t, 1, "the ended segment's event")
 	d := <-endAppend(se, 4, 0, 0x11)
 	if d.err != nil || d.p.Loc.Segment != 2 {
 		t.Fatalf("D's append = %v in segment %d, want a landing in 2", d.err, d.p.Loc.Segment)
 	}
 
-	// The sync returns over a stream that no longer holds the segment it
-	// synced. It must own nothing of segment 2: no window bytes the successor
-	// claims as synced-through, for no fsync of segment 2 ran.
-	holdS.Release()
-	if err := <-syncDone; err != nil {
-		t.Fatalf("the straddling sync = %v, want nil", err)
-	}
+	// The sync's success belongs to segment 1 alone: segment 2's tracker
+	// claims no window bytes as synced-through, for no fsync of segment 2 ran.
 	ePl := <-endAppend(se, 5, 0, 0x22)
 	if ePl.err != nil {
 		t.Fatal(ePl.err)
@@ -2287,9 +2288,10 @@ func TestEndSyncInFlightAcrossAFailureRollOwnsItsOwnSegment(t *testing.T) {
 }
 
 // TestEndTheStraddlingSyncsFailureMarksItsOwnSegmentAlone checks the other
-// half of the straddling sync: a failure of a segment the stream already left
-// neither marks the successor sync-failed nor ends it for a failure it never
-// had. It answers its error to its caller, which owns its window through End.
+// half of the straddling sync: a failure of the sync in flight when the
+// segment ended neither marks the successor sync-failed nor ends it for a
+// failure it never had. It answers its error to its caller, which owns its
+// window through End.
 func TestEndTheStraddlingSyncsFailureMarksItsOwnSegmentAlone(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -2319,15 +2321,16 @@ func TestEndTheStraddlingSyncsFailureMarksItsOwnSegmentAlone(t *testing.T) {
 		t.Fatalf("C's append = %v, want the fault's EIO", c.err)
 	}
 	// The sync rule stays armed: its one round is what the held fsync
-	// consults at its release, and nothing may disarm it before that.
+	// consults at its release, and nothing may disarm it before that. The
+	// event and the roll wait for the sync, so it returns first.
+	holdS.Release()
+	if err := <-syncDone; !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the straddling sync = %v, want the fault's EIO", err)
+	}
 	rec.awaitCount(t, 1, "the ended segment's event")
 	d := <-endAppend(se, 4, 0, 0x11)
 	if d.err != nil || d.p.Loc.Segment != 2 {
 		t.Fatalf("D's append = %v in segment %d, want a landing in 2", d.err, d.p.Loc.Segment)
-	}
-	holdS.Release()
-	if err := <-syncDone; !errors.Is(err, syscall.EIO) {
-		t.Fatalf("the straddling sync = %v, want the fault's EIO", err)
 	}
 
 	// The successor is untouched: it keeps its roll's state, takes further
@@ -2346,6 +2349,57 @@ func TestEndTheStraddlingSyncsFailureMarksItsOwnSegmentAlone(t *testing.T) {
 		t.Fatalf("the successor's own sync = %v, want nil", err)
 	}
 	endEventsStable(t, rec, "the append past the failed straddling sync")
+}
+
+// TestEndTheEventWaitsForASyncInFlightOnTheEndedSegment checks the event's
+// window against a Sync that straddles the failure: the sync took its prefix
+// before the append failed and its fsync is still running, so the window the
+// event names is read only after the sync returns. An event handed over at
+// the failure would name a SyncedThrough below what the returned Sync
+// covered, and a consumer failing "the window's records" would drop records
+// a nil-returning Sync already made durable (RFC 1 §5.3).
+func TestEndTheEventWaitsForASyncInFlightOnTheEndedSegment(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, rec := endStopBuilder(t)
+	se := endStopStreamEnv(e)
+	seg1 := streamSegName(1)
+
+	ah, ab := streamWriteHeader(streamFileID(1), 0, streamTestBody(64, 0x42), 7, core.Version{Counter: 1})
+	streamAppendWrite(t, se, ah, ab)
+	a2h, a2b := streamWriteHeader(streamFileID(1), 64, streamTestBody(512, 0x43), 7, core.Version{Counter: 2})
+	a2 := streamAppendWrite(t, se, a2h, a2b)
+	covered := a2.Loc.Off + a2.Loc.Len
+
+	holdS := e.seam.HoldFirst(t, journaltest.OpSync, seg1)
+	syncDone := make(chan error, 1)
+	go func() { syncDone <- e.s.Sync() }()
+	<-holdS.Reached()
+
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg1, 1, syscall.EIO)); err != nil {
+		t.Fatal(err)
+	}
+	if c := <-endAppend(se, 3, 1024, 0x7d); !errors.Is(c.err, syscall.EIO) {
+		t.Fatalf("C's append = %v, want the fault's EIO", c.err)
+	}
+	if err := e.seam.Schedule(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The sync is still in flight: its window is not final, so no event.
+	rec.awaitNone(t, "the event while a sync of the ended segment is in flight")
+
+	holdS.Release()
+	if err := <-syncDone; err != nil {
+		t.Fatalf("the straddling sync = %v, want nil", err)
+	}
+	ev := rec.awaitOne(t, "the event after the straddling sync returned")
+	if ev.Segment != 1 {
+		t.Fatalf("the event names segment %d, want 1", ev.Segment)
+	}
+	if ev.SyncedThrough < covered {
+		t.Fatalf("the event's SyncedThrough = %d, below %d the returned Sync covered: the window would include records a successful Sync made durable", ev.SyncedThrough, covered)
+	}
 }
 
 // TestEndALedgerRefusalToAnEndStillStartsTheNotifier checks the end's

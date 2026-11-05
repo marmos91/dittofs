@@ -1244,12 +1244,13 @@ func (s *Stream) Sync() error {
 	defer s.leaveDrain()
 
 	through := s.tracker.syncStart()
-	// The segment the fsync covers is named here, for the stream may move it
-	// while the fsync runs: an append failure ends its segment with no seal's
-	// drain to wait a sync out, and the failure path's roll installs its
-	// successor without one — a sync of the ended segment would otherwise
-	// apply its window to the successor's tracker (R10) and its success to
-	// the successor's own second-refusal word.
+	// The segment the fsync covers is named here, and the checks below hold
+	// the stream to it. The end's notifier waits this sync out before the roll
+	// that installs a successor can start, so today the stream cannot move
+	// while the fsync runs; the id check keeps a sync of an ended segment from
+	// ever applying its window to a successor's tracker (R10) or its success
+	// to the successor's own second-refusal word, should a roll ever stop
+	// waiting for the drain.
 	id, ref := s.id, s.ref
 	s.appendMu.Unlock()
 
