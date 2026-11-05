@@ -375,16 +375,16 @@ harness (`journalv2test/prof`) wired to the fixture.
 | 1 | **Interfaces** ⛔ | `pkg/block/enginev2`'s surface, `Deps` narrowed to this part, the engine over `pkg/vfs/vfserr`; the `Content` contract agreed with stage 2 | 5 | 8 | team | **everything** |
 | 2 | **Red e2e suite and test foundations** ⛔ | `engine-conformance` registered red, 45 rows, the fixture, a fault-injecting `kv.KV`, the fake journal | 9 | 28.5 | team | **all testing** in 3 to 10 |
 | 3 | **Write, read and overlay** ⛔ | per-file state, `Write`, `Draw`, `Overlay`, `Read`'s resolution, `Allocation` | 6 | 13 | A | 4, 8 |
-| 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 21 | B | 5, 6, 7 |
+| 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 21 | B | 5, 6, 7, 8 |
 | 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 15.25 | B | 6, 8 |
-| 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 9 | 24.75 | C | 7, 8 |
-| 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 4 | 12.5 | C | 9 |
+| 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 10 | 36.25 | C | 7, 8 |
+| 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 5 | 14.5 | C | 9 |
 | 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 7 | 19.5 | A | 5, 9 |
 | 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over stage 2's fake and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
 | 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 4 | 12.5 | team | the second part |
-| | **Total** | | **61** | **166.5** | | |
+| | **Total** | | **63** | **180** | | |
 
-**Plan estimate: 61 subtasks, 166.5 man-days.**
+**Plan estimate: 63 subtasks, 180 man-days.**
 
 RFC 8 is 3,627 lines, which gives N = 8. This part covers about half of it, and its cohesive
 areas are six: the data path, the stability point, removals, the lifecycle, capacity and
@@ -416,6 +416,7 @@ flowchart TD
   E4 -. "group commit, for recovery's commits" .-> E6
   E5 -. "removal loop, for start step 4" .-> E6
   E4 -. "commit times, for the self-fence" .-> E7
+  E4 -. "the group commit and the one sync, for the clone's phase 1" .-> E8
   E5 -. "guard and removal marker" .-> E8
   E8 -. "T8.1a's registrations, for T5.1's check" .-> E5
   E6 -. "clone markers at start" .-> E8
@@ -498,7 +499,7 @@ flowchart TD
   epic 4's group commit and epic 5's loop exist.
 - **Where the team converges:** epics 1 and 2 before S2; epic 9 and epic 10 after S3.
 - **Where the tracks wait on each other:** the graph's cross-track edges are E3 to E4, E4
-  to E6 and E7, E5 to E6, E5 and E6 to E8, and E8 to E5. Track B starts epic 4 on the verifier, which
+  to E6, E7 and E8, E5 to E6, E5 and E6 to E8, and E8 to E5. Track B starts epic 4 on the verifier, which
   replaces T3.2's stand-in, and the group commit, on epic 3's per-file state; the loss
   sequence and the split build on the group commit. Epic 5's T5.1 also reads T8.1a's
   registrations; T8.1a needs nothing of epic 5 and lands first, and T8.1b, the removal
@@ -794,7 +795,10 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
 
 ### Epic 6 — Start, bindings and recovery ⛔
 
-**Epic 6 estimate: 9 subtasks, 24.75 man-days.**
+**Epic 6 estimate: 10 subtasks, 36.25 man-days.**
+
+The breakdown, `rfc-8-engine-epic6.md`, restates this epic and its estimate; the subtask list
+below is the plan's, kept for the history of the split.
 
 The engine's life, and the store calls it needs. RFC 8 §2.1's `Lifecycle` names
 `JournalID`, `VersionLimits` and `RaiseVersionLimits` within `K` keys a transaction, and
@@ -844,7 +848,10 @@ and stop, §2.7. Counters: none new; conditions named by `Stats` for a refused s
 
 ### Epic 7 — Capacity, self-fence and health
 
-**Epic 7 estimate: 4 subtasks, 12.5 man-days.**
+**Epic 7 estimate: 5 subtasks, 14.5 man-days.**
+
+The breakdown, `rfc-8-engine-epic7.md`, restates this epic and its estimate; the subtask list
+below is the plan's, kept for the history of the split.
 
 The refusal table with no offload behind it, RFC 8 §10.2 as #3547 words it. A refused write
 gets a repack scoped by the refusal's limit, the share's segments for the share's limit and
