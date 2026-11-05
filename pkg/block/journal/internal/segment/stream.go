@@ -372,11 +372,14 @@ var ErrBadRoll = errors.New("segment: the roll options do not fit the record")
 // classifies the refusal the roll answers with — the one place the roll
 // knows its answer is final.
 //
-// When the pool reports making a spare failed with ENOSPC, a refusal naming
-// `spare` is answered with the platform's own ENOSPC, wrapped so errors.Is
-// holds for syscall.ENOSPC and not for core.ErrNoSpace: the journal's limits
-// are the caller's to drain and a full device is the operator's, and the two
-// must not be answered alike (R21). It is not counted. Otherwise the refusal
+// When the pool reports making a spare failed with ENOSPC and no full-size
+// retired segment is queued to be recycled, a refusal naming `spare` is
+// answered with the platform's own ENOSPC, wrapped so errors.Is holds for
+// syscall.ENOSPC and not for core.ErrNoSpace: the journal's limits are the
+// caller's to drain and a full device is the operator's, and the two must not
+// be answered alike (R21). It is not counted. When such a segment is queued
+// the recycle is what clears the shortage, so the refusal is the counted
+// `spare` one below. Otherwise the refusal
 // naming `spare` is counted once and returned unchanged (R20, R22). Every
 // other answer passes through unchanged and uncounted: a stopped pool's
 // core.ErrClosed, when it carries no NoSpaceError, and a header-only roll's
@@ -391,14 +394,10 @@ func (s *Stream) takeSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
 		return id, nil
 	}
 
-	// The full device, answered as itself rather than as a limit.
-	//
-	// ponytail: no full-size retired segment is consulted, because nothing
-	// hands one over yet. Ceiling: a roll answers ENOSPC while a retirement
-	// could have supplied a spare. Upgrade to asking the retirement queue
-	// once one exists — the fact it hands over is what clears this answer.
+	// The full device, answered as itself rather than as a limit, unless a
+	// full-size retired segment is to hand: that recycle is the spare.
 	var spare *core.NoSpaceError
-	if errors.As(err, &spare) && spare.Limit == core.LimitSpare && s.pool.DeviceFull() {
+	if errors.As(err, &spare) && spare.Limit == core.LimitSpare && s.pool.DeviceFull() && !s.pool.retiredToHand() {
 		return 0, fmt.Errorf("segment: no spare is ready and making one failed for lack of device space: %w", syscall.ENOSPC)
 	}
 

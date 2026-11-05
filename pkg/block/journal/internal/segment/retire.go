@@ -99,7 +99,7 @@ type RetirerConfig struct {
 // one retirement now; Enqueue hands the worker one; Stop joins it.
 //
 // decision: the executor's own state — the queue with its reasons, the set of
-// queued ids, the freed counter and the extra names a failed recycle left —
+// queued ids, the subset of them a recycle would take, the freed counter and the extra names a failed recycle left —
 // sits under the capacity domain of RFC 1 §8.2, as D13 asks of every piece of
 // mutable state this epic adds: no I/O under the mutex, no lock acquired
 // while it is held, and never held across a Set, Pool, Descriptors or storage
@@ -114,6 +114,11 @@ type Retirer struct {
 	queue   []core.SegmentID
 	reasons []Reason
 	queued  map[core.SegmentID]struct{}
+	// full is the queued ids whose retirement is a recycle candidate: not
+	// held and sealed full, with a pool to take the spare. Its length is the
+	// count the pool's refill asks, kept at each enqueue and drop so no
+	// question walks the queue; guarded by mu.
+	full    map[core.SegmentID]struct{}
 	started bool
 	// extra holds the names a recycle's failed rename may have put the file
 	// under beside the segment's own, keyed by the segment id: the retry's
@@ -146,15 +151,20 @@ func NewRetirer(c RetirerConfig) *Retirer {
 	if c.Log == nil {
 		c.Log = slog.New(slog.DiscardHandler)
 	}
-	return &Retirer{
+	r := &Retirer{
 		cfg:        c,
 		log:        c.Log,
 		queued:     make(map[core.SegmentID]struct{}),
+		full:       make(map[core.SegmentID]struct{}),
 		extra:      make(map[core.SegmentID][]string),
 		kick:       make(chan struct{}, 1),
 		done:       make(chan struct{}),
 		retryEvery: time.Second,
 	}
+	if c.Pool != nil {
+		c.Pool.attachRetirer(r)
+	}
+	return r
 }
 
 // Retire runs one retirement now: the unlink or the recycle of the segment id
@@ -457,6 +467,10 @@ func (r *Retirer) signal(ret Retirement) {
 // a second hand-over of the same segment changes nothing — and the kick
 // wakes the worker, coalesced. After Stop it is a drop.
 func (r *Retirer) Enqueue(id core.SegmentID, reason Reason) {
+	// Whether the segment is a recycle candidate is the ledger's to say, and
+	// no ledger call runs under r.mu.
+	isFull := reason == NotHeld && r.cfg.Pool != nil && r.cfg.Set.SealedFull(id)
+
 	r.mu.Lock()
 	if r.stoppedLocked() {
 		r.mu.Unlock()
@@ -466,6 +480,9 @@ func (r *Retirer) Enqueue(id core.SegmentID, reason Reason) {
 		r.queue = append(r.queue, id)
 		r.reasons = append(r.reasons, reason)
 		r.queued[id] = struct{}{}
+		if isFull {
+			r.full[id] = struct{}{}
+		}
 	}
 	r.mu.Unlock()
 
@@ -526,11 +543,19 @@ func (r *Retirer) Stop() {
 	// select could still pick the pending kick and run a pass after Stop
 	// returned. The closed channel is itself the stop flag everything
 	// reads — stoppedLocked only selects on it.
+	var wake bool
 	r.stop.Do(func() {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		close(r.done)
+		// The queue is no recycle to wait for once nobody drains it: the
+		// pool that held its refill for it is woken after the unlock.
+		wake = len(r.full) > 0
+		clear(r.full)
 	})
+	if wake && r.cfg.Pool != nil {
+		r.cfg.Pool.Kick()
+	}
 	r.wg.Wait()
 }
 
@@ -645,10 +670,21 @@ func (r *Retirer) pass() {
 
 // dropQueued forgets a queued id: its retirement is done, or the queue is
 // wrong to carry it further.
+//
+// The pool is kicked, after the unlock, when this drop emptied the full-size
+// set: a pool that held its refill for the recycle makes the slot the recycle
+// did not fill.
 func (r *Retirer) dropQueued(id core.SegmentID) {
 	r.mu.Lock()
 	delete(r.queued, id)
+	_, wasFull := r.full[id]
+	delete(r.full, id)
+	emptied := wasFull && len(r.full) == 0
 	r.mu.Unlock()
+
+	if emptied && r.cfg.Pool != nil {
+		r.cfg.Pool.Kick()
+	}
 }
 
 // requeue puts an id back at the head of the queue with its reason, for the

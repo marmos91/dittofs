@@ -88,7 +88,8 @@ type PoolCounters struct {
 // ready to be taken by a roll that costs no I/O, and the worker that keeps
 // each class at its target by making spares off the write path.
 //
-// decision: ready, held, pending, incoming, started, stopped and deviceFull
+// decision: ready, held, pending, incoming, started, stopped, deviceFull and
+// retirer
 // sit under the capacity domain of RFC 1 §8.2 — store-wide counters, no I/O
 // under p.mu, no lock acquired while it is held, and never held across a Maker
 // or a Set call: those take locks of this same domain, and no two locks of one
@@ -109,6 +110,7 @@ type Pool struct {
 	started    bool                          // guarded by mu
 	stopped    bool                          // guarded by mu
 	deviceFull bool                          // guarded by mu
+	retirer    *Retirer                      // the source of recycled spares, nil when none; guarded by mu
 
 	// spareRefusals counts each roll the pool refused naming `spare`. The
 	// pool never raises it itself: only the roll does, because only the
@@ -569,8 +571,9 @@ func (p *Pool) Stop() {
 // reaches the write path; making spares here is what keeps that true.
 //
 // ponytail: retries are demand-driven. A failed make is retried on the next
-// kick — every take, refused or not, every replacement, and the kick a
-// retirement makes — with no timer of its own. Ceiling: an idle journal
+// kick — every take, refused or not, every replacement, the kick a
+// retirement makes and the one the retirement queue's draining makes — with
+// no timer of its own. Ceiling: an idle journal
 // whose last make failed makes no spare until something takes or retires,
 // and a failing device sees one make attempt per refused roll, coalesced by
 // the one-slot kick. Upgrade to a timed retry on the pool's clock once
@@ -622,6 +625,19 @@ func (p *Pool) refill() bool {
 			return true
 		}
 		p.mu.Unlock()
+
+		// decision: the pool grows only when no full-size retired segment is
+		// to hand (RFC 28 §2.2, RFC 1 §6): a queued full-sealed segment is
+		// recycled into this very slot, so the pass makes nothing and the
+		// retirement queue's emptying, or an unlink's own kick, starts the
+		// next. Ceiling: one queued full segment stalls every make even when
+		// the pool is short by more than one, and so does a queued segment
+		// whose claim another path holds, for as long as that claim lasts.
+		// Withdrawn when spare refusals show rolls refused while a queued
+		// recycle stays stuck.
+		if p.retiredToHand() {
+			return true
+		}
 
 		// Make owns the pairing: an error returns no id, so the appends
 		// below never see an id of 0 named by a failure.
