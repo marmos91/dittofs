@@ -44,6 +44,25 @@ type CloneOp struct {
 // before anything changes. A clone at or below applied was applied before,
 // and a replay changes nothing.
 //
+// pending is the destination's operations the journal holds and the store
+// has not recorded, the copies aside, which Copied covers. Those below the
+// clone are committed before it, as a commit would. Those above it, outside
+// the extent, are applied after it in the same transaction: phase 1 sets
+// applied to Copied, so a later commit of one would be skipped as applied.
+// A replay, the clone already applied, applies those of them above applied,
+// as a commit would.
+//
+// decision: a write outside the extent staged on the destination while the
+// clone runs is recorded by phase 1 itself, after the clone, rather than the
+// engine refusing such writes until phase 1, which would hold a whole file's
+// writes behind a clone of one extent. Withdraw it if a clone ever leaves
+// applied below its copies' newest version.
+//
+// ponytail: the operations above the clone are applied in phase 1's one
+// transaction outside the key budget K, so many such writes during one clone
+// grow it past K. Split them into commits after phase 1 if a clone's
+// transaction is refused for size.
+//
 // Until the clone is done, a covering lookup over the destination extent
 // answers ErrDelay rather than a half-copied extent, and the engine answers
 // a write into it ErrDelay, so no destination write lands where a batch
@@ -65,8 +84,16 @@ func (e Existence) Clone(ctx context.Context, op CloneOp, pending []PendingOp) e
 		entity.ExtentOf(sp.SrcOff, sp.SrcOff+sp.Len).Overlaps(entity.ExtentOf(sp.DstOff, sp.DstOff+sp.Len)) {
 		return merrs.NewInvalidArgumentError("a clone overlapping itself")
 	}
-	if len(pending) > 0 {
-		failed, err := e.Commit(ctx, []PendingExistence{{Share: op.Share, File: op.File, Epoch: op.Epoch, Ops: pending}}, nil)
+	var below, above []PendingOp
+	for _, p := range pending {
+		if p.Version.Less(op.Version) {
+			below = append(below, p)
+		} else {
+			above = append(above, p)
+		}
+	}
+	if len(below) > 0 {
+		failed, err := e.Commit(ctx, []PendingExistence{{Share: op.Share, File: op.File, Epoch: op.Epoch, Ops: below}}, nil)
 		if err != nil {
 			return err
 		}
@@ -78,43 +105,52 @@ func (e Existence) Clone(ctx context.Context, op CloneOp, pending []PendingOp) e
 	if err != nil {
 		return err
 	}
-	return e.s.kv.Update(ctx, func(tx kv.Txn) error { return clonePhase1(tx, op, e.s.k, entity.OpenID(hold)) })
+	return e.s.kv.Update(ctx, func(tx kv.Txn) error {
+		applied, err := clonePhase1(tx, op, e.s.k, entity.OpenID(hold))
+		if err != nil || len(above) == 0 {
+			return err
+		}
+		// A replay of a phase 1 that committed already applies only what is
+		// above applied: what it applied then stays as it is.
+		return applyAll(tx, PendingExistence{Share: op.Share, File: op.File, Epoch: op.Epoch, Ops: above}, !applied)
+	})
 }
 
 // clonePhase1 applies the clone's first phase, holding its source with a
-// durable open under the ID hold.
-func clonePhase1(tx kv.Txn, op CloneOp, k int, hold entity.OpenID) error {
+// durable open under the ID hold. It reports whether it applied it: a clone
+// at or below applied changes nothing.
+func clonePhase1(tx kv.Txn, op CloneOp, k int, hold entity.OpenID) (bool, error) {
 	sp, share, file := op.Spec, op.Share, op.File
 	if err := rewriteFences(tx, share, file, op.Epoch); err != nil {
-		return err
+		return false, err
 	}
 	f, err := fileIn(tx, share, file)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !f.Applied.Less(op.Version) {
-		return nil // applied before, its source perhaps gone since
+		return false, nil // applied before, its source perhaps gone since
 	}
 	if err := destinationFree(tx, share, file); err != nil {
-		return err
+		return false, err
 	}
 	before := f
 	src, err := fileIn(tx, sp.SrcShare, sp.Src)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if sp.SrcOff+sp.Len > src.Size {
-		return merrs.NewInvalidArgumentError("a clone past the source's end of file")
+		return false, merrs.NewInvalidArgumentError("a clone past the source's end of file")
 	}
 	if err := sameNamespaces(tx, sp.SrcShare, share); err != nil {
-		return err
+		return false, err
 	}
 	if err := noCloneOver(tx, sp.SrcShare, sp.Src, entity.ExtentOf(sp.SrcOff, sp.SrcOff+sp.Len)); err != nil {
-		return err
+		return false, err
 	}
 	ms, err := masksOf(tx, share, file)
 	if err != nil {
-		return err
+		return false, err
 	}
 	ext := entity.ExtentOf(sp.DstOff, sp.DstOff+sp.Len)
 	was := f.Version
@@ -122,17 +158,17 @@ func clonePhase1(tx kv.Txn, op CloneOp, k int, hold entity.OpenID) error {
 	if live := ext.Intersect(entity.Extent{Length: f.Size}); !live.IsEmpty() {
 		var charged int64
 		if charged, credit, err = chargedIn(tx, share, file, f, ms, live, k, false); err != nil {
-			return err
+			return false, err
 		}
 		f.Charged -= charged
 		back, err := narrowStraddlers(tx, share, file, f, ms, live, true)
 		if err != nil {
-			return err
+			return false, err
 		}
 		f.Charged += back
 	} else if ext.Offset > f.Size {
 		if err := gapHole(tx, share, &f, ms, ext.Offset, op.Version); err != nil {
-			return err
+			return false, err
 		}
 	}
 	// The destination exists over the whole extent; phase 2 writes the
@@ -146,20 +182,20 @@ func clonePhase1(tx kv.Txn, op CloneOp, k int, hold entity.OpenID) error {
 	f.Modify, f.Change = later(f.Modify, op.Time), later(f.Change, op.Time)
 	f.Version = nextFileVersion(tx, entity.MaxVersion(f.Version, f.Applied))
 	if err := putFile(tx, was, f); err != nil {
-		return err
+		return false, err
 	}
 	if err := chargeFile(tx, share, &before, &f); err != nil {
-		return err
+		return false, err
 	}
 	spec := sp
 	m := entity.Removal{Version: op.Version, Extent: ext, Kind: entity.RemoveClone, Cursor: ext.Offset, OvSpan: f.MaxOverwrite, HoleCredit: credit, Shard: f.Shard, Clone: &spec}
 	if err := putRemoval(tx, share, file, m); err != nil {
-		return err
+		return false, err
 	}
 	// The source's hold: a durable open of the clone-source kind, held by
 	// no client, which no grace end closes and only the clone's last batch
 	// does.
-	return putOpen(tx, sp.SrcShare, src.Shard, entity.OpenRecord{ID: hold, File: sp.Src, Kind: entity.OpenCloneSource,
+	return true, putOpen(tx, sp.SrcShare, src.Shard, entity.OpenRecord{ID: hold, File: sp.Src, Kind: entity.OpenCloneSource,
 		CloneDst: file, CloneVersion: op.Version})
 }
 

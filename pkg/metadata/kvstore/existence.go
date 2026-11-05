@@ -281,13 +281,10 @@ func commitExistence(tx kv.Txn, p PendingExistence, first, budget int, fresh boo
 	if f.Type != entity.Regular && f.Type != entity.Stream {
 		return 0, 0, fileFailed(ErrNotContent)
 	}
-	ms, err := masksOf(tx, p.Share, p.File)
+	st, err := newExistState(tx, p, f, fenced)
 	if err != nil {
 		return 0, 0, err
 	}
-	st := &existState{tx: tx, share: p.Share, file: p.File, size: f.Size, f: f, orig: f, was: f.Version, fenced: fenced, epoch: p.Epoch, ms: ms,
-		holes: map[int64]hole{}, stored: map[int64]hole{}, masked: map[int64]hole{}, ovs: map[int64]overwrite{},
-		dirtyH: map[int64]bool{}, dirtyO: map[int64]bool{}}
 	i := first
 	for ; i < len(p.Ops); i++ {
 		op := p.Ops[i]
@@ -312,6 +309,60 @@ func commitExistence(tx kv.Txn, p PendingExistence, first, budget int, fresh boo
 		return i, 0, nil // nothing above applied: nothing to write
 	}
 	return i, st.keys(), st.flush()
+}
+
+// newExistState is file f's existence as p's commit starts changing it.
+func newExistState(tx kv.Txn, p PendingExistence, f entity.File, fenced bool) (*existState, error) {
+	ms, err := masksOf(tx, p.Share, p.File)
+	if err != nil {
+		return nil, err
+	}
+	return &existState{tx: tx, share: p.Share, file: p.File, size: f.Size, f: f, orig: f, was: f.Version, fenced: fenced, epoch: p.Epoch, ms: ms,
+		holes: map[int64]hole{}, stored: map[int64]hole{}, masked: map[int64]hole{}, ovs: map[int64]overwrite{},
+		dirtyH: map[int64]bool{}, dirtyO: map[int64]bool{}}, nil
+}
+
+// applyAll applies p's operations, in its version order, and writes the
+// result. With skip false it applies each whatever the file's applied, for
+// operations a caller knows are not yet recorded though applied is above
+// them; with skip true it skips those at or below applied, as a commit
+// does, and writes nothing when none is left.
+func applyAll(tx kv.Txn, p PendingExistence, skip bool) error {
+	fenced, err := existenceFence(tx, p)
+	if err != nil {
+		return err
+	}
+	f, err := fileIn(tx, p.Share, p.File)
+	if err != nil {
+		return err
+	}
+	st, err := newExistState(tx, p, f, fenced)
+	if err != nil {
+		return err
+	}
+	applied := 0
+	for i, op := range p.Ops {
+		if i > 0 && !p.Ops[i-1].Version.Less(op.Version) {
+			return merrs.NewInvalidArgumentError("operations not in version order")
+		}
+		if skip && !st.f.Applied.Less(op.Version) {
+			continue
+		}
+		applied++
+		if _, err := st.bound(op); err != nil { // loads the records op touches
+			return err
+		}
+		if err := st.apply(op); err != nil {
+			if ff, ok := err.(fileFailure); ok {
+				return ff.err
+			}
+			return err
+		}
+	}
+	if applied == 0 {
+		return nil
+	}
+	return st.flush()
 }
 
 // existenceFence reads the file's existence fence, tracked, reporting

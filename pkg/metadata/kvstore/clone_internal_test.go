@@ -298,3 +298,49 @@ func TestCloneJoinsEdgeHolesAtDone(t *testing.T) {
 		})
 	}
 }
+
+// RFC 8 §9.1 step 4: a write outside the extent staged on the destination
+// after the clone's journal step, below the copies' newest version, is
+// recorded by phase 1 after the clone: it grows the file past a hole, and a
+// later commit of it changes nothing. Committed before the clone, it would
+// raise applied above the clone, which phase 1 would then skip.
+func TestCloneAppliesTheWritesAboveIt(t *testing.T) {
+	f := newContentFix(t, nil)
+	src, dst := f.file(0), f.file(0)
+	f.exist(src, write(1, 0, 4*mib))
+	op := f.cloneOp(src, dst, 0, 0, mib, 5)
+	op.Copied = entity.VersionOf(7)
+	if err := f.s.Existence().Clone(context.Background(), op, []PendingOp{write(6, 3*mib, mib)}); err != nil {
+		t.Fatal(err)
+	}
+	got := f.get(dst)
+	if got.Size != 4*mib || got.Applied != entity.VersionOf(7) {
+		t.Errorf("after phase 1: size %d applied %v; want 4 MiB and the copies' 7", got.Size, got.Applied)
+	}
+	f.resume(dst)
+	f.want(dst, "after the clone", "uncarved[0,1) hole[1,3) uncarved[3,4)")
+	f.exist(dst, write(6, 3*mib, mib)) // the group commit's replay of it
+	if again := f.get(dst); again.Size != got.Size || again.Applied != got.Applied || again.Charged != got.Charged {
+		t.Errorf("a later commit of the write changed the file: %+v, was %+v", again, got)
+	}
+}
+
+// A phase 1 replayed after it committed, handed a write above the clone
+// staged since, records that write: the replay skips the clone but not the
+// operations above applied.
+func TestACloneReplayAppliesTheWritesAboveApplied(t *testing.T) {
+	f := newContentFix(t, nil)
+	src, dst := f.file(0), f.file(0)
+	f.exist(src, write(1, 0, 4*mib))
+	op := f.cloneOp(src, dst, 0, 0, mib, 5)
+	op.Copied = entity.VersionOf(7)
+	if err := f.s.Existence().Clone(context.Background(), op, []PendingOp{write(6, 3*mib, mib)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.Existence().Clone(context.Background(), op, []PendingOp{write(6, 3*mib, mib), write(9, 6*mib, mib)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.get(dst); got.Size != 7*mib || got.Applied != entity.VersionOf(9) {
+		t.Errorf("after the replay: size %d applied %v; want 7 MiB and 9, the new write recorded", got.Size, got.Applied)
+	}
+}
