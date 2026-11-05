@@ -1273,7 +1273,10 @@ after a loss, each client resends its recent unstable writes once.
   the transaction that covers its file, or the last of them for a file split
   over several. Stability points that arrive together share those
   transactions, across files, so a burst of `fsync`s costs one transaction per
-  batch, not one per file.
+  batch, not one per file. An overwrite staged above a removal whose phase 1
+  has not committed is not covered until that phase 1 commits ([§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)), so its
+  stability point waits for that phase 1 too, bounded only as for a store that
+  commits nothing ([§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)).
 - **Existence is otherwise committed lazily.** A file's pending existence is
   committed by the group commit within a bounded age of the sync that made it
   recoverable (**proposal**: 1 s, the `existence_age` setting), and always before
