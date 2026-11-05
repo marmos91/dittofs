@@ -622,6 +622,7 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 
 	s.appendMu.Lock()
 	if s.closed {
+		s.appendMu.Unlock()
 		return Placed{}, ErrStreamClosed
 	}
 	// Counted before anything is reserved and under the same lock Close sets
