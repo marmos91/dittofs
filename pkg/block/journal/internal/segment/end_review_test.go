@@ -746,9 +746,13 @@ func TestEndACloseDuringTheSealWaitAnswersClosed(t *testing.T) {
 	if err := <-endDone; !errors.Is(err, segment.ErrStreamClosed) {
 		t.Fatalf("End across a Close that landed during the seal wait = %v, want ErrStreamClosed", err)
 	}
-	<-sealDone
+	// The seal's own result is not part of what this test claims: it is waited
+	// out so no goroutine outlives the test, and logged for a failing run.
+	t.Logf("the Seal that waited out the Close returned %v", <-sealDone)
 	<-aDone
-	<-closeDone
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close = %v, want nil", err)
+	}
 }
 
 // endAwaitParked fails the test unless a goroutine is blocked in the drain
