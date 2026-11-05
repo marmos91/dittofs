@@ -18,7 +18,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
-	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // endAppendResult is one concurrent append's pair of answers, gathered over a
@@ -742,6 +741,24 @@ func (r *endRecorder) awaitNone(t *testing.T, what string) {
 	}
 }
 
+// endEventsStable fails the test unless the recorder's event count stays where
+// it stands through a bounded spin: the "no second event" checks read it, for
+// the one event a segment hands over has already arrived by the time they run
+// and the bound they keep is that nothing more lands.
+func endEventsStable(t *testing.T, r *endRecorder, what string) {
+	t.Helper()
+
+	n := r.count()
+	for i := range endAttempts {
+		if got := r.count(); got != n {
+			t.Fatalf("%s: the consumer now holds %d end events, want the %d it held: the one end a segment owns hands over once", what, got, n)
+		}
+		if i%64 == 0 {
+			runtime.Gosched()
+		}
+	}
+}
+
 // endZeroSlotWithConsumer runs the zero-slot choreography over a stream whose
 // consumer is already registered, and returns the environment, the recording
 // consumer, the ended segment's id, the failed slot's offset and the first
@@ -849,11 +866,11 @@ func TestEndTheEventIsHandedOverOnce(t *testing.T) {
 	if err := e.s.Sync(); err != nil {
 		t.Fatalf("the Sync of the new segment: %v", err)
 	}
-	rec.awaitNone(t, "the append past the end")
+	endEventsStable(t, rec, "the append past the end")
 	if err := e.s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	rec.awaitNone(t, "the Close")
+	endEventsStable(t, rec, "the Close")
 }
 
 // TestEndTheEventWaitsForAnEarlierSlotStillWriting checks the wait the
@@ -882,12 +899,12 @@ func TestEndTheEventWaitsForAnEarlierSlotStillWriting(t *testing.T) {
 		}
 	})
 	sa, sb := ss.Stream(0), ss.Stream(1)
-	seg := streamSegName(1)
 	rec := &endRecorder{}
 	sa.OnEnd(rec.OnEnd)
 
-	// Record A lands and is synced on the first stream, so its end event's
-	// window has a value the checks read back.
+	// Record A lands and is synced on the first stream, so its end
+	// event's window has a value the checks read back; the segment it
+	// takes is the one the holds below work on.
 	aPayload := streamTestBody(64, 0x42)
 	ah, abody := streamWriteHeader(streamFileID(1), 0, aPayload, 7, core.Version{Counter: 1})
 	se := streamEnv{seam: e.seam, set: e.set, maker: e.maker, cache: e.cache, budget: e.budget, s: sa, cap: streamCap}
@@ -895,7 +912,7 @@ func TestEndTheEventWaitsForAnEarlierSlotStillWriting(t *testing.T) {
 	if err := sa.Sync(); err != nil {
 		t.Fatalf("the first Sync: %v", err)
 	}
-	seg = streamSegName(aPlaced.Loc.Segment)
+	seg := streamSegName(aPlaced.Loc.Segment)
 
 	// B parks at the seam; C fails. The fault is armed once B's write is
 	// parked and C's is set loose, so the rule's one round fires on C's
@@ -1107,13 +1124,11 @@ func TestEndASealEndedSegmentSendsOneEvent(t *testing.T) {
 	if _, err := se.s.Append(bh, bbody); !errors.Is(err, syscall.EIO) {
 		t.Fatalf("the failed Append on the seal's env = %v, want the fault's EIO", err)
 	}
-	if got := recSeal.count(); got != 1 {
-		t.Fatalf("the write-ended segment handed %d events, want one", got)
-	}
+	recSeal.awaitOne(t, "the writeended segment's end")
 	if _, err := se.s.Seal(false); !errors.Is(err, segment.ErrSegmentEnded) {
 		t.Fatalf("Seal of the write-ended segment = %v, want ErrSegmentEnded", err)
 	}
-	recSeal.awaitNone(t, "the Seal of an already-ended segment")
+	endEventsStable(t, recSeal, "the Seal of an already-ended segment")
 }
 
 // TestEndRequestedAfterAFailedSync checks the durability code's own request:
@@ -1183,7 +1198,7 @@ func TestEndRequestedAfterAFailedSync(t *testing.T) {
 	if err := e.s.End(placed.Loc.Segment, syncErr); err != nil {
 		t.Fatalf("the second End of the ended segment = %v, want nil", err)
 	}
-	rec.awaitNone(t, "the second End")
+	endEventsStable(t, rec, "the second End")
 
 	// An End of a sealed segment is refused, and sends nothing. The new
 	// segment is sealed whole: a full Seal keeps its cap, and the segment
@@ -1197,7 +1212,7 @@ func TestEndRequestedAfterAFailedSync(t *testing.T) {
 	if err := e.s.End(d.Loc.Segment, syncErr); !errors.Is(err, segment.ErrWrongState) {
 		t.Fatalf("End of the sealed segment = %v, want ErrWrongState", err)
 	}
-	rec.awaitNone(t, "the End of a sealed segment")
+	endEventsStable(t, rec, "the End of a sealed segment")
 
 	// An End past the stream's Close is refused.
 	if err := e.s.Close(); err != nil {
@@ -1288,20 +1303,20 @@ func TestEndCloseWaitsForTheNotifier(t *testing.T) {
 	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
 	t.Cleanup(func() { _ = e.s.Close() })
 
-	// One record lands; the next write fails, ending the segment and
-	// starting a notifier whose consumer blocks on a channel until the
-	// test lets it pass.
-	aPayload := streamTestBody(64, 0x42)
-	ah, abody := streamWriteHeader(streamFileID(1), 0, aPayload, 7, core.Version{Counter: 1})
-	streamAppendWrite(t, e, ah, abody)
+	// The consumer blocks on a channel until the test lets it pass; it is
+	// registered before anything appends, as OnEnd's gate demands.
 	blocked := make(chan struct{})
 	entered := make(chan struct{})
-	pass := make(chan struct{})
 	e.s.OnEnd(func(ev segment.EndEvent) {
 		close(entered)
 		<-blocked
-		<-pass
 	})
+
+	// One record lands; the next write fails, ending the segment and
+	// starting a notifier whose consumer blocks on the channel.
+	aPayload := streamTestBody(64, 0x42)
+	ah, abody := streamWriteHeader(streamFileID(1), 0, aPayload, 7, core.Version{Counter: 1})
+	streamAppendWrite(t, e, ah, abody)
 	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg, 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
@@ -1331,7 +1346,6 @@ func TestEndCloseWaitsForTheNotifier(t *testing.T) {
 		}
 	}
 	close(blocked)
-	<-pass
 	select {
 	case err := <-closed:
 		if err != nil {
@@ -1418,14 +1432,7 @@ func TestEndEveryEndedSegmentHandsOneEventUnderRace(t *testing.T) {
 	// so the ends and the rolls interleave under the streams' own locks. The
 	// maker's writes run under its spare names, which no *.seg rule matches,
 	// so the fault leaves the spare making alone.
-	if err := seam.Schedule(sim.Rule{
-		Op:   journaltest.OpWrite,
-		Key:  "*.seg",
-		Prob: 0.25,
-		Action: sim.FaultAction{
-			Err: syscall.EIO,
-		},
-	}); err != nil {
+	if err := seam.Schedule(journaltest.FailingRandomly(journaltest.OpWrite, "*.seg", 0.25, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 

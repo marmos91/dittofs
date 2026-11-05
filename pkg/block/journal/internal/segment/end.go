@@ -112,20 +112,63 @@ func (s *Stream) endLocked(cause EndCause, err error) (core.SegmentID, bool) {
 // waits for it before it releases the active segment's ref: a consumer must
 // not call Close from it, for it would wait on itself.
 //
-// ponytail: nothing is handed to any consumer yet — the end only clears the
-// record, and a nil consumer drops it. The end event and its wait on every
-// slot the segment reserved, the tracker's synced value among the record's
-// fields, and the roll's own `OnEnd` registration are the next step of the
-// change this stub holds a place for; until then the record's fields are
-// written by no one past the end that made them. Replace the whole stub rather
-// than growing it beside a real hand-off.
+// The hand-over waits for every reservation the segment held — those
+// reserved before the failed one and those reserved after it alike — on the
+// stream's own cond, which drops appendMu while it waits.
+//
+// decision: the wait covers the later slots, a superset of the ones before
+// the failed slot, because RFC 28 §4.2's zero-slot row and epic 6's window
+// require the record of the append that completed after the failure to be in
+// the window the durability code reads: an event handed over while a later
+// slot still writes would leave an acknowledged record out of the window, and
+// the window is the record's only word that its bytes were not made durable.
+// Withdrawn only by a window that reads the segment's own ledger, which
+// would then carry the slots itself.
+//
+// decision: the named completion is the append's own completion section, not
+// R88's Track registration, for R88's durability sink is not part of this
+// stack yet: "registered its record" here means the completion ran the
+// tracker's complete under appendMu. The day R88 lands, its Track call goes
+// before that completion section, and this wait then implies the registration
+// too — the order is R88's to keep, not this wait's.
+//
+// The roll cannot move the segment the wait reads — s.id, and the tracker's
+// synced value with it — for it installs only once the end's record is
+// cleared, and the record is what this hand-over clears.
 func (s *Stream) notifyEnd() {
 	defer s.inflight.Done()
 
 	s.appendMu.Lock()
+	for s.apending > 0 {
+		s.drained.Wait()
+	}
+	rec := s.ending
+	ev := EndEvent{
+		Stream:  s.no,
+		Segment: rec.id,
+		Cause:   rec.cause,
+		Err:     rec.err,
+		// No write of the segment failed — a sync's failure, a requested
+		// end — so the end is the end of every reservation the segment
+		// held: the record's own next.
+		Failed:        rec.next,
+		SyncedThrough: s.tracker.synced,
+	}
+	if s.failedAt >= 0 {
+		ev.Failed = s.failedAt
+	}
 	s.ending = nil
+	fn := s.onEnd
 	s.appendMu.Unlock()
 	s.drained.Broadcast() // the roll waiting out the ended segment may pass
+
+	// The consumer runs with no lock held, on this goroutine, so it may
+	// read the ledger and its own tables freely — and Close waits for it
+	// before it releases the segment's ref, so the segment it names is
+	// still in the set while it runs.
+	if fn != nil {
+		fn(ev)
+	}
 }
 
 // OnEnd registers the consumer of the stream's end events. It must be called
@@ -143,8 +186,19 @@ func (s *Stream) OnEnd(fn func(EndEvent)) {
 }
 
 // End ends segment seg at the durability code's request after a failed sync,
-// with cause as its reason.
+// with cause as its reason. The request names the segment it failed on, so
+// the stream's own routing decides what the request means: its active segment
+// takes the end, a segment the stream already left needs nothing, and a
+// segment the stream never owned answers the ledger's own word.
+//
+// The request returns as soon as the end is made — the event's hand-over is
+// the notifier's own wait on the reservations the segment still holds, and
+// the request is not held hostage to a write it never owned.
 func (s *Stream) End(seg core.SegmentID, cause error) error {
+	// A requested end with no cause names no failure, so the caller's own
+	// sequencing is broken: the durability code asks for an end on the
+	// heels of a failed sync it owns, and a nil cause would hand its
+	// consumer an event whose failure names nothing.
 	if cause == nil {
 		panic("segment: End with no cause: a requested end names the failure that asked for it")
 	}
@@ -153,6 +207,61 @@ func (s *Stream) End(seg core.SegmentID, cause error) error {
 		s.appendMu.Unlock()
 		return ErrStreamClosed
 	}
+	// A seal still running owns the segment: wait it out on the drain's
+	// cond, the way an append does, for the seal may be ending the segment
+	// itself — its own failure paths — and a second end over the seal's
+	// decision would race the seal's own word for the segment.
+	for s.sealState == sealSealing {
+		s.drained.Wait()
+	}
+	if s.id == seg {
+		switch s.sealState {
+		case sealEnded:
+			// The segment is already ended — a failed write or sync got
+			// there first, or an earlier request did: one event per
+			// segment, and this request owns none.
+			s.appendMu.Unlock()
+			return nil
+		case sealSealed:
+			s.appendMu.Unlock()
+			return fmt.Errorf("%w: the segment is sealed", ErrWrongState)
+		}
+		endID, notify := s.endLocked(EndRequested, cause)
+		// decision: the request marks the stream started, for an end may
+		// arrive before any append — a first sync that failed on an empty
+		// segment still owns its window — and OnEnd's gate reads the
+		// stream's history through this flag alone.
+		s.started = true
+		s.appendMu.Unlock()
+		if unerr := s.set.End(endID); unerr != nil {
+			// The end of a segment the ledger may not know is the
+			// stream's own and this refusal names it; a ledger that
+			// cannot end it carries its failure to the caller, after
+			// the segment's stream state has taken the end, which is
+			// true: the segment takes no further append either way.
+			return unerr
+		}
+		if notify {
+			go s.notifyEnd()
+		}
+		return nil
+	}
 	s.appendMu.Unlock()
-	return fmt.Errorf("%w: the end is not implemented in this commit", ErrWrongState)
+
+	// A segment that is not the active one: the stream left it — sealed,
+	// ended — or never held it. The ledger's word decides, and passes
+	// through as itself: an id out of the set reaches its caller as
+	// ErrNotInSet, for the request named a segment this journal does not
+	// own, which the durability code's own bookkeeping must answer for.
+	state, serr := s.set.State(seg)
+	if serr != nil {
+		return serr
+	}
+	switch state {
+	case Ended:
+		return nil
+	case Sealed:
+		return fmt.Errorf("%w: the segment is sealed", ErrWrongState)
+	}
+	return fmt.Errorf("%w: the segment stands %d in the set, not active on its stream", ErrWrongState, uint8(state))
 }
