@@ -27,8 +27,11 @@ if [ -z "$CHANGED_GO" ]; then
     exit 0
 fi
 
-# Map changed files → unique package dirs.
-PKGS=$(echo "$CHANGED_GO" | xargs -n1 dirname | sort -u | sed 's|^|./|')
+# Map changed files → unique package dirs. A directory named testdata, or
+# starting with _ or ., is dropped: ./... never matches one, so CI never
+# builds it, but go test builds any directory named on its command line,
+# and fixtures there are not meant to compile.
+PKGS=$(echo "$CHANGED_GO" | xargs -n1 dirname | grep -Ev '(^|/)(testdata|[._][^/]+)(/|$)' | sort -u | sed 's|^|./|' || true)
 if [ -z "$PKGS" ]; then
     exit 0
 fi
