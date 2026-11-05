@@ -217,6 +217,10 @@ func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body Reco
 	return dst
 }
 
+// payloadCRCOff is where a record header keeps its seeded payload checksum, at
+// [84,88).
+const payloadCRCOff = 84
+
 // DecodeRecordHeader reads a record header, opened under journal's identity,
 // at the given segment and offset. An error matching ErrDamaged means the
 // bytes are not a record of this journal: a wrong length, magic or checksum
@@ -401,10 +405,6 @@ func VerifyRecordBody(body []byte, identity core.JournalID, h RecordHeader) (Rec
 	}
 	return out, nil
 }
-
-// payloadCRCOff is where a record header keeps its seeded payload checksum, at
-// [84,88).
-const payloadCRCOff = 84
 
 // RecordPayloadCRC returns the payload checksum an encoded record carries in
 // its header, the same column DecodeRecordHeader reads. It panics on a slice

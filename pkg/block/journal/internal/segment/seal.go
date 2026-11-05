@@ -75,6 +75,13 @@ func (r recordsDurable) Unwrap() error { return r.err }
 // one right after the footer; then, for an early seal alone, the file is
 // truncated past the trailer and that is made durable.
 //
+// synced is called, with no stream lock held, after each sync that succeeds:
+// with the marker after the records' sync, with the trailer's end after the
+// second — the cap for a full seal — and, for an early seal, with the
+// truncated size after the third. A failed sync reports nothing, and a nil
+// synced panics before any I/O. A caller with no stream, recovery, passes the
+// function that records what is durable.
+//
 // decision: no footer is ever written for a segment sealed by a previous
 // process, though the format permits it, because a segment sealed before this
 // process began is scanned instead on the next open — a footer written here
@@ -113,6 +120,7 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 		markerAndFooter = format.AppendCatalogEntry(markerAndFooter, e)
 	}
 	footer := markerAndFooter[format.SealMarkerSize:]
+	earlyEnd := footerOff + int64(len(footer)) + format.TrailerSize
 
 	if err := writeSealSteps(ref, markerAndFooter, footer, marker, footerOff, early, set.cap); err != nil {
 		if unerr := set.End(id); unerr != nil {
@@ -130,7 +138,7 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 	// footer of an early one.
 	trailerEnd := set.cap
 	if early {
-		trailerEnd = footerOff + int64(len(footer)) + format.TrailerSize
+		trailerEnd = earlyEnd
 	}
 	synced(id, trailerEnd)
 
@@ -158,7 +166,7 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 	}
 
 	// Step 3: the free tail, cut and made durable.
-	size := footerOff + int64(len(footer)) + format.TrailerSize
+	size := earlyEnd
 	//
 	// decision: a failed truncation, or a failed sync of one, returns a nil
 	// error with TailErr set, because "the seal is complete after the second

@@ -3,8 +3,10 @@ package segment_test
 import (
 	"bytes"
 	"errors"
+	"io"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -150,28 +152,26 @@ func TestSinkTracksEveryRecordOnce(t *testing.T) {
 // TestSinkTrackBeforeReturnAndAfterWrite pins that Track runs after the
 // record's bytes are readable and before Append returns.
 func TestSinkTrackBeforeReturnAndAfterWrite(t *testing.T) {
-	var e streamEnv
-	var tracked, readable bool
-	e = sinkStream(t, segment.Sink{
-		Track: func(w segment.Written) {
-			tracked = true
-			raw := make([]byte, format.RecordHeaderSize)
-			if _, err := e.s.ReadAt(w.Loc.Segment, raw, w.Loc.Off); err != nil {
-				return
-			}
-			_, err := format.DecodeRecordHeader(raw, streamIdentity, w.Loc.Segment, w.Loc.Off)
-			readable = err == nil
-		},
+	var tracked []segment.Written
+	e := sinkStream(t, segment.Sink{
+		Track:  func(w segment.Written) { tracked = append(tracked, w) },
 		Synced: func(core.SegmentID, int64) {},
 	})
 
 	h, body := streamWriteHeader(core.NewFileID([16]byte{1}), 0, []byte("payload"), 1, core.Version{Counter: 1})
 	streamAppendWrite(t, e, h, body)
-	if !tracked {
-		t.Fatal("Append returned before Track ran")
+	if len(tracked) != 1 {
+		t.Fatalf("Track ran %d times by the time Append returned, want 1", len(tracked))
 	}
-	if !readable {
-		t.Error("Track ran before the record's bytes could be read back and decoded")
+	// The sink may not take a lock of this package, so the bytes are read
+	// back once Append has returned.
+	w := tracked[0]
+	raw := make([]byte, format.RecordHeaderSize)
+	if _, err := e.s.ReadAt(w.Loc.Segment, raw, w.Loc.Off); err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	if _, err := format.DecodeRecordHeader(raw, streamIdentity, w.Loc.Segment, w.Loc.Off); err != nil {
+		t.Errorf("the tracked record's bytes cannot be decoded: %v", err)
 	}
 }
 
@@ -182,7 +182,7 @@ func TestSinkFailedWriteNotTracked(t *testing.T) {
 		"a failed write": func(key string) journaltest.Rule {
 			return journaltest.Failing(journaltest.OpWrite, key, 1, syscall.EIO)
 		},
-		"a short write": func(key string) journaltest.Rule {
+		"a write torn with an error": func(key string) journaltest.Rule {
 			return journaltest.Tearing(journaltest.OpWrite, key, 1, 8, syscall.EIO)
 		},
 	} {
@@ -212,6 +212,28 @@ func TestSinkFailedWriteNotTracked(t *testing.T) {
 				t.Fatalf("Track saw %+v after the append that followed the failure, want it at %+v", got, last.Loc)
 			}
 		})
+	}
+}
+
+// TestSinkShortWriteWithNilErrorNotTracked pins that a write landing short and
+// reporting success, which Append turns into io.ErrShortWrite, is not tracked.
+func TestSinkShortWriteWithNilErrorNotTracked(t *testing.T) {
+	rec := &recordingSink{}
+	streamFS := &streamShortFS{FS: newSeam(t).FS(), name: streamSegName(1)}
+	e := streamOverFS(t, streamCap, streamFS, func(e streamEnv) { e.cacheBuilt(t) })
+	e.s = segment.NewStream(1, streamIdentity, e.set, e.pool, e.cache, rec.sink())
+	t.Cleanup(func() { _ = e.s.Close() })
+
+	h, body := streamWriteHeader(streamFileID(1), 0, []byte("first"), 1, core.Version{Counter: 1})
+	streamAppendWrite(t, e, h, body)
+
+	streamFS.armed.Store(true)
+	h, body = streamWriteHeader(streamFileID(2), 64, []byte("short"), 1, core.Version{Counter: 2})
+	if _, err := e.s.Append(h, body); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("the short Append = %v, want io.ErrShortWrite", err)
+	}
+	if n := len(rec.tracked()); n != 1 {
+		t.Fatalf("Track ran %d times, want only the whole record's", n)
 	}
 }
 
@@ -440,6 +462,21 @@ func TestSinkSealSyncs(t *testing.T) {
 		}
 	})
 
+	t.Run("an early seal whose truncation sync fails stops at its second sync", func(t *testing.T) {
+		rec := &recordingSink{}
+		e := sinkStream(t, rec.sink())
+		sinkAppendN(t, e, 5)
+		e.seam.SetFault(&sealNthFault{seg: seg, op: journaltest.OpSync, n: 3, err: syscall.EIO})
+		res, err := e.s.Seal(true)
+		if err != nil || res.TailErr == nil {
+			t.Fatalf("Seal = %v, TailErr %v, want a clean seal with a failed tail", err, res.TailErr)
+		}
+		got := rec.syncedOf()
+		if len(got) != 2 || got[0].Through != res.Marker || got[1].Through <= res.Marker {
+			t.Fatalf("a seal whose truncation sync failed reported %+v, want the marker then the trailer's end and no third event", got)
+		}
+	})
+
 	for _, tc := range []struct {
 		name string
 		nth  int
@@ -512,13 +549,24 @@ func TestSinkSealSyncs(t *testing.T) {
 		}
 	})
 
-	t.Run("WriteSeal panics on a nil function", func(t *testing.T) {
+	t.Run("WriteSeal panics on a nil function before any I/O", func(t *testing.T) {
+		e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
+		defer func() { _ = e.s.Close() }()
+		placed := sinkAppendN(t, e, 3)
+		entries := sealEntriesOf(t, e, placed)
+		marker := placed[2].Loc.Off + placed[2].Loc.Len
+		ref, err := e.cache.Acquire(1)
+		if err != nil {
+			t.Fatalf("Acquire: %v", err)
+		}
+		defer ref.Release()
 		defer func() {
-			if recover() == nil {
-				t.Fatal("WriteSeal with a nil synced function did not panic")
+			msg, _ := recover().(string)
+			if !strings.Contains(msg, "reports its syncs") {
+				t.Fatalf("WriteSeal with a nil synced function panicked with %q, want the guard's own message", msg)
 			}
 		}()
-		_, _ = segment.WriteSeal(nil, segment.Ref{}, streamIdentity, 1, 0, nil, false, nil)
+		_, _ = segment.WriteSeal(e.set, ref, streamIdentity, 1, marker, entries, false, nil)
 	})
 }
 
@@ -589,7 +637,13 @@ func TestSinkHandOffDoesNotBlockAppend(t *testing.T) {
 	appended := make(chan struct{})
 	go func() {
 		defer close(appended)
-		sinkAppendN(t, e, 16)
+		for i := range 16 {
+			h, body := streamWriteHeader(streamFileID(i+1), int64(i)*64, streamTestBody(64, byte(i)), 7, core.Version{Counter: uint64(i + 1)})
+			if _, err := e.s.Append(h, body); err != nil {
+				t.Errorf("Append %d: %v", i, err)
+				return
+			}
+		}
 	}()
 	select {
 	case <-appended:
