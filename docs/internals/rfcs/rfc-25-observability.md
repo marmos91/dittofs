@@ -522,8 +522,10 @@ offload stall that fills the journal — is two conditions, each raised by its o
 evidence (`offload_stalled`, then `journal_full`), never one whose severity
 creeps with a timer.
 
-A refusal that is part of normal operation — an `ErrDelay` under pacing, a
-quota refusal, a recall in progress — is not a condition. It is counted by its
+A refusal that is part of normal operation is not a condition: an `ErrDelay`
+under pacing, a quota refusal, a share at its own journal limit, a segment roll
+refused for no spare ready while the device has room
+([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), a recall in progress. It is counted by its
 owner.
 
 ### 3.3 Scopes, and how they combine
