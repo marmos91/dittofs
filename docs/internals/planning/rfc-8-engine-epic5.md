@@ -268,11 +268,14 @@ numbered so that subtasks and tests can cite them.
   `decision:` marker at the lock names it, withdrawn if the journal can hand back the
   removal's version before it stops holding the extent. `Deallocate` holds it the same way
   (T5.2), under the same marker. Before deciding grow or removal and before the journal
-  call, the same lock waits out writes already admitted (epic 3's admission count, on its
-  condition with the context's `AfterFunc`, as a registration waits): a write in the journal
-  but not yet in the entry would otherwise sit below *v* unseen. A `Commit` on a guarded file
-  waits out the guard (epic 4's `commitThrough`), or every batch would skip the file and the
-  `Commit` would spin.
+  call, the same lock waits out writes already admitted (epic 8's T8.1a builds the
+  admitted-write count on the entry; the removal waits on its condition with the context's
+  `AfterFunc`, as a registration waits): a write in the journal but not yet in the entry
+  would otherwise sit below *v* unseen. A `Commit` on a guarded file waits out the guard, or
+  every batch would skip the file and the `Commit` would spin. Epic 4's `commitThrough` (D10)
+  has no such wait, so T5.1 adds it: on a guarded file it waits for the guard's release,
+  then finds its target covered once phase 1 has removed the operations it committed, and
+  wakes no group commit.
 - **D3, the in-flight mark.** The same entry-lock section checks the file's registrations
   (epic 8's T8.1b), answering `DelayClone` for a truncate or deallocate overlapping a source
   registration's extent and for any truncate or deallocate of a file holding a destination
@@ -383,7 +386,9 @@ test/engine/known.yaml  T5.2, T5.3, T5.5  their entries
   that fails after the journal step cannot simply fail, since the extent is gone: it is handed
   to the loop, which keeps the guard, and the call answers `DelayConflict` or `DelayCommit`
   (D9), for truncate and deallocate as for a release. A terminal failure ends it instead
-  (D10). `Existence.Size` in `kvstore` and `Deps`.
+  (D10). `Existence.Size` in `kvstore` and `Deps`. The wait on T8.1a's admitted-write count
+  before the grow-or-removal decision and the journal call (D2); in `groupcommit.go`,
+  `commitThrough`'s wait for a guard's release (D2).
 - **Acceptance criteria:**
   - a truncate answers once its phase 1 committed, and the File record's size is the new
     one; a truncate up records a grow at the journal's version and makes no phase 1;
@@ -394,7 +399,9 @@ test/engine/known.yaml  T5.2, T5.3, T5.5  their entries
   - a truncate into a registered extent answers `DelayClone`; a clone registered while a
     truncate is in flight returns only after its phase 1;
   - after phase 1, the entry holds neither the truncate's pending operation nor the writes
-    it committed.
+    it committed;
+  - a write admitted before a truncate is committed by its phase 1, and a `Commit` on a
+    guarded file answers once phase 1 commits.
 - **Tests:** over the fake and the real `kvstore`: a truncate's phase 1 writes the size and
   the removal record, then `Settle` once at *v* after the guard is released (catches a
   settle before the commit, or the guard held across it); the reservation counter at zero
@@ -413,7 +420,13 @@ test/engine/known.yaml  T5.2, T5.3, T5.5  their entries
   group commit triggered by a hook just after the guard is released captures neither the
   truncate's own operation nor the writes phase 1 committed (catches them removed after the
   release, when a capture would hand `kvstore` a truncate down, which it refuses as a
-  removal).
+  removal); a hook between a write's `WriteAt` and its insert while a truncate comes in: the
+  truncate's journal call starts only after the insert, phase 1 claims the write and its
+  `Done` runs once (catches a removal that does not wait out admitted writes, leaving one
+  below *v* that no commit takes, R4); a `Commit` over a pending overwrite on a file whose
+  phase 1 is held by a hook answers after phase 1 commits, with the group commit skipping
+  the file at most once meanwhile (catches a `Commit` that spins on batches that skip a
+  guarded file).
 
 ### T5.2 `Deallocate`
 
