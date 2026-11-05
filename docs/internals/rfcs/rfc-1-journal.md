@@ -2358,7 +2358,8 @@ draw on it. Today those are, first, the unsynced loss record of each record a
 read-only journal failed that the next open in the process drops ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)),
 and then the loss record of each record it drops as corrupt that no loss record
 on disk names yet ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), and of each unread record an
-`AcknowledgeUnreadable` turns into a loss before the journal serves
+`AcknowledgeUnreadable`, or an `Acknowledge` called before any share attaches,
+turns into a loss before the journal serves
 ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads), step 1). The first take the reserve before any of
 the second, and are never deferred (below): a corrupt record is found again at
 every open, but a record a read-only journal failed is named only by the
