@@ -503,28 +503,31 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
   happened, so a resolved failed segment again backs only records synced before its failure (RFC
   1 §5.3) and epic 9's repack needs no exception. A copy can be used from a segment already
   announced resolved. A segment holds the records of many files, so no one file's domain guards
-  its resolved state: the state, and a count of the copies in use from the segment, sit under the
-  stream's leaf mutex (D13). Epic 5's claim is one flag per segment with no owner, so this epic
-  counts its own holds: `Corrupt`, before it repoints the index to a copy in the segment,
-  increments the count and, in the same step, marks the segment unresolved; when the count goes
-  from zero to one it takes epic 5's claim, the one `Retire` refuses a segment with. Each
-  worker's re-append decrements the count, and only when it reaches zero does the worker release
+  its resolved state: the state, and the set of records whose copies are in use from the segment, keyed by sequence
+  number, sit under the stream's leaf mutex (D13). Epic 5's claim is one flag per segment with no
+  owner, so this epic keeps its own holds, one per record: `Corrupt`, before it repoints the index
+  to a copy in the segment, adds the record to the set (a record already in it adds nothing, so a
+  repeated read of the same extent holds it once) and, in the same step, marks the segment
+  unresolved; when the set goes from empty to one record it takes epic 5's claim, the one `Retire` refuses a segment with. Each
+  worker's re-append removes its record from the set, and only when the set is empty does the worker release
   the claim and announce the segment resolved, so a second record still pointing at the segment
   keeps it unresolved and claimed. Whoever hands an ended segment to `Retire`, and epic 9's
   repack before it carries the segment's records, reads the state under that mutex, and `Retire`
   refuses the segment while the claim lives. A claim that epic 5 refuses is not read as "being
   retired": `Set.Claim` returns only whether it was granted, so a repack's mid-move claim and a
-  retirement under way both look like a refusal. Another `Corrupt`'s own hold is only a count
-  increment and takes no second claim. When the zero-to-one claim is refused, the count and the
+  retirement under way both look like a refusal. Another `Corrupt`'s own hold is only an addition to the set
+  and takes no second claim. When the first claim is refused, the set and the
   unresolved mark stay, and the segment is marked claim owed, under the same leaf mutex. While
   a claim is owed no `Corrupt` repoints the index into that segment, so nothing repointed is
   unprotected: each one serves its read from the copy it verified through its own segment
-  reference (a retirement drains readers before it unlinks), takes its hold in the count, and
-  repoints nothing. The stream's worker retries the claim, each time it runs and at each tick of
+  reference (a retirement drains readers before it unlinks), adds its record to the set (once, however
+  often the extent is read), and repoints nothing. The stream's worker retries the claim, each time it runs and at each tick of
   the sync bound, and tells a repack from a retirement by asking epic 5's set whether the
   segment still exists. When the claim is granted, the worker repoints each owed record whose
-  index entry still names the record that did not verify (a record overwritten meanwhile is
-  left), re-appends it, and decrements the count as above. When the segment is gone, the verified
+  index entry still names the record that did not verify re-appends it and removes it from the
+  set, and removes from the set, with no re-append, every owed record the index no longer names
+  (one a later write overwrote), found when the worker retries and again before it releases, so an
+  overwritten record never keeps the set above empty. When the segment is gone, the verified
   copy is gone with it, a repack never having carried the record (the index names the corrupt
   record, not the original in the failed segment), so each owed record goes to `Lose` as a
   corrupt record, its extents dropped and its loss record written by the worker, never left as a
@@ -1161,12 +1164,16 @@ pkg/block/journal/
     releases nothing, the second's releases the claim and announces the segment resolved, and
     neither read goes to the loss.
   - A corrupt read whose claim is refused because a repack holds the segment mid-move is served
-    from the verified copy and is no loss; the count stays and the segment is marked claim owed.
+    from the verified copy and is no loss; the set and the unresolved mark stay and the segment is marked claim owed.
     A second corrupt read on the segment meanwhile also repoints nothing and is served from its
     own copy.
+  - A record read corrupt again while its claim is owed adds nothing: one record is one entry in
+    the set, however many reads find it.
+  - An owed record overwritten before the worker runs is removed from the set by the worker, with
+    no re-append, so the segment is still announced resolved once the others are re-appended.
   - Once the repack lets go, the worker's retry takes the claim, repoints each owed record that
     the index still names as unverified, re-appends it, and announces the segment resolved only
-    when the count reaches zero.
+    when the set is empty.
   - When a retirement wins the segment before the worker's retry, every owed record goes to `Lose`
     as corrupt, with its extents dropped and its loss record written, and none is left as a
     corrupt extent with no loss.
@@ -1202,7 +1209,10 @@ pkg/block/journal/
   and its claim released, while a second record still points at it); two corrupt reads on two records of a failed segment while a repack holds its claim, then the
   repack letting go and the worker retrying (catches a second read that repoints into a segment
   nothing protects, a refusal read as "being retired", which would lose a record whose copy
-  verifies, RFC 28 §3.3, and a count that is dropped on refusal); the same with the repack
+  verifies, RFC 28 §3.3, and a set dropped on refusal); the same segment with one owed record read corrupt five times
+  (catches a hold taken per read, which keeps the segment unresolved for good), and with one owed
+  record overwritten before the worker runs, the rest re-appended (catches an overwritten record
+  never removed, which keeps it claimed and unresolved, RFC 1 §5.3); the same with the repack
   letting go and a retirement taking the segment before the worker's retry, asserting each record
   has a loss record and no extent is left held (catches a known-corrupt extent left with no loss); a corrupt read with the active segment full and its seal held at the seam, asserting the
   read returns before the seal does (catches a read that rolls, RFC 1 §8.1, R90), with the worker
@@ -1335,7 +1345,7 @@ suggestion only: one pull request per subtask works as well.
   and T6.6 follow the current text; once a pull request settles #3676, T6.6 follows it: if entering
   read-only fails each stream's unsynced records, T6.6 does the same and its estimate is revisited.
 - **Epic 5's claim has no owner (D10).** `Set.Claim` refuses while any claim is held, and a
-  repack's mid-move claim is the same flag. This epic counts its own copy holds and takes one
+  repack's mid-move claim is the same flag. This epic keeps its own copy holds, one per record, and takes one
   claim for them. A refused claim stays owed and the worker retries it, telling a repack from a
   retirement by asking the set whether the segment still exists; epic 5 could return the reason
   instead of a bool, which would drop the retry's lookup. Epic 9's repack should release its claim
