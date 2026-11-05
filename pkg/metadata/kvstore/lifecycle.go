@@ -386,7 +386,8 @@ func (l Lifecycle) VersionLimits(
 // keys a share with tracking (its info, its state and its limit), and no
 // transaction holds every share. A share being removed or retired is
 // skipped, since nothing attaches it again and it must not fail the raise for
-// the shares batched with it; one that does not exist is refused. A batch
+// the shares batched with it, and so is one with no record, which a removal
+// leaves at its last step (RFC 16 §2.3.2), its ShareID never reused. A batch
 // that fails leaves the earlier ones raised: a raise is safe to run again.
 func (l Lifecycle) RaiseVersionLimits(
 	ctx context.Context,
@@ -407,7 +408,12 @@ func (l Lifecycle) RaiseVersionLimits(
 	for chunk := range slices.Chunk(ids, batch) {
 		err := l.s.kv.Update(ctx, func(tx kv.Txn) error {
 			for _, id := range chunk {
-				if err := raiseVersionLimitIn(tx, id, to[id]); err != nil {
+				err := raiseVersionLimitIn(tx, id, to[id])
+				if errors.Is(err, entity.ErrStale) || merrs.IsNotFoundError(err) {
+					continue
+				}
+
+				if err != nil {
 					return err
 				}
 			}
@@ -422,9 +428,16 @@ func (l Lifecycle) RaiseVersionLimits(
 	return nil
 }
 
-// raiseVersionLimitIn raises share's limit to v in tx, skipping a share
-// being removed or retired.
+// raiseVersionLimitIn raises share's limit to v in tx, a tracked max-write.
+// It refuses a share being removed or retired with ErrStale and one with no
+// record as not found, writing nothing. The state is read first: a removal
+// deletes the share's other records before it (RFC 16 §2.3.2, step 6), so a
+// share part way through that step reads stale, not missing.
 func raiseVersionLimitIn(tx kv.Txn, share entity.ShareID, v entity.JournalVersion) error {
+	if err := liveShare(tx, share); err != nil {
+		return err
+	}
+
 	_, ok, err := get(tx, shareKey(share, keys.SInfo))
 	if err != nil {
 		return err
@@ -432,15 +445,6 @@ func raiseVersionLimitIn(tx kv.Txn, share entity.ShareID, v entity.JournalVersio
 
 	if !ok {
 		return merrs.NewNotFoundError(share.String(), "share")
-	}
-
-	err = liveShare(tx, share)
-	if errors.Is(err, entity.ErrStale) {
-		return nil
-	}
-
-	if err != nil {
-		return err
 	}
 
 	b, ok, err := get(tx, versionLimitKey(share))
@@ -529,9 +533,27 @@ func (l Lifecycle) RaiseAtStart(
 
 // RaiseAtAttach raises the shard's incarnation by one and keeps its grace
 // instance, for an attach of a shard whose open state this process holds,
-// and returns the incarnation it wrote.
+// and returns the incarnation it wrote. That shard was raised already, by
+// this process or by the node whose handover shipped its table (RFC 16 §3),
+// so one with no shard record is refused as not found, as is one past the
+// 24-bit shard space, and neither writes anything.
 func (l Lifecycle) RaiseAtAttach(ctx context.Context, shard entity.ShardID) (inc uint64, err error) {
+	if shard >= entity.ShardLimit {
+		msg := fmt.Sprintf("shard %d past the 24-bit shard space", shard)
+
+		return 0, merrs.NewInvalidArgumentError(msg)
+	}
+
 	err = l.s.kv.Update(ctx, func(tx kv.Txn) error {
+		_, ok, err := get(tx, shardKey(uint64(shard)))
+		if err != nil {
+			return err
+		}
+
+		if !ok {
+			return merrs.NewNotFoundError(fmt.Sprint(shard), "shard")
+		}
+
 		sh, err := shardIn(tx, shard)
 		if err != nil {
 			return err

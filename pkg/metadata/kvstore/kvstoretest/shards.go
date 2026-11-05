@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/google/uuid"
@@ -86,7 +87,8 @@ func testRaiseAtStartRace(t *testing.T, kvo Opener) {
 
 // RFC 14 §4.4: an attach of a shard whose open state the node holds raises
 // its incarnation and keeps its grace instance, so no client reclaims for
-// nothing, and returns the incarnation the record then holds.
+// nothing, and returns the incarnation the record then holds. A shard never
+// raised, or past the 24-bit shard space, is refused and left as it was.
 func testRaiseAtAttachKeepsGrace(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	l := s.Lifecycle()
@@ -101,6 +103,17 @@ func testRaiseAtAttachKeepsGrace(t *testing.T, kvo Opener) {
 	}
 
 	wantShard(t, s, 1, 2, 1)
+
+	if _, err := l.RaiseAtAttach(ctx, 2); !merrs.IsNotFoundError(err) {
+		t.Errorf("an attach raise of a shard never raised: %v, want not found", err)
+	}
+
+	if _, err := l.RaiseAtAttach(ctx, entity.ShardLimit); !invalid(err) {
+		t.Errorf("an attach raise past the shard space: %v", err)
+	}
+
+	wantShard(t, s, 2, 0, 0)
+	wantShard(t, s, entity.ShardLimit, 0, 0)
 }
 
 // RFC 14 §4.4: two attach raises of one shard that race each take their own

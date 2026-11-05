@@ -263,48 +263,65 @@ func TestRecordJournalIsOneTransaction(t *testing.T) {
 	}
 }
 
-// RFC 8 §2.7: a share being removed or retired is skipped, so it does not
-// fail the raise for the shares batched with it, and is not raised; a share
-// that does not exist is still refused.
+// RFC 8 §2.7, RFC 16 §2.3.2: a share being removed or retired is skipped, so
+// it does not fail the raise for the shares batched with it, and is not
+// raised; so is one part way through its removal's step 6, its info deleted
+// and its state kept, and one with no record left.
 func TestRaiseVersionLimitsSkipsRemovedShares(t *testing.T) {
 	ctx := context.Background()
 	s := lifecycleStore(t, nil)
 	live := namedShare(t, s, "live")
 	removing := namedShare(t, s, "removing")
 	retired := namedShare(t, s, "retired")
+	emptied := namedShare(t, s, "emptied")
+	gone := entity.NewShareID()
 
-	for _, id := range []entity.ShareID{removing.ID, retired.ID} {
+	for _, id := range []entity.ShareID{removing.ID, retired.ID, emptied.ID} {
 		if err := s.ControlPlane().DeleteShare(ctx, id, entity.SnapshotsRefuse); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	rows(t, s, shareKey(retired.ID, keys.SSt), encodeState(shareState{State: entity.ShareRetired}))
+
+	err := s.kv.Update(ctx, func(tx kv.Txn) error {
+		return tx.Delete(shareKey(emptied.ID, keys.SInfo))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	ten := entity.VersionOf(10)
 
-	err := s.Lifecycle().RaiseVersionLimits(ctx, map[entity.ShareID]entity.JournalVersion{
+	err = s.Lifecycle().RaiseVersionLimits(ctx, map[entity.ShareID]entity.JournalVersion{
 		live.ID:     ten,
 		removing.ID: ten,
 		retired.ID:  ten,
+		emptied.ID:  ten,
+		gone:        ten,
 	})
 	if err != nil {
-		t.Fatalf("a raise naming shares being removed and retired: %v", err)
+		t.Fatalf("a raise naming shares being removed, retired and gone: %v", err)
 	}
 
 	for id, want := range map[entity.ShareID]entity.JournalVersion{
 		live.ID:     ten,
 		removing.ID: {},
 		retired.ID:  {},
+		emptied.ID:  {},
+		gone:        {},
 	} {
 		if got, err := s.VersionLimit(ctx, id); err != nil || got != want {
 			t.Errorf("share %v: limit %d, %v; want %d", id, got.Counter(), err, want.Counter())
 		}
 	}
 
-	unknown := map[entity.ShareID]entity.JournalVersion{entity.NewShareID(): ten}
+	if err := s.RaiseVersionLimit(ctx, emptied.ID, ten); !errors.Is(err, entity.ErrStale) {
+		t.Errorf("RaiseVersionLimit of a share part way through step 6: %v, want stale", err)
+	}
 
-	if err := s.Lifecycle().RaiseVersionLimits(ctx, unknown); !merrs.IsNotFoundError(err) {
-		t.Errorf("a raise naming a share that does not exist: %v, want not found", err)
+	if err := s.RaiseVersionLimit(ctx, gone, ten); !merrs.IsNotFoundError(err) {
+		t.Errorf("RaiseVersionLimit of a share with no record: %v, want not found", err)
 	}
 }
 
