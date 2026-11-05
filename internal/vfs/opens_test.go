@@ -1659,7 +1659,9 @@ func TestAGraceSpendsNoUnlinkRetry(t *testing.T) {
 // A close open state makes itself, a durable open timing out after its
 // session ended, releases the unlinked file it held, found in its own share
 // though another share is listed first. The shard's grace has ended first,
-// so pending release recovery does not run it instead.
+// so pending release recovery does not run it instead. The open is
+// persistent: a durable one holding no handle caching is closed at the
+// disconnect, not kept, and a handle lease is broken by the unlink.
 func TestATimedOutDurableOpenReleasesItsUnlinkedFile(t *testing.T) {
 	n := newNames(t)
 	ctx := t.Context()
@@ -1670,7 +1672,7 @@ func TestATimedOutDurableOpenReleasesItsUnlinkedFile(t *testing.T) {
 	pc := n.smbClient(t, "alice-pc", alice.Principal)
 	pc.Session = vfs.SessionRef{ID: 1}
 	req := vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData}
-	req.Durability, req.Timeout = entity.DurabilityDurable, time.Minute
+	req.Durability, req.Timeout = entity.DurabilityPersistent, time.Minute
 	_, err := n.Open(ctx, pc, req)
 	n.must(t, err)
 	_, x := n.fs.Create(t, n.fs.Admin, n.fs.Root, "x", kvstore.Regular(0o644))
@@ -1686,6 +1688,7 @@ func TestATimedOutDurableOpenReleasesItsUnlinkedFile(t *testing.T) {
 	if _, err := n.Disconnect(ctx, pc, pc.Client, pc.Session, vfs.SessionEnd{}); err != nil {
 		t.Fatal(err)
 	}
+	n.sending.Wait() // a close the disconnect made has run its release
 	if !n.held(f.ID) {
 		t.Fatal("released while its durable open waits for a reconnect")
 	}
