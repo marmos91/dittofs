@@ -41,14 +41,10 @@ type IdleSealer struct {
 // NewIdleSealer returns the idle sealer over streams, aging them on clock,
 // sealing early the active segment of a stream that has taken no append for
 // core.IdleSealAge while holding more than threshold beyond its last
-// catalogued point. Neither bound is measured; they are constants of the
-// implementation (RFC 28 §3.1):
-//
-// decision: core.IdleSealAge and the threshold are unmeasured constants. They
-// are long enough that a stream taking steady writes never seals early, and
-// short enough that an idle tail is usually catalogued before a restart. They
-// are overturned by active-segment scans dominating time to first read, or by
-// a trickle workload whose early seals show up in footer writes.
+// catalogued point. Neither bound is measured; both are constants of the
+// implementation (RFC 28 §3.1), and the decision comment at the pass that
+// uses them — pass is the one place both bounds meet — names what would
+// overturn them.
 //
 // A nil streams or clock, or a negative threshold, is a caller bug and
 // panics. A nil admit means the journal is writable; a nil log discards. The
@@ -151,6 +147,15 @@ func (w *IdleSealer) run() {
 // upgrade, a deadline heap keyed by stream, is worth it when a profile shows
 // the scan.
 //
+// decision: core.IdleSealAge here, and the threshold beside it in each
+// stream's idleDue, are the idle seal's two bounds, and both are unmeasured
+// constants (RFC 28 §3.1). They are long enough that a stream taking steady
+// writes never seals early, and short enough that an idle tail is usually
+// catalogued before a restart. They are overturned by active-segment scans
+// dominating time to first read, or by a trickle workload whose early seals
+// show up in footer writes. The core constant itself is where whoever
+// retunes it will look first; this marker carries what overturns it.
+//
 // The fallback wait is core.IdleSealAge, never 0, so a refusing check or a
 // failed seal cannot spin the worker on After(0). It is safe as a bound too:
 // a stream that is not a candidate now can only become one through an append
@@ -161,9 +166,9 @@ func (w *IdleSealer) run() {
 // minus that span, and waking at the fallback and recomputing arms the
 // exact remaining wait. That span apart, no seal is late: the worker wakes
 // no more than one IdleSealAge after a stream's deadline, and the stamp's
-// own error errs toward sealing sooner, never later. The age itself is the
-// constructor's own unmeasured constant, whose decision comment names what
-// would overturn it.
+// own error errs toward sealing sooner, never later. The age is the
+// unmeasured constant the decision comment above names, whose bound this
+// argument holds by.
 func (w *IdleSealer) pass() time.Duration {
 	next := core.IdleSealAge
 
@@ -211,7 +216,7 @@ func (w *IdleSealer) pass() time.Duration {
 			// never starts — and a ledger refusal is the case below's.
 			w.log.Debug("segment: the idle seal lost the segment to a close",
 				"stream", i, "err", err)
-		case err != nil && errors.Is(err, ErrLedgerDisagrees):
+		case errors.Is(err, ErrLedgerDisagrees):
 			// The seal's marker, footer and trailer stand durable on disk,
 			// and the ledger refused the transition anyway: the stream
 			// reports the segment sealed — sealSealed, not ended, and its

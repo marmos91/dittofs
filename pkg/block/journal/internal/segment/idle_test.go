@@ -648,14 +648,17 @@ func TestAFailingSealDoesNotKillTheWorker(t *testing.T) {
 	}
 }
 
-// TestALedgerRefusalIsErrorNotTheLostRaceLog checks the log level the worker
-// gives a seal whose ledger call was refused out of band: the segment,
-// ended in the ledger from outside while the stream still held it open and
-// sealable, is a disagreement between the stream and the ledger — not a
-// race the worker lost, for the one the worker can lose is a close of the
-// stream itself. What the level is, the captured log answers: Debug for a
-// real lost race alone, Error for this one.
-func TestALedgerRefusalIsErrorNotTheLostRaceLog(t *testing.T) {
+// TestAnOutOfBandEndIsErrorNotTheLostRaceLog checks the log level the worker
+// gives a seal whose segment was ended in the ledger from outside while the
+// stream still held it open and sealable: WriteSeal's check answers the
+// ledger's ErrWrongState and the seal ends the segment, so the verdict the
+// worker logs reaches the outcome switch's generic Error case — not the
+// ErrLedgerDisagrees case beside it, which no test can reach (a seal durable
+// on disk that the ledger refuses needs a Set double the real-storage rule
+// forbids), and not the lost-race Debug, for the one race the worker can
+// really lose is a close of the stream itself. The stream's own state names
+// which Error this was: ended, never sealed.
+func TestAnOutOfBandEndIsErrorNotTheLostRaceLog(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	var buf idleLogBuffer
@@ -676,16 +679,18 @@ func TestALedgerRefusalIsErrorNotTheLostRaceLog(t *testing.T) {
 
 	line := buf.line(t, "the idle seal")
 	if !strings.Contains(line, "level=ERROR") {
-		t.Fatalf("the ledger-refused seal's log line = %q, want level=ERROR", line)
+		t.Fatalf("the out-of-band-ended seal's log line = %q, want level=ERROR", line)
 	}
 	if strings.Contains(line, "lost the segment to a close") {
-		t.Fatalf("the ledger-refused seal's log line passes itself off as a lost race: %q", line)
+		t.Fatalf("the out-of-band-ended seal's log line passes itself off as a lost race: %q", line)
 	}
 
 	// The stream saw the same thing its next Sync does: the segment ended,
-	// never sealed.
+	// never sealed — the generic Error case's own outcome, and the word that
+	// separates an ended segment from the ErrLedgerDisagrees case beside it,
+	// whose segment would stand sealed.
 	if state := idleState(s); state != sealEnded {
-		t.Fatalf("the stream's seal state after the ledger-refused seal: %v, want ended", state)
+		t.Fatalf("the stream's seal state after the out-of-band-ended seal: %v, want ended", state)
 	}
 }
 
