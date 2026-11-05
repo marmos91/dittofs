@@ -20,6 +20,11 @@
 // on every failure — unlinked before it is given back, or held in the set,
 // End-ed at its cap, for a retirement to unlink. Ids are drawn above every
 // name the directory holds, and a failed drawing is never reused.
+//
+// The package also keeps the pool (Pool, pool.go): the spares separated into
+// three classes — content, headroom and repack reserve — handed out by a
+// take that performs no I/O and kept ready by a refill worker that makes
+// them off the write path, one goroutine the pool's Stop joins.
 package segment
 
 import (
@@ -95,11 +100,12 @@ type Counters struct {
 	// Sealed is the number of sealed segments in the set.
 	Sealed int64
 	// Spares is the number of spares the ledger holds.
-	// decision: it counts every spare the ledger holds; RFC 1 §3.7's Spares
-	// gauge excludes the headroom and repack-reserve spares, which the pool
-	// separates into classes because only content spares answer a roll — and
-	// the pool is not built yet, so the classes have nothing to hand over.
-	// Withdrawn when the pool lands and reports the content class.
+	// decision: it counts every spare the ledger holds, every class the pool
+	// separates them into, because Check sums every one of them at the cap —
+	// content, headroom and repack reserve alike. RFC 1 §3.7's Spares gauge,
+	// which counts the content class alone, is the pool's own
+	// PoolCounters.Spares. Withdrawn if the ledger ever learns the classes
+	// itself, which no present caller needs.
 	Spares int64
 	// DoubleRetires counts retires, recycles and spare drops that found the
 	// segment or spare out of the set. A retire that instead finds an Active
@@ -228,6 +234,35 @@ func (s *Set) AddSpare(id core.SegmentID, max int64) error {
 			Missing: s.c.UsedBytes + s.cap - max,
 			Unit:    core.UnitBytes,
 		}
+	}
+	s.spares[id] = struct{}{}
+	s.c.UsedBytes += s.cap
+	s.c.Spares++
+	return nil
+}
+
+// AdoptSpare accounts a spare the journal finds at open: a segment file the
+// directory already holds, allocated at its cap, which the caller has decided
+// is a spare — the scan that finds it and the decision are the caller's, and
+// belong to open. It raises the footprint by the cap and the spare count,
+// changing nothing else, so the spare is accounted beside the set exactly as
+// one the Maker made: no limit asks which way a spare entered.
+//
+// decision: no maximum is checked, because the file already exists and every
+// file the journal holds is accounted, so refusing it would leave allocated
+// storage unaccounted and no limit bounding it. The footprint may then stand
+// above a lowered maximum, which only blocks new spares (AddSpare refuses)
+// until retirements bring it down. Withdrawn if open is ever required to
+// refuse a directory over its maximum.
+func (s *Set) AdoptSpare(id core.SegmentID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if id == 0 {
+		return ErrBadID
+	}
+	if s.ownsLocked(id) {
+		return ErrDuplicateID
 	}
 	s.spares[id] = struct{}{}
 	s.c.UsedBytes += s.cap
