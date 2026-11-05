@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/format"
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/platform"
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/segment"
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/prof"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/platform"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // osStreamCap is the cap of the real-storage stream checks: small enough

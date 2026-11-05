@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/format"
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/segment"
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/storage"
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/prof"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // streamCap is the cap of the sets these tests build, small enough that a

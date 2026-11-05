@@ -3,11 +3,11 @@ package segment
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/format"
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/platform"
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/storage"
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/prof"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/platform"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // StreamAppendLockHeld reports whether the stream's append lock is held, for
