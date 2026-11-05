@@ -534,15 +534,17 @@ func TestPoolAdoptCountsTowardClassAtCap(t *testing.T) {
 // TestPoolBytesFiguresFollowTheClasses: the headroom and reserve figures
 // follow the classes' spares at the cap, as allocated now. After the fill at
 // targets {1, 2, 3}, the headroom holds two spares' worth and the reserve
-// three; a headroom take takes the figure with the spare until the refill
-// replaces it. The two classes' spares are journal-accounted: charged to no
-// share's tag, sitting in the ledger's own spare count, which holds all six.
-// It catches a figure that counts a class as bytes it no longer holds, and a
-// class spare charged to a share.
+// three; a headroom take takes the figure with the spare while the refill's
+// make is parked at the seam, so the dip is read with the replacement really
+// in flight — a poll instead could miss it, the worker refilling before the
+// poll saw the take's dip. The two classes' spares are journal-accounted:
+// charged to no share's tag, sitting in the ledger's own spare count, which
+// holds all six. It catches a figure that counts a class as bytes it no
+// longer holds, and a class spare charged to a share.
 func TestPoolBytesFiguresFollowTheClasses(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	_, set, _, p := poolOf(t, segment.Targets{Content: 1, Headroom: 2, Reserve: 3}, noMax, 0, nil)
+	seam, set, _, p := poolOf(t, segment.Targets{Content: 1, Headroom: 2, Reserve: 3}, noMax, 0, nil)
 	p.Start()
 	awaitCounters(t, "targets {1,2,3} filled", p,
 		func(c segment.PoolCounters) bool {
@@ -560,13 +562,23 @@ func TestPoolBytesFiguresFollowTheClasses(t *testing.T) {
 		}
 	}
 
+	// The take's kick is the only make the fill leaves owed, so arming the
+	// hold now parks exactly its refill: the replacement's make stands at
+	// the seam until the test releases it, holding the dip. It is armed
+	// after Start — a worker parked at the seam would block Stop's join —
+	// and released before Stop returns.
+	hold := seam.HoldFirst(t, journaltest.OpCreate, "*")
+
 	if id, err := p.Take(segment.Headroom); err != nil || id == 0 {
 		t.Fatalf("the headroom take: (%d, %v)", id, err)
 	}
-	awaitCounters(t, "the headroom taken down to cap", p,
-		func(c segment.PoolCounters) bool { return c.HeadroomBytes == segCap })
-	// The take is still in flight with the fill: the figure rides the class
-	// back to its target once the worker has made the spare.
+	<-hold.Reached()
+	if c := p.Counters(); c.HeadroomBytes != segCap || c.RepackReserveBytes != 3*segCap {
+		t.Fatalf("after the headroom take, with the refill's make parked at the seam, the headroom holds %d bytes and the reserve %d, want %d and %d: one spare's worth taken with the spare, the reserve untouched", c.HeadroomBytes, c.RepackReserveBytes, segCap, 3*segCap)
+	}
+	hold.Release()
+	// The figure rides the class back to its target once the worker's made
+	// spare lands: a settled end state, nothing takes after it.
 	awaitCounters(t, "the headroom refilled to two", p,
 		func(c segment.PoolCounters) bool { return c.HeadroomBytes == 2*segCap })
 	if err := set.Check(); err != nil {
@@ -1518,18 +1530,27 @@ func TestPoolWantRecycleReservesTheShortestClassFirst(t *testing.T) {
 	})
 
 	t.Run("the content class", func(t *testing.T) {
-		_, _, _, p := poolOf(t, segment.Targets{Content: 1, Headroom: 1, Reserve: 1}, noMax, 0, nil)
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1, Headroom: 1, Reserve: 1}, noMax, 0, nil)
 		p.Start()
 		awaitCounters(t, "all three classes filled", p,
 			func(c segment.PoolCounters) bool {
 				return c.Spares == 1 && c.HeadroomBytes == segCap && c.RepackReserveBytes == segCap
 			})
 
-		// One spare is taken from the content class, leaving it short while
-		// the other two stand at their targets.
+		// The take's kick is the only make the fill leaves owed, so arming
+		// the hold now parks exactly its refill: the content class stays
+		// short for the reservation below, and the recycled spare is the
+		// only one that can land while it is parked. It is armed after
+		// Start — a worker parked at the seam would block Stop's join —
+		// and released before Stop returns.
+		hold := seam.HoldFirst(t, journaltest.OpCreate, "*")
+
+		// One spare is taken from the content class, leaving it short
+		// while the other two stand at their targets.
 		if _, err := p.Take(segment.Content); err != nil {
 			t.Fatalf("the content take: %v", err)
 		}
+		<-hold.Reached()
 		c, ok := p.WantRecycleForTest()
 		if !ok || c != segment.Content {
 			t.Fatalf("a recycle was wanted for %v over a short content class, want Content", c)
@@ -1551,6 +1572,9 @@ func TestPoolWantRecycleReservesTheShortestClassFirst(t *testing.T) {
 		if _, ok := p.WantRecycleForTest(); ok {
 			t.Fatal("a recycle was wanted after one landed in the short class, want none")
 		}
+		// The released make lands as a second content spare after this; no
+		// assertion follows it, so that is fine.
+		hold.Release()
 		p.Stop()
 	})
 
