@@ -375,7 +375,7 @@ interface:
 | [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | the syncer | `OpenFlow`, one flow per share at attach |
 | [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | a syncer flow | `Close`, in `Drop` or `Close`; `Upload`, `Fetch`, `Prefetch`, `Healthy`, and `Health(d)` for the cause of an unhealthy direction — `ErrDenied` for quota, access or size, `ErrTransient`, `ErrCorrupt` or `ErrDrift` ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included), [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) |
 | [RFC 6 §10](rfc-6-block-metadata.md#10.%20API%20surface%20and%20observability) | block metadata's `Existence` and `Content` views, held as two interfaces | every method of both, except `Offloaded` while deduplication is deferred |
-| [RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer) | the metadata store's `Lifecycle` view | `JournalID`, the identity recorded for a device, for `Open` ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1); `VersionLimits`, read for `Open`'s floor, and `RaiseVersionLimits`, a tracked max-write of `S‖id‖vl` within `K` keys a transaction ([§2.7](#2.7%20The%20version%20limit)); `RaiseIncarnations`, in the start transaction or at attach (step 2) |
+| [RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer) | the metadata store's `Lifecycle` view | `JournalID`, the identity recorded for this node's device, for `Open` ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1); `Tags`, every share record's tag and how far its removal has gone, read at start (steps 1 and 5); `VersionLimits`, read for `Open`'s floor, and `RaiseVersionLimits`, a tracked max-write of `S‖id‖vl` within `K` keys a transaction ([§2.7](#2.7%20The%20version%20limit)); `RaiseAtStart`, in the start transaction and at any attach of a shard whose open state the node does not hold, which opens a new grace instance, and `RaiseAtAttach`, at an attach of one whose open state it holds, which keeps it (step 2, [RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)) |
 | this RFC, `CloneHold` ([§2.6](#2.6%20Dependencies%20and%20wiring)), which the root adapts from open state ([RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends)) | a clone's hold on its source | `Hold`, open state's `CloneOpen`, taking over the source record a clone's phase 1 wrote, before phase 2; `Release`, its `CloneClose`, once the clone is done, whose orphan open state reports through its own `Sink.Closed`; `Served`, its `Recovery.Served`, which a rebuilt clone waits on before its batches run ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)) |
 | [RFC 16 §3.1](rfc-16-metadata-store.md#3.1%20Lookups%20by%20ID%2C%20listings%2C%20and%20who%20may%20use%20them) | the metadata store's `Inspect` view | `Refs`, for the reseed only ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)); every other engine transaction goes through block metadata's views or `Lifecycle` |
 
@@ -385,7 +385,7 @@ component method no row names is unreachable from the engine. The journal's
 the recovery import ([RFC 26](rfc-26-catalog-backups.md)) call them ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1).
 
 `Lifecycle` is declared in [RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer).
-Its four methods are the engine's only store access outside block metadata's
+Its six methods are the engine's only store access outside block metadata's
 views and `Refs`.
 
 **One clock and one fault interface, fixed here.** This section fixes the
@@ -585,8 +585,8 @@ comes before `Start` ([§2.6](#2.6%20Dependencies%20and%20wiring)). `Start(ctx, 
 the steps below over the given shares, each step completing before the next
 begins. A step that fails closes in reverse what earlier steps opened and
 returns its error, so the engine is either serving or as built. A share refused
-at step 1 — its journal missing or foreign — does not fail `Start`: it is not
-attached, and `Stats` names it and its device.
+at step 1, its journal missing, foreign or not recorded for this node's device,
+does not fail `Start`: it is not attached, and `Stats` names it and its device.
 Nor, at `Start`, does a share whose journal `Open` refuses with
 `ErrUnsuitableStorage` ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)): it is not attached either, `Stats` names it,
 its device and the rule, and the engine raises `journal_unsuitable` and retries
@@ -611,7 +611,7 @@ tag counter above that journal's tags ([RFC 26 §2.3](rfc-26-catalog-backups.md#
 
 1. **Open the journal.** Read the version floor and the version limit for
    every share the device journal may serve ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)), and the journal identity the metadata store
-   records for the device ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), and open the journal with the floor and the identity
+   records for this node's device ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), and open the journal with the floor and the identity
    ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding), [§3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)). The engine opens each journal itself, through
    `Deps.Open`, reading the floor and the identity from the store; the root
    opens none. A share whose removal has reached its
@@ -625,8 +625,17 @@ tag counter above that journal's tags ([RFC 26 §2.3](rfc-26-catalog-backups.md#
    point a sync is proven to have reached before it serves, re-appending only
    what fails ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)). Start never creates a journal: only the explicit
    initialisation step calls `Init`, and its identity is recorded before
-   anything written to it is acknowledged ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). An `Open` that finds an
-   existing journal with nothing recorded for it reports the metadata store lost.
+   anything written to it is acknowledged ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). An `Open` with nothing
+   recorded for this node's device fails, naming the journal identity and the
+   installation ID the directory's `format` file holds ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)). The engine
+   refuses every share on that device, naming each, the device and what the
+   error names, and never reports the metadata store lost: the store is present,
+   so the journal is foreign, or of this installation and **not recorded**,
+   because the node's identity or the directory its bootstrap names changed, or
+   `Init` was interrupted ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap), [RFC 16 §3.2](rfc-16-metadata-store.md#3.2%20How%20it%20is%20assembled)). Only a
+   node's start that finds no metadata store beside its journals reports it lost
+   ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)). A journal not recorded serves only once `RecordJournal`
+   records it for this node and device, at a later start.
    **A recovery import orders its journals before its shares.** Once the import
    has rebuilt the store, it calls `Restamp` on each adopted journal with its own
    identity as `expect` ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)) and opens it, before it publishes any
@@ -652,7 +661,11 @@ tag counter above that journal's tags ([RFC 26 §2.3](rfc-26-catalog-backups.md#
    verifier is returned or any grace instance named ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more), [RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)). A
    start that left one unraised would repeat that shard's grace instance, and a
    client's `RECLAIM_COMPLETE` from before the restart would end the new grace
-   at once. A shard attached later raises its own at attach.
+   at once. A shard attached later raises its own at attach: with `RaiseAtAttach`,
+   which keeps the grace instance, when the node holds the shard's open state
+   (this process raised it already, or its handover shipped the table), and with
+   `RaiseAtStart` otherwise, a late attach after a refused open included, since
+   the restart lost its open state ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)).
 3. **Re-apply existence.** For each file the journal lists ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), read
    the operations above the file's `applied` version with `Since(id, applied)` —
    held extents and removal markers, each with its version ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)) —
@@ -893,13 +906,14 @@ start step 4), and every later change arrives the same way.
 // declared beside the engine's code and holds only the methods §2.1's table
 // names; the root passes each component's concrete type.
 type Deps struct {
+	Node      NodeID    // this node's identity, from its bootstrap (RFC 13 §2.2); JournalID looks up its devices under it (§2.5 step 1; proposal, with RFC 16 §3.2's index key)
 	Devices   []string  // one journal directory per device; Start opens each (§2.5 step 1)
 	Open      func(ctx context.Context, dir string, floor Version, expect JournalID) (Journal, error) // RFC 1 §3 Open
 	Carver    Carver    // RFC 2: Cut and the block assembler's fold
 	Syncer    Syncer    // RFC 3 §1.3: OpenFlow, one flow per share
 	Existence Existence // RFC 6 §10; apart from Content, since both declare Commit
 	Content   Content   // RFC 6 §10
-	Lifecycle Lifecycle // journal identity, version limits, incarnations (§2.5 steps 1–2, §2.7)
+	Lifecycle Lifecycle // journal identity, tags, version limits, incarnations (§2.5 steps 1 and 2, §2.7)
 	Refs      Refs      // RFC 16 §3.1: Inspect.Refs, for the reseed only
 	Holds     CloneHold // a clone's hold on its source (§9.1); the root adapts open state to it
 	Gate      Gate      // RFC 12 §2.3: the per-shard cut gate every existence commit passes
@@ -1043,11 +1057,10 @@ pkg/block/engine/            the engine (this RFC)
 pkg/sched/                   the shared work scheduler (§6.1.1), used by the engine and GC
 ```
 
-**Until the cutover the engine is `pkg/block/enginev2`**, as the journal is
-`pkg/block/journalv2`, beside v1's `engine` and `journal`; the cutover that
-deletes v1 renames both to the names above. The suffix is in Go package and
-import paths only: metric, span and log names say `engine` and `journal` from
-the start.
+**On `feat/storage-v2` the engine is `pkg/block/engine`**, as the journal is `pkg/block/journal`.
+While v1 existed they were `pkg/block/enginev2` and `pkg/block/journalv2`; the
+suffix was in Go package and import paths only, and metric, span and log names
+say `engine` and `journal` from the start.
 
 `offload/` is the one subpackage. It is the largest state machine, and its tests
 import only fakes of the offer, the carver, a flow and block metadata's views, so the import

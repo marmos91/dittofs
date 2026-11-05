@@ -1242,7 +1242,8 @@ in-flight operation.
 A **loss event** is an extent the journal stopped holding without being asked:
 dropped as corrupt ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), as stale ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), or because a failed sync window was
 failed ([§5.3](#5.3%20A%20failed%20sync)). Each names the share, the file, the extent, the content version,
-the reason, and whether its offloaded bit was set. `Stats` keeps the most recent
+the reason, whether its offloaded bit was set, and whether its loss is deferred
+([§6](#6.%20Capacity)). `Stats` keeps the most recent
 ones in a bounded ring, each with a sequence number, and counts them all
 ([§3.9](#3.9%20Metrics)), so a poller sees every new event or knows how many it missed. The
 engine logs each one.
@@ -1251,7 +1252,10 @@ engine logs each one.
 a **loss record** for each record piece a loss event drops ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)) before it
 publishes the event, naming the file, the extent and the version dropped, its
 reason, and — in its payload — the **sequence number of the record it drops**,
-and whether that record was **synced** when it was dropped. Recovery does not
+and whether that record was **synced** when it was dropped. The one exception
+is a loss an open defers past its reserve ([§6](#6.%20Capacity)): its event is published
+first, marked deferred, and its record is written later, into the copy that
+retires the dropped record's segment. Recovery does not
 hold again any record carrying that sequence number — the original, or a copy
 re-appended under it ([§4.3](#4.3%20Versions)) — even where it is still on disk and happens to
 verify ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)). What else the loss record reaches depends on the
@@ -1285,7 +1289,8 @@ dropped by the same per-extent test as a removal record ([§7.2](#7.2%20Repack))
 still on disk holds a record of its file over its extent at or below the pair of
 the record it names, neither that record nor a copy of it can come back. Recovery that drops a record as
 corrupt appends the loss record once, so the next open applies it and does not
-report the same loss again.
+report the same loss again, unless it drops more than the open reserve has
+room for and defers the record ([§6](#6.%20Capacity)).
 
 **A loss of content not yet offloaded raises the loss generation.** The journal
 keeps a **loss generation**, a counter it **MUST** raise by one on every loss
@@ -1388,7 +1393,8 @@ can commit a lost write's existence from it, and the range reads **Lost** rather
 than as the file was before the write ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)); an unsynced loss is not
 yielded, since its write was never answered as stable. A synced loss record
 above the caller's `applied` is therefore live, like an unsettled marker, until
-`Settle` covers it. It is how the engine learns, after a crash, what the journal holds that
+`Settle` covers it. A synced loss an open deferred ([§6](#6.%20Capacity)) is yielded,
+and listed by `Files`, exactly as if its record were on disk. It is how the engine learns, after a crash, what the journal holds that
 metadata has not recorded: the engine passes the file's `applied` version
 ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). A held extent is reported as a write, whether it came from `WriteAt`
 or `Fill`: a fill carries the version of a ref metadata already has, so it lies
@@ -2266,7 +2272,9 @@ differently, so that what remains serves the records that return space:
 A record of the last class that finds the headroom exhausted fails with
 `ErrNoSpace` naming the headroom rather than overrunning, and the engine
 answers it as the journal's capacity: retry-later while repack can return
-space.
+space. The open reserve, below, is not part of what it finds: to every record
+but an open's own, the headroom is exhausted once only that reserve is left,
+and the half above is half of the headroom without it.
 
 > decision: below half, only records of the last class draw, and among them only removals
 > of content the journal does not hold free nothing; an unmark is one per
@@ -2275,12 +2283,77 @@ space.
 > than repack returns space, and then those removals, and only they, are
 > refused until it does. Offloaded records are dropped rather than refused
 > because losing one costs a redundant upload, never content. Overturned by a
-> workload that reaches `headroom_draws` near the headroom's size while repack
+> workload that reaches `headroom_draws` near the headroom's size, less the open
+> reserve, while repack
 > has candidates it is not running.
 > The half kept for space-returning records and the default of
 > `journal.headroom_records` are unmeasured: overturned by a journal held at its
 > limit ([§10](#10.%20Open%20questions), question 4) whose removals reach the refusal, or whose
 > headroom sits mostly undrawn.
+
+**An open keeps part of the headroom for its own records.** The last 4,096
+records of the headroom, or half of it where `journal.headroom_records` is
+below 8,192 (proposal; 896 KiB at 224 bytes each), are the **open reserve**:
+only the header-only records an open appends to the headroom before it serves
+draw on it. Today those are, first, the unsynced loss record of each record a
+read-only journal failed that the next open in the process drops ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)),
+and then the loss record of each record it drops as corrupt that no loss record
+on disk names yet ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). The first take the reserve before any of
+the second, and are never deferred (below): a corrupt record is found again at
+every open, but a record a read-only journal failed is named only by the
+process's list of them, which a restart loses. Where they are more than the
+reserve holds, the open appends none of them past it and instead empties each
+segment that still holds one, as it empties a segment it ends ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)),
+leaving the failed records out of the copy: an unsynced loss reaches nothing
+but the record it names, so a record no segment holds any more needs no loss
+record. That draws on the repack reserve, which each retirement refills, never
+on the headroom, so however many records a read-only journal failed, the
+headroom does not refuse the reopen. The loss records the open's emptying writes
+with its copies go in the copies' spare, on the repack reserve, and draw on
+neither. No record appended while the journal
+serves draws on it, so a journal that ran its headroom out before a crash still
+finds the open reserve whole at the next open, unless an earlier open drew it
+and nothing has returned the headroom since. Headroom the journal regains goes
+to the open reserve first.
+
+**Past the open reserve, the open still serves, and appends no more.** An open
+that drops more records as corrupt than the open reserve has room for — a
+segment's worth of damage, or a reserve an earlier open drew — appends loss
+records while the reserve lasts and **defers** the rest. A deferred loss has no
+record on disk yet, and everything else a loss record gives is in place before
+the journal serves: the extent is not held, a synced one outranks what it
+superseded ([§3.8](#3.8%20Loss%20events)), its event is published as found at open and marked
+deferred, and a synced one is yielded by `Files` ([§3.7](#3.7%20State%20introspection)) and `Since`
+([§3.10](#3.10%20Settle%20and%20Since)) exactly as a synced loss record is, live until `Settle` covers it, so the
+engine commits a lost write's existence from it and the range reads **Lost**.
+`Settle` ends only that: the record is still owed.
+
+The record is written by whatever retires the segment holding the dropped
+record, and never on the headroom. Repack ([§7.2](#7.2%20Repack)) and the open's emptying
+([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) carry it into their target with the records they copy, under the
+repack reserve, as they carry a loss record already on disk, and a segment
+holding a deferred loss is never retired without that copy, even with nothing
+else live in it. The deferral ends only once the target is synced, and the
+source is unlinked only after that sync, so a power loss in between finds the
+dropped record still on disk. Until then the record that does not verify is
+still in its segment, so a crash finds the same damage, drops the same record
+and defers it again. Nothing waits on the headroom, so deferred losses cannot
+hold up the reclamation that would return it: a segment holding one is a repack
+candidate like any other. Failing the open instead would keep a share down
+until an operator frees space, for a loss the open has already contained.
+
+> decision: the open reserve bounds the loss records one open appends for
+> corrupt records, not the losses it can find; past it a loss is held in memory until its segment is
+> retired, so a large one costs a loss reported again at every open until
+> repack or the emptying reaches its segment. Overturned by a loss event marked
+> deferred in the field.
+
+> ponytail: in a copy a loss record takes its real bytes, 184 — a 96-byte
+> header, a 16-byte payload and a 72-byte footer entry — against at least 168
+> for the header-only record it replaces, so a segment of nothing but dropped
+> header-only records needs a tenth more than one segment's cap of repack
+> reserve. Upgrade to sizing the reserve at 11/10 of a cap when a deferred loss
+> is seen in the field.
 
 **Repack has a reserve of its own.** Repack copies live records before it can
 unlink their segment ([§7.2](#7.2%20Repack)). Its copies draw on a **repack reserve** at journal
@@ -2404,7 +2477,8 @@ copied. Only segments inside the scope are candidates. A segment pinned by a
 running offer ([§3.3](#3.3%20Offload)) is not a candidate. A segment left by a failed sync, or by a
 failed append that ended it, is one once its window, if any, is resolved, never
 before ([§5.3](#5.3%20A%20failed%20sync)); one recovery ends is emptied and unlinked at open instead
-([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). A segment a pass has selected takes no new pin until the pass ends
+([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). A segment holding a dropped record whose loss is deferred is a
+candidate, and its copy carries that loss record ([§6](#6.%20Capacity)). A segment a pass has selected takes no new pin until the pass ends
 with it.
 
 **Content preservation.** Repack **MUST** preserve the set of held extents and of
@@ -2448,9 +2522,10 @@ any other segment holds a record of its tag below its sequence number ([§3](#3.
 An offloaded or unmark record is live while it
 decides the bit of a held or retained extent ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)). Hold, unhold and stamp
 records are live while the hold or stamp they record is ([§3.11](#3.11%20Snapshot%20holds)). A segment is
-**held** while it backs a held or retained extent or holds a live one of these
-records; repack copies such records forward like held content, and a segment that
-is not held is retired ([§7.1](#7.1%20Releasing%20storage)).
+**held** while it backs a held or retained extent, holds a live one of these
+records, or holds a dropped record whose loss an open deferred ([§6](#6.%20Capacity)); repack
+copies such records forward like held content, a deferred loss as its loss
+record, and a segment that is not held is retired ([§7.1](#7.1%20Releasing%20storage)).
 
 **A removal record is dropped per extent, by version, not by sequence.** A
 removal, release or synced loss record outranks a record exactly where their
@@ -3043,7 +3118,8 @@ The open questions of the on-disk format and of recovery are
    fewer than writers' natural grouping suggests, is unmeasured against the
    contention more streams remove.
 4. **Headroom, reserves and thresholds** ([§6](#6.%20Capacity), [§3.3](#3.3%20Offload)). The headroom's
-   size (`journal.headroom_records`), the repack reserve of one segment, the bound
+   size (`journal.headroom_records`), the open reserve of 4,096 of its records,
+   the repack reserve of one segment, the bound
    of 64 pinned segments per offer and of 256 across offers are proposals; none
    has been measured against a journal held at its limit. The idle-seal
    threshold is [RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions)'s.

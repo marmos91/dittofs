@@ -22,7 +22,7 @@ E2's fault-injecting `kv.KV` (T2.3), which is not built yet, to fail the start t
 T6.7 needs epic 3's `Write` and `Draw` (T3.2, T3.3), where a version is issued, and the same
 `kv.KV` to block the raise. T6.5 needs epic 4's per-file existence commit (T4.3) and epic
 5's abort routine (T5.4); T6.6 and T6.8 epic 5's removal loop (T5.3); T6.9 epic 4's due set
-(T4.3) and reservation counter (T4.7), and T6.8. T6.10 needs T6.9 and `journalv2` to declare
+(T4.3) and reservation counter (T4.7), and T6.8. T6.10 needs T6.9 and `journal` to declare
 `ErrUnsuitableStorage` (RFC 1 §3). #3608 and #3609 put the share on every content call and
 give a pending release its retry channel. Epic 8's T8.6 builds a rebuilt clone's `Served`
 wait under a context that `Close` cancels and `Unbind` waits out (its D11).
@@ -85,7 +85,7 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
 - The salvage export of a stranded tag and its `Forget` while serving (`salvage.path`): the
   second part. Here a stranded tag stays stranded until the next start.
 - A read-only journal reopened in place (RFC 8 §2.5, E42): it needs RFC 1 §5.4's read-only
-  state, spares and probe, which `journalv2` does not have. No epic of this part owns it
+  state, spares and probe, which `journal` does not have. No epic of this part owns it
   (§9 point 8).
 - `Bind` with `State: Closing` (a re-home's finish, RFC 27) and `Fenced` (RFC 8 §11.2's
   copied-image row): out, and epic 7 for the self-fence, which is not a share state.
@@ -101,7 +101,7 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
 
 ### 1.3 Names used here
 
-- **E1**, epic 1, interfaces: `pkg/block/enginev2`'s exported surface, `Deps` and its
+- **E1**, epic 1, interfaces: `pkg/block/engine`'s exported surface, `Deps` and its
   interfaces, frozen at S1.
 - **E2**, epic 2, red e2e suite and test foundations: `engine-conformance` with its
   `known.yaml`, the fixture over the real journal, `kvstore` and the real open-state table,
@@ -155,15 +155,15 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
    passes to the journal or the store is asserted where they read it, over the real journal
    and `kvstore`, not where the engine builds it.
 6. **Known failures shrink.** An e2e test that turns green leaves the suite's `known.yaml`
-   (`test/enginev2/known.yaml`) in the same change: `dt` fails the run if a listed test
+   (`test/engine/known.yaml`) in the same change: `dt` fails the run if a listed test
    passes, so the change that turns it green removes it, a journal pull request included. A
    test over the real journal that starts red sits in that suite behind its build tag, never
    in `unit`, which keeps no known list.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1, enforced by
-   the engine's one import test, a walk over every package of `pkg/block/enginev2` with
-   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/engine`,
-   `pkg/block/journal`, `pkg/block/syncer`, `pkg/block/carver`, `pkg/block/remote` or the
-   v1 metadata service `pkg/metadata`. The walk checks every package on its own, so its
+   the engine's one import test, a walk over every package of `pkg/block/engine` with
+   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/syncer`,
+   `pkg/block/carver`, `pkg/block/remote` or the v1 metadata service `pkg/metadata`; v1's
+   engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
    allowlist names each package an exception applies to, test packages included. v1 is not
    touched: it is deleted at the cutover.
 8. **Real dependencies for properties of those dependencies.** No fake stands in for a
@@ -186,7 +186,7 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
     stays a review rule.
 11. **A symbol is exported only if the RFC's interface uses it.** Everything exported is
     frozen at S1. Helpers the engine's own files need stay unexported or move to an
-    `internal/` package of `enginev2`.
+    `internal/` package of `engine`.
 12. **Each subtask creates only what it declares.** No empty package and no stub without a
     caller. A package, an option or a test helper lands with its first consumer.
 
@@ -204,7 +204,7 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
 | 8 Real dependencies | T6.1, T6.3, T6.5, T6.7, T6.9, T6.10 | the identity, limits and incarnations from the real `kvstore`; the floor, the refusal of a missing or foreign journal, the recovery, the version limit, `Drop`'s `Forget` and the retried open over the real journal and its crash seam. Every §15 row runs over the fixture; the fake keeps the unit tests (the retry loop's, the content calls' answers after `Unbind`) |
 | 9 Comments | all | epic 3's copy-on-write share table `decision:`, kept at the `bindings` type (T6.2); `kvstore`'s `decision:` at `RaiseIncarnations`, rewritten for `RaiseAtStart` (T6.1); the version-limit headroom `decision:` and burst `ponytail:` (T6.7), RFC 8 §2.5's `decision:` on an error a check meets (T6.3), and the markers of §4 |
 | 10 Tests can fail | all | each test below names the change it catches |
-| 11 Exports | T6.1, T6.3 | `Lifecycle` changes shape (D4) and gains `Tags` (D2), both pending agreement (§9 points 1 and 2); `Tags`' record type is declared in `entity`, beside the store's other records, so `kvstore` imports no engine, and `entity.Shard` gains the primary's journal identity (D10, §9 point 14); `kvstore` gains `RecordJournal` (D3, §9 point 5) and `Lifecycle()`; `Stats` gains the refused shares and the journal conditions (T6.3). Test hooks live in `export_test.go` |
+| 11 Exports | T6.1, T6.3 | `Lifecycle` changes shape (D4) and gains `Tags` (D2), as RFC 16 §3 declares them (§9 points 1 and 2); `Tags`' record type is declared in `entity`, beside the store's other records, so `kvstore` imports no engine, and `entity.Shard` gains the primary's journal identity (D10, §9 point 14); `kvstore` gains `RecordJournal` on the opened store (D3, §9 point 5), the `JD` key kind and `Lifecycle()`; `Stats` gains the refused shares and the journal conditions (T6.3). Test hooks live in `export_test.go` |
 | 12 Creates only what it declares | all | each fake journal call lands with the subtask that first calls it; `RecordJournal` with T6.1, whose fixture is its first caller; `kv.Counting`'s count of Updates and of the most keys one Update wrote with T6.1; the fixture's second share with T6.2 and its second device with T6.10 |
 
 ## 3. Requirements and invariants
@@ -216,7 +216,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | The engine's store access outside block metadata's views and `Refs` is `Lifecycle` alone: `JournalID`, `VersionLimits`, `RaiseVersionLimits` and `RaiseIncarnations`, which D4 splits into `RaiseAtStart` and `RaiseAtAttach` and D2 extends with `Tags`, once the RFC text lands (§9 points 1 and 2) | invariant | §2.1, RFC 16 §3 | T6.1 |
+| R1 | The engine's store access outside block metadata's views and `Refs` is `Lifecycle` alone, its six calls: `JournalID` for this node's device, `Tags` (D2), `VersionLimits`, `RaiseVersionLimits`, `RaiseAtStart` and `RaiseAtAttach` (D4); the engine never calls `RecordJournal` (D3) | invariant | §2.1, RFC 16 §3 | T6.1 |
 | R2 | `JournalID` answers the identity the store records for a device; `J‖journal` is written when the journal is created, before anything in it is acknowledged | invariant | §2.5 step 1, RFC 16 §4.2, RFC 1 §3 | T6.1 |
 | R3 | Every write of `S‖id‖vl` (at start, at an attach, at every raise) is a tracked max-write: it writes the larger of the value it reads and its own, never blindly, and never lowers the limit | invariant | §2.7, RFC 16 §4.2 | T6.1, T6.2, T6.3, T6.7 |
 | R4 | The limits are raised in as many transactions as `K` takes, never one over every share | bound | §2.7, E40 | T6.1, T6.7 |
@@ -243,7 +243,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | R15 | The floor a journal opens with is at least every share's version floor and version limit (D5) | invariant | §2.5 step 1, §2.7; RFC 28 §3.1; RFC 1 §3, §4.3 | T6.3, T6.7 |
 | R16 | A journal missing or foreign where one is recorded (an `Open` with a recorded `expect` answering `ErrNoJournal`, an `IdentityError` or `ErrUnidentified`): every share on that device (D10) is refused, each named in `Stats` with its device, and `Start` does not fail for it | MUST | §2.5 step 1, RFC 28 §3.4 | T6.3 |
 | R17 | The directory of a missing or foreign journal is never opened as a new journal until an operator acknowledges the loss | MUST NOT | §2.5 step 1, RFC 28 §3.4 | T6.3 |
-| R18 | An `Open` with no identity recorded for its directory (zero `expect`), which always fails, fails `Start`: the metadata store lost when the directory holds a journal, uninitialised when it holds none, and the node serves nothing until an operator says what happened | invariant | §2.5 step 1, RFC 28 §3.4 | T6.3 |
+| R18 | An `Open` with no identity recorded for this node's device (zero `expect`) always fails. When the directory holds a journal, every share on that device is refused by name, `Stats` naming the device and the journal identity and installation ID the error names, and `Start` does not fail: the journal is foreign, or of this installation and not recorded (a changed node identity or directory, an interrupted `Init`), never the metadata store lost, and it serves only once `RecordJournal` records it, at a later start. When it holds none, `Start` fails as uninitialised | invariant | §2.5 step 1, RFC 28 §3.4 | T6.3 |
 | R19 | A share whose removal has reached its offload step is never attached at start; once the journal is open and before any share attaches, `Forget` runs for every tag `Stats` names whose share's removal reads forgotten | invariant | §2.5 step 1, §2.3 | T6.3 |
 | R20 | Before any version is issued, every served share's limit is written at the journal's next version plus one block, and passed with `SetVersionLimit` only once every write of it has committed; the floor at `Open` and every mark keep the epoch half zero | MUST | §2.5 step 1, §2.7, RFC 1 §4.3 | T6.3, T6.7 |
 | R21 | An error a check meets at `Open`, rather than a refusal it makes, fails `Start` as any failing step does | invariant | §2.5 (`decision:`) | T6.3 |
@@ -320,15 +320,23 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   `Drop` forgets the tag and a content call naming the share answers `ErrStale`. A
   `decision:` marker at `Tags` says so, withdrawn if RFC 8 §2.1 settles another source
   (§9 point 1).
-- **D3, who records a journal's identity.** No interface of RFC 16 writes `J‖journal`. T6.1
-  adds `kvstore`'s `RecordJournal(ctx, device, id)`, the store's part of the explicit
-  initialisation step, which the fixture calls after `Init` and production's initialisation
-  step will. `J‖journal` is keyed by identity, so `JournalID(device)` scans `J‖` for the
-  device, and `RecordJournal` deletes, in the same transaction, any other `J‖` key naming
-  the device, so a re-initialised device keeps one key and the scan answers its new
-  identity. A `ponytail:` marker at the scan names the ceiling (a node with hundreds of
-  devices) and the upgrade (a device index key). #3635 proposes a node argument as well;
-  T6.1 takes it if the RFC text does. Start never writes `J‖journal` (#3642).
+- **D3, who records a journal's identity.** RFC 16 §3.2 names the write: T6.1 adds
+  `RecordJournal(ctx, id, node, device)`, a method of the opened `kvstore.Store` in no
+  view, the store's part of the explicit initialisation step, which the fixture calls after
+  `Init` and production's initialisation step will; the engine never calls it. In one
+  transaction it writes `J‖journal` with the node and device and the index key
+  `JD‖node‖device` (kind 0x48) with the identity, so `JournalID(ctx, node, device)` is one
+  read of that key, with no scan of `J‖` and no `ponytail:`. `node` is `Deps.Node`;
+  `device` is a `JournalDir`, the directory the bootstrap names, encoded as a byte string,
+  never `entity.DeviceID` (a device file's major and minor). For a re-initialised device
+  it overwrites the index key and deletes the `J‖journal` of the identity the key named
+  (RFC 16 §3.2's proposal), so the key answers the new identity. A node whose identity, or
+  the directory it names, changed finds nothing under the new key by design (RFC 13 §2.2):
+  the device's shares are refused as not recorded (R18) until `RecordJournal` records the
+  journal there. When it records an identity whose `J‖journal` names another node or
+  directory, it also deletes that older index key, so each journal keeps one; RFC 16 says
+  nothing on that key, and a `decision:` marker at `RecordJournal` says so, withdrawn if
+  RFC 16 settles it. Start never writes `J‖journal` (#3642).
 - **D4, an attach keeps the grace instance only of a shard already raised.** `kvstore`'s
   `RaiseIncarnations` copies the incarnation into the grace instance on every call, which is
   right for a start and for the first raise of a shard since the process started, and wrong
@@ -345,12 +353,12 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   verifier's other inputs from the shard record, the primary's node and node epoch (RFC 16's
   `Shard.Primary` and `PrimaryEpoch`), are written by nothing until the node record lands
   (`kvstore`'s `ponytail:` at `RaiseIncarnations`), so the binding carries the incarnation
-  alone, and the process instance tells one start from the next. Pending the RFC 16 §3 text
-  (§9 point 2).
+  alone, and the process instance tells one start from the next. RFC 16 §3 declares both
+  forms (§9 point 2).
 - **D5, the floor at `Open`.** One number per journal: the largest of every share's version
   floor (`Content.VersionFloor`) and every share's limit (`VersionLimits`) among the shares
   the journal may serve, removed ones included, read through the `ShareID`s `Tags` names
-  (D2) whose shard lives on that journal (D10). `journalv2`'s doc for `Open` names the
+  (D2) whose shard lives on that journal (D10). `journal`'s doc for `Open` names the
   smallest limit; both are above every version issued, and the largest also covers a
   share whose limit was raised ahead of the others. A `decision:` marker at the computation
   says so. RFC 8 §2.5 and §2.7, RFC 28 §3.1 and RFC 1 §3 take the largest since #3710
@@ -435,7 +443,7 @@ pkg/metadata/kvstore/
                            the shard codec with the journal identity (D10)
   kvstoretest/
     lifecycle.go     T6.1  the view's cases
-pkg/block/enginev2/
+pkg/block/engine/
   deps.go            T6.1  Lifecycle's new shape (D2, D4, D10)
   share.go           T6.2  the share table (D1), the binding, Bind
                      T6.9  Unbind, Drop, the removed state (D9)
@@ -452,7 +460,7 @@ pkg/block/enginev2/
                            condition set Stats reports, which T6.3 or epic 7's T7.3
                            creates, whichever lands first
   export_test.go     T6.7  the block hook; T6.2 the unit composition through Bind
-  enginev2test/
+  enginetest/
     fake.go          T6.3  Open's refusals, Forget, Strand, Stats' tags and versions
                      T6.5  Files, Since, Settle
                      T6.7  SetVersionLimit and a counter bounded by it
@@ -462,7 +470,7 @@ pkg/block/enginev2/
   conformance/
     rfc8_a_test.go   T6.2 to T6.7, T6.10  the rows of §15.1 this epic owns
     rfc8_b_test.go   T6.2, T6.9  the rows of §15.2
-test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's issue
+test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's issue
 ```
 
 ## 6. Subtasks
@@ -474,28 +482,30 @@ test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's is
 - **Track:** C. **Depends on:** S2; the RFC 8 §2.1 and RFC 16 §3 edits that settle #3631
   and #3632, and §9 point 14.
 - **Covers:** R1 to R5.
-- **Deliverables:** `kvstore.Store.Lifecycle()` returning a view with `JournalID(ctx, device
-  string) ([16]byte, error)`, `VersionLimits(ctx, shares)`, `RaiseVersionLimits(ctx, to)`
-  writing at most `K` keys per transaction, each key a tracked max-write over
-  `RaiseVersionLimit`'s rule, except that a share whose record reads being removed or
-  retired is skipped instead of refused with `ErrStale`, since nothing attaches it again and
-  one such share must not fail the raise for every share batched with it; `RaiseAtStart(ctx,
-  shards)` and `RaiseAtAttach(ctx, shard)` (D4), each returning the incarnation it wrote per
-  shard, rewriting `kvstore`'s `decision:` at
-  `RaiseIncarnations` for `RaiseAtStart`, and `Tags(ctx)` (D2), its record declared in
-  `entity` and carrying the journal identity of each of the share's shards (D10); the
-  primary's journal identity added to `entity.Shard` and its codec (D10);
-  `RecordJournal(ctx, device, id)` writing `J‖journal`, deleting any other key naming the
-  device (D3) and rewriting, in the same transaction, the primary journal identity of every
-  shard that names the deleted one (D10), with its `ponytail:`; the engine's `Lifecycle`
-  declaring the six calls. `kv.Counting` gains a count of Updates and the most keys one
-  Update wrote, its first consumer here. In E2's fixture, the real view replaces the stub
-  `Lifecycle` that refuses every call (`unbuiltLifecycle`), and the fixture records
-  `Fixture.Journal`, the `JournalID` it kept from `Init`, through `RecordJournal`, so the
-  view's `JournalID` answers it for the fixture's directory.
+- **Deliverables:** `kvstore.Store.Lifecycle()` returning a view with `JournalID(ctx, node,
+  device JournalDir) ([16]byte, error)` over `JD‖node‖device`, `VersionLimits(ctx, shares)`,
+  `RaiseVersionLimits(ctx, to)` writing at most `K` keys per transaction, each key a tracked
+  max-write over `RaiseVersionLimit`'s rule, except that a share whose record reads being
+  removed or retired is skipped instead of refused with `ErrStale`, since nothing attaches
+  it again and one such share must not fail the raise for every share batched with it;
+  `RaiseAtStart(ctx, shards)` and `RaiseAtAttach(ctx, shard)` (D4), each returning the
+  incarnation it wrote per shard, rewriting `kvstore`'s `decision:` at `RaiseIncarnations`
+  for `RaiseAtStart`, and `Tags(ctx)` (D2), its record declared in `entity` and carrying the
+  journal identity of each of the share's shards (D10); the primary's journal identity added
+  to `entity.Shard` and its codec (D10); `RecordJournal(ctx, id, node, device)` on the
+  opened store, writing `J‖journal` and `JD‖node‖device`, deleting the `J‖journal` the
+  overwritten key named and the older index key of a journal recorded again (D3), and
+  rewriting, in the same transaction, the primary journal identity of every shard that names
+  the deleted one (D10), with its `ponytail:`; the engine's `Lifecycle` declaring the six
+  calls. `kv.Counting` gains a count of Updates and the most keys one Update wrote, its
+  first consumer here. In E2's fixture, the real view replaces the stub `Lifecycle` that
+  refuses every call (`unbuiltLifecycle`), and the fixture records `Fixture.Journal`, the
+  `JournalID` it kept from `Init`, through `RecordJournal`, so the view's `JournalID`
+  answers it for the fixture's directory.
 - **Acceptance criteria:**
   - `JournalID` of a device with no record answers the zero identity, not an error; of a
-    device whose journal was re-initialised, the newer identity.
+    device whose journal was re-initialised, the newer identity; of the same directory
+    under another node, the zero identity.
   - After `RecordJournal` for a re-initialised device, no shard record names its old
     identity.
   - `RaiseVersionLimits` never lowers a limit, never commits more than `K` keys, and skips a
@@ -578,8 +588,10 @@ test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's is
   each device of `Deps.Devices`, `JournalID`, the floor (D5), `Deps.Open`; the error mapped
   by `expect`, read first: with a recorded `expect`, a journal missing, foreign or
   unidentifiable (`ErrNoJournal`, `ErrIdentityMismatch`, `ErrUnidentified`) refusing its
-  shares by name and raising `journal_lost` (R16); with zero `expect`, every error failing
-  `Start` as the store lost or the device uninitialised (R18); any other error failing
+  shares by name and raising `journal_lost` (R16); with zero `expect`, a directory holding
+  a journal refusing the device's shares by name as not recorded, naming the identity and
+  installation ID the error names, and one holding none failing `Start` as uninitialised
+  (R18); any other error failing
   `Start` (R21); `Tags`' forgotten tags forgotten, its offloaded ones not attached, and both
   kept in the table in D9's removed state (R19, D2); each share
   given a handle on the journal its shard's record names (D10), at the larger of its floor
@@ -601,8 +613,11 @@ test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's is
   offloaded tag: `Forget` called for the first before any `Share`, no `Share` for the
   second, and a content call naming either answers `ErrStale` (R19, R12); a device with no
   recorded identity whose directory holds a journal, which `Open` with zero `expect` answers
-  with an `IdentityError`: `Start` fails naming the store lost and closes what it opened
-  (catches the error mapped before `expect` is read, R18); with a recorded `expect`, an
+  with an `IdentityError`: the device's shares refused by name as not recorded, `Stats`
+  naming the identity and installation ID, no report of the store lost, `Start` succeeds,
+  and after `RecordJournal` for this node and device the next `Start` serves them (catches
+  the error mapped before `expect` is read, and a changed node identity taken for a lost
+  store, R18); with a recorded `expect`, an
   `Open` answering `ErrUnidentified`: the device's shares refused by name and `Start`
   succeeds (R16); one device recorded as B, with share Y's shard naming B and share X's
   naming A, as after a re-initialisation whose rewrite was missed: X is refused by name with
@@ -854,7 +869,7 @@ test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's is
 
 **Subtask T6.10 estimate: 3.75 man-days.**
 
-- **Track:** C. **Depends on:** T6.6 and T6.9 (`Close`, `Unbind` and `Drop`); `journalv2`
+- **Track:** C. **Depends on:** T6.6 and T6.9 (`Close`, `Unbind` and `Drop`); `journal`
   declaring `ErrUnsuitableStorage`.
 - **Covers:** R5, R31 to R33, R41.
 - **Deliverables:** in `recover.go`, an `Open` refused with `ErrUnsuitableStorage` leaving its
@@ -913,7 +928,7 @@ flowchart TD
   T6_5 --> T6_6["T6.6 Start steps 4 and 5"]
   T6_5 & T6_7 --> T6_8["T6.8 Close"]
   T6_8 --> T6_9["T6.9 Unbind and Drop"]
-  J(["journalv2: ErrUnsuitableStorage"]):::sync -.-> T6_10
+  J(["journal: ErrUnsuitableStorage"]):::sync -.-> T6_10
   T6_6 & T6_9 --> T6_10["T6.10 Unsuitable journal at start"]
   T6_6 & T6_9 & T6_10 --> S3(["S3 engine complete over the fake journal"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
@@ -941,34 +956,30 @@ A suggestion only: one pull request per subtask works as well. PR 2 can be open 
 
 ## 9. Open points
 
-1. **How start reads the removals and the installation's tags** (D2), pending #3631. RFC 8 §2.5 step 1
-   forgets a tag "whose share's `rm` rows read forgotten" and does not attach one at
-   "offloaded or later", and step 5 strands "a tag no share record of the installation
-   names"; RFC 8 §2.1 says `Lifecycle`'s four methods are the engine's only store access
-   outside block metadata's views and `Refs`, and RFC 23 §2.2 hands `Start` only the
-   attached shares. One of them must change: RFC 16 §3 gaining `Tags`, keyed by `ShareID`
-   so a resumed removal's `Drop` finds the tag, is D2's choice, and #3631's proposed fix
-   should take that shape. It changes E1's frozen `Lifecycle`, so T6.1 waits for the RFC
-   text.
-2. **An attach keeps the grace instance** (D4), pending #3632. RFC 16 §3 has one `RaiseIncarnations` "in
-   the start transaction, or at attach", and `kvstore`'s copies the incarnation into the
-   grace instance on every call, which RFC 14 §4.4 and RFC 16's `Shard.GraceInstance` allow
-   only for a start or a failover that lost open state. RFC 16 §3 should declare the two
-   forms, and say that the first raise of a shard since the process started takes the start
-   form, since the restart lost its open state (D4); #3632's proposed `RaiseAttached` needs
-   that rule. It changes E1's frozen `Lifecycle`, so T6.1 waits for the RFC text.
+1. **How start reads the removals and the installation's tags** (D2), settled by #3712.
+   RFC 16 §3 gives `Lifecycle` `Tags(ctx) (map[ShareID]TagRecord, error)`, keyed by
+   `ShareID` so a resumed removal's `Drop` finds the tag, and RFC 8 §2.1 counts six
+   methods: D2's shape.
+2. **An attach keeps the grace instance** (D4), settled by #3712. RFC 16 §3 declares
+   `RaiseAtStart`, which sets `GraceInstance`, and `RaiseAtAttach`, which keeps it, each
+   returning the incarnations written; RFC 8 §2.5 step 2 takes the attach form only when
+   the node holds the shard's open state, and the start form otherwise (RFC 14 §4.4): D4's
+   rule.
 3. **The start transaction against `K`** (D8), pending #3633. RFC 8 §2.5 step 2, RFC 0 and RFC 14 §4.4 put
    every shard in one transaction; E40 and §2.7 bound every engine transaction by `K`, and
    §2.7 takes 10⁴ shares' 2 × 10⁴ keys as past it. On a node serving more shards than `K`,
    the two cannot both hold.
 4. **The floor at `Open`** (D5), settled by #3710. RFC 8 §2.5 step 1 and §2.7, RFC 28 §3.1
    and RFC 1 §3 now take the largest of every served share's version floor and version
-   limit, as D5 does. `journalv2`'s doc for `Open` still names the smallest limit, which is
+   limit, as D5 does. `journal`'s doc for `Open` still names the smallest limit, which is
    safe; it follows in a code change.
-5. **Who writes `J‖journal`** (D3), pending #3635. RFC 16 §4.2 has the key "written when the journal is
-   created", and no interface of RFC 16 §3 writes it; RFC 16 §3.2's `Init` writes `\x00format`,
-   `IN` and `SL` only. RFC 16 should name the write, and how `JournalID(device)` finds a key
-   that is keyed by identity.
+5. **Who writes `J‖journal`** (D3), settled by #3712. RFC 16 §3.2 names
+   `RecordJournal(ctx, id, node, device)` on the opened store, writing `J‖journal` and the
+   index `JD‖node‖device` that `JournalID(ctx, node, device)` reads; a changed node
+   identity or directory is new to the store (RFC 13 §2.2), and RFC 8 §2.5 step 1 refuses
+   its shares as not recorded, never as the store lost. Still open: the older index key of
+   a journal recorded again (D3's `decision:`), and who rewrites the shards' journal
+   identity when a device is re-initialised (point 14).
 6. **`journal_lost` at start.** #3641 added `journal_lost` to RFC 8 §11.1's list, but only
    "when a retried open finds the journal missing or foreign", while T6.3 raises it at
    `Start` too, as RFC 0 §10 and RFC 25 read; pending #3661.
@@ -981,11 +992,11 @@ A suggestion only: one pull request per subtask works as well. PR 2 can be open 
    estimates include them. E2's fault-injecting `kv.KV` (its T2.3) is not built either.
    T6.4 and T6.7 depend on it, and its days stay in E2's estimate.
 8. **A read-only journal reopened in place** (RFC 8 §2.5, E42, and §15.2's read-only row) is
-   in no epic of this part. It needs RFC 1 §5.4's read-only state, which `journalv2` does not
+   in no epic of this part. It needs RFC 1 §5.4's read-only state, which `journal` does not
    have yet; once it does, it is a subtask of this epic or of the second part.
 9. **`Unbind` with `keepHolds`** is refused: no snapshot exists in this part. A removal that
    keeps snapshots is RFC 12's, out.
-10. **No row over the real journal turns green in this epic** until `journalv2`'s `Init`,
+10. **No row over the real journal turns green in this epic** until `journal`'s `Init`,
     `Open`, `Share`, `Forget`, `Strand`, `SetVersionLimit`, `Files`, `Since` and `Settle`
     exist. Each row leaves `known.yaml` in the change that turns it green.
 11. **Two text fixes, merged.** RFC 1 §4.3 now sends the version limit's sizing to RFC 8

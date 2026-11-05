@@ -6,7 +6,7 @@ release-1 parts of [RFC 15 — topology](../rfcs/rfc-15-topology.md). The test f
 follow [RFC 29 — test harness](../rfcs/rfc-29-test-harness.md).
 **Team:** three people. **Track A** (storage) is @viquitorreis, **track B** (model and
 operations) is @didimelli, and @simonebaracchi coordinates (§3.4).
-**Naming:** **v1** is the journal that exists today (`pkg/block/journal`, one journal per
+**Naming:** **v1** was the journal before this plan (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`, one journal per
 share). **v2** is the journal RFC 1 describes (one journal per disk, shared by every share
 placed on that disk).
 
@@ -19,7 +19,7 @@ placed on that disk).
 v2 is a new local journal. It is not a refactor of v1 and shares no code with it. The two
 differ at the root:
 
-| | v1 (`pkg/block/journal`) | v2 (this plan) |
+| | v1 (`pkg/block/journal` until #3645 deleted it) | v2 (this plan) |
 | --- | --- | --- |
 | Granularity | one journal per **share** (`<journal.path>/shares/<name>/journal`) | one journal per **device**, shared by every share on it, each share working through its own `Handle` and `ShareTag` |
 | What it knows | carving, chunk sizes, eviction, cold seeding (`Hydrate`, `Commit`, `SeedCold`, …) | extents of files only. No chunks, no blocks, no remote tier ([RFC 1 §1.1](../rfcs/rfc-1-journal.md)) |
@@ -89,7 +89,7 @@ Epic 1 is **interfaces only**. Its output is code that compiles and does nothing
 - The kept tests pass: the import rule, the RFC signature compile check, typed errors
   matching their sentinels, and `Version`'s byte order (§1.5, rule 10).
 - The import test passes, allowing stdlib only (plus `golang.org/x/sys` in
-  `internal/platform`, epic 1 D6) and forbidding `pkg/block/journal`.
+  `internal/platform`, epic 1 D6) and, while v1 existed, forbidding v1's `pkg/block/journal`.
 - Every symbol carries a doc comment stating its contract in terms of the code.
   `CLAUDE.md` keeps RFC section numbers out of source comments, so the map from each
   symbol to its RFC section lives in the epic's planning file instead.
@@ -220,7 +220,7 @@ run is a failure ([RFC index, test tiers](../rfcs/rfc-index.md)).
 6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   `pkg/block/journal`. The import test enforces it. v1 code is neither ported nor
+   v1's journal (`pkg/block/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
    checks only whether v1 state exists, to refuse it at start (E10), and never reads
    v1's format.
@@ -260,7 +260,7 @@ run is a failure ([RFC index, test tiers](../rfcs/rfc-index.md)).
 | 7 | **Recovery and identity** | `Init`, `Open`, `Restamp`, rebuild by catalog and by scan, torn vs corrupt, unproven-tail re-verify, offload-state rebuild, stale rule, spare re-adoption, inspection and verify | 12 | A | 8 (corruption), 9 (corruption), 10, 11 |
 | 8 | **Data path and capacity** ⛔ | `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 13 | B | 9, 11 |
 | 9 | **Offload, reclamation, holds and tags** | `Offload`, `OffloadMany`, pins, `MarkOffloaded`, `Unmark`, `Release`, auto-retire, `Repack` and drop test, snapshot holds, `Forget`, `Strand` | 13 | B | 11 |
-| 10 | **Start and initialisation** | Start check and its two refusals, `journalv2.Init` in the initialisation step and the `J‖journal` writes, wipe of devices left by an interrupted step, device config keys | 5 | A | 11 |
+| 10 | **Start and initialisation** | Start check and its two refusals, `journal.Init` in the initialisation step and the `J‖journal` writes, wipe of devices left by an interrupted step, device config keys | 5 | A | 11 |
 | 11 | **Engine on the RFC 16 store** 🔀 | Stage 3 of #3119, planned after S4a: engine wiring (`Fill`, `report`, `Release`), per-device registry, version floor and limit, store contracts, error mapping, salvage, exporters and alert rules, API and CLI, system e2e tests | planned after S4a | team | 12 |
 | 12 | **E2E green** 🔀 | Burn down the known-failure list, soak, benchmarks J1–J5 and J8, CI tier registration, profiling baselines | 8 | team | release |
 | | | | **~121 + E11** | | |
@@ -397,11 +397,11 @@ code lives. Each package is created with its first symbol by the epic named on i
 never as a placeholder (§1.5, rule 12).
 
 ```text
-pkg/block/journalv2/              package journalv2 — public API (RFC 1 §3)
+pkg/block/journal/                package journal — public API (RFC 1 §3)
   doc.go  journal.go  handle.go  reservation.go
   types.go  errors.go  stats.go  trace.go  inspect.go
   options.go                      injection points; Clock is aliased from internal/core
-  imports_test.go                 stdlib only (x/sys in internal/platform), no pkg/block/journal
+  imports_test.go                 stdlib only (x/sys in internal/platform), no v1 import
   rfc_signatures_test.go          RFC 1 calls as written; a drifted signature stops the build
   errors_test.go                  every typed error Is its own sentinel
   internal/format/                RFC 28 §2 codecs, CRC32C, golden vectors       (E3)
@@ -414,17 +414,16 @@ pkg/block/journalv2/              package journalv2 — public API (RFC 1 §3)
   internal/recovery/              open/rebuild/scan/verify                       (E7)
   internal/reclaim/               repack, retirement                             (E9)
   conformance/                    component e2e: RFC 1 §9.4, RFC 28 §4.2         (E2)
-  journalv2test/                  crash seam, reference model, profiler, fixtures (E2)
+  journaltest/                    crash seam, reference model, profiler, fixtures (E2)
 pkg/sim/                          TestClock, Fault, Schedule; node-wide (RFC 8 §2.1) (E2)
 pkg/clock/                        Clock + System, with its first caller (stage-3 composition root, E11)
-test/journalv2/known.yaml         known failures, graded by dt (RFC 29 §4.7)     (E2)
-test/journalv2/trace.yaml         RFC row → test or owner, checked by trace_test.go (E2)
-test/e2e/journalv2_*_test.go      system e2e with kernel clients        (E10 and E11 tests)
+test/journal/known.yaml           known failures, graded by dt (RFC 29 §4.7)     (E2)
+test/journal/trace.yaml           RFC row → test or owner, checked by trace_test.go (E2)
+test/e2e/journal_*_test.go        system e2e with kernel clients        (E10 and E11 tests)
 ```
 
-The package is named `journalv2` while v1 exists. Renaming it once v1 is removed is out of
-scope. The suffix stays in Go package and import paths only: metric and span names, log
-fields and attribute keys say `journal`. v1 and v2 never share a binary, so no version
+The package was named `journalv2` while v1 existed; #3645 deleted v1 and renamed it
+`journal`. Metric and span names, log fields and attribute keys always said `journal`. v1 and v2 never share a binary, so no version
 label is needed either (epic 1, D1).
 
 ---
@@ -604,9 +603,9 @@ each tier's dependencies are in the epic's file, §7:
     byte-identical afterwards;
   - a crash between journal init and `kvstore.Init`: a start reports the store lost, and
     a re-run of the initialisation step wipes the devices and succeeds;
-  - a crash between `kvstore.Init` and the `J‖journal` writes: a start reports the store
-    lost, and once a re-run of the initialisation step completes the records, the next
-    start serves.
+  - a crash between `kvstore.Init` and the `J‖journal` writes: a start refuses the
+    devices as not recorded, never as the store lost, and once a re-run of the
+    initialisation step completes the records, the next start serves.
 - **Other sources**, kept to what the crash seam cannot cover at component level (it
   already covers fsyncgate-style failed fsyncs, a crash at every sync point and reordered
   writes; the scenarios that need special hosts are parked in §6):
@@ -982,7 +981,7 @@ they are deleted with the rest of v1 at the cutover (stage 7 of #3119).
   - a list of journal devices (path, maximum);
   - start refused when `storage` has no device.
 - **The start check** and its two refusals (below).
-- **The journal side of the initialisation step:** `journalv2.Init` on every device, the
+- **The journal side of the initialisation step:** `journal.Init` on every device, the
   `J‖journal` records written idempotently, and the wipe of devices left by an
   interrupted step (below).
 - **Metadata it relies on**, from RFC 16's store
@@ -1021,17 +1020,18 @@ refusal, so v1 state can never be read as a fresh install.
 
 **The initialisation step:**
 
-1. `journalv2.Init` on every device, with the installation ID the step mints. Nothing in
+1. `journal.Init` on every device, with the installation ID the step mints. Nothing in
    the store is needed for this;
 2. `kvstore.Init`, which writes the format record, `Installation` and the share list in one
    transaction. **This is the point of no return.** `kvstore.Open` refuses a store without
    the format record, so nothing else in the store can be written before it;
 3. what the store holds besides, the `J‖journal` records included, written idempotently
-   by this step, never by a start. A start that finds a journal with no record reports
-   the metadata store lost (RFC 8 §2.5). A crash between steps 2 and 3 is settled by
-   running the step again: finding the store initialised, it skips steps 1 and 2 and
-   records the identity each device's `format` file names, when that file names the
-   store's installation ID and the directory holds no segment (RFC 28 §3.4, an
+   by this step with `RecordJournal`, never by a start. A start that finds a journal with
+   no record beside an initialised store refuses that device's shares as not recorded,
+   never as the metadata store lost (RFC 8 §2.5 step 1). A crash between steps 2 and 3
+   is settled by running the step again: finding the store initialised, it skips steps 1
+   and 2 and records the identity each device's `format` file names, when that file names
+   the store's installation ID and the directory holds no segment (RFC 28 §3.4, an
    interrupted `Init`); any other device stays refused.
 
 The step must be re-runnable. A crash between steps 1 and 2 leaves devices whose `format`

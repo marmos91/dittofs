@@ -10,9 +10,9 @@ write records; [RFC 17](../rfcs/rfc-17-vfs.md) §2.3 and §5.7, for `Content` an
 `Overlay` feeds.
 **Track:** A.
 **Epic 3 estimate: 6 subtasks, 13 man-days.**
-**Depends on:** sync point **S2, red suite in CI**: E1's `pkg/block/enginev2` surface
+**Depends on:** sync point **S2, red suite in CI**: E1's `pkg/block/engine` surface
 (`Engine`, `Deps`, the `Journal` and `Handle` interfaces, `WriteOpts`, `Overlay`) and E2's
-fake journal (`enginev2test.FakeJournal`), profiler wiring and red rows; #3608 and #3609,
+fake journal (`enginetest.FakeJournal`), profiler wiring and red rows; #3608 and #3609,
 which put the share on every content call (D1). Nothing of epic 4:
 `Write` answers a stand-in verifier until epic 4's T4.1 replaces it (D12).
 **Blocks:** epic 4, whose group commit captures the pending operations T3.1 and T3.2
@@ -67,7 +67,7 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
 
 ### 1.3 Names used here
 
-- **E1**, epic 1, interfaces: `pkg/block/enginev2`'s exported surface, `Deps` and its
+- **E1**, epic 1, interfaces: `pkg/block/engine`'s exported surface, `Deps` and its
   interfaces, frozen at S1.
 - **E2**, epic 2, red e2e suite and test foundations: `engine-conformance` with its
   `known.yaml`, the fixture over the real journal and `kvstore`, the fault-injecting
@@ -121,15 +121,15 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
    passes to the journal or the store is asserted where they read it, over the real journal
    and `kvstore`, not where the engine builds it.
 6. **Known failures shrink.** An e2e test that turns green leaves the suite's `known.yaml`
-   (`test/enginev2/known.yaml`) in the same change: `dt` fails the run if a listed test
+   (`test/engine/known.yaml`) in the same change: `dt` fails the run if a listed test
    passes, so the change that turns it green removes it, a journal pull request included. A
    test over the real journal that starts red sits in that suite behind its build tag, never
    in `unit`, which keeps no known list.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1, enforced by
-   the engine's one import test, a walk over every package of `pkg/block/enginev2` with
-   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/engine`,
-   `pkg/block/journal`, `pkg/block/syncer`, `pkg/block/carver`, `pkg/block/remote` or the
-   v1 metadata service `pkg/metadata`. The walk checks every package on its own, so its
+   the engine's one import test, a walk over every package of `pkg/block/engine` with
+   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/syncer`,
+   `pkg/block/carver`, `pkg/block/remote` or the v1 metadata service `pkg/metadata`; v1's
+   engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
    allowlist names each package an exception applies to, test packages included. v1 is not
    touched: it is deleted at the cutover.
 8. **Real dependencies for properties of those dependencies.** No fake stands in for a
@@ -152,7 +152,7 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
     stays a review rule.
 11. **A symbol is exported only if the RFC's interface uses it.** Everything exported is
     frozen at S1. Helpers the engine's own files need stay unexported or move to an
-    `internal/` package of `enginev2`.
+    `internal/` package of `engine`.
 12. **Each subtask creates only what it declares.** No empty package and no stub without a
     caller. A package, an option or a test helper lands with its first consumer.
 
@@ -165,8 +165,8 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
 | 3 Observability | T3.1, T3.5 | the logger is `Deps.Logger`, already narrowed to `component=engine`. T3.1 records `engine_lock_wait_seconds{area="file_state"}`, T3.5 `engine_reads_total{class}` and `engine_read_seconds`, none labelled by share, in unexported counters that epic 7's `Stats` exposes (D9). T3.5 logs a **Lost** or corrupt read at `Error`, once per extent. No span: this part's write and read wait on none of RFC 8 §14's stages (no sync, no existence commit, no fetch, no pacing) |
 | 4 Profiling | all | T3.1's unit composition calls `prof.Watch`, so every unit test of the epic fails on a leaked goroutine, descriptor or heap |
 | 5 Public and internal | all | internal tests of the replay (T3.4) and the resolution table (T3.5); the content methods tested through `*Engine`; `-race` runs in T3.1, T3.2 and T3.5. Values the engine hands the store (`Covering`'s and `Allocation`'s share, file and extent) are asserted over the real `kvstore`; the `mtime` handed the journal is asserted where the journal reads it back, by `Since` over the real journal (T3.2) |
-| 6 Known failures | T3.2 | T3.2's test over the real journal enters `test/enginev2/known.yaml` naming this epic's issue; any row an epic-3 change turns green leaves it in that change |
-| 7 v2 ignores v1 | T3.1 | the import walk stays as it is; T3.1 adds the unit composition's imports (`journalv2test/prof`, `kvstoretest`, `badgerkv`, `kv`, `sim`) for the engine's own test package to its allowlist, by name |
+| 6 Known failures | T3.2 | T3.2's test over the real journal enters `test/engine/known.yaml` naming this epic's issue; any row an epic-3 change turns green leaves it in that change |
+| 7 v2 ignores v1 | T3.1 | the import walk stays as it is; T3.1 adds the unit composition's imports (`journaltest/prof`, `kvstoretest`, `badgerkv`, `kv`, `sim`) for the engine's own test package to its allowlist, by name |
 | 8 Real dependencies | T3.2, T3.5, T3.6 | the store's answers come from the real `kvstore`; the fake journal stands in only for the engine's logic; the `mtime` check runs over the real journal |
 | 9 Comments | all | the markers of §4, each at its code site; RFC 8 §2.3's per-file bound at the entry map (T3.1) |
 | 10 Tests can fail | all | each test below names the change it catches |
@@ -198,7 +198,7 @@ subtasks and tests can cite them.
 | R9 | Until its stability point the journal is the write's authority: its pending operation is in the file's entry, in version order, before `Write` answers, so a `Read`, `Overlay` or `Allocation` that starts after reflects it | invariant | §4.1, E15 | T3.2, T3.4, T3.5, T3.6 |
 | R10 | A `Write` that fails never calls `WriteOpts.Done`; a zero-length `Write` stages nothing, answers the verifier and calls `Done` once, with nothing charged | invariant | §12.1 | T3.2 |
 | R11 | `Draw` issues the next version of the file's journal and no other: above every version staged or drawn on that journal before it, with no version of the engine's or the store's own, and takes no lock (the caller holds the accept lock) | MUST | §4.1, RFC 1 §4.3 | T3.3 |
-| R12 | The content methods return only `vfserr` values and no `journalv2` type, the caller's own context error excepted, which passes through as itself for the adapters to map (D4): the journal's `OtherShareError` is `ErrCorrupt`, never retried; a `NoSpaceError` is `ErrDelay` with `DelayCapacity`, except the version limit's, which is `DelayCommit` | MUST | §12.1, §2.7, RFC 1 §4.3 | T3.2, T3.3, T3.5 |
+| R12 | The content methods return only `vfserr` values and no `journal` type, the caller's own context error excepted, which passes through as itself for the adapters to map (D4): the journal's `OtherShareError` is `ErrCorrupt`, never retried; a `NoSpaceError` is `ErrDelay` with `DelayCapacity`, except the version limit's, which is `DelayCommit` | MUST | §12.1, §2.7, RFC 1 §4.3 | T3.2, T3.3, T3.5 |
 
 **Overlay**
 
@@ -245,14 +245,14 @@ subtasks and tests can cite them.
   table, which knows only bound shares, so it answers `DelayFrozen` for any other; the
   removed and retired states, and their `ErrStale`, land with epic 6's `Unbind` and `Drop`.
   The parameter is not on this base yet: it lands in RFC 8 §12.1 and RFC 17 §2.3 with
-  #3608, and in `pkg/block/enginev2`'s and `internal/vfs`'s declared signatures with
+  #3608, and in `pkg/block/engine`'s and `internal/vfs`'s declared signatures with
   #3609, both ahead of T3.1.
 - **D2, the unit composition.** `Bind` and `Start` are epic 6's, so a unit test cannot bind
-  a share through them. T3.1 adds `export_test.go`, in package `enginev2`, with a hook that
+  a share through them. T3.1 adds `export_test.go`, in package `engine`, with a hook that
   installs one binding over a `Journal` and a `Handle`, and a helper in the engine's test
   package composing the engine over E2's `FakeJournal`, `kvstoretest.NewFS` on an
   in-memory `kv.KV`, `sim.TestClock` and `prof.Watch`. The helper cannot live in
-  `enginev2test`, which cannot reach `export_test.go`. It is replaced by epic 6's `Bind`
+  `enginetest`, which cannot reach `export_test.go`. It is replaced by epic 6's `Bind`
   once that lands, so no marker.
 - **D3, pending-operation order.** The entry's lock is never held across `WriteAt`: the
   operation is inserted by version after the journal answers. Writes of one file arrive in
@@ -318,7 +318,7 @@ subtasks and tests can cite them.
 ## 5. Target tree
 
 ```text
-pkg/block/enginev2/
+pkg/block/engine/
   file.go           T3.1  per-file entries, sharded by file; pending operations; bindingOf (D1)
   export_test.go    T3.1  the binding hook, counter accessors and the verifier swap (D2, D9, D12)
   unit_test.go      T3.1  the unit composition over the fake journal and the real kvstore
@@ -331,7 +331,7 @@ pkg/block/enginev2/
   unbuilt.go        T3.2–T3.6  each built method leaves it
   conformance/
     rfc8_write_test.go  T3.2  mtime read back through Since over the real journal
-test/enginev2/known.yaml  T3.2  its entry
+test/engine/known.yaml    T3.2  its entry
 ```
 
 ## 6. Subtasks
@@ -377,7 +377,7 @@ test/enginev2/known.yaml  T3.2  its entry
 - **Deliverables:** `write.go`: `Write` as RFC 8 §4.1's steps without admission and the post:
   validate (`off` negative is `ErrInvalid`), sample the stand-in verifier (D12), stage through `WriteAt`
   with the time of R7, insert the pending operation by version (D3), answer. The `FileID`
-  and version conversions to `journalv2`'s types, one line each over its converters, at
+  and version conversions to `journal`'s types, one line each over its converters, at
   their first caller. The journal-error mapping of D4. `conformance/rfc8_write_test.go`
   and its `known.yaml` entry.
 - **Acceptance criteria:**
@@ -396,7 +396,7 @@ test/enginev2/known.yaml  T3.2  its entry
   zero stand-in alone cannot show, a `Write` that never calls it, or one answering another
   verifier); a
   write refused a journal-limit `NoSpaceError`: `ErrDelay` with `DelayCapacity`, no `Done`, no operation,
-  and `entryOf(f) == nil` for a file with no entry before (catches a leaked `journalv2` error,
+  and `entryOf(f) == nil` for a file with no entry before (catches a leaked `journal` error,
   an early `Done`, or an `unlock` that never drops the entry, which otherwise shows only in
   T4.3); `OtherShareError` answered
   `ErrCorrupt`; a `WriteAt` answering the context's error returns it as itself, not

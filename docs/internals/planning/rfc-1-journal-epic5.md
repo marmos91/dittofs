@@ -131,7 +131,7 @@ durability policy (epic 6), no recovery (epic 7) and no index (epic 4).
 6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   `pkg/block/journal`. The import test enforces it. v1 code is neither ported nor
+   v1's journal (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
    checks only whether v1 state exists, to refuse it at start (E10), and never reads
    v1's format.
@@ -166,11 +166,11 @@ durability policy (epic 6), no recovery (epic 7) and no index (epic 4).
 | 4 Profiling | all | every test runs under E2's profiler. T5.2, T5.8 and T5.9 are where descriptors and goroutines could leak (the cache, the idle sealer, the retirement worker). T5.4b asserts zero allocations per position reservation, outside `-race` |
 | 5 Public and internals, `-race` | T5.1, T5.2, T5.4a, T5.4b, T5.5, T5.6, T5.7, T5.9, T5.11 | internal API now: the public `WriteAt`, `ReadAt` and `Stats` behaviour is tested in E8, their consumer. Concurrency is exercised under `-race` where subtasks list it |
 | 6 Known failures | none | every conformance test needs `Open`, which E7 and E8 wire. This epic turns none green and adds none |
-| 7 v2 ignores v1 | all | enforced by the import test. Nothing of `pkg/block/journal` is read |
+| 7 v2 ignores v1 | all | enforced by the import test. Nothing of v1's journal (deleted by #3645) is read |
 | 8 Real storage | T5.2, T5.4a–T5.11 | every test of a sync, a rename, an unlink or a crash runs on a real directory through E2's seam. T5.1 is pure logic and tests in memory |
 | 9 Comment markers | T5.1, T5.2, T5.4a, T5.4b, T5.5, T5.6, T5.7, T5.8 | see §4: each decision names its marker and where it goes. The RFC's `ponytail:` on the constant segment size goes at the cap in T5.6, and its `decision:` on zero-filling goes where T5.4a calls `Allocate`. The `decision:` on the 30 s idle time and `journal.idle_seal_bytes` goes at the idle constants in T5.8 |
 | 10 A test can fail | all | each test in §6 names the bug it catches |
-| 11 Exports | all | `journalv2` gains no symbol: everything is in `internal/segment`, and the one exception, `core.DescriptorBudget`, is already declared by E1 |
+| 11 Exports | all | `journal` gains no symbol: everything is in `internal/segment`, and the one exception, `core.DescriptorBudget`, is already declared by E1 |
 | 12 Created with its consumer | all | `internal/segment` lands with T5.1, and each file lands with the subtask that uses it. Until E8, tests are the only consumer: the package is logic over the storage seam tested on its own (rule 1), not a placeholder |
 
 ## 3. Requirements and invariants
@@ -392,7 +392,7 @@ below or in §1.2.
 ## 5. Target tree
 
 ```text
-pkg/block/journalv2/internal/
+pkg/block/journal/internal/
   segment/
     set.go          T5.1   segment set, footprint ledger, claims, per-(segment, tag) bytes
     descriptors.go  T5.2   descriptor cache over one per-process budget, reference drain
