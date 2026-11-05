@@ -1242,7 +1242,8 @@ in-flight operation.
 A **loss event** is an extent the journal stopped holding without being asked:
 dropped as corrupt ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), as stale ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), or because a failed sync window was
 failed ([§5.3](#5.3%20A%20failed%20sync)). Each names the share, the file, the extent, the content version,
-the reason, and whether its offloaded bit was set. `Stats` keeps the most recent
+the reason, whether its offloaded bit was set, and whether its loss is deferred
+([§6](#6.%20Capacity)). `Stats` keeps the most recent
 ones in a bounded ring, each with a sequence number, and counts them all
 ([§3.9](#3.9%20Metrics)), so a poller sees every new event or knows how many it missed. The
 engine logs each one.
@@ -1251,7 +1252,10 @@ engine logs each one.
 a **loss record** for each record piece a loss event drops ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)) before it
 publishes the event, naming the file, the extent and the version dropped, its
 reason, and — in its payload — the **sequence number of the record it drops**,
-and whether that record was **synced** when it was dropped. Recovery does not
+and whether that record was **synced** when it was dropped. The one exception
+is a loss an open defers past its reserve ([§6](#6.%20Capacity)): its event is published
+first, marked deferred, and its record is written later, into the copy that
+retires the dropped record's segment. Recovery does not
 hold again any record carrying that sequence number — the original, or a copy
 re-appended under it ([§4.3](#4.3%20Versions)) — even where it is still on disk and happens to
 verify ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)). What else the loss record reaches depends on the
