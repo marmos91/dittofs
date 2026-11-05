@@ -3,9 +3,9 @@ package handlers_test
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
-	handlertesting "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers/testing"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v3/handlers"
+	handlertesting "github.com/cubbit/dittofs/internal/adapter/nfs/v3/handlers/testing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

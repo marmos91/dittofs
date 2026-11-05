@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // This file tests the scan over segments built by hand: records planted at

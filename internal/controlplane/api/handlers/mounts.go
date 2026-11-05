@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 )
 
 // MountHandler handles unified mount management API endpoints.

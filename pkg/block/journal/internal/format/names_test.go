@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // TestSegmentNameRoundTrips pins the name of a segment and of a spare at both

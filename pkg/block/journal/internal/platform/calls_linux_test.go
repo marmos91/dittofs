@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/prof"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 	"golang.org/x/sys/unix"
 )
 

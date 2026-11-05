@@ -3,7 +3,7 @@ package encryption
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // Encryptor provides AEAD encryption and decryption for SMB3 messages.

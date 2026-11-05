@@ -7,7 +7,7 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // maxObserved bounds the bytes Compare accepts the journal naming for one

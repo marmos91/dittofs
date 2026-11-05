@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/vfs/vfserr"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // noStore is a store view any call of which panics, its views nil: a call

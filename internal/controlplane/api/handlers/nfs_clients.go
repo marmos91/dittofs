@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/state"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/go-chi/chi/v5"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
 // NfsClientHandler handles NFS-specific client management API endpoints

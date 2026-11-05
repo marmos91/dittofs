@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // fakeContent is Content over bytes in memory: every write is stable at once,

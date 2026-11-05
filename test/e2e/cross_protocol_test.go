@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	nfs3types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
-	smbtypes "github.com/marmos91/dittofs/internal/adapter/smb/types"
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
-	"github.com/marmos91/dittofs/test/e2e/framework"
-	"github.com/marmos91/dittofs/test/e2e/helpers"
+	nfs3types "github.com/cubbit/dittofs/internal/adapter/nfs/types"
+	smbtypes "github.com/cubbit/dittofs/internal/adapter/smb/types"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/test/e2e/framework"
+	"github.com/cubbit/dittofs/test/e2e/helpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

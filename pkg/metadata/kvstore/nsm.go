@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 )
 
 // ErrNSMNotRaised is a raise of the NSM state number to one not above the

@@ -10,7 +10,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/pkg/identity"
 )
 
 const ProviderName = "kerberos"

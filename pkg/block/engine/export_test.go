@@ -3,9 +3,9 @@ package engine
 import (
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/vfs/vfserr"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // BindForTest installs a binding of s over j and h, copying the share table as

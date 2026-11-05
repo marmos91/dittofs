@@ -40,11 +40,11 @@ import (
 
 	"github.com/jcmturner/gokrb5/v8/keytab"
 
-	smbauth "github.com/marmos91/dittofs/internal/adapter/smb/auth"
-	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
-	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
-	"github.com/marmos91/dittofs/pkg/auth/kerberos"
-	dconfig "github.com/marmos91/dittofs/pkg/config"
+	smbauth "github.com/cubbit/dittofs/internal/adapter/smb/auth"
+	"github.com/cubbit/dittofs/internal/adapter/smb/handlers"
+	kerbauth "github.com/cubbit/dittofs/internal/auth/kerberos"
+	"github.com/cubbit/dittofs/pkg/auth/kerberos"
+	dconfig "github.com/cubbit/dittofs/pkg/config"
 )
 
 // The combined keytab also carries nfs/dittofs.dittofs.ad@DITTOFS.AD (the NFS

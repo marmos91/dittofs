@@ -3,7 +3,7 @@ package format
 import (
 	"hash/crc32"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)

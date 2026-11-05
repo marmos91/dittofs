@@ -5,7 +5,7 @@ import (
 
 	"gorm.io/gorm/clause"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // GetIdentityProviderConfig returns the configuration row for a provider type.

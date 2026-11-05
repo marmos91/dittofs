@@ -3,7 +3,7 @@ package runtime
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/health"
 )
 
 // ShareOffline reports whether the named share could keep serving reads with

@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/codec"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
 )
 
 var (

@@ -3,15 +3,15 @@ package runtime
 import (
 	"context"
 	"errors"
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
-	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
+	cpstore "github.com/cubbit/dittofs/pkg/controlplane/store"
 )
 
 // snapTestTimeout bounds a wedged snapshot operation so a stuck test fails

@@ -7,8 +7,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
 // GraceRef names one grace instance of one shard.

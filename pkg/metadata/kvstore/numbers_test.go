@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/google/uuid"
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 func newShare(t *testing.T, s *Store) entity.ShareID {

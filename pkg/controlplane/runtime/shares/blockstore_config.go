@@ -7,15 +7,15 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block/middleware"
-	"github.com/marmos91/dittofs/pkg/block/middleware/compression"
-	"github.com/marmos91/dittofs/pkg/block/middleware/encryption"
-	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
-	"github.com/marmos91/dittofs/pkg/block/remote"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	remotes3 "github.com/marmos91/dittofs/pkg/block/remote/s3"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/block/middleware"
+	"github.com/cubbit/dittofs/pkg/block/middleware/compression"
+	"github.com/cubbit/dittofs/pkg/block/middleware/encryption"
+	"github.com/cubbit/dittofs/pkg/block/middleware/encryption/keyprovider"
+	"github.com/cubbit/dittofs/pkg/block/remote"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
+	remotes3 "github.com/cubbit/dittofs/pkg/block/remote/s3"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // BlockStoreConfigProvider resolves block store configurations from the control plane DB.

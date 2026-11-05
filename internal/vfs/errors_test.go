@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
-	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
-	"github.com/marmos91/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // The store contradicting itself is ErrInconsistent, not a store failure.

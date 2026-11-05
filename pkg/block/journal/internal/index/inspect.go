@@ -5,7 +5,7 @@ import (
 	"iter"
 	"slices"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // EntryKind is what a read-out entry records about its extent. It takes the

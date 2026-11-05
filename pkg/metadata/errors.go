@@ -1,8 +1,8 @@
 package metadata
 
 import (
-	"github.com/marmos91/dittofs/pkg/metadata/errors"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================

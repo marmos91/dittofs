@@ -7,8 +7,8 @@ package enginetest
 // own.
 
 import (
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // wrapJournal returns j as the engine's Journal. The handles its Share

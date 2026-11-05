@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 )
 
 // Rename moves an entry, in one transaction: the source entry goes, the

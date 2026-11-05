@@ -3,7 +3,7 @@ package signing
 import (
 	"encoding/binary"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // Signing algorithm ID constants per [MS-SMB2] Section 2.2.3.1.7.

@@ -1,8 +1,8 @@
 package storage_test
 
 import (
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/storage"
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
 
 // The seam implements the interfaces as the operating system's storage does;

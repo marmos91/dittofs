@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/block"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 
-	badgerstore "github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	badgerstore "github.com/cubbit/dittofs/pkg/metadata/store/badger"
 )
 
 // TestGCIndexSweep_DeletesOrphansWithoutWalk proves the index-based remote

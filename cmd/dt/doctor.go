@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/marmos91/dittofs/test/harness/needs"
+	"github.com/cubbit/dittofs/test/harness/needs"
 )
 
 // decision: dt doctor reports only the needs the registry names, checked as

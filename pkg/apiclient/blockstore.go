@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/url"
 
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
 )
 
 // BlockStoreGCOptions is the request body for

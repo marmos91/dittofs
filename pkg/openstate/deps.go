@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
 // Deps is what the table is built over.

@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/marmos91/dittofs/internal/dfsbench/cloud"
-	"github.com/marmos91/dittofs/internal/dfsbench/config"
-	"github.com/marmos91/dittofs/internal/dfsbench/exec"
-	"github.com/marmos91/dittofs/internal/dfsbench/fio"
-	"github.com/marmos91/dittofs/internal/dfsbench/report"
+	"github.com/cubbit/dittofs/internal/dfsbench/cloud"
+	"github.com/cubbit/dittofs/internal/dfsbench/config"
+	"github.com/cubbit/dittofs/internal/dfsbench/exec"
+	"github.com/cubbit/dittofs/internal/dfsbench/fio"
+	"github.com/cubbit/dittofs/internal/dfsbench/report"
 )
 
 // runRemote drives the managed run on the VM, detached. Called from runBench

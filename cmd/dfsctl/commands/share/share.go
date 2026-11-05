@@ -2,9 +2,9 @@
 package share
 
 import (
-	"github.com/marmos91/dittofs/cmd/dfsctl/commands/share/permission"
-	"github.com/marmos91/dittofs/cmd/dfsctl/commands/share/snapshot"
-	"github.com/marmos91/dittofs/cmd/dfsctl/commands/share/snapshotpolicy"
+	"github.com/cubbit/dittofs/cmd/dfsctl/commands/share/permission"
+	"github.com/cubbit/dittofs/cmd/dfsctl/commands/share/snapshot"
+	"github.com/cubbit/dittofs/cmd/dfsctl/commands/share/snapshotpolicy"
 	"github.com/spf13/cobra"
 )
 

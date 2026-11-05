@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/prof"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // pattern returns n bytes whose values do not repeat within 251 bytes, so a

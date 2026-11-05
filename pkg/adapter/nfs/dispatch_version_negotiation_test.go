@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	mount_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
+	mount_handlers "github.com/cubbit/dittofs/internal/adapter/nfs/mount/handlers"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
 )
 
 // readAcceptedReply reads one RPC record off the client end of the pipe and

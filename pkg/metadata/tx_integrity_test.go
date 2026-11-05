@@ -6,10 +6,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/cubbit/dittofs/pkg/metadata"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/metadata"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

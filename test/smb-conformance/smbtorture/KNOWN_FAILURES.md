@@ -117,7 +117,7 @@ entry in the changelog.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.notify.rec | Buffered backlog delivered per operation, not whole | **Re-measured after the empty-filter refusal was fixed.** The test now fails further on, at `notify.c:644`: `wrong value for notify.smb2.out.num_changes 0x5 should be 0x9`. It previously failed at `notify.c:642` with `NT_STATUS_INVALID_PARAMETER`, because `smb2_notify_send` at `notify.c:627` arms a recursive CHANGE_NOTIFY with `completion_filter = 0` and DittoFS refused an empty filter outright; the filter armed by the earlier request on the same handle now applies ([MS-FSA] 2.1.5.11), so the request is accepted and the test advances. What remains is the count: the test expects all nine buffered changes in one reply and gets five. Samba also carries this test as a known failure (`^samba3.smb2.notify.rec` in `selftest/knownfail`), and fails it at the same assertion. | [#2164](https://github.com/marmos91/dittofs/issues/2164) |
+| smb2.notify.rec | Buffered backlog delivered per operation, not whole | **Re-measured after the empty-filter refusal was fixed.** The test now fails further on, at `notify.c:644`: `wrong value for notify.smb2.out.num_changes 0x5 should be 0x9`. It previously failed at `notify.c:642` with `NT_STATUS_INVALID_PARAMETER`, because `smb2_notify_send` at `notify.c:627` arms a recursive CHANGE_NOTIFY with `completion_filter = 0` and DittoFS refused an empty filter outright; the filter armed by the earlier request on the same handle now applies ([MS-FSA] 2.1.5.11), so the request is accepted and the test advances. What remains is the count: the test expects all nine buffered changes in one reply and gets five. Samba also carries this test as a known failure (`^samba3.smb2.notify.rec` in `selftest/knownfail`), and fails it at the same assertion. | [#2164](https://github.com/cubbit/dittofs/issues/2164) |
 
 ### Oplocks
 
@@ -141,7 +141,7 @@ second. Identical on both profiles.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.oplock.batch22b | Break timeout | The test blocks the holder's transport so no ack can arrive and requires the second open to complete within smbtorture's `oplocktimeout` (35s). DittoFS takes 36s: `oplock.c:2715` reports `te got 36 - should be between 0 and 35`. The wait itself is by design; overshooting the ceiling is not. Pre-existing, and unobservable while the suite was truncated. | [#2115](https://github.com/marmos91/dittofs/issues/2115) |
+| smb2.oplock.batch22b | Break timeout | The test blocks the holder's transport so no ack can arrive and requires the second open to complete within smbtorture's `oplocktimeout` (35s). DittoFS takes 36s: `oplock.c:2715` reports `te got 36 - should be between 0 and 35`. The wait itself is by design; overshooting the ceiling is not. Pre-existing, and unobservable while the suite was truncated. | [#2115](https://github.com/cubbit/dittofs/issues/2115) |
 
 ### Directory Leases (Partial Implementation)
 
@@ -424,7 +424,7 @@ real assertion that merely carries the same status, because Samba maps the
 client's `iconv` `EILSEQ` on an unpaired surrogate to `NT_STATUS_NO_MEMORY`. The
 failure is dropped, the three sibling `Testing` subcases pass, and the row
 surfaces as a removal candidate. Filed as
-[#2198](https://github.com/marmos91/dittofs/issues/2198); not fixed here, so the
+[#2198](https://github.com/cubbit/dittofs/issues/2198); not fixed here, so the
 row now says not to trust that report.
 
 Across the ten CI job logs checked, `NT_STATUS_NO_MEMORY` matched **only** this
@@ -491,7 +491,7 @@ longer one to record.
 One residual window is known and is filed rather than papered over: nothing
 completes a CHANGE_NOTIFY that registers *after* the directory is marked, and
 `rmdir3`/`rmdir4` run their notify and their delete on two independent
-connections with no ordering between them ([#2199](https://github.com/marmos91/dittofs/issues/2199)).
+connections with no ordering between them ([#2199](https://github.com/cubbit/dittofs/issues/2199)).
 Keeping the rows would not have covered it — that window produces a hang, and a
 hang is graded as a truncation, which fails the job independently of the
 known-failure list (`BAD=$((NEW_FAILURES + ${#UNEXPECTED_TRUNCATIONS[@]}))`,

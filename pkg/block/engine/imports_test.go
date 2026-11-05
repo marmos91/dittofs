@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-const module = "github.com/marmos91/dittofs/"
+const module = "github.com/cubbit/dittofs/"
 
 // allowed is every import a package of the engine may have besides the
 // standard library and the engine's own packages. Each entry names the

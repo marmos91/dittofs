@@ -17,9 +17,9 @@ import (
 	"slices"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/logger"
+	storeerrors "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/internal/logger"
-	storeerrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // ErrLeaseBreakInProgress is returned by RequestLease when a same-key lease

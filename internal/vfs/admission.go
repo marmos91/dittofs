@@ -5,13 +5,13 @@ import (
 	"net/netip"
 	"strconv"
 
-	"github.com/marmos91/dittofs/internal/vfs/admit"
-	"github.com/marmos91/dittofs/internal/vfs/authz"
-	"github.com/marmos91/dittofs/internal/vfs/pseudofs"
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
-	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
-	"github.com/marmos91/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/internal/vfs/admit"
+	"github.com/cubbit/dittofs/internal/vfs/authz"
+	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // admitted is one call admitted to one share: the caller it acts as there,

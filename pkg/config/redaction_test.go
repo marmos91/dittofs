@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/api"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/controlplane/api"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
 	"gopkg.in/yaml.v3"
 )
 

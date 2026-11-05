@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/marmos91/dittofs/test/e2e/framework"
+	"github.com/cubbit/dittofs/test/e2e/framework"
 )
 
 // TestEnvironment wraps the existing framework helpers for container management.

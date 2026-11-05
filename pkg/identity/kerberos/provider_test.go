@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/pkg/identity"
 )
 
 func aliceLookup(_ context.Context, username string) (*identity.ResolvedIdentity, error) {

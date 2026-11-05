@@ -3,9 +3,9 @@ package kvtest_test
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/badgerkv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/kvtest"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 )
 
 // The suite through its own exported surface, against the embedded backend

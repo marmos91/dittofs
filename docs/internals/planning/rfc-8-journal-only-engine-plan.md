@@ -24,7 +24,7 @@ and built on top of this part, not beside it. Related RFCs, with how far each is
   namespace moves): **out**.
 
 **Tracks:** A, B and C (§3.4).
-**Programme:** the first part of stage 3 of [#3119](https://github.com/marmos91/dittofs/issues/3119),
+**Programme:** the first part of stage 3 of [#3119](https://github.com/cubbit/dittofs/issues/3119),
 "the engine (RFC 8)". This part is built by rif's team, which built stages 1 and 2. The
 journal v2 team, Davide (`didimelli`) and Vitor (`viquitorreis`), coordinated by Simone
 (`simonebaracchi`), builds the journal itself, RFC 1 and RFC 28, which this part sits on.

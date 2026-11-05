@@ -3,8 +3,8 @@ package metadata_test
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/stretchr/testify/require"
 )
 

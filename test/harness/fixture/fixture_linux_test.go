@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/needs"
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/needs"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // When dt ends without stopping its fixture, as when it panics or is killed,

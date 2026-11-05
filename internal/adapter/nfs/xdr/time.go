@@ -3,7 +3,7 @@ package xdr
 import (
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/types"
 )
 
 // ============================================================================

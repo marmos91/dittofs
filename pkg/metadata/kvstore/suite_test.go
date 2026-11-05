@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/badgerkv"
-	"github.com/marmos91/dittofs/pkg/metadata/kvstore/kvstoretest"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 )
 
 func badger(opts badgerkv.Options) kvstoretest.Opener {

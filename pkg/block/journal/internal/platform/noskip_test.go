@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/prof"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // TestNoSkip fails on a skip in any test of this package or of the storage

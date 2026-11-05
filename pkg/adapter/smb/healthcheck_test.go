@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/adapter/smb"
-	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/adapter/smb"
+	"github.com/cubbit/dittofs/pkg/health"
 )
 
 func minimalEnabledConfig() smb.Config {

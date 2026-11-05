@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/vfs/vfserr"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // fullDeps is a Deps with every member present. The interfaces are left

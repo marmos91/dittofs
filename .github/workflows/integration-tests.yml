@@ -183,7 +183,7 @@ jobs:
             echo "::error::PyKMIP setup did not enable the live KMIP tests."
             exit 1
           fi
-          if ! grep -Fxq 'github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider' /tmp/integration-pkgs.txt; then
+          if ! grep -Fxq 'github.com/cubbit/dittofs/pkg/block/middleware/encryption/keyprovider' /tmp/integration-pkgs.txt; then
             echo "::error::Live KMIP tests are missing from the integration package selection."
             exit 1
           fi

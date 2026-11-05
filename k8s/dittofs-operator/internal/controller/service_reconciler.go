@@ -26,8 +26,8 @@ import (
 	"sort"
 	"strings"
 
-	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
-	"github.com/marmos91/dittofs/k8s/dittofs-operator/pkg/resources"
+	dittoiov1alpha1 "github.com/cubbit/dittofs/k8s/dittofs-operator/api/v1alpha1"
+	"github.com/cubbit/dittofs/k8s/dittofs-operator/pkg/resources"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"

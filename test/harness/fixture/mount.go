@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // mountVers is the NFS version the kernel mounts each of a fixture's

@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/prof"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // maxZeroWrite is the most one zero write may ask for, so a segment's fill

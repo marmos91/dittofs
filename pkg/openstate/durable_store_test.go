@@ -7,7 +7,7 @@ import (
 	"testing/iotest"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 // anon is an anonymous read of one byte at off of file, as NFSv3 reads.

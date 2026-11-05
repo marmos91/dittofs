@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // Shrinking keeps only the steps the failure needs, however far apart they

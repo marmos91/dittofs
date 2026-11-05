@@ -479,7 +479,7 @@ package myremote_test
 
 import (
     "testing"
-    "github.com/marmos91/dittofs/pkg/block/blockstoretest"
+    "github.com/cubbit/dittofs/pkg/block/blockstoretest"
 )
 
 func TestMyRemoteBlockStore(t *testing.T) {

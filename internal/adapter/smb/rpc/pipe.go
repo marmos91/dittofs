@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/marmos91/dittofs/pkg/auth/sid"
+	"github.com/cubbit/dittofs/pkg/auth/sid"
 )
 
 // =============================================================================

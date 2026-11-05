@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 var (

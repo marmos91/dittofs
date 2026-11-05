@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/sim"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // Hold is one set of calls stopped at the seam.

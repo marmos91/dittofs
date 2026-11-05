@@ -4,8 +4,8 @@
 package conflict
 
 import (
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/openstate/grantfsm"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/openstate/grantfsm"
 )
 
 // Class is what a deny mode is judged on: read, write and delete.

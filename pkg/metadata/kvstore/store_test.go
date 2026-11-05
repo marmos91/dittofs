@@ -7,10 +7,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/badgerkv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
 
 func memKV(t *testing.T) kv.KV {

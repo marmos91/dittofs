@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	modulePath  = "github.com/marmos91/dittofs"
+	modulePath  = "github.com/cubbit/dittofs"
 	journalPath = modulePath + "/pkg/block/journal"
 	clockPath   = modulePath + "/pkg/clock"
 	simPath     = modulePath + "/pkg/sim"

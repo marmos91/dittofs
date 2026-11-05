@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/cli/credentials"
-	"github.com/marmos91/dittofs/internal/cli/output"
-	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/internal/cli/credentials"
+	"github.com/cubbit/dittofs/internal/cli/output"
+	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 func TestParseCommaSeparatedList(t *testing.T) {

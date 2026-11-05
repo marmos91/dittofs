@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 // seeded is a Deps.Rand drawn from a fixed seed, so a case mints the same

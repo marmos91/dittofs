@@ -19,7 +19,7 @@ The easiest way to get a complete development environment is using [Nix](https:/
 
 ```bash
 # Clone repository
-git clone https://github.com/marmos91/dittofs.git
+git clone https://github.com/cubbit/dittofs.git
 cd dittofs
 
 # Enter development shell (installs all dependencies automatically)
@@ -52,8 +52,8 @@ what decides whether a suite run counts as green.
 The binaries also run straight from the flake, without a clone:
 
 ```bash
-nix run github:marmos91/dittofs#dfs -- start
-nix run github:marmos91/dittofs#dfsctl -- --help
+nix run github:cubbit/dittofs#dfs -- start
+nix run github:cubbit/dittofs#dfsctl -- --help
 ```
 
 ### Manual Setup (Alternative)
@@ -100,7 +100,7 @@ backend out, at the cost of `-race`, which needs cgo.
 
 ```bash
 # Clone repository
-git clone https://github.com/marmos91/dittofs.git
+git clone https://github.com/cubbit/dittofs.git
 cd dittofs
 
 # Set up pre-commit hooks (recommended)

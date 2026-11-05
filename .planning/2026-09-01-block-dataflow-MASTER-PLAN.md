@@ -478,7 +478,7 @@ there, not after.
 Proposed: an RFC PR into `docs/internals/` (line-level review, versioned with the code, lands as
 the permanent architecture doc) plus one GitHub Discussion as the announcement and
 open-questions space, linking to it. **Discussions is currently disabled** on the repo;
-`gh repo edit marmos91/dittofs --enable-discussions` turns it on.
+`gh repo edit cubbit/dittofs --enable-discussions` turns it on.
 
 ## 8. Decisions taken
 

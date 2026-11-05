@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
 
 // The mixed-durability protocol against fakes: the proof half of the rebuilt

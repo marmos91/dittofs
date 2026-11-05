@@ -22,7 +22,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	v4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	v4types "github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
 )
 
 // pseudoFSHandlePrefix is the prefix used to distinguish pseudo-fs handles

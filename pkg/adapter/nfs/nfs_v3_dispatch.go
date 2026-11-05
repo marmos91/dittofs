@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"time"
 
-	nfsauth "github.com/marmos91/dittofs/internal/adapter/nfs/auth"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/middleware"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	nfs_types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
-	v3 "github.com/marmos91/dittofs/internal/adapter/nfs/v3"
-	"github.com/marmos91/dittofs/internal/logger"
+	nfsauth "github.com/cubbit/dittofs/internal/adapter/nfs/auth"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/middleware"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	nfs_types "github.com/cubbit/dittofs/internal/adapter/nfs/types"
+	v3 "github.com/cubbit/dittofs/internal/adapter/nfs/v3"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // handleNFSProcedure dispatches an NFS procedure call to the appropriate handler.

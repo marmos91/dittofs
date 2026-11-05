@@ -22,9 +22,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
-	"github.com/marmos91/dittofs/k8s/dittofs-operator/internal/controller/config"
-	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/conditions"
+	"github.com/cubbit/dittofs/k8s/dittofs-operator/api/v1alpha1"
+	"github.com/cubbit/dittofs/k8s/dittofs-operator/internal/controller/config"
+	"github.com/cubbit/dittofs/k8s/dittofs-operator/utils/conditions"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"

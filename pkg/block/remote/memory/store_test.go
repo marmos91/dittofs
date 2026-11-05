@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/blockstoretest"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/blockstoretest"
 )
 
 // TestMemory_RemoteBlockStoreConformance runs the unified

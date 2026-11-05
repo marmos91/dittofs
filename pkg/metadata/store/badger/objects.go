@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
+	blockpkg "github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata/store/internal/txretry"
 	"github.com/dgraph-io/badger/v4"
-	blockpkg "github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/txretry"
 )
 
 // ============================================================================

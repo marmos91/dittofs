@@ -3,7 +3,7 @@ package badger
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // Extended-attribute (xattr) operations delegate to the shared resolver in

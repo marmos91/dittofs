@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // FuzzScan drives ScanSegment over two shapes of input and holds every scan

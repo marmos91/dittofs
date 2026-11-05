@@ -3,7 +3,7 @@ package index
 import (
 	"math"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // The index is bounded, and the bound refuses. The count is of entries:

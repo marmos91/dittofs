@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/vfs/lockorder"
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kvstore/kvstoretest"
-	"github.com/marmos91/dittofs/pkg/openstate"
-	"github.com/marmos91/dittofs/pkg/vfs"
-	"github.com/marmos91/dittofs/pkg/vfs/vfstest"
+	"github.com/cubbit/dittofs/internal/vfs/lockorder"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
+	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 )
 
 // names is a serving filesystem over the fixture's share with its one shard

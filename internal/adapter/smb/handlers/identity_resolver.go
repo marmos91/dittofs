@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // resolveIdentityMapping checks the identity mapping store for a principal-to-username

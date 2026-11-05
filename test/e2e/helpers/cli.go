@@ -15,7 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/marmos91/dittofs/test/e2e/framework"
+	"github.com/cubbit/dittofs/test/e2e/framework"
 )
 
 // dfsctlBuild ensures the dfsctl binary is built exactly once from the source

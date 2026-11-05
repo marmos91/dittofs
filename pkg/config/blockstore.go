@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/marmos91/dittofs/internal/pathutil"
+	"github.com/cubbit/dittofs/internal/pathutil"
 )
 
 // defaultBlockDirName is the subdirectory of the state directory that holds

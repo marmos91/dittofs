@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/vfs"
-	"github.com/marmos91/dittofs/pkg/vfs/vfstest"
+	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 )
 
 func TestRecordingCallbacksAnswerAsSet(t *testing.T) {

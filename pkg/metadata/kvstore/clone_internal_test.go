@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 )
 
 func (f *cfix) cloneOp(src, dst entity.FileID, srcOff, dstOff, n int64, v uint64) CloneOp {

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 func repo(t *testing.T) *registry.Registry {

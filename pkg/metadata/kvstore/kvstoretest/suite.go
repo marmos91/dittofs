@@ -6,7 +6,7 @@ package kvstoretest
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 )
 
 // Opener returns a fresh, empty KV for one case, closed when the case ends.

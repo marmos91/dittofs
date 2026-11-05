@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
-	nlm_xdr "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/xdr"
-	"github.com/marmos91/dittofs/internal/logger"
-	metaerrors "github.com/marmos91/dittofs/pkg/metadata/errors"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/blocking"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/types"
+	nlm_xdr "github.com/cubbit/dittofs/internal/adapter/nfs/nlm/xdr"
+	"github.com/cubbit/dittofs/internal/logger"
+	metaerrors "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // LockRequest represents an NLM_LOCK request.

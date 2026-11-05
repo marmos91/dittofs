@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // fakeMounts puts a sudo, a mount and a umount on PATH that log each call

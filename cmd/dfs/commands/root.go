@@ -2,7 +2,7 @@
 package commands
 
 import (
-	"github.com/marmos91/dittofs/cmd/dfs/commands/config"
+	"github.com/cubbit/dittofs/cmd/dfs/commands/config"
 	"github.com/spf13/cobra"
 )
 

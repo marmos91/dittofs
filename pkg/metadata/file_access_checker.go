@@ -1,6 +1,6 @@
 package metadata
 
-import "github.com/marmos91/dittofs/pkg/metadata/acl"
+import "github.com/cubbit/dittofs/pkg/metadata/acl"
 
 // Service's permission-check methods are the single protocol-agnostic entry
 // point every protocol adapter (NFSv3 / NFSv4.0 / NFSv4.1 / SMB2 / SMB3)

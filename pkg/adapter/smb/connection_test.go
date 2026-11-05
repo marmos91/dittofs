@@ -6,9 +6,9 @@ import (
 	"net"
 	"testing"
 
-	smb "github.com/marmos91/dittofs/internal/adapter/smb"
-	"github.com/marmos91/dittofs/internal/adapter/smb/header"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	smb "github.com/cubbit/dittofs/internal/adapter/smb"
+	"github.com/cubbit/dittofs/internal/adapter/smb/header"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // =============================================================================

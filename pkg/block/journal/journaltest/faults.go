@@ -1,6 +1,6 @@
 package journaltest
 
-import "github.com/marmos91/dittofs/pkg/sim"
+import "github.com/cubbit/dittofs/pkg/sim"
 
 // Rule selects some of the seam's calls and what the seam does with them: the
 // calls of an op on a file whose name matches a key pattern, as sim.Match

@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // reRun matches the name of a job's re-run, RUN-a2: its time, its commit and
@@ -72,7 +72,7 @@ func CI(ctx context.Context, suite string, n int, warn io.Writer) ([]report.Run,
 	if token == "" {
 		return nil, errors.New("reading the runs' artifacts needs a token in GITHUB_TOKEN, as GITHUB_TOKEN=$(gh auth token)")
 	}
-	api := cmp.Or(os.Getenv("GITHUB_API_URL"), "https://api.github.com") + "/repos/" + cmp.Or(os.Getenv("GITHUB_REPOSITORY"), "marmos91/dittofs")
+	api := cmp.Or(os.Getenv("GITHUB_API_URL"), "https://api.github.com") + "/repos/" + cmp.Or(os.Getenv("GITHUB_REPOSITORY"), "cubbit/dittofs")
 	get := func(url string) ([]byte, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {

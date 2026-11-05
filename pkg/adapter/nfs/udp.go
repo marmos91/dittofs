@@ -8,9 +8,9 @@ import (
 	"runtime/debug"
 	"sync"
 
-	mount_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/logger"
+	mount_handlers "github.com/cubbit/dittofs/internal/adapter/nfs/mount/handlers"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // maxUDPDatagram bounds a single RPC-over-UDP message. The protocols served

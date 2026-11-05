@@ -28,8 +28,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
-	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/conditions"
+	dittoiov1alpha1 "github.com/cubbit/dittofs/k8s/dittofs-operator/api/v1alpha1"
+	"github.com/cubbit/dittofs/k8s/dittofs-operator/utils/conditions"
 )
 
 // forbidden answers as the DittoFS API does when a route needs the admin role.

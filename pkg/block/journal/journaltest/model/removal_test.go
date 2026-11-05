@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // Truncate stops holding every extent at or beyond size, narrows the one

@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // Grade grades each result of one cell in place, setting its grade and the

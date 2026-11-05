@@ -28,7 +28,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // State is where a segment of the set stands. Spares are not in the set:

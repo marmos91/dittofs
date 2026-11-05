@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/openstate"
-	"github.com/marmos91/dittofs/pkg/vfs/vfserr"
+	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // Open state's answers to a clone's hold cross in the engine's types: a

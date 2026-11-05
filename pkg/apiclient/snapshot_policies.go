@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/api/dto"
+	"github.com/cubbit/dittofs/pkg/controlplane/api/dto"
 )
 
 // SnapshotPolicy is the wire DTO for a per-share snapshot policy.

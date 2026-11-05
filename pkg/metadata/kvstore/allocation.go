@@ -3,8 +3,8 @@ package kvstore
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 )
 
 // allocationWindow is the first extent Allocation asks the covering lookup

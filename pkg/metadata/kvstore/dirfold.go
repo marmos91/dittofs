@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 )
 
 // FoldDirectory folds a batch of a directory's time deltas into its record,

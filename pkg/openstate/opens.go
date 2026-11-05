@@ -8,12 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
-	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
-	"github.com/marmos91/dittofs/pkg/openstate/conflict"
-	"github.com/marmos91/dittofs/pkg/openstate/grantfsm"
-	"github.com/marmos91/dittofs/pkg/openstate/sequence"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/openstate/conflict"
+	"github.com/cubbit/dittofs/pkg/openstate/grantfsm"
+	"github.com/cubbit/dittofs/pkg/openstate/sequence"
 )
 
 // Open is one open of one file, used only by its opener. Its durable form,

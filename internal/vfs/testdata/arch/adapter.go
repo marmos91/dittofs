@@ -1,3 +1,3 @@
 package seeded
 
-import _ "github.com/marmos91/dittofs/internal/adapter/nfs"
+import _ "github.com/cubbit/dittofs/internal/adapter/nfs"

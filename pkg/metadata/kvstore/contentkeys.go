@@ -3,8 +3,8 @@ package kvstore
 import (
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
 
 // Keys of block metadata. Per-file records sit under the file's key with the

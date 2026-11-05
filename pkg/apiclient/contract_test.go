@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/internal/controlplane/api/handlers"
+	"github.com/cubbit/dittofs/internal/controlplane/api/handlers"
 )
 
 // TestContract_DecodesRealServerProblemJSON proves the apiclient decodes the

@@ -6,7 +6,7 @@ package suite
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // Run runs the suite against the services newService builds: a fresh one,

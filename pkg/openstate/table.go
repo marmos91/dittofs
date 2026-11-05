@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/openstate/sequence"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/openstate/sequence"
 )
 
 // Table is the open state of every file this node is the primary of. Each

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/test/harness/known"
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/known"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // The nfstest grader's cases (nfs-mount/nfstest/parse-results_test.sh), each

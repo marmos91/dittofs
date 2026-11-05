@@ -13,9 +13,9 @@ import (
 
 	badger "github.com/dgraph-io/badger/v4"
 
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/internal/backend"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/internal/backend"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
 
 // Options configures a Store.

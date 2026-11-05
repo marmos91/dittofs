@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/dfsbench/exec"
-	"github.com/marmos91/dittofs/internal/dfsbench/fio"
+	"github.com/cubbit/dittofs/internal/dfsbench/exec"
+	"github.com/cubbit/dittofs/internal/dfsbench/fio"
 )
 
 // Re-export layer: re-serve a source directory (a FUSE mountpoint or a plain

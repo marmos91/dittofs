@@ -1,5 +1,5 @@
 # DittoFS Operator Helm Chart Values
-# See https://github.com/marmos91/dittofs for documentation
+# See https://github.com/cubbit/dittofs for documentation
 
 # Controller Manager configuration
 controllerManager:

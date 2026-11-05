@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/storage"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
 // OS is a storage.FS over the directory dir, on the operating system's files.

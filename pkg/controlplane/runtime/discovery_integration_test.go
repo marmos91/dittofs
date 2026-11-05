@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/discovery/hostinfo"
+	"github.com/cubbit/dittofs/pkg/discovery/hostinfo"
 )
 
 // TestDiscoveryName_OverrideFromSetting verifies the instance-wide discovery

@@ -17,13 +17,13 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/marmos91/dittofs/internal/vfs/authz"
-	"github.com/marmos91/dittofs/internal/vfs/lockorder"
-	"github.com/marmos91/dittofs/internal/vfs/pseudofs"
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
-	"github.com/marmos91/dittofs/pkg/openstate"
-	"github.com/marmos91/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/internal/vfs/authz"
+	"github.com/cubbit/dittofs/internal/vfs/lockorder"
+	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // Deps is what the filesystem is built over. The node starts and stops each of

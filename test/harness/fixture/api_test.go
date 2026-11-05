@@ -15,8 +15,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/apiclient"
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // fakeAPI answers the calls the fixture makes as the server would, and

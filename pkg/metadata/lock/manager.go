@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/logger"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // LockManager provides unified lock management for all protocols.

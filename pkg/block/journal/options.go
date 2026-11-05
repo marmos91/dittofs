@@ -3,8 +3,8 @@ package journal
 import (
 	"log/slog"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/storage"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
 // The journal's clock, settings and descriptor budget, declared in

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/vfs/vfserr"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // Write stages p at off of file f of share s and answers once the journal

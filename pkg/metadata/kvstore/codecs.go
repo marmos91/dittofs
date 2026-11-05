@@ -3,8 +3,8 @@ package kvstore
 import (
 	"errors"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/codec"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
 )
 
 // Every control-plane codec is at version 1. A field the key carries is not

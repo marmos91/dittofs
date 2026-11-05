@@ -13,15 +13,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/vfs/authz"
-	"github.com/marmos91/dittofs/internal/vfs/pseudofs"
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
-	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
-	"github.com/marmos91/dittofs/pkg/metadata/kvstore/kvstoretest"
-	"github.com/marmos91/dittofs/pkg/openstate"
-	"github.com/marmos91/dittofs/pkg/sim"
-	"github.com/marmos91/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/internal/vfs/authz"
+	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
+	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/sim"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 var (

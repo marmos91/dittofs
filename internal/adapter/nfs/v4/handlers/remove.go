@@ -5,13 +5,13 @@ import (
 	goerrors "errors"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	metaerrors "github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/pseudofs"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/state"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
+	xdr "github.com/cubbit/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	metaerrors "github.com/cubbit/dittofs/pkg/metadata/errors"
 )
 
 // handleRemove implements the REMOVE operation (RFC 7530 Section 16.25).

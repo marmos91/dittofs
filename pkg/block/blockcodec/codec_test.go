@@ -7,8 +7,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/blockcodec"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/blockcodec"
 )
 
 // shortWriter simulates a non-conforming io.Writer that returns n < len(p) with

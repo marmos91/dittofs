@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // fakeKnfsd puts on PATH a sudo that logs and runs its command, and a mount,

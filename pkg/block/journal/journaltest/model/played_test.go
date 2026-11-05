@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // refuseOther is the journal's answer to a call through tag on id when

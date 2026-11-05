@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // TestEnumerateOpenFiles_SMB verifies the handler's open-file table feeds the

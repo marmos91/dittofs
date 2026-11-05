@@ -10,10 +10,10 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/model"
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/raw"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/model"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
 // The checks here inject damage systematically rather than by example: a

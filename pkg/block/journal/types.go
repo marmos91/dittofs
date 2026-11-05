@@ -1,6 +1,6 @@
 package journal
 
-import "github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+import "github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 
 // decision: the value types are declared in internal/core and re-exported
 // here as aliases. The journal's internal packages need them, and this package

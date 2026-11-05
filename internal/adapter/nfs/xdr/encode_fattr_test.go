@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/types"
 )
 
 // goldenFileAttr is a fully-populated fattr3 with distinct, non-trivial values

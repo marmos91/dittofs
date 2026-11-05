@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // change runs fn on id's entry under the file's write lock and fails the test

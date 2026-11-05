@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/raw"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
 // rawEntry is e as raw builds it: the same fields laid out by raw's own

@@ -5,8 +5,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
 func names(t *testing.T, seq func(func(kvstore.Listed, error) bool)) ([]string, []uint64) {

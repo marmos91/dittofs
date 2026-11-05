@@ -3,7 +3,7 @@ package model
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // Fill writes only the sub-extents that are absent, never overwrites a held

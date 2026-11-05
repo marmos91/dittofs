@@ -3,7 +3,7 @@ package openstate
 import (
 	"net/netip"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 // Sink is how open state reaches clients and the service: every other call

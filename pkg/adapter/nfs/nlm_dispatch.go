@@ -6,11 +6,11 @@ import (
 	"net"
 	"time"
 
-	nlm "github.com/marmos91/dittofs/internal/adapter/nfs/nlm"
-	nlm_callback "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/callback"
-	nlm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/logger"
+	nlm "github.com/cubbit/dittofs/internal/adapter/nfs/nlm"
+	nlm_callback "github.com/cubbit/dittofs/internal/adapter/nfs/nlm/callback"
+	nlm_handlers "github.com/cubbit/dittofs/internal/adapter/nfs/nlm/handlers"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // handleNLMProcedure dispatches an NLM procedure call to the appropriate handler.

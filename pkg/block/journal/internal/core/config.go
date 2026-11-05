@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/storage"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
 // Config is the journal's configuration as its internal packages read it,

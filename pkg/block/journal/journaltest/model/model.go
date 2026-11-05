@@ -8,7 +8,7 @@ import (
 	"math"
 	"slices"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 type (

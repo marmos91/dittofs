@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/marmos91/dittofs/pkg/apiclient"
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/cubbit/dittofs/pkg/apiclient"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
 )
 
 // gcServer is a recording stub that answers either the GC trigger or

@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 func neutralErrors(t *testing.T, newService func(t *testing.T) vfs.Service) {

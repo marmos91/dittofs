@@ -5,9 +5,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/openstate/conflict"
-	"github.com/marmos91/dittofs/pkg/openstate/grantfsm"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/openstate/conflict"
+	"github.com/cubbit/dittofs/pkg/openstate/grantfsm"
 )
 
 // GrantKind is what a caching grant lets its holder cache: read, write and

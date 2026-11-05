@@ -8,7 +8,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // modelView serves a model's current state through the View a journal

@@ -5,7 +5,7 @@ package platform
 import (
 	"os"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/storage"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
 // filePerm is the mode a created file is asked for, which the umask can only

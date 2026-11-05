@@ -7,9 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/encryption"
-	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/smb/session"
+	"github.com/cubbit/dittofs/internal/adapter/smb/encryption"
+	"github.com/cubbit/dittofs/internal/adapter/smb/handlers"
+	"github.com/cubbit/dittofs/internal/adapter/smb/session"
 )
 
 // LockedWriter wraps a sync.Mutex for serializing writes to a connection.

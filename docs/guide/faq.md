@@ -789,6 +789,6 @@ See `test/posix/known.yaml` for the complete list with detailed explanations.
 ## Still Have Questions?
 
 - Check the other documentation in [docs/](.)
-- Search [existing GitHub issues](https://github.com/marmos91/dittofs/issues)
-- Open a [new issue](https://github.com/marmos91/dittofs/issues/new) for bugs or feature requests
+- Search [existing GitHub issues](https://github.com/cubbit/dittofs/issues)
+- Open a [new issue](https://github.com/cubbit/dittofs/issues/new) for bugs or feature requests
 - Review [CLAUDE.md](../../CLAUDE.md) for detailed development guidance

@@ -3,7 +3,7 @@ package types
 import (
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // TreeConnection represents an active tree connection mapping a client

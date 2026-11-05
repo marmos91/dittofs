@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	nsm "github.com/marmos91/dittofs/internal/adapter/nfs/nsm"
-	nsm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nsm/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/logger"
+	nsm "github.com/cubbit/dittofs/internal/adapter/nfs/nsm"
+	nsm_handlers "github.com/cubbit/dittofs/internal/adapter/nfs/nsm/handlers"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // handleNSMProcedure dispatches an NSM procedure call to the appropriate handler.

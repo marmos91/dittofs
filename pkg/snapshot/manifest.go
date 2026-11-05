@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // ErrInvalidManifestLine is returned by ReadManifest when a line in the

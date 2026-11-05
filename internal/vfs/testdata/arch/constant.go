@@ -1,5 +1,5 @@
 package seeded
 
-import "github.com/marmos91/dittofs/pkg/openstate/sequence"
+import "github.com/cubbit/dittofs/pkg/openstate/sequence"
 
 var _ = sequence.Granted

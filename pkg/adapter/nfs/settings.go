@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	v4attrs "github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	v4attrs "github.com/cubbit/dittofs/internal/adapter/nfs/v4/attrs"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 )
 
 // applyNFSSettings reads current NFS adapter settings from the runtime's

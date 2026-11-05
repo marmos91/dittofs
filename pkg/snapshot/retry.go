@@ -3,7 +3,7 @@ package snapshot
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // ValidateRetryTarget checks that snap is eligible as a retry target for

@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/auth/sid"
+	"github.com/cubbit/dittofs/pkg/auth/sid"
 )
 
 // buildTestAlterContext creates an alter_context PDU for the LSA interface. Its

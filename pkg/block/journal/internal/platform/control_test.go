@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/prof"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // controlFrame is the function an os.File's SyscallConn().Control runs its

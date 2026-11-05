@@ -3,8 +3,8 @@ package engine
 import (
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 // Settings are the engine's node-level settings, handed to Apply. Every one

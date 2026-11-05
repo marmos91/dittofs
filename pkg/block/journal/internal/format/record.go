@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // RecordHeaderSize is the size of a record header; the body and then the

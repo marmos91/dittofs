@@ -3,7 +3,7 @@ package format
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // Kind is a record's kind: what the record does — stages bytes, removes or

@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/vfs/vfserr"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // errUnbuilt answers every call whose behaviour is not built yet.

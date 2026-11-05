@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/stores"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/stores"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestRegistry covers the registry surface end to end: registration rejects

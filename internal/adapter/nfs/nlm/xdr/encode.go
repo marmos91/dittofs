@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // ============================================================================

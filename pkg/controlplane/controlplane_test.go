@@ -5,8 +5,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/api"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/controlplane/api"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
 )
 
 // guardPprofGlobals snapshots the process-global pprof sampling knobs and

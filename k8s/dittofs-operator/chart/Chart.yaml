@@ -18,10 +18,10 @@ keywords:
   - operator
   - kubernetes
 
-home: https://github.com/marmos91/dittofs
+home: https://github.com/cubbit/dittofs
 
 sources:
-  - https://github.com/marmos91/dittofs
+  - https://github.com/cubbit/dittofs
 
 maintainers:
   - name: Marco Moschettini

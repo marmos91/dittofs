@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // ============================================================================

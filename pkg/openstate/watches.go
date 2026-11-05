@@ -4,7 +4,7 @@ import (
 	"context"
 	"slices"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 // WatchID names a watch by its shard, grace instance bits and token, as a

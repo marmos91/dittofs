@@ -7,11 +7,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	"github.com/marmos91/dittofs/pkg/health"
 )
 
 // AdapterHandler handles adapter configuration API endpoints.

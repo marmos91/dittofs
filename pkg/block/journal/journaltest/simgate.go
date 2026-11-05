@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/sim"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // SimGate is a fault that parks a chosen class of calls until the test

@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 )
 
 // FuzzNamespace reads its input as a stream of namespace operations —

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/api"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/controlplane/api"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
 )
 
 // ApplyDefaults sets default values for any unspecified configuration fields.
