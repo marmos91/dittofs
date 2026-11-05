@@ -704,7 +704,8 @@ GC pause above until the operator's statement. Taking a catalog backup on a
 period is what bounds that loss. The journals' content for the lost store's
 shares sits under tags no recovered share claims, since recovery gives each
 share a new identity. So a recovery import, **before it publishes any share**,
-records each adopted journal's identity in the rebuilt store, `Restamp`s it with
+records each adopted journal's identity, node and device in the rebuilt store
+with `RecordJournal` ([RFC 16 §3.2](rfc-16-metadata-store.md#3.2%20How%20it%20is%20assembled)), `Restamp`s it with
 the rebuilt store's installation ID, opens it, and raises the store's tag
 counter above every tag the journal's `Stats` names; only then does it mint a
 tag for any share ([RFC 1 §3](rfc-1-journal.md#3.%20Interface), [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)). No

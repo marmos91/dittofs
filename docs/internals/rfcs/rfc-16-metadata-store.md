@@ -650,7 +650,7 @@ type Shard struct {
 	PrimaryEpoch uint64  // node epoch Primary was named under; a node whose lease lapsed is primary of nothing (RFC 11 §3.1)
 	Epoch        uint64  // ownership epoch: fences (RFC 10 §2.1)
 	Incarnation  uint64  // shard incarnation: raised each time a node or journal begins serving the shard as primary; feeds the write verifier (RFC 11 §3.1)
-	GraceInstance uint64 // set to Incarnation in the transaction of a start or failover that lost the shard's open state, and by compare-and-swap before it serves by a new primary whose handover's table never arrived (RFC 11 §3.1); by nothing else: a handover that ships the table, a batch move and an address arrival keep it. Names the grace instance; a stateid carries its low 5 bits (RFC 14 §2.1, §4.4)
+	GraceInstance uint64 // set to Incarnation in the transaction of a start or failover that lost the shard's open state, and by compare-and-swap before it serves by a new primary whose handover's table never arrived (RFC 11 §3.1), and by the first raise of a shard no client holds state under yet, a new, cloned or restored one (§3); by nothing else: a handover that ships the table, a batch move and an address arrival keep it. Names the grace instance; a stateid carries its low 5 bits (RFC 14 §2.1, §4.4)
 	Replicas     []Replica
 	Count        int // configured size of the replica set, primary included
 	Floor        int // fewest of primary and replicas, learners included, that acknowledge a write
@@ -1185,13 +1185,31 @@ type Minter interface {
 type Alloc struct{ UID, GID, RID bool }
 
 // Lifecycle is the engine's store access outside block metadata's views and
-// Inspect.Refs (RFC 8 §2.1, §2.5, §2.7), over S‖id‖vl and the incarnation keys.
+// Inspect.Refs (RFC 8 §2.1, §2.5, §2.7), over JD‖node‖device, the share records'
+// tags, SH‖shard‖rm, S‖id‖vl and the incarnation keys.
 // Signatures are indicative; RFC 8 owns what each call carries.
 type Lifecycle interface {
-	JournalID(ctx context.Context, device DeviceID) (JournalID, error)                 // the identity recorded for a device, for Open
+	JournalID(ctx context.Context, node NodeID, device JournalDir) (JournalID, error) // the identity recorded for a node's device (JD‖node‖device), for Open
+	Tags(ctx context.Context) (map[ShareID]TagRecord, error)                          // every share record's tag and its removal state, for start steps 1 and 5
 	VersionLimits(ctx context.Context, shares []ShareID) (map[ShareID]Version, error) // each share's limit, read for Open's floor
 	RaiseVersionLimits(ctx context.Context, to map[ShareID]Version) error             // a tracked max-write of S‖id‖vl, within K keys a transaction
-	RaiseIncarnations(ctx context.Context, shards []ShardID) error                    // in the start transaction, or at attach
+	RaiseAtStart(ctx context.Context, shards []ShardID) (map[ShardID]uint64, error)   // raises each incarnation and sets GraceInstance to it; returns the incarnations written
+	RaiseAtAttach(ctx context.Context, shard ShardID) (uint64, error)                 // raises the incarnation and keeps GraceInstance; returns the incarnation written
+}
+
+// JournalDir is a journal device: the directory the node's bootstrap names for
+// it (RFC 13 §2.2), as written there, one of RFC 8's Deps.Devices. It is not a
+// device file's major and minor (RFC 7 §2.1's DeviceID).
+type JournalDir string
+
+// TagState is how far a share's removal has gone, for start (RFC 8 §2.5).
+type TagState uint8 // Serving, Offloaded, Forgotten
+
+// TagRecord is one share record's tag (S‖id‖info) and how far the share's
+// removal has gone, read from its SH‖shard‖rm rows (§2.3.2).
+type TagRecord struct {
+	Tag   ShareTag
+	State TagState // Serving: no removal, or one before its offload step; Offloaded: every rm row at offloaded or later, and not all forgotten; Forgotten: every rm row at forgotten, step 4 or done
 }
 
 // ControlPlane is the management API's view (RFC 23). Every write names what
@@ -1270,6 +1288,31 @@ filesystem service's `GetAttr` joins `Files.Get` with the engine's overlay of
 `Size`, `Times` and `Version` for bytes not yet committed ([RFC 8](rfc-8-engine.md)); nothing
 else answers size or times, and `Existence` offers no read of them.
 
+**`Lifecycle` reads what start needs, and raises an incarnation in two forms.**
+`Tags` answers every share record of the installation, attached or not, with how
+far its removal has gone, so start can forget the tag of a share whose removal
+reads forgotten, leave unattached one at offloaded or later, and strand only a tag
+no share record names ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), steps 1 and 5). It is keyed by `ShareID`, because a
+resumed removal's `Drop` names only the share. The two raises differ only in the
+grace instance ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)): `RaiseAtStart` sets `GraceInstance` to the new
+incarnation, since a restart lost the shard's open state, and `RaiseAtAttach`
+keeps it. **`RaiseAtAttach` is only for a shard whose open state the node
+holds**: one this process has already raised, or one whose handover shipped the
+table (cluster, [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)). Every other raise takes the start form: a share
+this node served before a restart and binds again after it, and a late attach of
+a journal refused at start, lost their open state with the restart; a new,
+cloned or restored share has none, so the start form costs nothing there. Both return the incarnation they wrote, so the engine puts it
+on the share's binding with no read after the raise. `JournalID` reads
+`JD‖node‖device` (§4.2), which `RecordJournal` writes (§3.2).
+
+Each shape here is a **proposal**, settled when the engine's start is built:
+`Tags` as one store read (the other reading has the node hand the removals and
+tags to `Start`, which changes [RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)'s call; the store read keeps
+`Start`'s inputs as they are and reads what start needs where it is recorded);
+the two raises as two calls (one call with a flag states the same rule; two names
+make the grace rule visible at every call site); and their return values (the
+engine needs the incarnation for its write verifier, [RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)).
+
 `User` and `Share` here are entities, not wire types: `PutUser` receives a
 `User` and overwrites it whole, and the only field it writes that another
 entity reads is the name index. `PutUser`, `PutGroup`, `PutShare`,
@@ -1325,6 +1368,7 @@ There is one concrete store, built once from a `KV`:
 ```go
 err := metadata.Init(ctx, kv, install)                     // once per installation, with the minted ID; see below
 st, err := metadata.Open(ctx, kv, metadata.Options{...}) // reads the format record first (§4.6)
+err = st.RecordJournal(ctx, id, node, device)            // the initialisation step after each journal's Init, and a recovery import for each journal it adopts; in no view
 
 var (
 	_ Namespace    = st.Namespace()
@@ -1348,6 +1392,29 @@ var (
 with the installation ID the step minted and `SL` at 0, and it refuses a store that already
 holds a format record. `Open` never creates one: it reports a store with no
 format record as not initialised.
+
+`RecordJournal(ctx, id JournalID, node NodeID, device JournalDir) error` is the
+store's part of creating or adopting a journal, a method of the opened store, as
+the sketch shows, and in no view: the engine never calls it. The initialisation
+step calls it after the journal's `Init` and before anything in the journal is
+acknowledged, and a recovery import calls it for each journal it adopts, before
+it publishes any share
+([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)). In one transaction it writes `J‖journal` with the node and
+device, and `JD‖node‖device` with the journal identity, which `Lifecycle`'s
+`JournalID` reads (§4.2). **Proposal:** the operator's step that re-initialises a
+device calls it too, overwriting the device's index key and deleting the
+`J‖journal` of the identity it named, so no record is left of a journal that no
+longer exists. No RFC names that step yet, and who rewrites the shards' journal
+identity there is still open. **Proposal:** the index key
+and the node in it. A device is a directory a node's bootstrap names
+([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)), so two nodes sharing one store can name the same one, and a
+lookup by device alone is then ambiguous; on a single node the node is always the
+same. A scan of the `J‖` prefix for the device would need no new key, at a cost
+that grows with the installation's journals. A node whose bootstrap changes its
+identity, or the directory it names for a journal, is new to the store for that
+device by design: `JournalID` finds nothing under the new key, and the journal
+serves again only once `RecordJournal` records it there, never through a start
+that scans `J‖` for the device and guesses.
 
 Inside, the store is not one giant type. Each area — namespace, files, content,
 blocks, principals, control plane, open state — is its own small struct over one
@@ -1694,7 +1761,8 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `SH‖shard‖xh‖opID` | (cluster) cross-shard hold record: a participant's hold for one prepared operation, with its deadline, written by a fenced transaction that also rewrites, at the shard's current epoch, the fences of the files it holds that still name an older one, so a primary that stayed through a raise leaves the coordinator's commit no stale fence to fail on; every commit of the operation guards it, and a release deletes it before the participant grants what it refused ([RFC 11 §8.1](rfc-11-ownership.md#8.1%20Operations%20across%20shards)) |
 | | `SH‖shard‖rm` | the share removal's progress on this shard: step 3, offloaded, forgotten, step 4 with its cursor, or done ([§2.3.2](#2.3.2%20Removing%20a%20share)); absent before the shard's step 3 starts |
 | | `SH‖shard‖hw` | (cluster) each replica's acknowledged committed-point mark, persisted by the primary on a period; never lowered, raises no epoch ([RFC 10 §7.2](rfc-10-journal-replication.md#7.2%20Removal)) |
-| | `J‖journal` | a journal, keyed by journal identity: the node and device it lives on, written when the journal is created and before anything in it is acknowledged, so a start that finds no journal or another one there refuses its shares ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); and, from the replication extension on, its generation, raised at every open, lease acquisition and lease renewal, and by a primary that finds itself rolled back ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)) |
+| | `J‖journal` | a journal, keyed by journal identity: the node and device it lives on, written by `RecordJournal` (§3.2) when the journal is created and before anything in it is acknowledged, so a start that finds no journal or another one there refuses its shares ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); and, from the replication extension on, its generation, raised at every open, lease acquisition and lease renewal, and by a primary that finds itself rolled back ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)) |
+| | `JD‖node‖device` | the journal identity on a node's device: the index `Lifecycle`'s `JournalID` reads to open that device's journal ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1), written with `J‖journal` by `RecordJournal` (§3.2) and overwritten when the device is re-initialised (proposal, §3.2) |
 | | `RS‖partition` | (cluster) repair scheduler lease per partition of the shard-ID hash, with its epoch ([RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair)) |
 | | `MV‖giving‖receiving` | move record: the cursor of a move of files from the giving shard to the receiving one, one per pair, so a crashed move resumes and several moves out of one shard run at once ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) |
 | | `MKP‖masterKeyID‖ns‖moveID` | export pin, keyed by the version-qualified master key ID: a master key version the export of a move of namespace `ns` to another installation carried a wrapping under; while one exists the material provider refuses to destroy that key, and only an operator's `ReleasePin` deletes it ([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)) |
@@ -1828,7 +1896,7 @@ are the prefix's. No separator byte is written.
   range of `b` is one GC partition's keys whatever the partition count
   ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)).
 - **Byte string** — an entry's folded key, an xattr name, an idempotency key (`IK`), an operation or resource kind (`OPR`, `AUX`), a user, group, share
-  or netgroup name, a path, a setting key, a SID, a Kerberos principal, a
+  or netgroup name, a path, a journal directory (`JD`'s `device`), a setting key, a SID, a Kerberos principal, a
   client owner, a backup location's name (`NS‖ns‖bk‖location`, and `NS‖ns‖keyseq‖target`, empty for the namespace's own object), a namespace key ID (up to 255 bytes, [RFC 5](rfc-5-transforms.md)), a master key ID
   (`MKP`'s `masterKeyID`, [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)): each `0x00` byte written as `0x00 0xFF`, then the two-byte
   terminator `0x00 0x01`. Inside a string `0x00` is always followed by `0xFF`,
@@ -1856,7 +1924,7 @@ are the prefix's. No separator byte is written.
 | Store | `\x00` 0x00, followed by the bytes `format`; nothing else is under 0x00 |
 | Per file, per share | `F` 0x01, `S` 0x02 |
 | Per namespace | `C` 0x10, `CR` 0x11, `B` 0x12, `BR` 0x13, `BD` 0x14, `BC` 0x15, `I` 0x16, `NS` 0x17 |
-| Server-wide | `U` 0x20, `G` 0x21, `M` 0x22, `MR` 0x23, `GR` 0x24, `NX` 0x25, `NP` 0x26, `NG` 0x27, `SL` 0x28, `IN` 0x29, `NSM` 0x2A, `PX` 0x2B, `N` 0x2C, `SH` 0x2D, `J` 0x2E, `RS` 0x2F, `MV` 0x30, `SLOT` 0x31, `CFG` 0x32, `CFGGEN` 0x33, `SEC` 0x34, `CL` 0x35, `CLO` 0x36, `TG` 0x37, `MKP` 0x38, `IDS` 0x3A, `PGEN` 0x3B, `OP` 0x3C, `OPR` 0x3D, `IK` 0x3E, `XP` 0x3F, `SS` 0x40, `SSH` 0x41, `AT` 0x42, `ATH` 0x43, `ATA` 0x44, `AU` 0x45, `AUX` 0x46, `AUC` 0x47; 0x39 retired |
+| Server-wide | `U` 0x20, `G` 0x21, `M` 0x22, `MR` 0x23, `GR` 0x24, `NX` 0x25, `NP` 0x26, `NG` 0x27, `SL` 0x28, `IN` 0x29, `NSM` 0x2A, `PX` 0x2B, `N` 0x2C, `SH` 0x2D, `J` 0x2E, `RS` 0x2F, `MV` 0x30, `SLOT` 0x31, `CFG` 0x32, `CFGGEN` 0x33, `SEC` 0x34, `CL` 0x35, `CLO` 0x36, `TG` 0x37, `MKP` 0x38, `IDS` 0x3A, `PGEN` 0x3B, `OP` 0x3C, `OPR` 0x3D, `IK` 0x3E, `XP` 0x3F, `SS` 0x40, `SSH` 0x41, `AT` 0x42, `ATH` 0x43, `ATA` 0x44, `AU` 0x45, `AUX` 0x46, `AUC` 0x47, `JD` 0x48; 0x39 retired |
 
 | Under | Sub-kind codes |
 | --- | --- |

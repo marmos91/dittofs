@@ -978,8 +978,8 @@ and the verifier) as well. Epic 10's rows need only a `dfs` that starts.
   devices and any v1 state byte-identical; a crash between journal init and the store's
   init, after which a start reports the store lost and a re-run of initialisation wipes
   the devices and succeeds; a crash between the store's init and the journal records,
-  after which a start reports the store lost, and once a re-run of initialisation
-  completes the records, the next start serves.
+  after which a start refuses the devices as not recorded, never as the store lost, and
+  once a re-run of initialisation completes the records, the next start serves.
 - **Process death against power loss:** `SIGKILL` and a power cut kept distinct, and a
   long soak with capacity below the data written (the soak itself is epic 12's).
 
