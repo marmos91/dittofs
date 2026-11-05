@@ -114,7 +114,9 @@ jobs:
           SUITE: ${{ inputs.suite }}
           # decision: on feat/storage-v2 the data path answers unavailable until
           # the adapters run on vfs.Service, so the data-path suites are skipped
-          # there. unit/windows moves no file bytes but is skipped for its cost;
+          # there, and so is integration/ad-dc, which drives SMB through the old
+          # adapter against the AD DC: nothing merged there changes that flow.
+          # unit/windows moves no file bytes but is skipped for its cost;
           # journal-platforms.yml covers the journal on Windows. Delete V2 once
           # the adapters run on vfs.Service. A merge queue run's ref is its
           # queue branch and it has no base_ref, so its target is read from
@@ -127,7 +129,7 @@ jobs:
           # default.
           jq -c --arg suite "$SUITE" --arg v2 "$V2" '[(.cells // [])[] | select($suite == "" or .suite == $suite)
               | select($v2 != "true" or ((IN(.suite; "e2e", "pjdfstest", "pynfs", "wpts", "smbtorture", "cthon04",
-                  "nfstest", "clients", "fio-verify", "bench-smoke", "system") or .name == "unit/windows") | not))
+                  "nfstest", "clients", "fio-verify", "bench-smoke", "system") or IN(.name; "unit/windows", "integration/ad-dc")) | not))
               | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
                 or .suite == "smbtorture" or (.suite == "system" and .place != "dedicated")
                 or .suite == "clients" or .suite == "cthon04" or .suite == "nfstest" or .suite == "fio-verify"
