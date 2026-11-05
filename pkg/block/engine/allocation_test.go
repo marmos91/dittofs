@@ -286,6 +286,29 @@ func TestAllocationReadsAgainAfterAGroupCommitBetweenItsReads(t *testing.T) {
 	u.allocations(t, f, run{4 * kib, 8 * kib, false})
 }
 
+// A truncate's phase 1 committing after the store answers and before the
+// entry is read makes the pass read again: committed data [0, 4k), a pending
+// write [4k, 12k), then a truncate to 10k commits it in its phase 1 between
+// the two reads, and a write [16k, 18k) is staged after. Read as one pass,
+// Allocation(4k) would answer hole [4k, 16k).
+func TestAllocationReadsAgainAfterAPhase1BetweenItsReads(t *testing.T) {
+	ce := &committingExistence{}
+	u := newUnit(t, func(d *engine.Deps) { ce.Existence = d.Existence; d.Existence = ce })
+	f := u.create(t, "f")
+	u.write(t, f, 0, make([]byte, 4*kib))
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	u.write(t, f, 4*kib, make([]byte, 8*kib))
+	ce.after = func() {
+		if err := u.e.Truncate(context.Background(), u.share.ID, f, 10*kib); err != nil {
+			t.Errorf("truncate: %v", err)
+		}
+		u.write(t, f, 16*kib, make([]byte, 2*kib))
+	}
+	u.allocations(t, f, run{4 * kib, 6 * kib, false})
+}
+
 // A write staged after a truncate applies after it, and only extends the end
 // of file: a truncate to 1k then a write [3k, 8k) leave a hole [1k, 3k); a
 // write [18k, 22k) then [12k, 19k) leave the file ending at 22k.

@@ -480,6 +480,7 @@ func (e *Engine) committed(r *removal) (dones []func()) {
 	}
 	clear(fe.ops[len(kept):])
 	fe.ops = kept
+	e.files.removals.Add(1) // committed operations left the entry: see Allocation
 	return dones
 }
 
