@@ -2393,31 +2393,30 @@ func TestEndALedgerRefusalToASealsEndStillStartsTheNotifier(t *testing.T) {
 	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
 	t.Cleanup(func() { _ = e.s.Close() })
 
-	// One record lands and is synced; the second's write fails, ending the
-	// segment. The ledger's own refusal of the end is the shape of the bug
-	// the check guards: it ends the segment by hand too.
+	// One record lands; the segment's Sync fails, so the stream holds a
+	// syncFailed word while the segment stands open — the state the seal's
+	// freeze branch ends it from. The ledger is ended by hand first, so the
+	// seal's own set.End meets a refusal: the freeze branch's caller.
 	ah, ab := streamWriteHeader(streamFileID(1), 0, streamTestBody(64, 0x42), 7, core.Version{Counter: 1})
 	a := streamAppendWrite(t, e, ah, ab)
-	if err := e.s.Sync(); err != nil {
-		t.Fatalf("the first Sync: %v", err)
-	}
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, seg, 1, syscall.EIO)); err != nil {
 		t.Fatal(err)
 	}
-	bh, bb := streamWriteHeader(streamFileID(2), 64, streamTestBody(64, 0x55), 7, core.Version{Counter: 2})
-	if _, err := e.s.Append(bh, bb); !errors.Is(err, syscall.EIO) {
-		t.Fatalf("the failed Append = %v, want the fault's EIO", err)
+	if err := e.s.Sync(); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the faulted Sync = %v, want the fault's EIO", err)
 	}
 	if err := e.seam.Schedule(); err != nil {
 		t.Fatal(err)
 	}
-	// Both the stream and the ledger ended the segment: the seal meets the
-	// freeze branch — a write failed — and the ledger refuses the second end.
-	if err := e.set.End(a.Loc.Segment); err != nil && !errors.Is(err, segment.ErrWrongState) {
-		t.Fatalf("ending the already-ended segment in the ledger by hand: %v", err)
+	// The ledger ends the segment by hand, so the seal's end below is the
+	// one the ledger refuses.
+	if err := e.set.End(a.Loc.Segment); err != nil {
+		t.Fatalf("ending the segment in the ledger by hand: %v", err)
 	}
-	if _, err := e.s.Seal(false); err == nil {
-		t.Fatal("the Seal of the ledger-ended segment answered nil, want a refusal")
+	if res, err := e.s.Seal(false); err == nil {
+		t.Fatalf("the Seal of the ledger-ended segment answered nil, want a refusal (res %+v)", res)
+	} else if !errors.Is(err, segment.ErrSegmentEnded) {
+		t.Fatalf("the Seal of the ledger-ended segment = %v, want the ended sentinel joined in refusal", err)
 	}
 
 	done := make(chan error, 1)
@@ -2431,7 +2430,6 @@ func TestEndALedgerRefusalToASealsEndStillStartsTheNotifier(t *testing.T) {
 		t.Fatal("Close never returned past the refused seal: the refusal leaked the end's in-flight count")
 	}
 }
-
 
 // TestEndTheRollDoesNotInstallBeforeTheEventsSnapshot checks the roll's
 // install wait against the notifier itself: an end's event must be handed
@@ -2572,13 +2570,24 @@ func TestEndSyncedSegmentBeforeItsFailureStopsOnTheSecondRefusal(t *testing.T) {
 	rec.awaitCount(t, 1, "the first segment's end")
 
 	// The failure in the unsynced spare taken to leave that ended segment is
-	// the second refusal in a row, and the stream must stop with it.
+	// the second refusal in a row, and the stream must stop with it. The
+	// rule is armed while segment 2's header write is parked at the hold —
+	// From 2 — so the parked header passes and the record write, the second
+	// matching call, takes the fault, as the first stop check stages it.
 	seg2 := streamSegName(2)
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg2, 1, syscall.EIO)); err != nil {
+	holdH := e.seam.HoldFirst(t, journaltest.OpWrite, seg2)
+	appendDone := make(chan error, 1)
+	ch, cb := streamWriteHeader(streamFileID(3), 0, streamTestBody(64, 0x7d), 7, core.Version{Counter: 3})
+	go func() {
+		_, err := e.s.Append(ch, cb)
+		appendDone <- err
+	}()
+	<-holdH.Reached()
+	if err := e.seam.Schedule(journaltest.FailingFrom(journaltest.OpWrite, seg2, 2, 1, syscall.EIO)); err != nil {
 		t.Fatal(err)
 	}
-	ch, cb := streamWriteHeader(streamFileID(3), 0, streamTestBody(64, 0x7d), 7, core.Version{Counter: 3})
-	if _, err := e.s.Append(ch, cb); !errors.Is(err, syscall.EIO) {
+	holdH.Release()
+	if err := <-appendDone; !errors.Is(err, syscall.EIO) {
 		t.Fatalf("the second failed Append = %v, want the fault's EIO", err)
 	}
 	if err := e.seam.Schedule(); err != nil {
