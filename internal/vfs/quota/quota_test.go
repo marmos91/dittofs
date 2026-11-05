@@ -441,3 +441,19 @@ func TestARehomeHoldsNoMutexAcrossItsStoreRead(t *testing.T) {
 		t.Fatal("a rehome whose store read waits on another reservation's Release did not return within 1s")
 	}
 }
+
+// A file whose owner is its group, a group a privileged caller made its
+// owner, is charged to that group once, as the store charges it, so its
+// reservations hold what they add once against the group's quota.
+func TestAnOwnerThatIsTheGroupIsReservedOnce(t *testing.T) {
+	ctx := context.Background()
+	s := newStore()
+	q := New(s, (&events{}).emit)
+	s.limits[Target{Principal: staff}] = hardBytes(10)
+	c := Charge{Share: share, Owner: staff, Group: staff}
+	for _, n := range []int64{6, 4} {
+		if _, err := q.Reserve(ctx, vfs.Identity{}, c, entity.Usage{Bytes: n}); err != nil {
+			t.Fatalf("%d bytes of a group-owned file's 10-byte group quota: %v", n, err)
+		}
+	}
+}

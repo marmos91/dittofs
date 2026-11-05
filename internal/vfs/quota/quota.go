@@ -237,6 +237,8 @@ func (q *Quotas) reserve(ctx context.Context, writer vfs.Identity, c Charge, add
 		{vfs.QuotaShare, Target{}, true},
 		{vfs.QuotaProject, Target{Project: c.Project}, c.Project != 0},
 		{vfs.QuotaUser, Target{Principal: c.Owner}, !c.Owner.IsZero()},
+		// A group that is also the owner, as a privileged caller may make
+		// it, is charged once, as the store charges it.
 		{vfs.QuotaGroup, Target{Principal: c.Group}, !c.Group.IsZero() && c.Group != c.Owner},
 	}
 	r := &Reservation{q: q, file: c.File, add: add}
