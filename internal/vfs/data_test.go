@@ -439,9 +439,10 @@ func TestSeekFindsDataAndHoles(t *testing.T) {
 }
 
 // An open holding append data without write data appends and overwrites
-// nothing: bob, whom alice's 0600 file's ACL allows read and append data,
-// opens it for append, and his write and his deallocate from offset 0 are
-// ErrAccess and change no byte, while his write at its end appends.
+// nothing: bob, whom alice's setuid 0600 file's ACL allows read and append
+// data, opens it for append, and his write and his deallocate from offset 0
+// are ErrAccess and change no byte, while his write at its end appends,
+// clearing setuid.
 func TestAnAppendDataOpenOnlyAppends(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
@@ -449,10 +450,15 @@ func TestAnAppendDataOpenOnlyAppends(t *testing.T) {
 	alice := proven(s.alice.Principal, inLab)
 	_, err := s.Write(ctx, alice, vfs.Anonymous(h), 0, []byte("hello"), vfs.Unstable)
 	s.must(t, err)
+	_, err = s.fs.Store.Files().SetAttrs(ctx, s.fs.Admin, h, entity.Attrs{}.WithMode(0o4600))
+	s.must(t, err)
 	acl := entity.ACLFromMode(0o600)
 	acl.Entries = append(acl.Entries, entity.ACE{Type: entity.ACEAllow, Mask: entity.ReadData | entity.AppendData, Who: s.bob.Principal})
 	_, err = s.fs.Store.Files().SetACL(ctx, s.fs.Admin, h, acl)
 	s.must(t, err)
+	if m := s.record(t, h).Mode; m != 0o4600 {
+		t.Fatalf("the file's mode %o, want 4600", m)
+	}
 	pc := s.smb(t, "bob-pc", s.bob.Principal)
 	ref := s.opener(t, pc, "f", entity.AppendData)
 	if _, err := s.Write(ctx, pc, ref, 0, []byte("HELLO"), vfs.Unstable); !errors.Is(err, vfs.ErrAccess) {
@@ -463,6 +469,9 @@ func TestAnAppendDataOpenOnlyAppends(t *testing.T) {
 	}
 	if _, err := s.Write(ctx, pc, ref, 5, []byte("!"), vfs.Unstable); err != nil {
 		t.Errorf("an append through an append-data open: %v", err)
+	}
+	if m := s.record(t, h).Mode; m != 0o600 {
+		t.Errorf("the append left mode %o, want 600", m)
 	}
 	buf := make([]byte, 8)
 	if n, _, err := s.Read(ctx, alice, vfs.Anonymous(h), 0, buf); err != nil || string(buf[:n]) != "hello!" {

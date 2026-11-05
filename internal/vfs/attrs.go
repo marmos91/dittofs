@@ -245,7 +245,7 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 // it explicitly instead.
 func (fs *Filesystem) truncate(ctx context.Context, a *admitted, h vfs.Handle, f vfs.File, ch vfs.Attrs) error {
 	if !ch.Changes(entity.AttrMode) {
-		if _, err := fs.clearSetID(ctx, a, h, f); err != nil {
+		if _, err := fs.clearSetID(ctx, a, h, f, false); err != nil {
 			return err
 		}
 	}

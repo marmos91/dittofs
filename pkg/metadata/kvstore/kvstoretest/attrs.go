@@ -112,7 +112,7 @@ func testWriteACLAndClearSetID(t *testing.T, kvo Opener) {
 	must(t, errOf(files.SetAttrs(ctx, alice, h, entity.Attrs{}.WithMode(0o4660))))
 	before, err := files.ACL(ctx, f.admin, h)
 	must(t, err)
-	if got, err := files.ClearSetID(ctx, carol, h); err != nil || got.Mode&0o7777 != 0o660 {
+	if got, err := files.ClearSetID(ctx, carol, h, false); err != nil || got.Mode&0o7777 != 0o660 {
 		t.Errorf("ClearSetID by a writer: %o, %v", got.Mode, err)
 	}
 	after, err := files.ACL(ctx, f.admin, h)
@@ -120,7 +120,7 @@ func testWriteACLAndClearSetID(t *testing.T, kvo Opener) {
 	if !reflect.DeepEqual(before, after) {
 		t.Errorf("ClearSetID changed the stored ACL:\n before %+v\n after  %+v", before, after)
 	}
-	if _, err := files.ClearSetID(ctx, bob, h); !isDenied(err) {
+	if _, err := files.ClearSetID(ctx, bob, h, false); !isDenied(err) {
 		t.Errorf("ClearSetID by a caller without write data: %v", err)
 	}
 	// An append-only file takes appends alone, so the clear asks append data
@@ -128,8 +128,22 @@ func testWriteACLAndClearSetID(t *testing.T, kvo Opener) {
 	log, _ := f.create(alice, pub, "log", regular(0o644))
 	must(t, errOf(files.SetAttrs(ctx, alice, log, entity.Attrs{}.WithMode(0o4644))))
 	must(t, errOf(files.SetAttrs(ctx, f.admin, log, entity.Attrs{}.WithFlags(entity.FlagAppendOnly))))
-	if got, err := files.ClearSetID(ctx, alice, log); err != nil || got.Mode&0o7777 != 0o644 {
+	if got, err := files.ClearSetID(ctx, alice, log, true); err != nil || got.Mode&0o7777 != 0o644 {
 		t.Errorf("ClearSetID of an append-only file by its owner: %o, %v", got.Mode, err)
+	}
+	// Append data alone admits an append to a plain file, so it clears the
+	// bits for one, and for no other change.
+	erin := f.member("erin", entity.Principal{})
+	suid, _ := f.create(alice, pub, "suid", regular(0o600))
+	must(t, errOf(files.SetAttrs(ctx, alice, suid, entity.Attrs{}.WithMode(0o4600))))
+	sacl := entity.ACLFromMode(0o4600 & 0o777)
+	sacl.Entries = append(sacl.Entries, entity.ACE{Type: entity.ACEAllow, Mask: entity.ReadData | entity.AppendData, Who: erin.Principal})
+	must(t, errOf(files.SetACL(ctx, alice, suid, sacl)))
+	if _, err := files.ClearSetID(ctx, erin, suid, false); !isDenied(err) {
+		t.Errorf("ClearSetID for an overwrite by a caller holding append data alone: %v", err)
+	}
+	if got, err := files.ClearSetID(ctx, erin, suid, true); err != nil || got.Mode&0o7777 != 0o600 {
+		t.Errorf("ClearSetID for an append by a caller holding append data alone: %o, %v", got.Mode, err)
 	}
 }
 

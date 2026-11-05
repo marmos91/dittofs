@@ -296,7 +296,7 @@ func (fs *Filesystem) stage(ctx context.Context, c vfs.Call, a *admitted, h vfs.
 	if flagsRefuse(f, off) {
 		return vfs.WCC{}, vfs.ErrPerm
 	}
-	if _, err := fs.clearSetID(ctx, a, h, f); err != nil {
+	if _, err := fs.clearSetID(ctx, a, h, f, off >= f.Size); err != nil {
 		return vfs.WCC{}, err
 	}
 	unlock, err := fs.locks.Take(ctx, lockorder.Set{Accept: []lockorder.Key{lockorder.Key(f.ID)}})
@@ -326,17 +326,19 @@ func flagsRefuse(f vfs.File, off int64) bool {
 // clearSetID clears setuid and setgid on f, which h names, for an
 // unprivileged caller, the owner included, changing its content, in a change
 // committed before the content's change is staged; it reports whether it
-// cleared either.
+// cleared either. appends says the change starts at or past the size, which
+// append data admits as well as write data.
 //
 // decision: the clear is decided against the file as the caller is now, not
 // against the open the change came through, which the store cannot be
-// handed: a write through an open whose caller has since lost write on a
-// setuid file is refused. Overturned once ClearSetID takes an open's grant.
-func (fs *Filesystem) clearSetID(ctx context.Context, a *admitted, h vfs.Handle, f vfs.File) (bool, error) {
+// handed: a write through an open whose caller has since lost the right it
+// wants, write data, or append data for an append, on a setuid file is
+// refused. Overturned once ClearSetID takes an open's grant.
+func (fs *Filesystem) clearSetID(ctx context.Context, a *admitted, h vfs.Handle, f vfs.File, appends bool) (bool, error) {
 	if a.caller.Privileged || f.ClearSetID() == f.Mode {
 		return false, nil
 	}
-	if _, err := fs.meta.Files().ClearSetID(ctx, a.caller.Identity, h); err != nil {
+	if _, err := fs.meta.Files().ClearSetID(ctx, a.caller.Identity, h, appends); err != nil {
 		return false, storeErr(err)
 	}
 	return true, nil
