@@ -2688,7 +2688,7 @@ writers.
 **No open waits on a pinned writer.** A read of a segment whose writer is
 open reads through it. An open of a segment file, for a read or for any write
 the writer rule above names, that finds no descriptor under the bound it may
-close — each a pinned writer or in use by a read or a sync — opens one past the
+close — each a pinned writer or in use by a read, a write or a sync — opens one past the
 bound; `descriptor_overruns` counts each, and the bound holds again once
 descriptors close. [RFC 24 §6.3](rfc-24-resources.md#6.3%20File%20descriptors) carries overruns in the process's remaining quarter.
 
