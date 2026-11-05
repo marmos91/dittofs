@@ -747,11 +747,16 @@ A suggestion only: one pull request per subtask works as well.
    synced loss's `OpLost`. Settled: RFC 8 §5.1 says so since #3716.
 8. **A synced loss of committed, unoffloaded content reaches no metadata.** A corrupt loss
    reported once its write is committed as written (D13, or a loss a ring gap hides, point 5)
-   lands at or below the file's `applied`, where `kvstore` skips an `OpLost`. The extent reads
-   **Lost** through the journal only while the journal keeps the loss record: a group commit's
-   `Settle` drops it, and once repack drops it too (RFC 1 §7.2) a crash serves the extent as
-   committed data instead of **Lost**, and its charge is never released. The fix is a
+   lands at or below the file's `applied`, where `kvstore` skips an `OpLost`. The extent still
+   reads **Lost**, after a crash too: it is committed uncarved, with no chunk or a stale one, and
+   once `Settle` and repack (RFC 1 §7.2) drop the journal's record of it, RFC 0 §4.2's table
+   classes it **Lost** and the read fails, never serving the stale chunk. What metadata never
+   records is the loss on the File, and the extent's charge is never released. The fix is a
    store-side loss path that records the loss against the File and uncharges the extent at or
    below `applied`, driven from `markLost` when it finds no pending write, and for a gap from the
    journal's `Since(id, 0)` loss records. It needs a `kvstore` call and an RFC 6 line, and has no
-   owner yet. `Settle` needs no change: it never passes a write metadata does not hold.
+   owner yet. `Settle` needs no change: it never passes a write metadata does not hold. Whether
+   a **Lost** extent counts in `Charged` at all is undecided by the RFCs: RFC 6 §2.4 defines
+   `Charged` as "the file's logical bytes excluding holes", while RFC 8 §5.1 has a write
+   committed from its loss record charge nothing. The uncharge is to be decided in an RFC
+   issue.
