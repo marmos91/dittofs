@@ -38,24 +38,35 @@ func (e *Engine) Allocation(ctx context.Context, s entity.ShareID, f entity.File
 		if err := ctx.Err(); err != nil {
 			return entity.Span{}, err
 		}
+		gen := e.files.removals.Load()
 		run, hole, err := e.d.Existence.Allocation(ctx, s, f, cursor)
 		if err != nil {
 			return entity.Span{}, e.storeErr(err)
 		}
-		// The pending operations are read after the store: an operation
-		// leaves the entry only once its existence commits, so every one the
-		// store does not yet hold is here, and replaying one it already holds
-		// changes nothing.
+		// The pending operations are read after the store, and the pass is
+		// read again if any committed operation left an entry between the
+		// two reads: then every operation the store does not hold is in the
+		// entry, and replaying one it already holds changes nothing. That
+		// holds only because operations leave an entry in version order,
+		// oldest first, which every commit path must keep.
 		//
 		// decision: each pass reads the store and the entry afresh, so a
 		// commit landing between two passes is seen by the later one only; a
 		// run stitched across passes is right at each pass but not one
-		// snapshot. Hold one version across passes, as Read's asOf does, if
-		// a caller needs the run as of one instant.
+		// snapshot, and can answer a hole over data written during the call:
+		// committed hole [0, 4k) and data [4k, 8k), the first pass sees the
+		// hole, then a write to [0, 4k) and a deallocate of [4k, 8k) are
+		// staged, and the second pass sees a hole at 4k, so Allocation(0)
+		// answers hole [0, 8k). Both operations are concurrent with the call.
+		// Hold one version across passes, as Read's asOf does, if a caller
+		// needs the run as of one instant.
 		var ops []pendingOp
 		if fe := e.files.lockOf(f); fe != nil {
 			ops = slices.Clone(fe.ops)
 			e.files.unlock(f, fe)
+		}
+		if e.files.removals.Load() != gen {
+			continue // an operation committed mid-pass: read both again
 		}
 		a := allocation{eof: math.MaxInt64}
 		end := run.End()
@@ -139,13 +150,9 @@ func (a *allocation) apply(op pendingOp) {
 	}
 }
 
-// opEnd is where x ends, capped as entity.Extent.End caps it, so a length to
-// the end of file does not wrap.
+// opEnd is where x ends, capped so a length to the end of file does not wrap.
 func opEnd(x journal.Extent) int64 {
-	if x.Len > math.MaxInt64-x.Off {
-		return math.MaxInt64
-	}
-	return x.Off + x.Len
+	return entity.Extent{Offset: x.Off, Length: x.Len}.End()
 }
 
 // paint makes [o, e) all of one class.

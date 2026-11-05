@@ -162,7 +162,8 @@ func TestAllocationMapsTheStoresRefusals(t *testing.T) {
 // read.
 type committingExistence struct {
 	engine.Existence
-	between func()
+	between func() // runs once, before the store is read
+	after   func() // runs once, after the store answers
 }
 
 func (c *committingExistence) Allocation(ctx context.Context, share entity.ShareID, file entity.FileID, off int64) (entity.Extent, bool, error) {
@@ -170,7 +171,12 @@ func (c *committingExistence) Allocation(ctx context.Context, share entity.Share
 		c.between = nil
 		b()
 	}
-	return c.Existence.Allocation(ctx, share, file, off)
+	run, hole, err := c.Existence.Allocation(ctx, share, file, off)
+	if a := c.after; a != nil {
+		c.after = nil
+		a()
+	}
+	return run, hole, err
 }
 
 // An operation staged and committed while Allocation runs is never replayed
@@ -200,6 +206,33 @@ func TestAllocationReadsTheEntryAfterTheStore(t *testing.T) {
 		u.e.ClearOps(f)
 	}
 	u.allocations(t, f, run{0, 10 * kib, false})
+}
+
+// An operation committing after the store answers and before the entry is
+// read is in neither read, so the pass is read again: committed data
+// [0, 4k), a pending write [4k, 12k); between the two reads it commits and
+// leaves the entry, and a write [16k, 18k) is staged. Read as one pass,
+// Allocation(4k) would answer hole [4k, 16k), a state the file never had.
+func TestAllocationReadsAgainAfterACommitBetweenItsReads(t *testing.T) {
+	ce := &committingExistence{}
+	u := newUnit(t, func(d *engine.Deps) { ce.Existence = d.Existence; d.Existence = ce })
+	_, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "f", kvstore.Regular(0o644))
+	f, v := made.ID, made.Version.Counter()
+	if failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: []kvstore.PendingOp{
+		{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: 4 * kib}, Time: time.Now()},
+	}}}); err != nil || failed[f] != nil {
+		t.Fatalf("commit: %v, %v", err, failed[f])
+	}
+	u.e.AddWriteOp(f, v+2, 4*kib, 8*kib)
+	ce.after = func() {
+		ops := []kvstore.PendingOp{{Version: entity.VersionOf(v + 2), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: 4 * kib, Length: 8 * kib}, Time: time.Now()}}
+		if failed, err := u.fs.Store.Existence().Commit(context.Background(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: ops}}); err != nil || failed[f] != nil {
+			t.Errorf("commit: %v, %v", err, failed[f])
+		}
+		u.e.ClearOps(f)
+		u.e.AddWriteOp(f, v+3, 16*kib, 2*kib)
+	}
+	u.allocations(t, f, run{4 * kib, 8 * kib, false})
 }
 
 // A write staged after a truncate applies after it, and only extends the end

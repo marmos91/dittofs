@@ -95,6 +95,14 @@ type files struct {
 	shards [fileShards]fileShard
 	clock  Clock
 	waits  lockWaits // area file_state
+	// removals is bumped under an entry's lock whenever committed operations
+	// leave it, so a reader that read block metadata and an entry apart can
+	// tell a commit landed between them.
+	//
+	// ponytail: one counter for every file, so a commit to any file makes an
+	// Allocation pass of another read again. Keep one per file, beside the
+	// entry and outliving it, once those retries show in a profile.
+	removals atomic.Uint64
 }
 
 func newFiles(c Clock) *files {

@@ -132,5 +132,6 @@ func (e *Engine) AddWriteOp(f entity.FileID, v uint64, off, n int64) {
 func (e *Engine) ClearOps(f entity.FileID) {
 	fe := e.files.lockFor(f)
 	fe.ops = nil
+	e.files.removals.Add(1)
 	e.files.unlock(f, fe)
 }
