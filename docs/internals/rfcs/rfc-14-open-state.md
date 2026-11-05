@@ -570,9 +570,13 @@ access the I/O wants: `ReadData` for a read, `WriteData` for a write starting
 below the file's size, and `AppendData` for one starting at or past it, the
 size being the one the filesystem read under the file's admission lock. I/O
 through an open, or through a lock state taken under it, whose `Access` lacks
-what it wants is refused `ErrAccess`. So an open holding `AppendData` without
-`WriteData` can only append: a write starting below the size is refused, and
-one at or past it is admitted.
+what it wants is refused `ErrAccess`, except that `WriteData` also admits a
+write at or past the size, as Windows servers admit an SMB2 `WRITE` that
+extends the file through either right; for anonymous and delegated I/O the
+filesystem applies the same rule in the right it asks the chokepoint for
+([RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write)). So an open holding `AppendData`
+without `WriteData` can only append: a write starting below the size is
+refused, and one at or past it is admitted.
 
 **I/O under a grant's reference is the client's, and authorised afresh.** A
 client may use a grant that covers no open for I/O by any of its owners, under
@@ -2304,8 +2308,9 @@ wire says so. So every SMB open keeps `LossSeen`, the file's **loss sequence**
 ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal))
 as sampled when the open was made — `OpenRequest.Loss`, which the service reads
 from the engine without a sync before it calls `Open` — and at its last flush. A flush through an
-open whose `LossSeen` is below the file's current loss sequence **MUST** fail
-with `ErrLost` and set `LossSeen` to the current value, so each open that was
+open whose `LossSeen` is below the file's current loss sequence **MUST** fail,
+with `ErrLost` or with the failed sync's own error, or, until the engine names
+that error, with any failure but a retry ([RFC 17 §5.8](rfc-17-vfs.md#5.8%20The%20write%20verifier)), and set `LossSeen` to the current value, so each open that was
 open across the loss learns of it once, at its next flush. `LossSeen` is
 volatile even for a persistent open: the loss sequence restarts at 0 in each
 process, so a persistent open reinstated after a restart, a failover or a
@@ -3025,7 +3030,7 @@ type Recovery interface {
 }
 
 type Checks interface {
-	CheckIO(ctx, who Caller, f FileKey, o OpenRef, r ByteRange, want entity.AccessMask) error // want: ReadData for a read, WriteData for a write starting below the file's size, AppendData for one starting at or past it (§2.2); f: the file o's handle names; its Shard, not o's, decides grace and anonymous I/O
+	CheckIO(ctx, who Caller, f FileKey, o OpenRef, r ByteRange, want entity.AccessMask) error // want: ReadData for a read, WriteData for a write starting below the file's size, AppendData for one starting at or past it, which WriteData also admits (§2.2); f: the file o's handle names; its Shard, not o's, decides grace and anonymous I/O
 	CheckChange(ctx, who Caller, f FileKey, via *OpenRef, what ChangeMask) error // recalls grants and never waits; via: the open it came through, nil: none (§2.4); who.Protocol picks §7's or §9.5's rule
 }
 ```
@@ -3278,7 +3283,7 @@ Deleted numbers are not reused.
 | L39 | No worker waits on a blocked lock: a waiter is volatile, served first in, first out per range, barred only where its blockers are, and ends only on what §2.10 lists, a replaced callback waiter or a refused callback grant answered; an NLM grant is resent, never released for a silence; no adapter answers a waiting request other than as granted before `CancelLock` returns. | Hold an exclusive lock; owners request blocking exclusive A, shared B, exclusive C while a fourth takes non-waiting shared locks on the held range; release: A first, B, then C, the fourth refused while A waits, no worker held. Owner A1 holds byte 0 and A2 of the same client waits exclusive on [0, ∞): another client's lock on [4096, 8192) is granted. Two blocking NLM locks of one owner on one file: the first is reported `LockWaitOver(granted=false)` when the second replaces it. A callback waiter whose grant would take its client past the range cap: reported `LockWaitOver(granted=false)` when the range frees, nothing held, and the next waiter considered. A poll waiter that stops polling loses its reservation after a lease period. An NLM grant whose acknowledgements are dropped for ten minutes is still resent and held; a refusal releases it. Race a cancel against an unlock 10⁴ times: granted and held, or cancelled and none held. |
 | L40 | Each primary holds at most 4096 caching grants per client; a client at the budget is offered none, and is asked once per climb to the budget to return down to 2048 where its protocol can be asked. | An NFSv4.1 client opens 5000 files at one primary: grants stop at 4096 and one `Sink.RecallAny` names 2048; return 100, climb back to 4096: a second `RecallAny`. Over SMB: leases stop at 4096, every lease held stays, and one is offered again once the count falls. |
 | L41 | A client's `Expires` is volatile; its `Adapter` is durable, written only in the step of the change it belongs to, and only over the bytes the writer read. | `AddSession` with new bytes, restart, `Record` through another node: the bytes as written and one session. Two `AddSession`s expecting the same bytes race: one writes, the other writes nothing and is answered `ErrRecordChanged` with the first's record. 10⁵ clients renew for two lease periods: no record write; restart the lease owner: none expired within a lease period. A renewal racing the sweep that expires it: the client stays. RFC 21 N18 holds the `CREATE_SESSION` replay. |
-| L43 | Every SMB open that was open across a loss of an acknowledged, unoffloaded write of its file fails its next flush with `ErrLost`, once. | Two SMB durable opens, write unstable through the first, drop its journal record as corrupt: each `Flushed` is `ErrLost` once, then succeeds; a reconnect before flushing does not clear it. |
+| L43 | Every SMB open that was open across a loss of an acknowledged, unoffloaded write of its file fails its next flush once, with `ErrLost` or with the failed sync's own error. | Two SMB durable opens, write unstable through the first, drop its journal record as corrupt: each `Flushed` is `ErrLost` once, then succeeds; a reconnect before flushing does not clear it. Fail the sync window instead: the open whose flush is the file's next sync fails with the window's error, the other with `ErrLost`, each once. Answer the first open's flush `ErrDelay`, and separately cancel it during its sync: assert its `LossSeen` is unchanged and its next flush fails `ErrLost`, once. |
 | L44 | A byte-range lock request recalls every caching grant another client holds on the file before it is decided, and is never answered as a conflict while the recall runs: a callback request becomes a waiter, any other is answered `ErrDelay`. | Grant a write delegation; a blocking NLM lock from another host: the delegation recalled, `Waiting`, and after a return with no lock the waiter granted through `LockWaitOver`; with the holder flushing a conflicting lock, the waiter is granted at its unlock. Non-blocking: `ErrDelay` while the recall runs, granted on a retry after. |
 | L45 | A client that let a recall be revoked or a break time out is offered no grant at that primary for one lease period after it; the fence ends on its own. | An SMB client lets a break time out and stays connected: no lease for 90 s, one after. |
 | L46 | A batch move's commit adds the receiving shard to every client record its open-state entries name; the entries are installed only after it. | **(cluster)** Move a batch holding a client's opens to a shard it held nothing in, and fail that shard over right after the commit: the client is told to reclaim and its reclaim accepted. |

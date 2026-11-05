@@ -1721,7 +1721,7 @@ it, long enough for a lease break to run out and be revoked.
 | Step | What | Owner |
 | --- | --- | --- |
 | 1 | admit the call to the share its handle names, counted first; resolve the handle, refusing a stale one | §4.9 |
-| 2 | through an open: `NotYours` for a caller that is not its principal, then the open's stored grant; through a delegation: `NotYours` for a client that does not hold it; anonymous or delegated: authorise the caller against the file and check deny modes others hold, breaking handle caching before refusing | §3.1, [§4.6](#4.6%20One%20chokepoint), §5.3 |
+| 2 | through an open: `NotYours` for a caller that is not its principal, then the open's stored grant; through a delegation: `NotYours` for a client that does not hold it; anonymous or delegated: authorise the caller against the file, asking write data for a write starting below the size, and for one at or past it write data where `Granted` shows the caller holds it, append data otherwise ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)), then check deny modes others hold, breaking handle caching before refusing | §3.1, [§4.6](#4.6%20One%20chokepoint), §5.3 |
 | 3 | in grace, `ErrGrace` for a write overlapping a lock, deny mode or grant that may still be reclaimed; otherwise the caller's open and others' byte-range locks; a conflicting caching grant starts a recall and returns `ErrDelay` | [RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard), [§7](rfc-14-open-state.md#7.%20Conflicts%20across%20protocols) |
 | 4 | reserve the charge the write adds: the bytes it lands in holes below the size its staged writes leave, read from the engine's `Allocation` over its range under the admission lock, and the bytes it writes past that size; the gap a write leaves past the size stays a hole and is not reserved. A write that adds no charge, an overwrite of data, reserves nothing | §5.6 |
 | 5 | `ErrPerm` for an immutable file, or an append-only one below its size, releasing step 4's reservation, before anything changes; then, for a caller not privileged — the owner included — on a setuid file, or setgid with group execute, clear those bits in a committed mode change. The same step runs for a truncate, a deallocate and a copy or clone's destination | [RFC 7 §7.8](rfc-7-namespace-metadata.md#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint), [§9.6](rfc-7-namespace-metadata.md#9.6%20setuid%20and%20setgid%20are%20cleared%20when%20an%20unprivileged%20caller%20changes%20the%20file) |
@@ -1763,7 +1763,7 @@ func (s *Filesystem) writeOnce(ctx context.Context, c Caller, ref OpenRef, f Fil
 	if err = s.authz.IO(ctx, c, ref, f, Write); err != nil { // step 2: §4.6
 		return wr, false, err
 	}
-	want := WriteData // a write starting below the size; AppendData alone admits one at or past it (RFC 14 §2.2)
+	want := WriteData // a write starting below the size; at or past it AppendData, which WriteData also admits (RFC 14 §2.2)
 	if off >= f.Size {
 		want = AppendData
 	}
@@ -2319,6 +2319,18 @@ read once the sync completes ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20
 and passes it to open state's `Flushed`, which fails the flush with `ErrLost`
 once for each open that was open across a loss of an acknowledged, unoffloaded
 write of the file ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
+A flush whose engine `Commit` fails with that loss still passes the file's
+loss sequence to `Flushed` before it returns the engine's error, so the loss
+that failed it is not reported to the same open again by its next flush. A
+flush answered a retry (`ErrDelay`), or cancelled, passes nothing: the open
+learns of nothing, and its retried flush still fails with `ErrLost`.
+
+> decision: the engine's `Commit` doesn't name a failed window's error, so a
+> flush whose `Commit` fails for any reason but a retry or a cancel passes the
+> loss sequence, as if its error were the loss's own. A flush failing for an
+> unrelated reason, after a loss from a corrupt record that failed no sync,
+> then marks that loss seen without `ErrLost`. Overturned once `Commit` names
+> the failed window's error, when only that error passes it.
 
 ### 5.9 Copy and clone
 
