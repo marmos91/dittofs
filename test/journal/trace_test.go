@@ -101,11 +101,12 @@ func quote(s string) string { return `"` + s + `"` }
 
 // paragraphHead returns the bold run that names a row at lines[i]. A bold run names one only
 // where it opens a paragraph: a wrapped line of prose can start with one too, such as **MUST**.
+// **Suites.** opens the paragraph that says where a section's checks run, and is no row.
 func paragraphHead(lines []string, i int) (string, bool) {
 	if i > 0 && strings.TrimSpace(lines[i-1]) != "" {
 		return "", false
 	}
-	if m := heading.FindStringSubmatch(lines[i]); m != nil {
+	if m := heading.FindStringSubmatch(lines[i]); m != nil && m[1] != "Suites" {
 		return m[1], true
 	}
 	return "", false
@@ -268,13 +269,16 @@ func TestTrace(t *testing.T) {
 	}
 }
 
-// TestParagraphHead checks that a bold run wrapped onto a continuation line is not a row.
+// TestParagraphHead checks that a bold run wrapped onto a continuation line, and the
+// paragraph naming the suites, are not rows.
 func TestParagraphHead(t *testing.T) {
 	lines := []string{
 		"**Torn tail.** A crash mid-append leaves a partial record, and replay",
 		"**MUST** stop at it.",
 		"",
 		"**Second**: another row.",
+		"",
+		"**Suites.** The checks run in the journal's own suite.",
 	}
 	var got []string
 	for i := range lines {
