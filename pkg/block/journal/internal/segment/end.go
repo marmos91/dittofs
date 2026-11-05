@@ -78,15 +78,6 @@ type endRec struct {
 	stopped bool
 }
 
-// stoppedErr returns the stream's stopped error, read under the append lock;
-// the Append head check and the callers that must not take a spare read it
-// first. The lock is held for this read alone.
-func (s *Stream) stoppedErr() error {
-	s.appendMu.Lock()
-	defer s.appendMu.Unlock()
-	return s.stopped
-}
-
 // stopLocked marks the stream stopped with the failure that stopped it. The
 // caller holds appendMu. A second stop keeps the first failure's word: the
 // stream is already stopped, and the failure that first said so is the one
@@ -173,6 +164,14 @@ func (s *Stream) endLocked(cause EndCause, err error) (core.SegmentID, bool) {
 func (s *Stream) notifyEnd() {
 	defer s.inflight.Done()
 
+	// notifyParkHook is a test hook at the notifier's top, before its wait:
+	// the one place the notifier can be held between the ended segment's last
+	// completion and its event's snapshot, so the roll's install wait can be
+	// proven to hold past the wake the completion broadcasts. nil outside the
+	// check that parks there; the lock is never held across it.
+	if notifyParkHook != nil {
+		notifyParkHook()
+	}
 	s.appendMu.Lock()
 	for s.apending > 0 {
 		s.drained.Wait()
@@ -206,6 +205,11 @@ func (s *Stream) notifyEnd() {
 		fn(ev)
 	}
 }
+
+// notifyParkHook is the test hook at notifyEnd's top; see its call site. A
+// check that parks there must nil it before it releases, or every later
+// notifier of the process parks with it.
+var notifyParkHook func()
 
 // OnEnd registers the consumer of the stream's end events. It must be called
 // before the first append — before any reservation, roll or end — for a later
@@ -250,6 +254,14 @@ func (s *Stream) End(seg core.SegmentID, cause error) error {
 	for s.sealState == sealSealing {
 		s.drained.Wait()
 	}
+	// A close that landed while the request waited the seal out names the
+	// call's whole answer now — a segment a close raced its seal to is ended
+	// with no event anyway (the close's own exemption), and a request past a
+	// close owns nothing to end.
+	if s.closed {
+		s.appendMu.Unlock()
+		return ErrStreamClosed
+	}
 	if s.id == seg {
 		switch s.sealState {
 		case sealEnded:
@@ -268,6 +280,11 @@ func (s *Stream) End(seg core.SegmentID, cause error) error {
 		// segment still owns its window — and OnEnd's gate reads the
 		// stream's history through this flag alone.
 		s.started = true
+		// The notifier starts whatever the ledger said, for the end already
+		// named it to the in-flight group Close waits on: a refusal here is
+		// a ledger and a stream that disagree, and it must not turn into a
+		// hang of every later roll on the end's record, which nothing else
+		// would ever clear.
 		s.appendMu.Unlock()
 		if unerr := s.set.End(endID); unerr != nil {
 			// The end of a segment the ledger may not know is the
@@ -275,6 +292,9 @@ func (s *Stream) End(seg core.SegmentID, cause error) error {
 			// cannot end it carries its failure to the caller, after
 			// the segment's stream state has taken the end, which is
 			// true: the segment takes no further append either way.
+			if notify {
+				go s.notifyEnd()
+			}
 			return unerr
 		}
 		if notify {

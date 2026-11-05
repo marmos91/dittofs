@@ -202,7 +202,7 @@ func TestStreamAFailedWriteEndsItsSegmentAndTheStreamRollsPastIt(t *testing.T) {
 	if h1.SyncedThrough != 0 {
 		t.Fatalf("the first record carries SyncedThrough %d, want 0", h1.SyncedThrough)
 	}
-	firstSegment := segmentOf(h1)
+	firstSegment := h1.Segment
 	if err := e.s.Sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
@@ -251,12 +251,6 @@ func TestStreamAFailedWriteEndsItsSegmentAndTheStreamRollsPastIt(t *testing.T) {
 	if p3.Loc.Segment != p.Loc.Segment {
 		t.Fatalf("the second append after the failure landed in segment %d, want the first's %d: one failure rolls once", p3.Loc.Segment, p.Loc.Segment)
 	}
-}
-
-// segmentOf returns the segment a decoded record header names, so a check can
-// name the segment the record it read back reserved in.
-func segmentOf(h format.RecordHeader) core.SegmentID {
-	return h.Segment
 }
 
 // streamMustWrite appends one record and reads its own header back, so the

@@ -497,12 +497,12 @@ var corpus = []seed{
 		op6(opTake, 1, 0, 0, 4, 0),
 		op6(opDropSpare, 1, 0, 0, 4, 0), // refused: a segment goes out by Retire, not here
 	), 0, 0, 1, 0, 0},
-	{"a record into a sealed segment is refused, one into an ended is charged", slices.Concat(
+	{"a record into an ended segment is charged, and the ended segment never seals", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
 		op6(opEnd, 1, 0, 0, 4, 0),
 		op6(opAddRecord, 1, 0, 3, 4, 30), // charged: the record completed past the end
-		op6(opSeal, 1, 0, 0, 4, 0),       // refused: the segment never seals again
-		op6(opAddRecord, 1, 0, 3, 4, 30), // refused: a charge never reaches a non-active, non-ended one
+		op6(opSeal, 1, 0, 0, 4, 0),       // refused: an ended segment never seals again
+		op6(opAddRecord, 1, 0, 3, 4, 30), // charged: the segment stays Ended
 		op6(opRetire, 1, 0, 0, 4, 0),
 	), 1, 0, 1, 0, 0},
 	{"seal and end of an ended segment", slices.Concat(

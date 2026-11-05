@@ -311,7 +311,7 @@ type Stream struct {
 	// and the roll it parked on the end's record.
 	drained *sync.Cond
 
-	// ended holds the record of the segment the stream ended while no
+	// ending holds the record of the segment the stream ended while no
 	// successor is installed over it, from the end itself until its notifier
 	// cleared it: the roll the next append makes waits out that record, so a
 	// late completion of the ended segment never touches the successor's
@@ -603,17 +603,6 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		return Placed{}, fmt.Errorf("%w: a hold covers content writes, not a kind with no payload", ErrBadRoll)
 	}
 
-	// decision: the stopped head check runs before any take, before even
-	// the roll's gate is armed, for a stopped stream owes its caller an
-	// answer that costs nothing: RFC 1 §5.4's read-only journal "reserves
-	// nothing and takes no spare", so the pool's spares stand exactly where
-	// the second refusal left them. Withdrawn only by a stopped stream that
-	// is ever allowed to serve again, which the journal-wide read-only
-	// state of the durability code owns instead.
-	if s.stoppedErr() != nil {
-		return Placed{}, s.stoppedErr()
-	}
-
 	// The idle stamp's time is read here, before the lock, so appendMu is
 	// never held across Clock.Elapsed — the decision comment at appendMu
 	// holds for the clock's own mutex too. The stamp taken below therefore
@@ -633,7 +622,6 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 
 	s.appendMu.Lock()
 	if s.closed {
-		s.appendMu.Unlock()
 		return Placed{}, ErrStreamClosed
 	}
 	// Counted before anything is reserved and under the same lock Close sets
@@ -662,6 +650,22 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		if s.closed {
 			s.appendMu.Unlock()
 			return Placed{}, ErrStreamClosed
+		}
+		// decision: the stop is checked inside the loop, re-read under the
+		// lock every turn holds at this top, and not only once before it,
+		// because the appends that entered concurrent with a stream-ending
+		// failure roll past a check the loop never re-makes: a roll-gate
+		// wake, a drain cond wake and a lock hand-off all resume at this
+		// top, and an append parked on the roll gate while another's failure
+		// stopped the stream would otherwise arm a roll of its own and take
+		// a third spare, which RFC 1 §5.4's stopped stream must not — the
+		// pool's spares stand exactly where the second refusal left them.
+		// Withdrawn only by a stopped stream that is ever allowed to serve
+		// again, which the journal-wide read-only state of the durability
+		// code owns instead.
+		if s.stopped != nil {
+			s.appendMu.Unlock()
+			return Placed{}, s.stopped
 		}
 		// decision: no reservation is placed here without re-reading the
 		// seal state under this same hold (R1, R85: once a seal has taken
@@ -818,10 +822,12 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 			s.lastAppend = now
 		}
 		s.count++
-		// The reservation starts the stream, for OnEnd's gate reads it, and
-		// names its segment to the end's notifier: the completion below is
-		// the one that clears the name, and the event waits for it.
-		s.started = true
+		// The reservation names its segment to the end's notifier: the
+		// completion below is the one that clears the name, and the event
+		// waits for it. The stream is already started by this point — the
+		// reservation runs only past the roll that armed the gate, and the
+		// gate's arming is where the first append marked it — so the
+		// reservation needs no flag of its own.
 		s.apending++
 		// pending names this append to a seal that may start while it is
 		// in flight, and leaves at the append's final exit — after its
@@ -1100,12 +1106,21 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	// in-flight writes of the ended segment alone, on the failure path
 	// only. The wait carries the appends' in-flight count too, for the
 	// notifier that clears the record waits for the same completions under
-	// the same cond, so one wake serves both. Withdrawn the day a completion
-	// is able to reach the tracker at all once the segment it reserved in
-	// is ended, which would have to carry the segment's own id through the
-	// completion.
+	// the same cond, so one wake serves both. Withdrawn the day completions
+	// stop touching the stream's shared tracker and catalog — per-segment
+	// trackers, for instance — for a late completion of an ended segment
+	// would then be harmless to a successor installed at once.
 	for (s.ending != nil || s.apending > 0) && !s.closed {
 		s.drained.Wait()
+	}
+	// A close that landed during the wait itself unwinds the taken spare: a
+	// successor installed now would stay Active in the ledger, never ended
+	// and never unlinked, and its ref would never be released while the
+	// close released the old segment's own — the same wait that carries the
+	// ended segment's late completions also carries a close racing them.
+	if s.closed {
+		s.appendMu.Unlock()
+		return s.endTaken(id, ref, ErrStreamClosed)
 	}
 	if s.apending != 0 {
 		panic("segment: a roll installs a successor over reservations the ended segment still holds")
@@ -1228,20 +1243,39 @@ func (s *Stream) Sync() error {
 	defer s.leaveDrain()
 
 	through := s.tracker.syncStart()
-	ref := s.ref
+	// The segment the fsync covers is named here, for the stream may move it
+	// while the fsync runs: an append failure ends its segment with no seal's
+	// drain to wait a sync out, and the failure path's roll installs its
+	// successor without one — a sync of the ended segment would otherwise
+	// apply its window to the successor's tracker (R10) and its success to
+	// the successor's own second-refusal word.
+	id, ref := s.id, s.ref
 	s.appendMu.Unlock()
 
 	if err := ref.Sync(); err != nil {
 		// The failure belongs to the durability layer's failed window: the
 		// caller owns the records the window holds, and no later sync of
 		// this segment claims what the failure left — the value stands where
-		// the failure found it.
+		// the failure found it. A stream that moved on while the fsync ran
+		// takes no word of the failure either: the window it names is the
+		// ended segment's, whose durability the caller owns through its
+		// end's event, never the successor's.
 		s.appendMu.Lock()
-		s.tracker.syncFail()
+		if s.id == id {
+			s.tracker.syncFail()
+		}
 		s.appendMu.Unlock()
 		return err
 	}
 	s.appendMu.Lock()
+	// A success owns only the segment it covered: a failure path's roll that
+	// installed a successor while the fsync ran owns that successor's
+	// tracker and second-refusal word, which no sync of the ended segment
+	// may reach.
+	if s.id != id {
+		s.appendMu.Unlock()
+		return nil
+	}
 	s.tracker.syncDone(through)
 	// A sync of the active segment has succeeded: the second-refusal rule
 	// reads this beside leftFailed, for a stream that proved this segment
@@ -1335,10 +1369,18 @@ func (s *Stream) sealLocked(early bool) (SealResult, error) {
 		endID, notify := s.endLocked(EndSeal, reason)
 		s.appendMu.Unlock()
 		s.drained.Broadcast() // the Syncs parked on the seal leave with the end
+		// The notifier starts whatever the ledger said, for the end already
+		// named it to the in-flight group Close waits on: a refusal here is
+		// a ledger and a stream that disagree, and it must not turn into a
+		// hang of Close and of every later roll on the end's record, which
+		// nothing else would ever clear.
 		if err := s.set.End(endID); err != nil {
 			// The end of a segment the ledger may not know is the
 			// stream's own and the seal's refusal above names it; a
 			// ledger that cannot end it carries the failure here.
+			if notify {
+				go s.notifyEnd()
+			}
 			return SealResult{}, errors.Join(ErrSegmentEnded, err)
 		}
 		if notify {

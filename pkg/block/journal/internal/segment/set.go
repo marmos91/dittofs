@@ -435,14 +435,14 @@ func (s *Set) Shrink(id core.SegmentID, size int64) error {
 // append failure ends its segment with appends still in flight, and the
 // record that completes after the end wrote bytes inside storage the segment
 // already covers — uncharging them would hand the share bytes the journal
-// still holds (R55). A Sealed segment is refused still, and no charge can
-// ever arrive past one, for a seal drains every appender before it seals, so
-// the ledger cannot see a legitimate charge there; a refusal that would name
-// an arrived-late charge against a sealed segment is a caller bug this
-// refusal reports rather than a state it absorbs. Withdrawn the day completion
-// carries the segment's own id through to the charge, for the id alone then
-// names the segment the reservation was made in and the state gate can carry
-// a fact rather than trust the caller's sequencing.
+// still holds (R55). A Sealed segment is refused still, for a seal drains
+// every appender before it seals, so no completion can reach a charge past
+// one; a refusal that would name an arrived-late charge against a sealed
+// segment is a caller bug this refusal reports rather than a state it
+// absorbs. Withdrawn the day a charge can ever arrive for a segment after
+// its seal — a seal that stops draining its appender, or a completion that
+// outlives the drain — which would have to carry the segment's own id
+// through to the charge for the gate to hold.
 //
 // ponytail: one mutex serves every append's tag accounting, so a mesh of
 // streams on many files funnels into one lock the hotter it gets. Ceiling:
