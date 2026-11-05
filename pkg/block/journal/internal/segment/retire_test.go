@@ -352,10 +352,21 @@ func TestRetireRecycleCallLogAndFootprint(t *testing.T) {
 	if e.p == nil {
 		t.Fatal("the test's pool went missing")
 	}
+	// The take's kick is the only make this started pool owes, so arming
+	// the hold now parks exactly its refill: the replacement's make stands
+	// at the seam until the test releases it, so the reservation below
+	// reads a class the landing spare has not filled back. It is armed
+	// after Start, which owes no make of its own here — the pool a recycle's
+	// spare holds sits at its target, so Start's kick makes nothing —
+	// because a worker parked at the seam would block Stop's join.
 	e.p.Start()
+	hold := e.seam.HoldFirst(t, journaltest.OpCreate, "*")
 	if id, err := e.p.Take(segment.Content); err != nil || id != res.Fresh {
 		t.Fatalf("the take of the recycled spare: (%d, %v), want %d", id, err, res.Fresh)
 	}
+	// The take's kick started the refill, so the reservation below reads the
+	// pool with the replacement really in flight, not before the worker woke.
+	<-hold.Reached()
 	// The take empties the class again, and the completed recycle spent its
 	// reservation: the pool wants the next one. A recycled landing that
 	// never paid its slot back leaves the class reading one-short-forever,
@@ -363,10 +374,15 @@ func TestRetireRecycleCallLogAndFootprint(t *testing.T) {
 	if class, ok := e.p.WantRecycleForTest(); !ok || class != segment.Content {
 		t.Fatalf("after the recycled spare was taken the pool wants no recycle: (%v, %v), want (content, true): a completed recycle must spend the slot it reserved", class, ok)
 	}
-	e.p.Stop()
+	// The allocate count is read with the refill still parked, for the
+	// make it holds reaches the seam with an allocate the moment the test
+	// lets it go — a landed refill would add the one allocation the
+	// assertion exists to rule out.
 	if got := e.seam.Calls(journaltest.OpAllocate) - allocs; got != 0 {
 		t.Fatalf("the retirement and the take allocated %d times, want none beside the segment's own making", got)
 	}
+	hold.Release()
+	e.p.Stop()
 }
 
 // TestRetireFreshIDEveryNameInPlace: the id the recycle drew exceeds every id
@@ -439,11 +455,27 @@ func TestRetireDecidesAtRetirement(t *testing.T) {
 			func(c segment.PoolCounters) bool { return c.Spares == 1 })
 
 		old := e.segment(true)
+
+		// The take's kick is the only make the fill leaves owed, so arming
+		// the hold now parks exactly its refill: the replacement's make
+		// stands at the seam until the test releases it, so the retire below
+		// runs with the pool really below its target instead of racing the
+		// spare that could land first and turn the recycle into an unlink.
+		// It is armed after the segment's own making, which reaches the
+		// seam with a create of its own, and after Start — a worker parked
+		// at the seam would block Stop's join — and released before Stop is
+		// called.
+		hold := e.seam.HoldFirst(t, journaltest.OpCreate, "*")
+
 		// Take the spare the pool holds, so the retirement finds the pool
 		// below its target.
 		if _, err := e.p.Take(segment.Content); err != nil {
 			t.Fatalf("the take that empties the pool: %v", err)
 		}
+		// The take's kick started the refill, so the retirement below reads
+		// the pool with the replacement really in flight, not before the
+		// worker woke.
+		<-hold.Reached()
 		res, err := e.r.Retire(old, segment.NotHeld)
 		if err != nil {
 			t.Fatalf("the retire below target: %v", err)
@@ -451,6 +483,7 @@ func TestRetireDecidesAtRetirement(t *testing.T) {
 		if !res.Recycled {
 			t.Fatalf("the retire below target recycled nothing: %+v, want a recycle", res)
 		}
+		hold.Release()
 		e.p.Stop()
 	})
 
