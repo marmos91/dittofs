@@ -126,7 +126,6 @@ func (s *Stream) endLocked(cause EndCause, err error) (core.SegmentID, bool) {
 	if s.ending == nil {
 		s.ending = &endRec{id: id, cause: cause, err: err, next: s.next, stopped: s.stopped != nil}
 		s.inflight.Add(1)
-		s.drained.Broadcast()
 		return id, true
 	}
 	return id, false
@@ -267,6 +266,13 @@ func (s *Stream) End(seg core.SegmentID, cause error) error {
 		s.appendMu.Unlock()
 		return ErrStreamClosed
 	}
+	// A stream that holds no segment has none to end: the request names a
+	// segment that does not exist, and ending it would hand the consumer an
+	// event for segment 0.
+	if s.id == 0 && seg == 0 {
+		s.appendMu.Unlock()
+		return ErrNoSegment
+	}
 	if s.id == seg {
 		switch s.sealState {
 		case sealEnded:
@@ -285,11 +291,6 @@ func (s *Stream) End(seg core.SegmentID, cause error) error {
 			return fmt.Errorf("%w: the segment is sealed", ErrWrongState)
 		}
 		endID, notify := s.endLocked(EndRequested, cause)
-		// decision: the request marks the stream started, for an end may
-		// arrive before any append — a first sync that failed on an empty
-		// segment still owns its window — and OnEnd's gate reads the
-		// stream's history through this flag alone.
-		s.started = true
 		// The notifier starts whatever the ledger said, for the end already
 		// named it to the in-flight group Close waits on: a refusal here is
 		// a ledger and a stream that disagree, and it must not turn into a

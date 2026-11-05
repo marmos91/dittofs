@@ -2169,11 +2169,11 @@ func TestEndRequestedSecondFailureStops(t *testing.T) {
 }
 
 // TestEndAppenderAlreadyInsideTheRollIsStoppedAtTheLoopTop checks the stop's
-// inner check: an append that passed the head check before the failure that
+// inner check: an append that passed the loop-top check before the failure that
 // stopped the stream — one already running AppendRoll's loop when the second
 // refusal lands — wakes at the loop top, re-reads the stop there and takes no
 // third spare. The park hook holds the second append at the loop top past the
-// head check, and the third's failure stops the stream while it is held.
+// loop-top check, and the third's failure stops the stream while it is held.
 func TestEndAppenderAlreadyInsideTheRollIsStoppedAtTheLoopTop(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -2189,7 +2189,7 @@ func TestEndAppenderAlreadyInsideTheRollIsStoppedAtTheLoopTop(t *testing.T) {
 		t.Fatalf("X landed in segment %d, want the taken spare 2", p.Loc.Segment)
 	}
 
-	// Y parks at the loop top past the head check, holding no lock.
+	// Y parks at the loop top past the loop-top check, holding no lock.
 	parked := make(chan struct{})
 	release := make(chan struct{})
 	segment.StreamSetAppendParkHook(func() {
@@ -2988,14 +2988,38 @@ func TestEndRegistrationPastARollAndAnEndPanics(t *testing.T) {
 	}
 
 	// Past a requested end the gate closes the same way, for an end may
-	// arrive before any append and still owns its window's event.
-	ee := streamOver(t, streamCap, func(streamEnv) {}).built(t)
-	t.Cleanup(func() { _ = ee.s.Close() })
-	if err := ee.s.End(0, syscall.EIO); err != nil && !errors.Is(err, segment.ErrNotInSet) {
-		t.Fatalf("an End naming a segment out of the set = %v, want the ledger's own refusal", err)
+	// arrive after any append and still owns its window's event.
+	es, erec := endStopBuilder(t)
+	eh, eb := endWrite(1, 0, 0x41)
+	streamAppendWrite(t, endStopStreamEnv(es), eh, eb)
+	if err := es.s.End(1, syscall.EIO); err != nil {
+		t.Fatalf("End of the active segment = %v, want nil", err)
 	}
-	if panicked := callsOnEnd(t, ee.s); !panicked {
-		t.Fatal("OnEnd past an end returned, want a panic")
+	erec.awaitOne(t, "the requested end")
+}
+
+// TestEndOnAStreamWithNoSegmentEndsNothing checks that a request naming
+// segment 0 on a stream that holds none is refused: no segment is ended, no
+// event is handed over, and the stream is left exactly as it was — OnEnd
+// still registers.
+func TestEndOnAStreamWithNoSegmentEndsNothing(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
+	t.Cleanup(func() { _ = e.s.Close() })
+	rec := &endRecorder{}
+	e.s.OnEnd(rec.OnEnd)
+	if err := e.s.End(0, syscall.EIO); !errors.Is(err, segment.ErrNoSegment) {
+		t.Fatalf("End(0) on a stream with no segment = %v, want ErrNoSegment", err)
+	}
+	rec.awaitNone(t, "an End of a segment that does not exist")
+	registered := func() (panicked bool) {
+		defer func() { panicked = recover() != nil }()
+		e.s.OnEnd(func(segment.EndEvent) {})
+		return
+	}
+	if registered() {
+		t.Fatal("OnEnd panicked after a refused End, want the stream untouched")
 	}
 }
 

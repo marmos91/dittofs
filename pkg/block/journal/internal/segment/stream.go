@@ -342,9 +342,7 @@ type Stream struct {
 
 	// leftFailed says the active segment was taken to leave an ended one:
 	// a failure in it before any sync of it has succeeded is the second
-	// segment in a row (RFC 1 §5.4). The roll sets it at install; a failed
-	// successor header write sets it too, for the stream stays on its
-	// ended segment and the next roll leaves the same one.
+	// segment in a row (RFC 1 §5.4). The roll sets it at install.
 	leftFailed bool
 	// syncedOnce says a Sync of the active segment has succeeded: the
 	// second-refusal rule reads it beside leftFailed, for a stream that
@@ -353,7 +351,7 @@ type Stream struct {
 	syncedOnce bool
 	// stopped is non-nil once the stream stopped: a second segment in a
 	// row failed, or a failure carried EROFS. Every later append fails at
-	// the head with it, so no spare is taken and nothing is reserved; the
+	// the top of its loop with it, so no spare is taken and nothing is reserved; the
 	// failure it wraps is the one that stopped the stream.
 	stopped error
 }
@@ -1078,18 +1076,13 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 		// itself carries EROFS, wherever the stream stands. The taken spare
 		// ends below with no event, for no record was ever reserved in it,
 		// and the old segment's own event was already handed over; the
-		// stream keeps its stopped error for the head check to answer every
-		// later append with. Withdrawn together with the endTaken
+		// stream keeps its stopped error for the append loop's top to answer
+		// every later append with. Withdrawn together with the endTaken
 		// exemption the day a take unwinds a segment the stream had
 		// already appended to.
 		s.appendMu.Lock()
 		if errors.Is(err, syscall.EROFS) || leftEnded {
 			s.stopLocked(err)
-			// leftFailed names the stay the stream keeps: it stays on an
-			// ended segment exactly on the leftEnded path, and the head
-			// check is what carries the stop from here — a stopped stream
-			// never rolls again.
-			s.leftFailed = leftEnded
 		}
 		s.appendMu.Unlock()
 		return s.endTaken(id, ref, err)

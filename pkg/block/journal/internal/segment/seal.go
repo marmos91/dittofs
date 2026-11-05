@@ -28,9 +28,9 @@ var (
 	// Nothing was written and no counter moved.
 	ErrBadCatalog = errors.New("segment: the catalog does not describe the segment up to the marker")
 
-	// ErrNoSegment is the refusal of a seal on a stream that has not taken
-	// a segment: there is nothing to close.
-	ErrNoSegment = errors.New("segment: the stream has no segment to seal")
+	// ErrNoSegment is the refusal of a seal or an End on a stream that has
+	// not taken a segment: there is nothing to close or to end.
+	ErrNoSegment = errors.New("segment: the stream has no segment")
 
 	// ErrLedgerDisagrees is the refusal of a ledger call that runs past
 	// the seal's second step, with the marker, footer and trailer already
