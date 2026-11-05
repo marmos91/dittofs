@@ -1366,8 +1366,12 @@ func TestRollTheStreamClosedWhileARollRanReturnsClosedAndEndsItsSpare(t *testing
 	prof.Watch(t, prof.Options{})
 
 	e := rollPin(t, 4096, segment.Targets{Content: 4}, nil).withStream(t, 1)
+	// The ledger assertion below reads the pinned pre-fill whole — the four
+	// spares made, of which the two takes leave two — so the worker must
+	// reach its target before the first take runs, or the count it reads
+	// would be the pre-fill's own progress rather than the takes'.
 	awaitCounters(t, "the content spares ready", e.pool,
-		func(c segment.PoolCounters) bool { return c.Spares >= 2 })
+		func(c segment.PoolCounters) bool { return c.Spares == 4 })
 
 	// One record nearly fills the segment, and the straddling write below
 	// first places its piece; the next append rolls, and its roll seals the
