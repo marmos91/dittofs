@@ -350,7 +350,7 @@ pkg/block/engine/
                     T5.4  Delete, the retry channel, the abort routine (D6, D7)
   removals.go       T5.3  the removal loop per journal, its backoff, removal_stalled, its part of dropShare (D5)
   file.go           T5.1  the entry's guard and in-flight mark
-  groupcommit.go    T5.1  the capture's skip of a guarded file
+  groupcommit.go    T5.1  the capture's skip of a guarded file, commitThrough's wait for its release
   deps.go           T5.1  Existence.Size
   ../../metadata/kvstore/  T5.1  Size, a truncate above the size as a hole (D11), Refused; T5.4  the holders read before Remove commits (D6)
   unbuilt.go        T5.1, T5.2, T5.4  each built method leaves it
@@ -424,8 +424,9 @@ test/engine/known.yaml  T5.2, T5.3, T5.5  their entries
   truncate's journal call starts only after the insert, phase 1 claims the write and its
   `Done` runs once (catches a removal that does not wait out admitted writes, leaving one
   below *v* that no commit takes, R4); a `Commit` over a pending overwrite on a file whose
-  phase 1 is held by a hook answers after phase 1 commits, with the group commit skipping
-  the file at most once meanwhile (catches a `Commit` that spins on batches that skip a
+  phase 1 is held by a hook, the clock pinned so D5's `existence_age` never puts the file
+  back on the due set, answers after phase 1 commits, with the group commit skipping the
+  file at most once meanwhile (catches a `Commit` that spins on batches that skip a
   guarded file).
 
 ### T5.2 `Deallocate`

@@ -67,7 +67,8 @@ the engine test package's `newUnitOver`.
 
 - `Truncate`, `Deallocate`, `Delete`, the per-file guard and the removal's phase 1, whose
   `Done` path is another of `Done`'s: epic 5. The group commit's capture skipping a file whose guard
-  is held lands with the guard, in T5.1.
+  is held, and `commitThrough`'s wait for the guard's release (epic 5's D2), land with the
+  guard, in T5.1.
 - Rebuilding entries from `Since` and committing recovered existence before a file is served,
   the incarnation raise at start, `Close`'s join, `Forget`'s `Done` and `Drop`'s removal from
   the due set: epic 6. This epic gives them the per-file commit and the due set's removal.
@@ -196,7 +197,7 @@ the engine test package's `newUnitOver`.
 | 9 Comments | all | the markers of §4 at their code sites, and three of RFC 8 §5.1's: the loss sequence's floor (`ponytail:`, T4.5), the lazy existence of appends (`decision:`, T4.2) and the stable-overwrite cost (`ponytail:`, T4.2) |
 | 10 Tests can fail | all | each test below names the change it catches |
 | 11 Exports | all | nothing new is exported from `engine`; the test hooks live in `export_test.go`, the reservation counter in `enginetest`. `kvstore.PendingOp`'s new fields and `OpLost` are `kvstore`'s own, used by its caller |
-| 12 Creates only what it declares | all | the per-file commit lands in T4.3 with its first consumer, `Commit` (T4.2); the sync function lands in T4.5 with its first consumer, the drain; the retrying-owner mark lands in T4.4 with its first setter, the group commit, ahead of its reader, epic 7's T7.2, since epic 4 blocks epic 7 and a dependency the other way would be a cycle |
+| 12 Creates only what it declares | all | the per-file commit lands in T4.3 with its first consumer, `Commit` (T4.2); the sync function lands in T4.5 with its first consumer, the drain; the retrying-owner mark lands in T4.4 with its first setter, the group commit, or its reader, epic 7's T7.2, whichever lands first: epic 4 blocks epic 7, so a dependency of T4.4 on T7.2 would be a cycle, and T7.2 does not depend on T4.4 |
 
 ## 3. Requirements and invariants
 
@@ -540,7 +541,7 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   cleared too when a capture finds the file's entry gone, on `lostWhole` and on
   `dropShare`; `engine_group_commit_splits_total`; RFC 8 §15's `ponytail:` at the split
   table; the retrying-owner context mark, an unexported context value with its setter and
-  reader, which this subtask builds because it is the first to need it, and under which every
+  reader, which this subtask builds unless epic 7's T7.2 landed first and built it, and under which every
   store call the group commit retries is made, so that epic 7's self-fence (T7.2, its D7),
   which reads the mark and reuses it, counts a whole-call failure as failing and a file's
   own failure not; epic 5's removal loop sets the same mark. In the engine's test package, `newUnitOver`, which composes the unit over a given
@@ -589,7 +590,9 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   takes, and the insert checks it: a write whose version it names is inserted marked lost,
   and its batch commits it as `OpLost` (R32); a kept event below the write's version is a
   committed write's (§9, point 8), discarded, since a file's writes arrive in version order
-  (epic 3's D3). A `ponytail:` marker: a kept event of a file never written again stays
+  (epic 3's D3). A `decision:` marker at the discard names that order, to be withdrawn with
+  D3's own: two writes of one file in the gap at once would have the later discard the
+  earlier one's event, committed as data. A `ponytail:` marker: a kept event of a file never written again stays
   until the process ends, one per such loss; prune it with point 8's store-side loss path.
   `kvstore`'s `OpLost` (D6),
   with its own test. E2's fake journal gains a `Report` method that injects a loss event,
@@ -758,10 +761,11 @@ A suggestion only: one pull request per subtask works as well.
    classes it **Lost** and the read fails, never serving the stale chunk. What metadata never
    records is the loss on the File, and the extent's charge is never released. The fix is a
    store-side loss path that records the loss against the File and uncharges the extent at or
-   below `applied`, driven from `markLost` when it finds no pending write, and for a gap from the
-   journal's `Since(id, 0)` loss records. It needs a `kvstore` call and an RFC 6 line, and has no
-   owner yet. `Settle` needs no change: it never passes a write metadata does not hold. Whether
+   below `applied`, driven from T4.5's discard of a kept event below a write's version, never
+   from `markLost` itself, since an event it keeps may still name a write between `WriteAt` and
+   its insert, which the batch commits as `OpLost`; and for a gap from the journal's
+   `Since(id, 0)` loss records. It needs a `kvstore` call and an RFC 6 line, and is epic 4's,
+   under #3734. `Settle` needs no change: it never passes a write metadata does not hold. Whether
    a **Lost** extent counts in `Charged` at all is undecided by the RFCs: RFC 6 §2.4 defines
    `Charged` as "the file's logical bytes excluding holes", while RFC 8 §5.1 has a write
-   committed from its loss record charge nothing. The uncharge is to be decided in an RFC
-   issue.
+   committed from its loss record charge nothing. #3734 decides the uncharge.
