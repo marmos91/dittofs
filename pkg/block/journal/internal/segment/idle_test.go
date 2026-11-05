@@ -111,12 +111,6 @@ func (r *idleRig) advance(t *testing.T, d time.Duration) {
 	r.clock.Advance(d)
 }
 
-// advanceRaw moves the clock with no wait for the worker's arm, for the
-// checks that drive a stopped or unstarted worker.
-func (r *idleRig) advanceRaw(d time.Duration) {
-	r.clock.Advance(d)
-}
-
 // armed blocks until the clock holds at least one armed wait, so a check
 // that is about to advance never releases a wait the worker has not taken
 // yet. Past a firing advance it means the pass the advance released has
@@ -216,10 +210,11 @@ func TestTheIdleSealComesAtExactlyTheIdleAge(t *testing.T) {
 	// seal's fall is measured against.
 	footprintBefore := r.set.Counters().UsedBytes
 
-	// The advance crosses the armed wait too: arming first settles the
-	// pass the previous advance released, so the nanosecond moves the clock
-	// onto the wait that pass itself armed, and cannot slip past it before
-	// the worker takes it.
+	// The first pass armed a whole idle age — whether it read the stream
+	// before the append and fell back on the age, or read it after and
+	// answered its fresh stamp with the age's whole remainder, for both
+	// readings sat at the clock's origin. The nanosecond lands the clock
+	// exactly on that wait, so the pass it releases sees the stream due.
 	r.advance(t, time.Nanosecond)
 	r.sealed(t, 1)
 	if state := idleState(s); state != sealSealed {
@@ -235,6 +230,43 @@ func TestTheIdleSealComesAtExactlyTheIdleAge(t *testing.T) {
 	trailerEnd := format.SegmentHeaderSize + w.Loc.Len + format.SealMarkerSize + format.CatalogEntrySize + format.TrailerSize
 	if fall := footprintBefore - r.set.Counters().UsedBytes; fall != r.cap-trailerEnd {
 		t.Fatalf("the footprint fell by %d across the idle seal, want the whole tail %d", fall, r.cap-trailerEnd)
+	}
+}
+
+// TestTheIdleSealLeavesAStreamOneNanosecondShortOfTheAgeOpen catches a
+// worker that measures a stream's age ahead of the stream's own stamp: the
+// pass one seal releases must leave a stream one nanosecond short of the
+// idle age open, however far past the fallback wait the clock has moved.
+// Two streams appended a nanosecond apart make that exact pass: stream 0's
+// deadline releases the wait, and the pass it runs reads stream 1 — which
+// a worker reading the clock one nanosecond early finds due and seals. A
+// lone-stream check cannot catch this, for no pass runs below the age
+// unless another stream's seal releases one.
+func TestTheIdleSealLeavesAStreamOneNanosecondShortOfTheAgeOpen(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	r := idleRigOver(t, 2, 64<<10, 8, nil).start()
+	s0, s1 := r.stream(0), r.stream(1)
+	idleAppend(t, s0, 64, 0)
+	r.advance(t, time.Nanosecond)
+	idleAppend(t, s1, 64, 0)
+
+	// The wait the worker armed at its start fires with the clock on the
+	// age and stream 0 due: stream 1, appended a nanosecond after it, is a
+	// nanosecond short of the age in the pass that runs. The pass settles
+	// with stream 0 alone sealed, whatever the pass made of stream 1.
+	r.advance(t, core.IdleSealAge-time.Nanosecond)
+	r.armed(t)
+	if state, sealed := idleState(s1), r.set.Counters().Sealed; state != sealOpen || sealed != 1 {
+		t.Fatalf("a nanosecond short of the age in a running pass: stream 1 %v, %d sealed, want open and stream 0's alone", state, sealed)
+	}
+
+	// The nanosecond takes the clock onto the wait the last pass armed —
+	// stream 1's own remaining wait — and the pass it releases seals it.
+	r.advance(t, time.Nanosecond)
+	r.sealed(t, 2)
+	if state := idleState(s1); state != sealSealed {
+		t.Fatalf("a nanosecond past the age: stream 1 %v, want sealed", state)
 	}
 }
 
@@ -493,7 +525,7 @@ func TestTheSealerStopsAndJoins(t *testing.T) {
 		r.worker.Stop()
 		r.worker.Stop()  // the second is a no-op
 		r.worker.Start() // after Stop: starts nothing
-		r.advanceRaw(10 * time.Millisecond)
+		r.clock.Advance(10 * time.Millisecond)
 		if pending := r.clock.Pending(); pending != armed {
 			t.Fatalf("after Stop the clock holds %d waits, want the same %d it abandoned", pending, armed)
 		}

@@ -161,13 +161,9 @@ func (w *IdleSealer) run() {
 // minus that span, and waking at the fallback and recomputing arms the
 // exact remaining wait. That span apart, no seal is late: the worker wakes
 // no more than one IdleSealAge after a stream's deadline, and the stamp's
-// own error errs toward sealing sooner, never later.
-//
-// decision: core.IdleSealAge and the threshold are unmeasured constants, as
-// the constructor's decision comment carries in full. What would change them
-// here is the same evidence it names: scans of active tails dominating time to
-// first read, or a trickle workload whose early seals cost more than they
-// return.
+// own error errs toward sealing sooner, never later. The age itself is the
+// constructor's own unmeasured constant, whose decision comment names what
+// would overturn it.
 func (w *IdleSealer) pass() time.Duration {
 	next := core.IdleSealAge
 
@@ -210,20 +206,23 @@ func (w *IdleSealer) pass() time.Duration {
 		case errors.Is(err, ErrStreamClosed):
 			// The one race the idle seal can really lose: a close of the
 			// stream beat the seal's drain park and the seal came back
-			// refused — refused by the stream's own closed flag, not by
-			// the stream's ErrWrongState above, which the held check
-			// rules out, and not by a ledger refusal, which the case
-			// below reports.
+			// refused by the stream's own closed flag. The sealer's held
+			// check rules out the stream's ErrWrongState — a second seal
+			// never starts — and a ledger refusal is the case below's.
 			w.log.Debug("segment: the idle seal lost the segment to a close",
+				"stream", i, "err", err)
+		case err != nil && errors.Is(err, ErrLedgerDisagrees):
+			// The seal's marker, footer and trailer stand durable on disk,
+			// and the ledger refused the transition anyway: the stream
+			// reports the segment sealed — sealSealed, not ended, and its
+			// next Sync does not answer ErrSegmentEnded — which is why this
+			// refusal is an Error and never the lost-race Debug. The worker
+			// retries no segment and never rolls.
+			w.log.Error("segment: the idle seal's ledger refused a segment sealed durable on disk",
 				"stream", i, "err", err)
 		case err != nil:
 			// The segment is ended: its next Sync reports ErrSegmentEnded to
 			// the durability layer, which owns the records it acknowledged.
-			// A ledger refusal lands here as well, for the idle seal's own
-			// held check and its state switch under the same hold rule out
-			// the stream's ErrWrongState — a refusal that still says it is
-			// the ledger's, a state the stream and the set disagree on,
-			// which is never a lost race, so it keeps the same Error.
 			// The worker retries no segment and never rolls.
 			w.log.Error("segment: the idle seal failed and its segment is ended",
 				"stream", i, "err", err)
