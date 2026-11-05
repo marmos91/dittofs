@@ -715,7 +715,9 @@ tag counter above that journal's tags ([RFC 26 §2.3](rfc-26-catalog-backups.md#
    the operations above the file's `applied` version with `Since(id, applied)` —
    held extents and removal markers, each with its version ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)) —
    and apply them to existence in version order, with the modification time each
-   write's record carries, recording the usage they add ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)): writes acknowledged and synced but not yet committed,
+   write's record carries and its `Change.Over`, the runs where it superseded
+   another write above `applied`, for which the existence commit writes
+   overwrite records ([RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents)), recording the usage they add ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)): writes acknowledged and synced but not yet committed,
    and removals whose metadata step a crash cut off
    ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)). A clone marker — `CloneTarget`'s, yielded as `Change.Clone` —
    is a clone, never a plain removal: the engine rebuilds the clone from the spec — source extent
@@ -1344,6 +1346,13 @@ after a loss, each client resends its recent unstable writes once.
   recoverable (**proposal**: 1 s, the `existence_age` setting), and always before
   an offer captures the file, before a removal's first transaction, before a size
   or time set ([RFC 7 §9.5](rfc-7-namespace-metadata.md#9.5%20An%20explicit%20time%20outlives%20the%20writes%20staged%20before%20it)), before an owner or group change ([RFC 17 §5.5](rfc-17-vfs.md#5.5%20Size%20changes)), and behind a snapshot cut's closed gate.
+- **A commit carries supersession within itself.** Each write a group commit
+  commits goes to `Existence.Commit` with the runs where it overlaps an earlier
+  write of the same file in the file's pending existence — what `Since` yields
+  as `Change.Over` after a crash ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)) — so the commit writes an overwrite
+  record for them ([RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents)). The engine computes them from the pending
+  writes it holds, never by asking the journal: by the commit the superseded
+  write has left the journal's index.
 - **A committed file's journal is settled.** Once a group commit's transaction
   commits a file's pending existence, the engine calls `Settle(id, v)`
   ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)) at the newest version that transaction committed for the
