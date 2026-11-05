@@ -722,3 +722,16 @@ A suggestion only: one pull request per subtask works as well.
 7. **RFC 8 §5.1 step 4 names no `Settle`.** T4.3 settles each committed file at the highest
    version it committed, as RFC 1 §3.6 and §3.10 need for a truncate up's marker and a
    synced loss's `OpLost`. Settled: RFC 8 §5.1 says so since #3716.
+8. **A synced loss of committed, unoffloaded content reaches no metadata.** A corrupt loss
+   reported once its write is committed as written (D13, or a loss a ring gap hides, point 5)
+   lands at or below the file's `applied`, where `kvstore` skips an `OpLost`. The extent still
+   reads **Lost** through the journal; what metadata never records is the uncharge. The fix is a
+   store-side loss path that records the loss against the File and uncharges the extent at or
+   below `applied`, driven from `markLost` when it finds no pending write, and for a gap from the
+   journal's `Since(id, 0)` loss records. It needs a `kvstore` call and an RFC 6 line, and has no
+   owner yet. `Settle` needs no change: it never passes a write metadata does not hold.
+9. **A loss drained between `WriteAt` and the insert is unmarked.** `Write` takes its version
+   from `WriteAt` before it inserts the operation under the entry's lock, so a drain in that gap
+   finds no write to mark and advances past the event. T4.5's `markLost` must remember an
+   unmatched event per file, and the insert check it, with a test that places a corrupt loss in
+   that gap.
