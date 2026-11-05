@@ -191,7 +191,8 @@ sync and to end a segment, and epic 4's index to drop and re-hold extents.
 11. **A symbol is exported only if RFC 1 §3 uses it.** Everything exported is frozen at
     S1, so a helper exported for convenience becomes a contract. Helpers the internal
     packages need (`Less`, `IsZero`, `End`, `Overlaps`, `Seq`, the proposed constants)
-    stay in `internal/core`.
+    stay in `internal/core`. The one field added after S1 is `LossEvent`'s deferred flag (T6.2,
+    R39): RFC 1 §3.8 uses it, and epic 1's type does not carry it yet.
 12. **Each subtask creates only what it declares.** No empty package and no stub without
     a caller. A package, an option or a test helper lands with its first consumer.
 
@@ -286,9 +287,9 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R39 | A loss event is an extent the journal stopped holding without being asked: dropped as corrupt, as stale, or because a failed window was failed. It names the share, the file, the extent, the content version, the reason, whether the offloaded bit was set, and whether its loss is deferred (R92) | invariant | RFC 1 §3.8 | T6.2 |
+| R39 | A loss event is an extent the journal stopped holding without being asked: dropped as corrupt, as stale, or because a failed window was failed. It names the share, the file, the extent, the content version, the reason, whether the offloaded bit was set, and whether its loss is deferred (R92). Epic 1's `LossEvent` (1.7) has no such field: T6.2 adds it, an amendment of a surface frozen at S1, as T6.1's is for `SyncPolicy`; epic 7's open is the only one that sets it | invariant | RFC 1 §3.8 | T6.2 |
 | R40 | `Stats` keeps the most recent loss events in a bounded ring, each with a sequence number, and counts them all, so a poller sees every new event or knows how many it missed | invariant | RFC 1 §3.8, §3.9 | T6.2 |
-| R41 | A loss is a record. The journal appends a loss record for each record piece a loss event drops, before it publishes the event, naming the file, extent, version and reason, and carrying in its payload the sequence number of the record it drops and whether that record was synced when it was dropped | invariant | RFC 1 §3.8 | T6.2 |
+| R41 | A loss is a record. The journal appends a loss record for each record piece a loss event drops, before it publishes the event, naming the file, extent, version and reason, and carrying in its payload the sequence number of the record it drops and whether that record was synced when it was dropped. The one exception is a loss an open defers past the open reserve (R92), which is epic 7's: its event is published first, marked deferred, and its record is written later, into the copy that retires the dropped record's segment | invariant | RFC 1 §3.8 | T6.2 |
 | R42 | An unsynced loss record (a record of a failed window, or one found corrupt before its sync) reaches nothing else: it names the exact record, never "at or below this version inside the extent" | invariant | RFC 1 §3.8 | T6.2 |
 | R43 | A synced loss record (a record found corrupt or stale after its sync) also outranks every record of the extent below its version, as a release record does. This epic sets the flag; epic 7's rebuild applies it | invariant | RFC 1 §3.8 | T6.2 |
 | R44 | Each loss event and each failed-window report names the file of every record it drops | MUST | RFC 1 §3.8 | T6.2, T6.4, T6.7 |
