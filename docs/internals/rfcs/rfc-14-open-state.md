@@ -570,9 +570,12 @@ access the I/O wants: `ReadData` for a read, `WriteData` for a write starting
 below the file's size, and `AppendData` for one starting at or past it, the
 size being the one the filesystem read under the file's admission lock. I/O
 through an open, or through a lock state taken under it, whose `Access` lacks
-what it wants is refused `ErrAccess`. So an open holding `AppendData` without
-`WriteData` can only append: a write starting below the size is refused, and
-one at or past it is admitted.
+what it wants is refused `ErrAccess`, except that `WriteData` also admits a
+write at or past the size, as Windows servers admit an SMB2 `WRITE` that
+extends the file through either right; the filesystem's chokepoint applies the
+same rule to anonymous and delegated I/O. So an open holding `AppendData`
+without `WriteData` can only append: a write starting below the size is
+refused, and one at or past it is admitted.
 
 **I/O under a grant's reference is the client's, and authorised afresh.** A
 client may use a grant that covers no open for I/O by any of its owners, under
@@ -3023,7 +3026,7 @@ type Recovery interface {
 }
 
 type Checks interface {
-	CheckIO(ctx, who Caller, f FileKey, o OpenRef, r ByteRange, want entity.AccessMask) error // want: ReadData for a read, WriteData for a write starting below the file's size, AppendData for one starting at or past it (§2.2); f: the file o's handle names; its Shard, not o's, decides grace and anonymous I/O
+	CheckIO(ctx, who Caller, f FileKey, o OpenRef, r ByteRange, want entity.AccessMask) error // want: ReadData for a read, WriteData for a write starting below the file's size, AppendData for one starting at or past it, which WriteData also admits (§2.2); f: the file o's handle names; its Shard, not o's, decides grace and anonymous I/O
 	CheckChange(ctx, who Caller, f FileKey, via *OpenRef, what ChangeMask) error // recalls grants and never waits; via: the open it came through, nil: none (§2.4); who.Protocol picks §7's or §9.5's rule
 }
 ```

@@ -1763,7 +1763,7 @@ func (s *Filesystem) writeOnce(ctx context.Context, c Caller, ref OpenRef, f Fil
 	if err = s.authz.IO(ctx, c, ref, f, Write); err != nil { // step 2: §4.6
 		return wr, false, err
 	}
-	want := WriteData // a write starting below the size; AppendData alone admits one at or past it (RFC 14 §2.2)
+	want := WriteData // a write starting below the size; at or past it AppendData, which WriteData also admits (RFC 14 §2.2)
 	if off >= f.Size {
 		want = AppendData
 	}
@@ -2319,6 +2319,9 @@ read once the sync completes ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20
 and passes it to open state's `Flushed`, which fails the flush with `ErrLost`
 once for each open that was open across a loss of an acknowledged, unoffloaded
 write of the file ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
+A flush whose engine `Commit` fails still passes the file's loss sequence to
+`Flushed` before it returns the engine's error, so the loss that failed it is
+not reported to the same open again by its next flush.
 
 ### 5.9 Copy and clone
 
