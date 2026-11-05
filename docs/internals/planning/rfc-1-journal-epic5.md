@@ -732,8 +732,11 @@ pkg/block/journal/internal/
   check its constructor takes before each unlink or recycle, and the worker leaves the queue as
   it is while the check fails (R89); after each retirement it calls the retired-segment hook its constructor takes (nil does nothing;
   epic 6's `Durability` passes the one that drops the segment's copy table entries), once the
-  segment has left the set, so a copy that names a retired segment is never looked up; it has a
-  `Stop` that joins it, which T5.11 calls.
+  segment has left the set, on an unlink, a recycle and the fallback alike, exactly once per
+  retirement. Between the set's retirement and the hook call a copy that names the segment can
+  still be looked up; epic 6 treats a copy that cannot be read as one that does not verify, so
+  that window is safe. Epic 8's constructor is what passes epic 6's hook. It has a `Stop` that
+  joins it, which T5.11 calls. The hook is a call after the retirement, absorbed by the estimate.
 - **Acceptance criteria:**
   - The seam sees, per recycle, a rename, a directory sync, two zero writes and one sync, and
     no allocation and no zero-fill. `UsedBytes` does not move across a recycle.
@@ -750,6 +753,8 @@ pkg/block/journal/internal/
   - The retirement reports not-durable when its directory sync fails.
   - A failed unlink leaves the segment in the set, accounted, and the worker retries it.
   - With the read-only check failing, the worker unlinks and recycles nothing.
+  - The retired-segment hook runs once per retirement, after the segment left the set, on an
+    unlink, a recycle and the fallback to an unlink, and not for a refused or failed retirement.
 - **Tests:** the seam's call log for a recycle, and the footprint around it (R72, R78); the
   four failure injections; the pool target moved across the retirement (catches a decision
   made at seal); a reader holding a reference while a retirement runs, which must wait and
@@ -759,7 +764,9 @@ pkg/block/journal/internal/
   (R79); a crash at each durable state with the directory listing; a write log showing a
   recycle writes only the two slots (R87); an unlink that fails and is retried; an active
   segment and a pooled spare refused (R82); a queued retirement with the read-only check
-  failing, and the seam's call log unchanged (R89).
+  failing, and the seam's call log unchanged (R89); a recording hook asserting one call per
+  retirement through each of the three paths, made after the set no longer holds the segment, and
+  none for a refused retirement.
 
 ### T5.10 Ending a segment after a failed append
 
