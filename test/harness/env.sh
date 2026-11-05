@@ -396,7 +396,7 @@ host_teardown() {
     for p in /tmp/dittofs-posix-* /tmp/dittofs-admin-password "$pidf"; do
         [[ -e "$p" && "$p" != "$keep" ]] || continue
         if [[ -O "$p" ]]; then rm -rf "$p"
-        else warn "$p is owned by $(owner_of "$p"); clear it with: sudo rm -rf $p"; fi
+        else warn "$p is owned by $(owner_of "$p"); clear it with: sudo rm -rf -- $(printf %q "$p")"; fi
     done
 }
 
