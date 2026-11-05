@@ -605,7 +605,7 @@ the drops it recorded pending before re-apply, whatever the other ranges' marks 
 ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads), [RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)) — every snapshot of each `HoldFiles`
 file's share with a live hold on the journal, and with `Unnamed` every one with
 a live hold on it — raises the loss sequence of every file of its
-shares, as below for a device lost whole, and records the acknowledgement
+shares, as below for a device lost whole, and records each range
 done, all before the shares attach. An I/O error reading the journal's
 `format` file is unreadable at open, never a journal found missing or not the
 one recorded, and is retried the same way; an acknowledgement naming `format`
@@ -642,7 +642,7 @@ tag counter above that journal's tags ([RFC 26 §2.3](rfc-26-catalog-backups.md#
 > every live hold mark, the acknowledgement drops; a `hold` record unread
 > across its cut's completion; the snapshot-store call the engine uses to mark
 > a snapshot `failed`, which [§2.1](#2.1%20Content%20composition) does not declare; and keeping the
-> `AckResult` across a crash, for which a resume not yet marked done fails
+> `AckResult` across a crash, for which a resume that finds a range not yet marked done fails
 > every snapshot with a live hold on the journal instead. The ceiling: a
 > snapshot can reach `complete` with a file read at a version the
 > acknowledgement dropped from under it, where none of the three paths names
