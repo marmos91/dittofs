@@ -2410,7 +2410,8 @@ candidate like any other. Failing the open instead would keep a share down
 until an operator frees space, for a loss the open has already contained.
 
 > decision: the open reserve bounds the loss records one open appends for
-> corrupt records, not the losses it can find; past it a loss is held in memory until its segment is
+> corrupt records and for unread records an acknowledgement turns into losses
+> before the shares attach, not the losses it can find; past it a loss is held in memory until its segment is
 > retired, so a large one costs a loss reported again at every open until
 > repack or the emptying reaches its segment. Overturned by a loss event marked
 > deferred in the field.
