@@ -1062,3 +1062,18 @@ func TestConnectsRacingLastDisconnectsAreNeverRefused(t *testing.T) {
 	}
 }
 
+// A second Start is refused before it changes the store: the node epoch it
+// would raise is left where the first Start put it.
+func TestASecondStartRaisesNoEpoch(t *testing.T) {
+	f := newFixture(t)
+	if err := f.Start(ctx, f.sink, (&orderLog{}).order); err == nil {
+		t.Fatal("a second Start succeeded")
+	}
+	next, err := f.d.Records.RaiseNodeEpoch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != f.epoch+1 {
+		t.Errorf("the epoch after a refused second Start: next raise %d, want %d", next, f.epoch+1)
+	}
+}
