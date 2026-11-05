@@ -708,8 +708,9 @@ tag counter above that journal's tags ([RFC 26 §2.3](rfc-26-catalog-backups.md#
    the restart lost its open state ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)).
 3. **Re-apply existence.** A file whose `Since` yields `ErrUnreadable` is skipped,
    not failed: it takes writes, serves no read and commits no existence, and
-   this step runs for it again once its record reads or is acknowledged, before
-   it serves a read
+   this step runs for it again once its record reads or is acknowledged — for
+   a file an acknowledgement's pending drop made unread, once that drop is
+   done, not when the pinning record reads — before it serves a read
    ([RFC 28 §3.3](rfc-28-journal-format.md#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify)). For each file the journal lists ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), read
    the operations above the file's `applied` version with `Since(id, applied)` —
    held extents and removal markers, each with its version ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)) —
