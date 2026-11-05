@@ -3,6 +3,7 @@ package segment
 import (
 	"errors"
 	"fmt"
+	"syscall"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
@@ -72,6 +73,28 @@ type endRec struct {
 	// reservation the segment holds, and the lower bound of the window the
 	// durability code reads for it.
 	next int64
+	// stopped says the stream stopped with this end: it will take no
+	// further spare.
+	stopped bool
+}
+
+// stoppedErr returns the stream's stopped error, read under the append lock;
+// the Append head check and the callers that must not take a spare read it
+// first. The lock is held for this read alone.
+func (s *Stream) stoppedErr() error {
+	s.appendMu.Lock()
+	defer s.appendMu.Unlock()
+	return s.stopped
+}
+
+// stopLocked marks the stream stopped with the failure that stopped it. The
+// caller holds appendMu. A second stop keeps the first failure's word: the
+// stream is already stopped, and the failure that first said so is the one
+// the journal-wide read-only state of the durability code will read.
+func (s *Stream) stopLocked(err error) {
+	if s.stopped == nil {
+		s.stopped = fmt.Errorf("%w: %w", ErrStreamStopped, err)
+	}
 }
 
 // endLocked ends the stream's active segment, the one place a segment becomes
@@ -97,8 +120,20 @@ type endRec struct {
 func (s *Stream) endLocked(cause EndCause, err error) (core.SegmentID, bool) {
 	id := s.id
 	s.sealState = sealEnded
+	// The refusal that ends a segment also decides whether the stream
+	// survives it: an EROFS says the device is read-only, so every later
+	// journal call would fail too, and a failure in a segment taken to
+	// leave an ended one — before any sync of it has succeeded — is the
+	// second segment in a row (RFC 1 §5.4). Either way the stream stops:
+	// its later appends fail at once, reserving nothing and taking no
+	// spare, and the event this end hands over says so.
+	if errors.Is(err, syscall.EROFS) || (s.leftFailed && !s.syncedOnce) {
+		s.stopLocked(err)
+	}
+	// The stop travels with the end's record, so the one event the ended
+	// segment hands its consumer says whether the stream stopped with it.
 	if s.ending == nil {
-		s.ending = &endRec{id: id, cause: cause, err: err, next: s.next}
+		s.ending = &endRec{id: id, cause: cause, err: err, next: s.next, stopped: s.stopped != nil}
 		s.inflight.Add(1)
 		s.drained.Broadcast()
 		return id, true
@@ -148,6 +183,7 @@ func (s *Stream) notifyEnd() {
 		Segment: rec.id,
 		Cause:   rec.cause,
 		Err:     rec.err,
+		Stopped: rec.stopped,
 		// No write of the segment failed — a sync's failure, a requested
 		// end — so the end is the end of every reservation the segment
 		// held: the record's own next.

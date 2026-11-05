@@ -21,6 +21,25 @@ func Failing(op, key string, count int, err error) Rule {
 	}
 }
 
+// FailingFrom returns a rule that fails the matching calls numbered from to
+// from+count-1, rather than the first count of them: a check that must let a
+// rule's own first matching calls pass — a spare's header write among the
+// writes of the segment name — arms it past them. A from below 1 is read as
+// 1, the schedule's own reading of it. A count of 0 fails every matching
+// call from from on. A nil err is an action that does nothing, which
+// Schedule refuses.
+func FailingFrom(op, key string, from, count int, err error) Rule {
+	return Rule{
+		Op:    op,
+		Key:   key,
+		From:  from,
+		Count: count,
+		Action: sim.FaultAction{
+			Err: err,
+		},
+	}
+}
+
 // FailingRandomly returns a rule that fails each matching call with err only
 // with probability p, drawn per call from the schedule's own stream: a stress
 // check spreads its failures over a run of calls rather than taking the

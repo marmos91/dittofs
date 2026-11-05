@@ -333,6 +333,23 @@ type Stream struct {
 	// cannot be registered anymore.
 	onEnd   func(EndEvent)
 	started bool
+
+	// leftFailed says the active segment was taken to leave an ended one:
+	// a failure in it before any sync of it has succeeded is the second
+	// segment in a row (RFC 1 §5.4). The roll sets it at install; a failed
+	// successor header write sets it too, for the stream stays on its
+	// ended segment and the next roll leaves the same one.
+	leftFailed bool
+	// syncedOnce says a Sync of the active segment has succeeded: the
+	// second-refusal rule reads it beside leftFailed, for a stream that
+	// synced its new segment once no longer appends into a segment nothing
+	// proved durable. Set in Sync's success branch, reset at roll install.
+	syncedOnce bool
+	// stopped is non-nil once the stream stopped: a second segment in a
+	// row failed, or a failure carried EROFS. Every later append fails at
+	// the head with it, so no spare is taken and nothing is reserved; the
+	// failure it wraps is the one that stopped the stream.
+	stopped error
 }
 
 // sealState is where a stream's seal stands: open, closing, closed for good,
@@ -584,6 +601,17 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 	}
 	if r.Hold != nil && !hasPayload {
 		return Placed{}, fmt.Errorf("%w: a hold covers content writes, not a kind with no payload", ErrBadRoll)
+	}
+
+	// decision: the stopped head check runs before any take, before even
+	// the roll's gate is armed, for a stopped stream owes its caller an
+	// answer that costs nothing: RFC 1 §5.4's read-only journal "reserves
+	// nothing and takes no spare", so the pool's spares stand exactly where
+	// the second refusal left them. Withdrawn only by a stopped stream that
+	// is ever allowed to serve again, which the journal-wide read-only
+	// state of the durability code owns instead.
+	if s.stoppedErr() != nil {
+		return Placed{}, s.stoppedErr()
 	}
 
 	// The idle stamp's time is read here, before the lock, so appendMu is
@@ -950,6 +978,12 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	s.appendMu.Unlock()
 
 	var pred core.SegmentID
+	// leftEnded says the roll is leaving a segment the stream ended (or its
+	// own seal just did), the one fact both the successor-header stop below
+	// and the install's leftFailed need: every ordinary roll leaves a sealed
+	// one behind, and a refused header write back onto the ended one would
+	// be the second refusal in a row.
+	leftEnded := old != 0 && state == sealEnded
 
 	switch {
 	case old == 0:
@@ -983,6 +1017,7 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 		}
 		closed := s.closed
 		ended := s.sealState == sealEnded
+		leftEnded = ended
 		s.appendMu.Unlock()
 		if closed {
 			return s.endTaken(id, Ref{}, ErrStreamClosed)
@@ -1022,6 +1057,27 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 		Stream:      s.no,
 	})
 	if _, err := ref.WriteAt(buf, 0); err != nil {
+		// decision: a failed successor header write stops the stream when
+		// the segment the stream stays on is ended — the refusal it just
+		// met leaving it is the second in a row, and the next append would
+		// only take a further spare to meet a third — or when the failure
+		// itself carries EROFS, wherever the stream stands. The taken spare
+		// ends below with no event, for no record was ever reserved in it,
+		// and the old segment's own event was already handed over; the
+		// stream keeps its stopped error for the head check to answer every
+		// later append with. Withdrawn together with the endTaken
+		// exemption the day a take unwinds a segment the stream had
+		// already appended to.
+		s.appendMu.Lock()
+		if errors.Is(err, syscall.EROFS) || leftEnded {
+			s.stopLocked(err)
+			// leftFailed names the stay the stream keeps: it stays on an
+			// ended segment exactly on the leftEnded path, and the head
+			// check is what carries the stop from here — a stopped stream
+			// never rolls again.
+			s.leftFailed = leftEnded
+		}
+		s.appendMu.Unlock()
 		return s.endTaken(id, ref, err)
 	}
 
@@ -1061,6 +1117,13 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	s.entries = nil
 	s.tracker.reset(format.SegmentHeaderSize)
 	s.sealState = sealOpen
+	// The new segment's own second-refusal state: the roll left a segment
+	// the stream ended — the one this segment replaces, whatever ended it,
+	// its own failure or its own seal's — so a failure in the new one
+	// before any sync of it succeeds is the second segment in a row (RFC 1
+	// §5.4), which endLocked reads through this pair.
+	s.leftFailed = leftEnded
+	s.syncedOnce = false
 	s.appendMu.Unlock()
 
 	// The old ref is released only after its seal's syncs, outside the lock:
@@ -1180,6 +1243,11 @@ func (s *Stream) Sync() error {
 	}
 	s.appendMu.Lock()
 	s.tracker.syncDone(through)
+	// A sync of the active segment has succeeded: the second-refusal rule
+	// reads this beside leftFailed, for a stream that proved this segment
+	// durable once is past the window where a failure in it counts as the
+	// second in a row (RFC 1 §5.4).
+	s.syncedOnce = true
 	s.appendMu.Unlock()
 	return nil
 }
