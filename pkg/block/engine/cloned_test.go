@@ -918,3 +918,23 @@ func TestACloneHandsTheStoreNoCopy(t *testing.T) {
 		}
 	}
 }
+
+// A clone's phase 1 committing the destination's pending write after the
+// store answers and before the entry is read makes the pass read again:
+// destination data [0, 2m), a pending write [2m, 2m+8k), then a clone into
+// [0, 1m) commits it between the two reads, and a write at 5m is staged
+// after. Read as one pass, Allocation(2m) would answer hole [2m, 5m). The
+// clone lands below the offset asked, since a store lookup over a clone not
+// done waits for it.
+func TestAllocationReadsAgainAfterAClonesPhase1BetweenItsReads(t *testing.T) {
+	ce := &committingExistence{}
+	u := clonedUnit(t, func(d *engine.Deps) { ce.Existence = d.Existence; d.Existence = ce })
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	dst := u.committedFile(t, "dst", fill(2*mib, 'd'))
+	u.write(t, dst, 2*mib, fill(8*kib, 'w'))
+	ce.after = func() {
+		u.clone(t, src, dst, vfserr.Extent{Len: mib})
+		u.write(t, dst, 5*mib, fill(2*kib, 'l'))
+	}
+	u.allocations(t, dst, run{2 * mib, 8 * kib, false})
+}
