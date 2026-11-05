@@ -2,7 +2,6 @@ package segment
 
 import (
 	"errors"
-	"runtime"
 	"testing"
 	"time"
 
@@ -29,10 +28,12 @@ import (
 // a started pool with two content spares, a cache, and a stream over them
 // whose idle stamp clock already watches, so every append from the first
 // stamps the time the checks read. The pool's two spares are awaited before
-// the build returns, so the first append never races the refill. The clock
-// comes from each check's own journaltest.NewStopwatchClock, held in a := so
-// no name of pkg/sim reaches this package.
-func idleOver(t *testing.T, cap int64, clock core.Clock) (*Stream, *journaltest.Seam, *Set) {
+// the build returns, so the first append never races the refill; the pool
+// comes back with them, for a check whose second roll takes the spare the
+// first roll's refill owes settles it the same way before it takes. The
+// clock comes from each check's own journaltest.NewStopwatchClock, held in
+// a := so no name of pkg/sim reaches this package.
+func idleOver(t *testing.T, cap int64, clock core.Clock) (*Stream, *journaltest.Seam, *Set, *Pool) {
 	t.Helper()
 
 	seam, err := journaltest.NewSeam(t.TempDir())
@@ -44,15 +45,7 @@ func idleOver(t *testing.T, cap int64, clock core.Clock) (*Stream, *journaltest.
 	pool := NewPool(maker, Targets{Content: 2}, nil)
 	t.Cleanup(func() { pool.Stop() })
 	pool.Start()
-	for range 1 << 20 {
-		if pool.Counters().Spares == 2 {
-			break
-		}
-		runtime.Gosched()
-	}
-	if c := pool.Counters(); c.Spares != 2 {
-		t.Fatalf("the pool never readied its two content spares: %+v", c)
-	}
+	waitSpares(t, pool, 2)
 	cache := NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(8))
 	t.Cleanup(func() {
 		if err := cache.Shutdown(); err != nil {
@@ -62,7 +55,7 @@ func idleOver(t *testing.T, cap int64, clock core.Clock) (*Stream, *journaltest.
 	s := NewStream(1, probeIdentity, set, pool, cache)
 	t.Cleanup(func() { _ = s.Close() })
 	s.watchIdle(clock)
-	return s, seam, set
+	return s, seam, set, pool
 }
 
 // idleWrite returns the header and body of one write record of n payload
@@ -119,7 +112,7 @@ func TestStreamIdleDueRefusesEveryStreamThatIsNoCandidate(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	c := journaltest.NewStopwatchClock()
-	s, _, _ := idleOver(t, 64<<10, c)
+	s, _, _, _ := idleOver(t, 64<<10, c)
 
 	// No segment yet: never a candidate.
 	c.Advance(2 * core.IdleSealAge)
@@ -177,10 +170,14 @@ func TestStreamIdleDueAnswersTheExactRemainingWait(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	c := journaltest.NewStopwatchClock()
-	s, _, _ := idleOver(t, 64<<10, c)
+	s, _, _, _ := idleOver(t, 64<<10, c)
 	// Two records, so the stream holds 128 payload bytes past its header:
-	// a candidate at any positive threshold below that.
+	// a candidate at any positive threshold below that. The appends sit 5 s
+	// apart on the clock, so the wait is measured from the stamp of the
+	// second one — a stream whose appends never stamp leaves the watch's
+	// own stamp standing and answers a wait 5 s longer.
 	idleAppend(t, s, 64, 0)
+	c.Advance(5 * time.Second)
 	idleAppend(t, s, 64, 64)
 	c.Advance(2 * time.Second)
 
@@ -201,7 +198,7 @@ func TestStreamIdleDueComesAtExactlyTheIdleAge(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	c := journaltest.NewStopwatchClock()
-	s, _, _ := idleOver(t, 64<<10, c)
+	s, _, _, _ := idleOver(t, 64<<10, c)
 	idleAppend(t, s, 64, 0)
 	c.Advance(core.IdleSealAge - time.Nanosecond)
 	if due, wait := s.idleDue(c.Elapsed(), 8); due || wait != time.Nanosecond {
@@ -222,7 +219,7 @@ func TestStreamWatchIdleStampsAWatchingStreamJustActive(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	c := journaltest.NewStopwatchClock()
-	s, _, _ := idleOver(t, 64<<10, c)
+	s, _, _, _ := idleOver(t, 64<<10, c)
 	idleAppend(t, s, 64, 0)
 	c.Advance(10 * time.Second)
 	if due, wait := s.idleDue(c.Elapsed(), 8); due || wait != core.IdleSealAge-10*time.Second {
@@ -250,7 +247,7 @@ func TestStreamARefusedAppendDoesNotMoveTheStamp(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	c := journaltest.NewStopwatchClock()
-	s, _, _ := idleOver(t, 64<<10, c)
+	s, _, _, _ := idleOver(t, 64<<10, c)
 	idleAppend(t, s, 64, 0)
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -275,7 +272,7 @@ func TestStreamAnAppendThatReservedAfterThePeekKeepsTheSegmentOpen(t *testing.T)
 	prof.Watch(t, prof.Options{})
 
 	c := journaltest.NewStopwatchClock()
-	s, _, set := idleOver(t, 64<<10, c)
+	s, _, set, _ := idleOver(t, 64<<10, c)
 	w := idleAppend(t, s, 64, 0)
 	threshold := w.Loc.Len - 8
 	c.Advance(2 * core.IdleSealAge)
@@ -308,7 +305,7 @@ func TestStreamSealIdleSealsADueSegmentEarly(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	c := journaltest.NewStopwatchClock()
-	s, _, _ := idleOver(t, 64<<10, c)
+	s, _, _, _ := idleOver(t, 64<<10, c)
 	w := idleAppend(t, s, 64, 0)
 	c.Advance(2 * core.IdleSealAge)
 
@@ -356,7 +353,7 @@ func TestStreamSealIdleRefusesAStreamSomeoneElseSealed(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	c := journaltest.NewStopwatchClock()
-	s, _, _ := idleOver(t, 64<<10, c)
+	s, _, _, _ := idleOver(t, 64<<10, c)
 	w := idleAppend(t, s, 64, 0)
 	if _, err := s.Seal(false); err != nil {
 		t.Fatalf("the explicit Seal: %v", err)
