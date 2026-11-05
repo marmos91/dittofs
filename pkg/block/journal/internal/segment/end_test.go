@@ -1971,6 +1971,71 @@ func TestEndEROFSStopsTheStream(t *testing.T) {
 	endEventsStable(t, rec, "the Appends after the EROFS stop")
 }
 
+// TestEndASealThatFoundAnEROFSSyncStopsTheStream checks RFC 1 §5.4's
+// read-only rule against a seal that finds the failure: a Sync failed with
+// EROFS, and the Seal that follows ends the segment before any End request
+// arrives. The seal's event carries the sync's EROFS and names the stop, and
+// the next append takes no spare.
+func TestEndASealThatFoundAnEROFSSyncStopsTheStream(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, rec := endStopBuilder(t)
+	se := endStopStreamEnv(e)
+	seg1 := streamSegName(1)
+	ah, ab := streamWriteHeader(streamFileID(1), 0, streamTestBody(64, 0x42), 7, core.Version{Counter: 1})
+	streamAppendWrite(t, se, ah, ab)
+
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, seg1, 1, syscall.EROFS)); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.s.Sync(); !errors.Is(err, syscall.EROFS) {
+		t.Fatalf("the Sync = %v, want the fault's EROFS", err)
+	}
+	if err := e.seam.Schedule(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.s.Seal(false); !errors.Is(err, segment.ErrSegmentEnded) {
+		t.Fatalf("the Seal = %v, want ErrSegmentEnded", err)
+	}
+	ev := rec.awaitOne(t, "the seal's end")
+	if ev.Cause != segment.EndSeal {
+		t.Fatalf("the event's cause is %v, want the seal's", ev.Cause)
+	}
+	if !errors.Is(ev.Err, syscall.EROFS) {
+		t.Fatalf("the event's error is %v, want the sync's EROFS in its chain", ev.Err)
+	}
+	if !ev.Stopped {
+		t.Fatal("the event does not name the stream stopped, want Stopped: an EROFS says the journal calls would keep failing")
+	}
+	ch, cb := streamWriteHeader(streamFileID(3), 0, streamTestBody(64, 0x66), 7, core.Version{Counter: 3})
+	if _, err := e.s.Append(ch, cb); !errors.Is(err, segment.ErrStreamStopped) {
+		t.Fatalf("the Append after the EROFS = %v, want ErrStreamStopped", err)
+	}
+}
+
+// TestEndAnEROFSRequestStopsTheStreamOverAnAlreadyEndedSegment checks that an
+// End request naming an EROFS stops the stream even when another failure got
+// to the segment first: the segment's end keeps its first word, but the
+// stream's stop is the request's own.
+func TestEndAnEROFSRequestStopsTheStreamOverAnAlreadyEndedSegment(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, rec := endStopBuilder(t)
+	seg := endStopEndsSegment(t, e, rec, syscall.EIO)
+	if ev := rec.one(t); ev.Stopped {
+		t.Fatal("the first end names the stream stopped, want it rolling after an EIO")
+	}
+	if err := e.s.End(seg, syscall.EROFS); err != nil {
+		t.Fatalf("End over the ended segment = %v, want nil", err)
+	}
+	ch, cb := streamWriteHeader(streamFileID(3), 0, streamTestBody(64, 0x66), 7, core.Version{Counter: 3})
+	_, err := e.s.Append(ch, cb)
+	if !errors.Is(err, segment.ErrStreamStopped) || !errors.Is(err, syscall.EROFS) {
+		t.Fatalf("the Append after the EROFS request = %v, want ErrStreamStopped wrapping EROFS", err)
+	}
+	endEventsStable(t, rec, "the EROFS request over an ended segment")
+}
+
 // TestEndAFailedSuccessorHeaderStopsTheStream checks the stop's third path:
 // after a failed append, the roll onto the successor fails at the
 // successor's own header write — the write the spare's name first sees.

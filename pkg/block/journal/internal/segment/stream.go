@@ -328,6 +328,12 @@ type Stream struct {
 	// and a roll resets it at install; the end's event reads it while it
 	// waits, where a roll cannot move it.
 	failedAt int64
+	// failErr is the failure the active segment's writes and syncs left, kept
+	// for the seal that finds the segment already failed and must name it in
+	// its end: the tracker records that a failure happened, not which. The
+	// first failure stands, except that an EROFS replaces any other, for it
+	// alone decides the stream's stop. Reset by a roll.
+	failErr error
 	// onEnd is the consumer of the stream's end events; started says the
 	// stream has made a reservation, a roll or an end, so the consumer
 	// cannot be registered anymore.
@@ -893,6 +899,7 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 			if s.failedAt < 0 || off < s.failedAt {
 				s.failedAt = off
 			}
+			s.noteFailure(werr)
 			if s.id == id && s.sealState == sealOpen {
 				if endID, notify := s.endLocked(EndAppend, werr); notify {
 					s.appendMu.Unlock()
@@ -1130,6 +1137,7 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	s.next = format.SegmentHeaderSize
 	s.count = 0
 	s.failedAt = -1
+	s.failErr = nil
 	s.entries = nil
 	s.tracker.reset(format.SegmentHeaderSize)
 	s.sealState = sealOpen
@@ -1148,6 +1156,14 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 		oldRef.Release()
 	}
 	return nil
+}
+
+// noteFailure keeps the failure a write or a sync of the active segment met
+// for the seal that may find it later. The caller holds appendMu.
+func (s *Stream) noteFailure(err error) {
+	if s.failErr == nil || errors.Is(err, syscall.EROFS) {
+		s.failErr = err
+	}
 }
 
 // enterDrain names the calling operation — an append between its
@@ -1265,6 +1281,7 @@ func (s *Stream) Sync() error {
 		s.appendMu.Lock()
 		if s.id == id {
 			s.tracker.syncFail()
+			s.noteFailure(err)
 		}
 		s.appendMu.Unlock()
 		return err
@@ -1367,6 +1384,9 @@ func (s *Stream) sealLocked(early bool) (SealResult, error) {
 		reason := fmt.Errorf("%w: a sync of the segment failed", ErrSegmentEnded)
 		if s.tracker.freeze {
 			reason = fmt.Errorf("%w: a write of the segment failed", ErrSegmentEnded)
+		}
+		if s.failErr != nil {
+			reason = fmt.Errorf("%w: %w", reason, s.failErr)
 		}
 		endID, notify := s.endLocked(EndSeal, reason)
 		s.appendMu.Unlock()

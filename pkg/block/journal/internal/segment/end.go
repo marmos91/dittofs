@@ -272,7 +272,12 @@ func (s *Stream) End(seg core.SegmentID, cause error) error {
 		case sealEnded:
 			// The segment is already ended — a failed write or sync got
 			// there first, or an earlier request did: one event per
-			// segment, and this request owns none.
+			// segment, and this request owns none. An EROFS it names still
+			// stops the stream: the device is read-only whichever failure
+			// ended the segment first.
+			if errors.Is(cause, syscall.EROFS) {
+				s.stopLocked(cause)
+			}
 			s.appendMu.Unlock()
 			return nil
 		case sealSealed:
@@ -320,6 +325,13 @@ func (s *Stream) End(seg core.SegmentID, cause error) error {
 	}
 	switch state {
 	case Ended:
+		// The same read-only rule as an ended active segment: the request's
+		// EROFS stops the stream although the segment's end is not its own.
+		if errors.Is(cause, syscall.EROFS) {
+			s.appendMu.Lock()
+			s.stopLocked(cause)
+			s.appendMu.Unlock()
+		}
 		return nil
 	case Sealed:
 		return fmt.Errorf("%w: the segment is sealed", ErrWrongState)
