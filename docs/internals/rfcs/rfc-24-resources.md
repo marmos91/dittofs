@@ -382,7 +382,7 @@ reserve the bytes it is about to hold from its pool **before** it holds them,
 and release them when it frees them:
 
 ```go
-package resources // internal/resources
+package resources // pkg/resources
 
 // Budget is one counted pool (§2.3): waits or refuses at its ceiling, as the pool's row says.
 type Budget struct{ /* name, ceiling, waits bool, reserved, per-key DRR queues */ }
@@ -481,7 +481,7 @@ pools := &resources.Pools{
 }
 ost := openstate.New(openstate.Deps{Budget: resources.NewBudget("open", sp.Open, false) /* … */})
 svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(pools.Receive, pools.Reply) /* … */})
-// every adapter is handed pools as core.Deps.Pools (RFC 20 §3.4); the journals take
+// every adapter is handed pools as adapter.Deps.Pools (RFC 20 §3.4); the journals take
 // sp.Index and the syncer sp.Transfers as sizes (§7.1, §7.2); CPU tokens are a
 // semaphore.Weighted over sp.Tokens (§6.2)
 ```
@@ -497,7 +497,7 @@ svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(pools.Receive, pools.Re
 | sizes: metadata store, index, transfers | the root, from `Split` | the store, each journal, the syncer | handed at construction; the owner sizes itself |
 
 - **A consumer takes only the budgets it charges**, as fields of its own
-  `Deps`, never the whole set: `core.Deps` takes `Pools`, `openstate.Deps` the
+  `Deps`, never the whole set: `adapter.Deps` takes `Pools`, `openstate.Deps` the
   open-state budget, `vfs.Deps` the share cap; the store, the journals and the
   syncer take a size, not a budget.
 - **Nothing here has a lifecycle.** `Detect`, `SplitFor` and `NewBudget` start
@@ -524,10 +524,11 @@ svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(pools.Receive, pools.Re
 ### 2.8 Package layout
 
 ```text
-internal/resources/
+pkg/resources/
   limit.go        Limit, Detect: the runtime limit, the control group, the host (§2.1)
   split.go        Split, SplitFor, Check: fractions, floors, the ceilings' sum, settings (§2.3, §2.4, §7)
   budget.go       Budget, Reservation, Pools: counted pools and their turns (§2.5, §4.1)
+  buf.go          Buf, BufPool: §3.1's classes, a sync.Pool per class, reference counted, reserved before taken (RFC 20 §6.8)
   sharecap.go     ShareCap, WithCharge, ChargeOf (§4.2)
   fd.go           the open-file split and fd_limit_low (§6.3)
   metrics.go      memory_*, cpu_* (§10)

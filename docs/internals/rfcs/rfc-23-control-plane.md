@@ -411,7 +411,7 @@ func New(cfg Config) (*Node, error) {
 		checked := vfs.Serve(n.fs, cfg.Transport, n.router, ...)        // the fence and the dedup around the filesystem
 		svc = vfs.NewGateway(vfs.GatewayDeps{Local: checked, Router: n.router, Transport: cfg.Transport})
 	}
-	n.adapters = core.Deps{Service: svc, ...}                           // handed to each adapter's factory as reconcile enables it; no identity
+	n.adapters = adapter.Deps{Service: svc, ...}                        // handed to each adapter's factory as reconcile enables it; no identity
 	n.api      = api.New(api.Deps{SignIn: n.ident, ...})                // the same identity, called directly, never through vfs (RFC 18 §8.1)
 	return n, nil                                                       // only the metadata store opened; nothing started
 }
