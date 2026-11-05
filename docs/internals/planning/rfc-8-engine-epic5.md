@@ -563,7 +563,7 @@ start step 4 and epic 8's phase 2 can enqueue.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T5.1, T5.2, epic 8's T8.1b | 6 | epic 4's PR 2 and PR 3; epic 8's PR 1 (T8.1a) | the three removals' phase 1 with the guard and the mark, and the registration check T8.1b builds in T5.1's entry-lock section |
+| 1 | T5.1, T5.2, epic 8's T8.1b | 5 (+1, epic 8's T8.1b, counted there) | epic 4's PR 2 and PR 3; epic 8's PR 1 (T8.1a) | the three removals' phase 1 with the guard and the mark, and the registration check T8.1b builds in T5.1's entry-lock section |
 | 2 | T5.3, T5.4 | 7.5 | PR 1 | the loop and the release that retries from it |
 | 3 | T5.5 | 2.75 | PR 2 | the interleavings and the crashes, once every removal exists |
 
