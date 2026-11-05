@@ -2671,7 +2671,9 @@ seal, a repack copy, a re-append, or a spare's fill or zeroing — and every syn
 of it go through one descriptor, the segment's writer. A writer opened for a
 write is pinned from that open, before any slot is reserved, and stays open until a sync through it has covered every such write, until a write
 or sync through it has failed, or until the journal closes ([§8.7](#8.7%20Shutdown)), and is
-never closed to make room under the bound. After a failure nothing syncs that
+never closed to make room under the bound. A writer through which nothing
+has been written stays pinned while the call that opened it is in progress, and
+is unpinned when that call ends. After a failure nothing syncs that
 file again: a failed segment takes no further append ([§5.3](#5.3%20A%20failed%20sync)), a failed
 repack target is a failed segment, unlinked only once repack has carried its pre-failure records
 forward ([§5.3](#5.3%20A%20failed%20sync)), its unsynced copies dropped with no loss recorded, since their
