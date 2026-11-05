@@ -1152,9 +1152,10 @@ every reclaim after the first failover. Instead:
   only. A later failover starts a new instance, in which the same client may
   reclaim again.
 - **A grace instance never repeats, on one node too.** Every start of a node
-  raises the incarnation of every shard it serves, in the transaction that
-  starts it and before any open-state request is answered
-  ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard),
+  raises the incarnation of every shard it serves, in the start's transactions,
+  before any open-state request is answered
+  ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing),
+  [RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard),
   [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)), so
   a single-node restart opens a new instance. Were the instance to repeat, the
   `RECLAIM_COMPLETE` a client sent at mount would end the new grace for it at
