@@ -2278,7 +2278,8 @@ and the half above is half of the headroom without it.
 > than repack returns space, and then those removals, and only they, are
 > refused until it does. Offloaded records are dropped rather than refused
 > because losing one costs a redundant upload, never content. Overturned by a
-> workload that reaches `headroom_draws` near the headroom's size while repack
+> workload that reaches `headroom_draws` near the headroom's size, less the open
+> reserve, while repack
 > has candidates it is not running.
 > The half kept for space-returning records and the default of
 > `journal.headroom_records` are unmeasured: overturned by a journal held at its
@@ -2286,10 +2287,13 @@ and the half above is half of the headroom without it.
 > headroom sits mostly undrawn.
 
 **An open keeps part of the headroom for its own records.** The last 4,096
-records of the headroom (proposal; 896 KiB at 224 bytes each) are the **open
-reserve**: only the header-only records an open appends before it serves draw on
-it — today the loss record of each record it drops as corrupt that no loss
-record on disk names yet ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). No record appended while the journal
+records of the headroom, or half of it where `journal.headroom_records` is
+below 8,192 (proposal; 896 KiB at 224 bytes each), are the **open reserve**:
+only the header-only records an open appends to the headroom before it serves
+draw on it — today the loss record of each record it drops as corrupt that no
+loss record on disk names yet ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). The loss records the open's
+emptying writes with its copies go in the copies' spare, on the repack reserve,
+and draw on neither. No record appended while the journal
 serves draws on it, so a journal that ran its headroom out before a crash still
 finds the open reserve whole at the next open, unless an earlier open drew it
 and nothing has returned the headroom since. Headroom the journal regains goes
@@ -2300,7 +2304,8 @@ records as corrupt than the open reserve has room for — a segment's worth of
 damage, or a reserve an earlier open drew — appends loss records while the
 reserve lasts and leaves the rest **owed**. An owed loss still stands in memory:
 the extent is not held, a synced one outranks what it superseded ([§3.8](#3.8%20Loss%20events)), and
-its event is published as found at open. Its loss record is appended as a record
+its event is published as found at open and marked owed, so an owed loss is
+seen in the ring. Its loss record is appended as a record
 of the last class above once the headroom outside the open reserve has room.
 Until it is, the segment holding the dropped record is retired neither by repack
 nor by the open's emptying ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)): an ended segment holding one is
@@ -2314,8 +2319,11 @@ the open has already contained.
 > losses it can find; past it a loss is held in memory and its segment kept, so
 > a large one costs a segment kept on disk and a loss reported again at every
 > open until the headroom returns. An ended segment kept for an owed loss loses
-> what the emptying protects: later damage to its records reads as torn.
-> Overturned by an open in the field that leaves a loss record owed.
+> what the emptying protects: later damage to its records reads as torn, and
+> damage to the record that proved the dropped one synced makes the dropped one
+> read as never written, so the content it superseded is held and served again.
+> That needs a second fault in the same segment before the headroom returns.
+> Overturned by a loss event marked owed in the field.
 
 **Repack has a reserve of its own.** Repack copies live records before it can
 unlink their segment ([§7.2](#7.2%20Repack)). Its copies draw on a **repack reserve** at journal
@@ -2439,7 +2447,8 @@ copied. Only segments inside the scope are candidates. A segment pinned by a
 running offer ([§3.3](#3.3%20Offload)) is not a candidate. A segment left by a failed sync, or by a
 failed append that ended it, is one once its window, if any, is resolved, never
 before ([§5.3](#5.3%20A%20failed%20sync)); one recovery ends is emptied and unlinked at open instead
-([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). A segment a pass has selected takes no new pin until the pass ends
+([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). A segment holding a record whose loss record is owed is not a
+candidate until that loss record is appended ([§6](#6.%20Capacity)). A segment a pass has selected takes no new pin until the pass ends
 with it.
 
 **Content preservation.** Repack **MUST** preserve the set of held extents and of
