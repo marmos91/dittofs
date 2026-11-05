@@ -67,7 +67,7 @@ func (fs *Filesystem) Write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, of
 		// reserve quota, Done releases the reservation here.
 		Done: func() {},
 	}
-	wr.WCC, err = fs.stage(ctx, c, a, ref.Handle, f, off, func() (err error) {
+	wr.WCC, err = fs.stage(ctx, c, a, ref.Handle, f, off, true, func() (err error) {
 		wr.Verifier, err = fs.engine.Write(ctx, f.Share, f.ID, off, src, opts)
 		return err
 	})
@@ -149,7 +149,8 @@ func (fs *Filesystem) Commit(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 }
 
 // Deallocate punches a hole of length bytes from off in the file ref names,
-// checked and ordered as a write is, and answers its WCC.
+// checked and ordered as a write is, and answers its WCC; an append-only file
+// refuses any, ErrPerm, as one never appends.
 func (fs *Filesystem) Deallocate(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off, length int64) (vfs.WCC, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
@@ -162,7 +163,7 @@ func (fs *Filesystem) Deallocate(ctx context.Context, c vfs.Call, ref vfs.OpenRe
 	}
 	defer release()
 	defer unlock()
-	return fs.stage(ctx, c, a, ref.Handle, f, off, func() error {
+	return fs.stage(ctx, c, a, ref.Handle, f, off, false, func() error {
 		return fs.engine.Deallocate(ctx, f.Share, f.ID, off, length)
 	})
 }
@@ -286,14 +287,15 @@ func content(f vfs.File) error {
 	return nil
 }
 
-// stage runs do, a change of the content of f, which h names, at off: an
-// immutable file, or an append-only one below its size, is ErrPerm before
+// stage runs do, a change of the content of f, which h names, at off, which
+// may append only when appendable: an immutable file, or an append-only one
+// for a change below its size or one that may not append, is ErrPerm before
 // anything changes; then an unprivileged caller's change clears setuid and
 // setgid in a committed change; then, under f's accept lock, the flags are
 // checked again against the size the overlay leaves, the WCC's Before is
 // read, do stages the change, and the After is read, all in that one hold.
-func (fs *Filesystem) stage(ctx context.Context, c vfs.Call, a *admitted, h vfs.Handle, f vfs.File, off int64, do func() error) (vfs.WCC, error) {
-	if flagsRefuse(f, off) {
+func (fs *Filesystem) stage(ctx context.Context, c vfs.Call, a *admitted, h vfs.Handle, f vfs.File, off int64, appendable bool, do func() error) (vfs.WCC, error) {
+	if flagsRefuse(f, off, appendable) {
 		return vfs.WCC{}, vfs.ErrPerm
 	}
 	if _, err := fs.clearSetID(ctx, a, h, f, off >= f.Size); err != nil {
@@ -308,7 +310,7 @@ func (fs *Filesystem) stage(ctx context.Context, c vfs.Call, a *admitted, h vfs.
 	if err != nil {
 		return vfs.WCC{}, err
 	}
-	if flagsRefuse(before, off) {
+	if flagsRefuse(before, off, appendable) {
 		return vfs.WCC{}, vfs.ErrPerm
 	}
 	if err := do(); err != nil {
@@ -317,10 +319,11 @@ func (fs *Filesystem) stage(ctx context.Context, c vfs.Call, a *admitted, h vfs.
 	return fs.wcc(ctx, c, a, h, before), nil
 }
 
-// flagsRefuse reports whether f's flags refuse a change of its content at off:
-// it is immutable, or append-only and off below its size.
-func flagsRefuse(f vfs.File, off int64) bool {
-	return f.IsImmutable() || f.IsAppendOnly() && off < f.Size
+// flagsRefuse reports whether f's flags refuse a change of its content at off,
+// which may append only when appendable: it is immutable, or append-only and
+// the change below its size or not appendable.
+func flagsRefuse(f vfs.File, off int64, appendable bool) bool {
+	return f.IsImmutable() || f.IsAppendOnly() && (!appendable || off < f.Size)
 }
 
 // clearSetID clears setuid and setgid on f, which h names, for an

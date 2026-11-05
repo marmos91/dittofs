@@ -281,8 +281,8 @@ func TestTheVerifierAndAFlushAcrossALoss(t *testing.T) {
 // owner's included, in a change committed before the engine stages it, so
 // GetAttr shows them clear before anything commits, and so does the change's
 // WCC.Before, read after the clear; a privileged one keeps them. An append to
-// a setuid, append-only file clears them too, and a write below its size is
-// refused and clears nothing.
+// a setuid, append-only file clears them too, and a write below its size,
+// or a deallocate from it, is refused and clears nothing.
 func TestAWriteClearsSetIDBeforeItIsStaged(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
@@ -351,6 +351,15 @@ func TestAWriteClearsSetIDBeforeItIsStaged(t *testing.T) {
 		if m := s.record(t, h).Mode; m != 0o4666 {
 			t.Errorf("the refused write through %v left mode %o", c.ref.Kind, m)
 		}
+	}
+	// A deallocate never appends, so one from the size is refused too.
+	s.engine.dealloc = func(entity.FileID) { t.Error("a deallocate of an append-only file was staged") }
+	if _, err := s.Deallocate(ctx, bob, rw, 3, 100); !errors.Is(err, vfs.ErrPerm) {
+		t.Errorf("a deallocate from an append-only file's size: %v, want ErrPerm", err)
+	}
+	s.engine.dealloc = nil
+	if m := s.record(t, h).Mode; m != 0o4666 {
+		t.Errorf("the refused deallocate left mode %o", m)
 	}
 	if _, err := s.Write(ctx, bob, ref, 3, []byte("new"), vfs.Unstable); err != nil {
 		t.Errorf("an append to a setuid, append-only file: %v", err)
