@@ -90,7 +90,7 @@ var settingsSMBCmd = &cobra.Command{
 	Short: "Manage SMB adapter settings",
 	Long: `Manage SMB protocol adapter settings.
 
-Use show to inspect current values, update to change individual settings, and reset to restore defaults. SMB-specific knobs include dialect range (SMB 2.1 to 3.1.1), session and oplock timeouts, connection limits, and at-rest encryption.
+Use show to inspect current values, update to change individual settings, and reset to restore defaults. SMB-specific knobs include dialect range (SMB 2.0.2 to 3.1.1), session and oplock timeouts, connection limits, and at-rest encryption.
 
 Examples:
   # Inspect current SMB settings

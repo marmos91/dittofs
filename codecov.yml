@@ -1,0 +1,11 @@
+# decision: no coverage status, comment or annotation while the code moves fast,
+# since they were noise on every PR. Uploads continue, so the coverage history is
+# there when the checks come back on. Revisit when the version is being
+# stabilized.
+coverage:
+  status:
+    project: off
+    patch: off
+comment: false
+github_checks:
+  annotations: false

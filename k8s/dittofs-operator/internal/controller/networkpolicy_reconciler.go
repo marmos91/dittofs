@@ -35,6 +35,9 @@ import (
 
 const labelTrue = "true"
 
+// labelInstance is the label naming the DittoServer a resource belongs to.
+const labelInstance = "instance"
+
 const (
 	// adapterNetworkPolicyLabel marks a NetworkPolicy as managed by the adapter NetworkPolicy reconciler.
 	adapterNetworkPolicyLabel = "dittofs.io/adapter-networkpolicy"
@@ -162,7 +165,7 @@ func (r *DittoServerReconciler) ensureBaselineNetworkPolicy(ctx context.Context,
 	npName := baselineNetworkPolicyName(ds.Name)
 	desiredLabels := map[string]string{
 		"app":                      "dittofs-server",
-		"instance":                 ds.Name,
+		labelInstance:              ds.Name,
 		baselineNetworkPolicyLabel: labelTrue,
 	}
 	desiredIngress := baselineIngressPorts(ds)
@@ -304,7 +307,7 @@ func (r *DittoServerReconciler) reconcileNetworkPolicies(ctx context.Context, ds
 		client.InNamespace(ds.Namespace),
 		client.MatchingLabels{
 			adapterNetworkPolicyLabel: labelTrue,
-			"instance":                ds.Name,
+			labelInstance:             ds.Name,
 		},
 	); err != nil {
 		return fmt.Errorf("failed to list adapter network policies: %w", err)

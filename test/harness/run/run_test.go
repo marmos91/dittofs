@@ -209,7 +209,7 @@ suites:
 // need the check finds unmet is named, with its reason.
 func TestBlocked(t *testing.T) {
 	_, r := anyRepo(t, `suites:
-  fixed: { cmd: "true", fixture: { profile: memory, smb: { mount: true } }, needs: [docker] }
+  fixed: { cmd: "true", fixture: { profile: memory, nfs: "4.1", smb: { mount: true } }, needs: [docker] }
   plain: { cmd: "true", needs: [docker, root, podman] }
   goclient: { cmd: go test ./x, format: go-json, fixture: { profile: memory, client: namespace } }
   rootclient: { cmd: "true", needs: [root], fixture: { profile: memory, client: namespace } }
@@ -226,7 +226,7 @@ func TestBlocked(t *testing.T) {
 	for _, s := range r.Suites {
 		units[s.Name] = r.Units(s)[0]
 	}
-	if why, unmet := Blocked(units["fixed"], units["fixed"].Needs, check); why != "dt doesn't mount SMB yet" || unmet != nil || checked != nil {
+	if why, unmet := Blocked(units["fixed"], units["fixed"].Needs, check); why != "dt doesn't mount a share over both NFS and SMB yet" || unmet != nil || checked != nil {
 		t.Errorf("fixed: %q %q, checked %q", why, unmet, checked)
 	}
 	why, unmet := Blocked(units["plain"], units["plain"].Needs, check)
@@ -409,6 +409,24 @@ func TestBase(t *testing.T) {
 		if got := base(); got != c.want {
 			t.Errorf("%+v: base %q", c, got)
 		}
+	}
+}
+
+// --base (Options.Base) names the ref for a branch whose base isn't develop,
+// and wins over the event; without it the event's base stands.
+func TestBaseOverride(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	if got := (Options{Base: "origin/y"}).base(); got != "origin/y" {
+		t.Errorf("--base: %q", got)
+	}
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITHUB_EVENT_NAME", "pull_request")
+	t.Setenv("GITHUB_BASE_REF", "main")
+	if got := (Options{Base: "origin/y"}).base(); got != "origin/y" {
+		t.Errorf("--base over the event: %q", got)
+	}
+	if got := (Options{}).base(); got != "origin/main" {
+		t.Errorf("event alone: %q", got)
 	}
 }
 
@@ -757,5 +775,101 @@ four -- test -d {out}
 	rep, out = runTarget(t, root, r, "n", false)
 	if o := rep.Outcomes[0]; o.Name != "n/k/y" || o.Result != report.Passed {
 		t.Errorf("n: %+v\n%s", o, out)
+	}
+}
+
+// A size-timed cell's first scenario, which fills setup.sh's images and
+// caches, also gets the fixture's setup time; the scenarios after it, one
+// with no bound, and a suite timed otherwise don't.
+func TestFirstScenarioLimit(t *testing.T) {
+	size := Cell{Unit: &registry.Suite{Timeout: registry.Timeout{Test: "size"}}}
+	fixed := Cell{Unit: &registry.Suite{Timeout: registry.Timeout{Test: "30m"}}}
+	xs := 2*10*time.Second + 2*time.Minute
+	for _, c := range []struct {
+		cell  Cell
+		test  string
+		first bool
+		want  time.Duration
+	}{
+		{size, "t/00-a-xs.sh", true, xs + fixtureSetup},
+		{size, "t/00-a-xs.sh", false, xs},
+		{size, "t/90-a-xxl.sh", true, 0},
+		{fixed, "t/00-a-xs.sh", true, 30 * time.Minute},
+	} {
+		if got := c.cell.limit(c.test, nil, c.first); got != c.want {
+			t.Errorf("%s %q, first %t: %s, want %s", c.cell.Unit.Timeout.Test, c.test, c.first, got, c.want)
+		}
+	}
+}
+
+// --in auto moves a run to dtc when a cell needs what is missing here and the
+// container gives, unless a cell needs what is met here and the container
+// lacks. A cell dtc can't run doesn't move it, and keeps it here when it runs
+// here. The tests set hostOS to darwin.
+func TestContainer(t *testing.T) {
+	was := hostOS
+	hostOS = "darwin"
+	t.Cleanup(func() { hostOS = was })
+	missing := func(unmet ...string) func(string) error {
+		return func(n string) error {
+			if slices.Contains(unmet, n) {
+				return errors.New("missing")
+			}
+			return nil
+		}
+	}
+	cell := func(needs ...string) Cell {
+		c := Cell{Unit: &registry.Suite{}}
+		c.Needs = needs
+		return c
+	}
+	both := cell("linux", "nfs-client", "smb-client")
+	both.Unit.Fixture = &registry.Fixture{NFS: registry.NFS{Version: "4.1"}, SMB: registry.SMB{Enabled: true, Mount: true}}
+	nfs := cell("linux", "nfs-client")
+	nfs.Unit.Fixture = &registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "4.1"}}
+	self := cell("linux")
+	self.Unit.Fixture = &registry.Fixture{Profile: "memory", Users: []string{"self"}}
+	selfHere := cell("root")
+	selfHere.Unit.Fixture = &registry.Fixture{Profile: "memory", Users: []string{"self"}}
+	for _, c := range []struct {
+		name  string
+		cells []Cell
+		unmet []string
+		want  bool
+	}{
+		{"Linux missing", []Cell{cell("linux", "root")}, []string{"linux"}, true},
+		{"a tool the image installs", []Cell{cell("nfs-client", "service:localstack")}, []string{"nfs-client"}, true},
+		{"everything met", []Cell{cell("linux")}, nil, false},
+		{"a cell needs macOS, met here", []Cell{cell("linux"), cell("macos")}, []string{"linux"}, false},
+		{"missing in the container too", []Cell{cell("host:dedicated")}, []string{"host:dedicated"}, false},
+		{"a cell dt can't run anywhere", []Cell{both}, []string{"linux", "nfs-client", "smb-client"}, false},
+		{"an NFS mount, which dt makes only in dtc on this host", []Cell{nfs}, []string{"linux"}, true},
+		{"users: self, which dtc refuses as root", []Cell{self}, []string{"linux"}, false},
+		{"a cell that runs here but not in dtc", []Cell{selfHere, cell("linux")}, []string{"linux"}, false},
+		{"one missing need the container lacks too", []Cell{cell("linux", "rpcbind")}, []string{"linux", "rpcbind"}, false},
+		{"a service missing here, so in the container too", []Cell{cell("linux", "service:localstack")}, []string{"linux", "service:localstack"}, false},
+	} {
+		if got := Container(c.cells, missing(c.unmet...)); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// Until its last cell is done, a run's summary.json says it didn't finish, so
+// a run killed after its passing cells never reads as passed.
+func TestUnfinishedRunIsNotAPass(t *testing.T) {
+	root, r := repo(t, `groups: { g: [a, b] }
+suites:
+  a: { cmd: "true" }
+  b: { cmd: "sh t/peek.sh {out}" }
+`, map[string]string{"t/peek.sh": `! grep -q '"exit": 0' "$1/../summary.json"
+`})
+	rep, out := runTarget(t, root, r, "g", false)
+	if rep.Status() != 0 {
+		t.Fatalf("b saw a finished run's exit status while it ran:\n%s", out)
+	}
+	sum, err := report.Read(rep.Dir)
+	if err != nil || sum.Exit != 0 {
+		t.Errorf("the finished run's summary: exit %d, %v", sum.Exit, err)
 	}
 }

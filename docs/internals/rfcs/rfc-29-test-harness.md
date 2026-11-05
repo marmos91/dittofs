@@ -233,7 +233,7 @@ Every suite has its own entry point, its own setup and its own way of saying how
 | R8 | External-tool suites first, and green | pjdfstest, pynfs, WPTS, smbtorture, the system scenarios and fio report no new failures |
 | R9 | Adapt the harness; keep what's tested, replace what isn't | the graders' rules carry over with their tests; each suite's scripts give way to a fixture (§4.2) once its results match, and are deleted in the same change |
 | R10 | Not run is never passed | an unmet need, a fixture that fails its own check, a suite that ran no tests, or, in a suite with a `known` file, a test that skips without being an expected skip ends in exit 2 (§4.4, §4.7) |
-| R11 | Each component RFC names the suites that cover it | every RFC under `docs/internals/rfcs/` has a section naming its harness suites or groups (§4.9), once #2894 lands them there |
+| R11 | Each component RFC names the suites that cover it | every RFC under `docs/internals/rfcs/` has a paragraph naming its harness suites, groups or options, which `dt docs --check` checks against the registry (§4.9) |
 
 "Green" means no new failures, no unexpected skips and no unexpected passes (§4.7). Every failing
 test is either fixed or listed as a known failure, and in a suite that keeps a known-failure list
@@ -350,7 +350,10 @@ What stays, because it isn't an entry point:
 nfstest's `baseline-knfsd.sh` stays too, though it is an entry point, with `nfs-knfsd-baseline.yml`:
 a dispatch-only evidence job outside the registry, which nfstest's known list cites. Its export goes
 to namespaced clients and its report compares each known-failure row, so it stays until a `knfsd`
-fixture has `clients` and `dt` has a per-row comparison.
+fixture has `clients` and `dt` has a per-row comparison. What it runs stays with it: nfstest's
+`run.sh` and grader, `grade.sh`, `common/known-failures.sh`, the helpers they source, `fetch.sh`
+for nfstest alone, and nfstest's Markdown tables, which it grades knfsd against. Which tables grade
+which option set moves from `suites.json` into it.
 
 ### Getting `dt`
 
@@ -385,7 +388,8 @@ the suite's `env` (e2e's `DITTOFS_E2E_REQUIRE_*` and `DITTOFS_E2E_NIGHTLY`), the
 the services the suite needs (`LOCALSTACK_ENDPOINT`, for one, so e2e uses the Localstack its
 `service:` need found rather than starting its own), `DITTOFS_E2E_BIN` and `PATH`. The commands of a
 suite that isn't `go-json` get its `env` and `PATH` only, as they get neither of the others when
-they run as the user. Today's e2e job does the same by hand, with `sudo -E env "PATH=$PATH" ...`. A
+they run as the user. The e2e job did the same by hand, with `sudo -E env "PATH=$PATH" ...`, until
+it moved into `tests.yml`. A
 fixture sets no variables: it gives its values as placeholders (§4.2), and a suite that needs one in
 a variable puts it in its `env`, as `fio-verify` puts `{mount}` in `BENCH_DIR`. A secret never goes
 on a command line, where any user can read it while the process runs: the server started under
@@ -453,12 +457,13 @@ suites:
     job: Go Checks
     tier: pr
     cmd:
+      - go mod verify                           # the module cache still matches go.sum
       - { sh: 'test -z "$(gofmt -s -l .)"' }   # a command that needs a shell says so
       - go vet ./...
       - go vet -tags=e2e,integration,ad_dc,portmap_system,kerberos,stress ./...   # tagged tests compile
       - go run ./test/spec-citations
       - test/required-tests.sh
-      - golangci-lint run --timeout=5m          # the version lint.yml pins
+      - golangci-lint run --timeout=5m          # the version tests.yml pins
   lint-repo:
     job: Repo Checks
     tier: pr
@@ -488,7 +493,7 @@ suites:
   unit:
     job: Unit Tests (1.26.x)            # the name the ruleset requires, until it requires the gate (§4.8)
     format: go-json
-    cmd: go test -race {args} -timeout=25m ./pkg/... ./internal/... ./cmd/... ./test/...
+    cmd: go test -race {args} -timeout=25m -coverprofile={out}/coverage.txt ./pkg/... ./internal/... ./cmd/... ./test/...   # the profile Codecov gets (§4.8)
     args: { pr: "-short" }              # pull requests run the short suite, as today
     tier: pr
     options:
@@ -498,7 +503,7 @@ suites:
         blocking: { pr: false }         # reported on PRs, blocking after merge (§9)
       nonrace:                          # the throughput and allocation gates that skip under -race
         cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
-        tier: nightly
+        tier: nightly                   # blocking there: a tripped gate posts (§4.10)
   integration:
     job: Integration Tests (1.26.x)
     format: go-json
@@ -509,7 +514,7 @@ suites:
     options:
       portmap:  { cmd: go test -tags=portmap_system -timeout=2m ./test/integration/portmap/..., needs: [linux, rpcbind] }
       kerberos: { cmd: go test -tags=kerberos -timeout=5m ./test/integration/kerberos/, needs: [docker] }
-      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smb-client], tier: merge }
+      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smbclient], tier: merge }
   operator:                             # its own Go module; the kustomize render check becomes a make target
     cmd: make -C k8s/dittofs-operator test lint manifests-verify
     tier: pr
@@ -519,10 +524,11 @@ suites:
     env:
       DITTOFS_E2E_REQUIRE_NLM: "1"      # a missing prerequisite fails instead of skipping
       DITTOFS_E2E_REQUIRE_KERBEROS: "1" # the same for Kerberos mounts
-      nightly: { DITTOFS_E2E_NIGHTLY: "1" }
+      # nightly: { DITTOFS_E2E_NIGHTLY: "1" }, once the dedup tests have known-failure entries (§9)
     needs: [linux, root, nfs-client, smb-client, nfs4-acl-tools, "service:localstack"]
+    blocking: { pr: false }             # on PRs, until a week with no failure on develop (§8)
     options:
-      stress: { cmd: "go test -tags=e2e,stress -timeout=60m ./test/e2e/...", tier: nightly }   # quoted: a comma ends a flow value
+      stress: { cmd: "go test -tags=e2e,stress -run ^TestStress -timeout=30m ./test/e2e/", tier: nightly }   # quoted: a comma ends a flow value
       kerberos:                         # the Kerberos mounts, on pull requests that can affect them
         cmd: go test -tags=e2e -run Kerberos -timeout=30m ./test/e2e/
         tier: pr
@@ -540,6 +546,10 @@ suites:
           - "test/e2e/*kerberos*"
           - test/e2e/framework/kerberos.go
           - test/integration/kerberos/**
+      cross-protocol:                   # one file through both protocols, on pull requests that can break it (§4.3)
+        cmd: go test -tags=e2e -run CrossProtocol -skip Kerberos -timeout=30m ./test/e2e/
+        tier: pr
+        paths: [internal/adapter/**, pkg/adapter/**, internal/vfs/**, pkg/vfs/**, pkg/metadata/**, ...]
 
   # Conformance. Each tool is called directly, against the suite's fixture (§4.2). `matrix`
   # replaces suites.json's profiles. Commands are shortened: the flags each tool needs are in its
@@ -572,7 +582,7 @@ suites:
     options:
       knfsd:                            # the same tests against the kernel's NFS server, for comparison
         matrix: { minor: ["0", "1"] }   # an option replaces `matrix` too: knfsd has no profile
-        fixture: { server: knfsd, nfs: export, squash: none, lease: 30s }   # as pynfs's baseline-knfsd.sh sets knfsd up
+        fixture: { server: knfsd, nfs: export, squash: none, lease: 30s }   # the kernel's server, set up as pynfs needs it
         tier: manual
         blocking: false
   wpts:
@@ -666,30 +676,43 @@ suites:
     tier: nightly
     needs: [linux]
 
-  # Each OS's own clients mount the fixture's share, and the workloads run over the mount. Replaces
-  # smb-client-compat.yml once its results match. The suite itself is the Linux run, with every
-  # workload; macOS and Windows run a smoke test (§9).
+  # Each OS's own client mounts the fixture's share over SMB, and the workloads run over the mount.
+  # The suite itself is the Linux run; macOS and Windows run a smoke test (§9).
   clients:
-    tests: test/clients/*               # the workloads: today's smb-client-compat checks
-    cmd: "{test} {mount}"
-    fixture: { profile: badger-s3, smb: { mount: true }, nfs: "4.1" }
-    needs: [linux, root, smb-client, nfs-client]
-    tier: nightly
+    tests: [test/clients/files.sh, test/clients/rename.sh, test/clients/s3.sh]
+    cmd: "{test} {mount} {bucket}"     # s3.sh sees a block reach the bucket; the others take the mount alone
+    fixture: { profile: badger-s3, smb: { mount: true } }
+    needs: [linux, root, smb-client]
+    tier: merge                         # after each merge, on every branch tests.yml runs; macOS and Windows nightly
     options:                            # hosted macOS runners have no Docker, and Windows runners run Windows containers only, so no S3 there
-      macos:   { needs: [macos], fixture: { profile: memory, smb: { mount: true }, nfs: "4" } }     # macOS mounts NFS 3 and 4.0
-      windows: { needs: [windows], fixture: { profile: memory, smb: { mount: true }, nfs: "3" } } # net use /TCPPORT, no port 445; NFS 3 only
+      smb21:                            # SMB 2.1, Windows 7's newest, from a real client: Linux's, asked for it
+        fixture: { profile: badger-s3, smb: { mount: true, dialect: "2.1" } }
+        tier: nightly
+      macos:
+        tests: [test/clients/files.sh, test/clients/xattr.sh]
+        cmd: "{test} {mount}"
+        env: { SMB_URL: "//{user}:{password}@{server}:{smb-port}/{share}" }   # xattr.sh mounts the share again
+        needs: [macos]
+        fixture: { profile: memory, smb: { mount: true } }
+        tier: nightly
+      windows:                          # a script isn't a program there: PowerShell runs it
+        tests: [test/clients/files.ps1]
+        cmd: powershell -NoProfile -ExecutionPolicy Bypass -File {test} {mount}
+        needs: [windows]
+        fixture: { profile: memory, smb: { mount: true } }   # New-SmbMapping -TcpPort, no port 445
+        tier: nightly
 
   # The system scenarios: a real server in a container, real clients, faults injected.
   system:
-    cmd: test/scenarios/setup.sh {test}
+    cmd: { sh: 'test/scenarios/setup.sh "$(basename {test})"' }   # setup.sh takes a scenario's file name
     tests: test/scenarios/[0-9][0-9]-*.sh
     select: { merge: "[0-8]?-*.sh" }    # nightly runs all; the 0x smoke group joins pr once timed
+    env: { SLACK_DIR: /nonexistent }    # dt reports the run; setup.sh posts to Slack on its own runs only (§4.6)
     known: test/scenarios/known.yaml
-    needs: [linux, podman]
-    needs_by_test:                      # the long runs only fit the dedicated host (§4.5)
-      "9?-*.sh": ["host:dedicated", "disk:110"]
-    timeout: { test: size, cell: 90m }  # test: from the size in the file name; cell: per shard (below)
-    shards: 4                           # split over 4 CI jobs
+    needs: [linux, podman, host:dedicated]  # on the dedicated host alone (§4.5)
+    needs_by_test:                      # the long runs need its disk, in a cell of their own
+      "9?-*.sh": ["disk:110"]
+    timeout: { test: size, cell: 90m }  # test: from the size in the file name; cell: below
   fio-verify:
     # The job files are templates, as dfsbench's are: fio doesn't expand their ${VAR:-default}s, so
     # perl fills them from the environment into a copy below {out}, which fio runs.
@@ -706,7 +729,14 @@ suites:
     needs: [linux, root, nfs-client, fio]
     options:
       smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client, fio] }
-  bench-smoke: { cmd: go run ./cmd/bench run --smoke, metrics: dfsbench-json, tier: pr, blocking: false }   # bench-smoke.yml today
+  bench-smoke:                          # bench-smoke.yml's two steps
+    cmd:
+      - go run ./cmd/bench run --smoke --results {out}
+      - { sh: 'for job in bench/workloads/mailbox/*.fio; do TARGET_DIR={out} bench/workloads/mailbox/run.sh "$job" --parse-only || exit 1; done' }   # they only parse: dfsbench doesn't run them
+    metrics: dfsbench-json
+    needs: [fio]
+    tier: pr
+    blocking: { pr: false }             # reported on PRs, blocking after merge (§4.10)
 ```
 
 | Field | Meaning | Default |
@@ -737,6 +767,7 @@ suites:
 | `known` | The suite's known failures and expected skips (§4.7) | none |
 | `shards` | Split `tests` over this many CI jobs | `1` |
 | `job` | Run in a CI job of this fixed name, outside the matrix: for checks the branch ruleset requires by name. `unit` and `integration` keep theirs only until the ruleset requires the gate (§4.8) | none: a matrix cell |
+| `parallel` | `true`: under `--parallel`, the suite's cells may run beside others (§4.4), set once someone has checked that they hold nothing else of the host's ([testing-parallel.md](../testing-parallel.md)) | `false`: they run alone |
 
 **Placeholders.** `dt` fills them once per cell, before the first test, and `{test}` again for
 each test. Each value is one argument, never split again, except `{packages}`, `{args}`, `{names}` and
@@ -752,12 +783,12 @@ fixture are filled before the first test, when neither has a value.
 | `{test-args}` | the words after `--` on a test's line in a `.txt` list, each filled like the command, as cthon04's programs take their own arguments |
 | `{names}` | the tests a run names, on `dt run`'s command line or for a retry, else the suite's `names`, which doesn't count as naming tests. A run that names no tests grades every test the tool reports. A run that names tests, on `dt run`'s command line or for a retry, grades only those: a named test that skipped because of a test it depends on is not run (exit 2), and any other skip is graded against the expected skips. pynfs runs with `--rundeps`, so a named test's dependencies run too, and it lists every other test as OMIT; neither is graded, and a scoped pynfs run that skipped what it named isn't a pass (§3) |
 | `{args}` | the tier's `args` |
-| `{base}` | the ref a change is compared against: in CI, a pull request's base branch, a merge group's base commit, or for a push to develop the commit before it; `origin/develop` locally. There is none on the schedule, on `workflow_dispatch`, or for a push without a previous commit, and a command that uses it is then skipped (§4.8) |
+| `{base}` | the ref a change is compared against: in CI, a pull request's base branch, a merge group's base commit, or for a push to develop the commit before it; `origin/develop` locally. `dt run --base REF` names another ref wherever it runs, as a branch stacked on an epic needs. Without it, there is none on the schedule, on `workflow_dispatch`, or for a push without a previous commit, and a command that uses it is then skipped (§4.8) |
 | `{bin}` | a directory with `dfs` and `dfsctl` built from the checkout, as the user; a root suite gets it as `DITTOFS_E2E_BIN` (§3) |
 | `{tools}` | the pinned test tools (pjdfstest, pynfs, cthon04, nfstest) at the revisions `flake.lock` pins: built with `nix build .#NAME` on Linux runners and laptops with Nix, as CI does today, or the copies in the `dtc` image (§4.5). Only Linux cells use them. A suite gets the tools it names under `{tools}`, and only those are built and laid out; it names each by its path there, as pynfs does with `{tools}/pynfs/bin/pynfs-4.{minor}`. Each tool is one link, but for cthon04: `{tools}/pjdfstest` is pjdfstest's `share/pjdfstest` tree, its binary beside its `tests`, where pjdfstest's `misc.sh` looks for it, `{tools}/pynfs` is pynfs's tree, with its `bin`, `{tools}/cthon04` is a copy of cthon04's built tree that the user `dt` runs as can write, as the scripts' copy is, since its general tests `cp` their sources to the mount, keeping their modes, and Nix's store holds them read-only, and `{tools}/nfstest` holds a `bin` with a program per module, on Python 3.12, since nfstest's remote execution, which its lock and delegation modules set up first, breaks from 3.13 on |
 | `{out}` | the cell's results directory, as an absolute path: a tool may change directory, as pynfs's wrappers do. Before a command runs, `dt` makes the directories of each path below `{out}` that one of its arguments names, so a test named by its path, as `fio-verify`'s `bench/workloads/seq-write.fio`, can write `{out}/{test}.json`. A `{ sh: "..." }` command makes its own, since its values are quoted |
 | `{packages}` | the package list `packages` gives |
-| `{server}`, `{nfs-port}`, `{smb-port}`, `{mount}`, `{share}`, `{user}`, `{user2}`, `{password}`, `{realm}`, `{krb5-conf}`, `{client2}` | from the fixture (§4.2) |
+| `{server}`, `{nfs-port}`, `{smb-port}`, `{mount}`, `{bucket}`, `{share}`, `{user}`, `{user2}`, `{password}`, `{realm}`, `{krb5-conf}`, `{client2}` | from the fixture (§4.2) |
 
 For the pynfs cell `badger-s3/1`, for example:
 
@@ -792,12 +823,15 @@ aren't run stay in the file.
 **Scenario timeouts.** A scenario's size class is in its file name (`test/scenarios/README.md`):
 `xs` under 10 s, `s` under 1 min, `m` under 5, `l` under 15, `xl` under 1 h. With `test: size`, its
 timeout is twice its class's bound plus 2 minutes for the container's setup, so 32 minutes for an
-`l`. An `xxl` scenario has no bound, so only the cell's timeout applies to it.
+`l`. An `xxl` scenario has no bound, so only the cell's timeout applies to it. Those 2 minutes
+assume `setup.sh`'s images and caches are there, and a hosted runner starts without them: the
+cell's first scenario, which pulls and fills them, also gets the fixture's 5 minutes, which the
+cell's limit counts (below) though `system` has no fixture.
 
 **A cell outlasts its tests.** A cell runs its tests one after another, so `dt plan` never gives
 it a limit shorter than the sum of its tests' limits plus the fixture's 5 minutes (§4.2); it raises
 the cell's limit and says so. A test with no bound counts as the cell's own limit. So the 9x cell,
-which `needs_by_test` gives the dedicated host, gets 5 h 7 min whatever `cell` says: 2 h 2 min for
+which `needs_by_test` splits off, gets 5 h 7 min whatever `cell` says: 2 h 2 min for
 its `xl` scenario, the cell's 90 minutes for each of its two `xxl` ones, and 5 for the fixture.
 
 Rules `dt` enforces when it loads the file:
@@ -831,8 +865,10 @@ tables from it, becomes `dt docs --check` in step 3 (§8), as the conformance su
 tables always describe what CI runs, and until then CI runs those suites from `suites.json`. Its
 other reader, `ci-health.yml`, takes from it only the names of the workflows it watches. Those are
 workflows, not suites, so the registry doesn't hold them. When `suites.json` goes in step 3 (§8),
-the list moves into `ci-health.yml` itself, whose trigger already repeats it, and names `tests.yml`
-and any workflow still outside it (§4.8). Until then `suites.json`'s list names `tests.yml` too.
+the list moves into `ci-health.yml` itself and names `tests.yml`, the one workflow it watched beside
+`conformance.yml`; the workflows still outside `tests.yml` then were never on it. Its trigger, which
+repeated the list for the retry of a failed run, goes with `conformance.yml`, the last workflow it
+retried (§8).
 
 **What isn't registered, and why.** Each has a reason or an issue:
 - **The NFS `sec=krb5` conformance job:** e2e covers the same mounts (§3).
@@ -851,7 +887,7 @@ carry a script that builds it.
 | `server` | `dfs` (the default), or `knfsd` for the pynfs comparison: the kernel's NFS server, serving NFSv4.0, 4.1 and 4.2 over TCP on 2049, its `{nfs-port}`, and not NFSv3. `rpc.nfsd` still reads the host's `/etc/nfs.conf` for the rest, so a listener it adds there, such as RDMA's, is the host's. It exports a tmpfs of its own to `{server}` alone, as the NFSv4 root, with `/export` in it, since the kernel won't export the overlay file system a container's `/tmp` is. Where the kernel's tmpfs has no POSIX ACLs, as Docker Desktop's, the server has none either, and pynfs's ACL tests skip, which the cell reports. A `knfsd` fixture sets `nfs: export`, and at most `squash: none` and `lease`; it gives `{server}` and `{nfs-port}`, and no `{bin}`. It implies `root`, `knfsd` and `port:2049` (below), so the kernel's server that `dt` starts and stops is its own. It fails when the kernel's list of versions lacks one of the three, since `rpc.nfsd` only logs a version the kernel refuses. It sets the server's grace period to 10 seconds, the least, and waits it out before the first test. The lease and grace times are the kernel's for every server on that network stack, so `dt` restores them when it stops the server |
 | `profile` | The store profile: `memory`, `badger` or `badger-s3`. Required for a `dfs` fixture. For an S3 profile `dt` creates the bucket |
 | `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`, except from a namespaced `client`, which has NLM of its own. A `nolock` mount answers every lock in the client, so a test of NFSv3 locking runs from a namespaced `client`, or it tests the client rather than the server. In the mapping the version may be left out, for options that name it: their `vers=` gives it, and with none the kernel negotiates it, as cthon04's `default` set does. `export` exports the share without a mount, for pynfs and nfstest, which mounts by itself |
-| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, and smbtorture, whose multichannel test opens its extra connections to 445 whatever `-p` gives, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
+| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, and smbtorture, whose multichannel test opens its extra connections to 445 whatever `-p` gives, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the first share at `{mount}` as `{user}`, on the fixture's SMB port, with the machine's own SMB client, which must then report it mounted at SMB 3.1.1, or at `{ dialect: ... }` when the fixture sets one, the dialect `dt` prints, as an NFS mount's version is: `mount.cifs` on Linux, as root, asked for `vers=3.1.1` or that dialect, the only client that can be asked for one, with `{password}` in a credentials file; `mount_smbfs` on macOS, as the user `dt` runs as, whose mount it then is, with `{password}` in the share's URL, the only way it takes one but a terminal's prompt, so on its command line while it runs, and its dialect from `smbutil statshares`; and on Windows `New-SmbMapping -TcpPort`, as that user, on the last free drive letter, then `{mount}`, with `{password}` from the environment, and its dialect from `Get-SmbConnection`. A fixture mounts its share over NFS or over SMB, not both |
 | `shares` | A file of shares and their settings, as data (below); the default is one share, `/export` |
 | `users` | UIDs to create, each with a read-write grant on every share; `self` is the user `dt` runs as, in its own group, so a suite's tests run under an ordinary user's permissions rather than root's. `dt` running as root, as in `dtc`, has no such user to give, and a fixture with `self` doesn't start: run `dt` there as an ordinary user with passwordless sudo |
 | `squash`, `delegations`, `lease` | Export and adapter settings, as the server has them today (below) |
@@ -885,9 +921,9 @@ In a `shares` file, `{user}` owns each share's root and holds the `admin` grant 
 `wpts-admin` does today: ownership lets it write at the root, and `admin` lets `smb2.acls` take
 ownership. `{user2}` has a uid of its own, the same password and no grant: WPTS's non-admin user,
 and the restricted principal of `smb2.acls.ACCESSBASED`. On the default share, `/export`, `{user}`
-has a uid of its own and no grant, as `{user2}` does. No suite uses `{user}` there yet; the first
-that does, `clients` with its SMB mount (§8 step 4), adds what it needs with its own change to this
-RFC.
+has a uid of its own and no grant, as `{user2}` does, unless the fixture mounts it over SMB: the
+mount is `{user}`'s, so `{user}` holds `read-write` on it, without which the server refuses the
+mount, and doesn't own its root, which the mount doesn't need.
 
 **Settings.** A fixture sets only settings the server has. The storage RFCs (#2894) ask that
 fixtures use only the settings RFC 13, 14 and 16 define, which fix the NFSv4 lease at 90 seconds
@@ -900,7 +936,8 @@ root keeps its privileges, as both suites need.
 **Needs a fixture implies.** A fixture adds to its cell's `needs` what its fields require, so the
 cell doesn't start without them and `dt plan` places it where they're met: `service:localstack` for
 an S3 profile, `root` and `nfs-client` for an NFS mount or a namespaced `client`, `rpcbind` for
-`rpcbind: host`, `root` and `smb-client` for an SMB mount, `root` and `port:445` for
+`rpcbind: host`, `smb-client` for an SMB mount, and `root` with it on Linux, whose client mounts as
+root, while macOS's and Windows's mount as the user `dt` runs as, `root` and `port:445` for
 `smb: { port: 445 }`, and `docker` for `kerberos`, whose KDC is a container. They are for the
 fixture's own steps: only a suite's own `needs` make its commands run as root (§3).
 
@@ -923,8 +960,12 @@ The fixture gives the command these placeholders:
   names the server's principal after: Samba's client never uses Kerberos with an address.
 - `{nfs-port}` and `{smb-port}`: the ports its adapters listen on, free ones chosen per fixture,
   unless a field sets one, so cells can run side by side (§4.4). Cells whose fixtures set the same
-  port, or `rpcbind: host`, run one at a time.
+  port, or that both use the host's rpcbind (`rpcbind: host`, or a knfsd server), run one at a time
+  (§4.4).
 - `{client2}`: the second client's address, with `clients: 2`.
+- `{bucket}`: with an S3 profile, the request that lists the keys under the fixture's prefix in its
+  bucket, an S3 ListObjectsV2 URL, so a test can see what the server put there, as `clients`'s
+  `s3.sh` sees a block of a file it wrote reach S3.
 - `{mount}`: where the share is mounted, a path as short as today's `/tmp/dittofs-test`, so a
   test of path length such as pjdfstest's `open/03.t` measures the server, not the mount point.
 - `{realm}` and `{krb5-conf}`: with `kerberos`, its KDC's realm, and a `krb5.conf` that names the
@@ -967,9 +1008,9 @@ its server's output goes beside them, to `{out}/dfs.log` (§4.6).
 | Tier | Runs on | Contains | Budget (wall clock) |
 |---|---|---|---|
 | `pr` | every pull request (and `merge_group`, if a merge queue is ever available) | suites and options with `tier: pr`, narrowed by `select.pr` | p90 ≤ 20 min |
-| `merge` | every push to develop, that is, every merge | `pr` plus `tier: merge`, every profile | ≤ 60 min |
+| `merge` | every push to develop, that is, every merge, and to `main` and `feat/storage-v2` | `pr` plus `tier: merge`, every profile | ≤ 60 min |
 | `nightly` | schedule, and the dedicated host | everything except `manual` | ≤ 4 h |
-| `manual` | `dt run NAME`, or `workflow_dispatch` | benchmarks, comparisons, long simulations | none |
+| `manual` | `dt run NAME`, or `workflow_dispatch` | the benchmarks, comparisons and long simulations run by hand (§4.10) | none |
 
 Each tier contains the one below it: a quick run on every PR, the full set after every merge, and
 the long and heavy suites each night.
@@ -985,7 +1026,9 @@ its macOS and Windows options stay on `memory`, since their hosted runners can't
 **Blocking and non-blocking.** Within a tier, a suite or option with `blocking: false` runs and is
 reported, with its new failures annotated on the PR, but never fails the gate, and the gate doesn't
 wait for it (§4.8). That's the place for a check that should be seen before it can be trusted to
-block, such as the Windows unit run on PRs (§9). `blocking` may differ per tier.
+block, such as the Windows unit run and `bench-smoke` on PRs (§9, §4.10). `blocking` may differ
+per tier: both block after a merge and nightly, since a non-blocking cell's failure there posts
+nowhere.
 
 **Budgets.** These are proposals, against today's 25–40 min. Every result records its duration,
 and `dt history` gives p50 and p90 per suite, so moving a suite between tiers is a one-word change
@@ -1015,17 +1058,19 @@ dt plan --tier T [--base REF] [--shard I/N]    the cells a tier runs, each with 
    [--json]                                    --base REF compares the branch with REF for docs-only PRs and `paths`
    [--estimate [--ci] [--last N]]              and the tier's runner-minutes, from dt history
 dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] run, grade and write results; exit status below
-   [--tier T] [--only A,B] [--skip A,B] [--parallel N]
+   [--tier T] [--only A,B] [--skip A,B] [--parallel N] [--base REF]
 dt run --tier T --place P                      the cells of tier T that dt plan gives place P (the dedicated host)
 dt report [RUN] [--format text|md|json]        show a run; CI appends --format md to the job summary
-dt report [RUN] --failures [--post]            only the new failures; --post opens or updates an issue per failure
+dt report [RUN...] --failures                  only the new failures; --post CELL,... posts them, given a tier
+   [--post CELL,...]                           run's planned cells and its runs
+dt report RUN --commit-status NAME             set the commit status NAME on the run's commit, from its exit status
 dt history [SUITE[/TEST]] [--ci] [--last N]    pass, fail, skip and flaky counts over past runs, with durations
 dt doctor                                      which `needs` this machine meets, and how to meet the rest
 dt known prune SUITE [--ci] [--last N]         remove entries that matched no failing or skipping test in recent runs
 dt known import FILE.md KNOWN.yaml             convert a Markdown known-failure list into a known file, once;
    [--where AXIS=V,...]                        --where sets where its entries apply
 dt known baseline SUITE/CELL [RUN]             write a cell's results as its baseline file (smbtorture's)
-dt docs [--check]                              write the documentation's suite tables, or check them
+dt docs [--check]                              write the documentation's suite tables, or check them; check the RFCs' suites paragraphs
 ```
 
 The environment commands stay as they are: `dt services`, `dt stack`, `dt cleanup`, `dt hooks`,
@@ -1056,9 +1101,9 @@ left as it is. It edits the YAML only: while a suite keeps
 its Markdown list (§4.7), the Go test that compares the two names the rows to remove.
 
 **Cells.** `dt plan` names each cell by its suite, then its option, then its matrix values in the
-order the axes are written, then, for tests a `needs_by_test` entry sends elsewhere, the place they
+order the axes are written, then, for tests a `needs_by_test` entry splits off, the place they
 go to, and last `shard-I` when the suite has shards: `pjdfstest/badger-s3/4.1`,
-`smbtorture/kerberos`, `system/shard-2`, `system/dedicated`. `dt run pynfs/badger` runs every cell
+`smbtorture/kerberos`, `smbtorture/badger-s3/shard-2`, `system/dedicated`. `dt run pynfs/badger` runs every cell
 whose name begins with those segments. Shards split the tests of a cell on a shared place, dealt
 in turn so long and short tests spread evenly; a dedicated host runs its tests as one cell.
 `dt plan --shard I/N` deals the tier's cells the same way, for splitting a run across machines.
@@ -1079,12 +1124,21 @@ to Ubuntu. `dt plan --json` prints the tier and its cells:
 
 A cell lists `tests` only when it runs part of its suite's; `matrix`, `option`, `job` and `tools`,
 the test tools it takes from `{tools}`, appear when the cell has them. CI turns `place` into the
-job's runner and `timeout_minutes` into its `timeout-minutes`.
+job's runner, and `timeout_minutes` plus 15 minutes, for the job's other steps and for a suite run as
+root to stop, into its `timeout-minutes`: a job its own limit stops is cancelled, not failed, so a hung
+cell must reach the cell's limit first, which fails it.
 
 **Selecting what runs.** `dt run conformance` runs every suite in the group, and
 `dt run conformance --skip wpts` or `--only wpts,pynfs` narrows it. `--parallel N` runs up to N
-cells at once. That is safe only because each fixture gets its own ports, mount point and results
-directory. Today the suites share them and must run one at a time (`Makefile:108-111`).
+cells at once, 1 by default. Cells start in order, each once none running conflicts with it. A
+cell runs beside others only when its suite says `parallel: true` (§4.1); between two that do, dt
+still keeps apart, from their needs, which hold their fixtures': either needing free disk
+(`disk:N`), both needing the host's rpcbind (`rpcbind`, as `rpcbind: host` and a knfsd server
+give), and both needing the same port (`port:N`). The run's `{bin}` and `{tools}` are built and
+laid out once, before any cell starts. Everything else a suite holds of the host's is for whoever
+sets its `parallel` to check ([testing-parallel.md](../testing-parallel.md)). With more than one
+at once, each line a cell prints is led by its name, as `[CELL] `; its log keeps the lines as they
+are, and the summary and the results keep the cells' order.
 
 **The tier of a run.** `dt run` runs each suite or option it names at `--tier T`, `pr` by default,
 or at the suite's own tier when that is wider; `manual` counts as the widest, so
@@ -1096,24 +1150,48 @@ of the workflow run it belongs to, the fixed-name jobs (§4.8) included, so a pu
 `unit` without `-short`, as today.
 
 **Posting failures.** `dt report --failures --post` opens a GitHub issue for each new failure, or
-comments on the one already open for it, and lists them in the develop-status issue (§4.8). The
-first version is narrow, so it can't flood the tracker as #1705's alarm did:
-- it posts only from develop and nightly runs, never from PRs or laptops;
-- a test gets an issue only after it fails 2 runs in a row;
-- known, quarantined and flaky tests never get one;
-- issues are found again by a label and the test's ID, so a test has one issue;
-- a run with more than 10 new failing tests posts no issue per test: something systemic broke, and
-  the failing set goes to the develop-status issue only;
-- an issue carries the test, the failing line, the commit and the log link, and nothing about
-  customers or deployments, because issues are public. Planning detail of that kind goes in the
-  project board's private draft items.
+comments on the one already open for it, and lists them in the develop-status issue (§4.8). It
+takes the cells one tier run planned, and its runs, as in CI each cell's job writes a run of its
+own. A cell in several runs, a job re-run by hand, counts from the last by name, and a planned cell
+with no run, as one whose job died before it wrote its results, didn't run. With no run at all it
+fails and posts nothing, since no run shows it is develop's. Its token is `GITHUB_TOKEN`, and a
+request GitHub answers with a 5xx is sent once more. The first version is narrow, so it can't flood
+the tracker as #1705's alarm did:
+- it posts only from develop and nightly runs, never from PRs or laptops: it refuses a run whose
+  checkout wasn't on `develop` or whose tier isn't `merge` or `nightly`, and only `tests.yml`'s
+  `post` job and the dedicated host pass `--post`;
+- a test gets an issue only after it fails 2 runs in a row of its cell, which the develop-status
+  issue counts; an issue already open for it gets a comment instead. Either happens once: the
+  develop-status issue links the issue from then on. `dt` never closes a test's issue; whoever
+  fixes the test does;
+- known, quarantined and flaky tests never get one: only a result graded `new` does;
+- issues are found again by a label and the test's ID, so a test has one issue: the label
+  `develop-red`, and the title `CELL TEST fails on develop`, cut to the 256 characters GitHub
+  allows. The ID is the cell and the test, as CTRF names a test by its suite, so a test failing in
+  two cells has an issue in each. A test's issue GitHub refuses doesn't stop the post: the other
+  tests' issues and the develop-status issue are still written, and the post fails after them;
+- a tier run with more than 10 new failing tests posts no issue per test: something systemic broke,
+  and the failing set goes to the develop-status issue only;
+- an issue carries the test, the failing line (its message's first line), the commit and the log
+  link (its workflow run's page), and nothing about customers or deployments, because issues are
+  public. Planning detail of that kind goes in the project board's private draft items.
+
+**Commit status.** `dt report RUN --commit-status NAME` sets the commit status NAME on the run's
+commit: `success` for exit status 0, `failure` for 1, `error` for any other, described by the
+counts of passed tests, new failures and known ones, of cells that failed with no test to name,
+and of cells not run, and linked to the workflow run when there is one. It takes one run of the
+merge or nightly tier on develop, `main` or `feat/storage-v2`, the branches whose pushes run the
+merge tier, where `--post` takes develop's alone, and uses the same token. The dedicated host
+passes it for the cells it runs after a merge (§4.5), so a commit shows their result next to the
+workflow's.
 
 | Flag | Effect |
 |---|---|
 | `--ci` | non-interactive; GitHub annotations for new failures and unexpected passes, each by name, and for a cell that failed or didn't run with no test to name, once, with its note; a suite that can't run here is an error, not a skip. The job summary comes from `dt report` (§4.6) |
 | `--retry N` | re-run failed tests up to N times (default 0; CI passes 1 on develop and the schedule, never on pull requests, §4.7) |
-| `--in host\|container\|auto` | where to run; `auto` uses `dtc` when the host lacks a need the container provides |
+| `--in host\|container\|auto` | where the whole run happens: `host` here; `container` in `dtc`, which runs the same command with `--in host`, and whose exit status is the run's, any but 1 to 3 as 2; `auto`, the default, moves to `dtc` when Docker, which `dtc` runs in, is here, a cell needs what the host lacks and the container gives, and no cell needs what the host has and the container lacks, such as macOS. A cell `dtc` can't run, as one whose fixture has `users: self`, which refuses root, counts for neither, unless it runs here, which keeps the run here. With `--ci` the default is `host`: in CI the plan picks the place. Inside `dtc` the run stays there whatever `--in` says |
 | `--results DIR` | where results go (default `test/harness/results/`, gitignored) |
+| `--base REF` | the ref `{base}` stands for in the commands that use it, instead of the base dt finds (`origin/develop` here, the event's in CI); a ref that names no commit in the checkout stops the run before any cell starts |
 
 | Exit status | Meaning |
 |---|---|
@@ -1131,24 +1209,27 @@ alert in §4.8 treats them differently, which is the main defence against anothe
 `needs` names what a suite requires:
 - **platforms:** `linux`, `windows`, `macos`;
 - **privileges:** `root` (passwordless sudo);
-- **container engines:** `docker`, `podman`;
-- **system services and tools:** `rpcbind`, `knfsd`, `nfs-client`, `smb-client`,
+- **container engines:** `docker`, `podman` (5.6 or later, which the scenarios need, or Docker to
+  run it in its own image, below);
+- **system services and tools:** `rpcbind`, `knfsd`, `nfs-client`, `smb-client`, `smbclient`,
   `nfs4-acl-tools`, `kerberos`, `dm-flakey`, `fio`;
 - **resources:** `disk:<GB>`, `port:<n>` (nothing listens on it; a port below those an ordinary
   user may bind is checked by connecting to it on loopback, since only the fixture's capability binds
   it);
-- **hosts:** `host:dedicated`, met only by the dedicated test host;
+- **hosts:** `host:dedicated`, met only by the dedicated test host, which says it is one by running
+  `dt run --place dedicated`;
 - **infrastructure:** `cloud:<provider>` (credentials and provisioned infrastructure), and
   `service:<name>` for the services `dt services` starts (`localstack`, `postgres`, `kmip`).
 
-`dt doctor` reports which are met. For an unmet need, `dt run` either moves to the `dtc` container
-(when it provides it and `--in` allows), or reports the suite as not run, with the reason. It is
+`dt doctor` reports which are met. For an unmet need, `dt run` either moves the whole run to the
+`dtc` container (when it provides it and `--in` allows, §4.4), or reports the suite as not run, with the reason. It is
 never reported as passed. Without `--ci` such a cell is skipped: the run's status comes from the
 cells that ran, so `dt run go` on a laptop still checks what it can, and a run where nothing ran
 is exit 2. With `--ci` it is an error, exit 2 (§4.4). In CI, `dt plan` gives each cell its place from the same list: `windows`
 and `macos` get those hosted runners, a cell needing `host:dedicated` or more disk than a runner has
 gets the dedicated host, and everything else Ubuntu. A `needs_by_test` entry splits its tests into
-cells of their own, so the 9x scenarios go to the host and the rest of `system` stays on runners.
+cells of their own, so the 9x scenarios, which need the host's disk, run apart from the rest of
+`system`, which needs the host too.
 
 There are three places to run:
 
@@ -1156,33 +1237,57 @@ There are three places to run:
 |---|---|---|
 | A developer's machine | the host, or `dtc` (pinned Linux toolchain, privileged) | anything the machine can meet; macOS runs Linux-only suites in `dtc` |
 | GitHub-hosted runner | Linux, 4 CPU, 16 GB RAM, 14 GB SSD (public repositories); the Ubuntu 24.04 image has Docker, podman 4.9.3 and Go 1.26.8. Windows runners are Windows Server 2025, and macOS runners are available | the `pr` and `merge` tiers, the nightly suites that fit, and the `clients` options |
-| Dedicated test host | a large disk and long run times | nightly suites a runner can't hold: the 9x long runs, such as scenario 92, which grows a 30 GB file |
+| Dedicated test host | a large disk and long run times | the system scenarios after each merge, and nightly suites a runner can't hold: the 9x long runs, such as scenario 92, which grows a 30 GB file, and the performance night |
 
 **Windows clients on a hosted runner.** The runner's own system owns TCP port 445, which is why
 `smb-client-compat.yml`'s Windows job skipped `net use` on most runs from mid-September (#2994),
 until it was dropped: it tested nothing. Since Windows Server 2025, which the hosted runners are,
 the SMB client can connect on another port: `net use \\localhost\share /TCPPORT:12445`, or
-`New-SmbMapping -TcpPort`. So the fixture mounts on DittoFS's own port, and port 445 isn't needed.
-This still needs one run to prove it end to end.
+`New-SmbMapping -TcpPort`. So the fixture maps the share on DittoFS's own port with
+`New-SmbMapping`, which takes the password from the environment where `net use` would show it on
+its command line, and port 445 isn't needed. A dispatched run proved it end to end on 2026-10-22
+(run 39835268616): the hosted runner's client mapped the share at SMB 3.1.1, and the old job's
+checks passed over it.
 
 **Scenarios on a runner.** They need podman 5.6 or later (`test/scenarios/README.md`), and the
 hosted image has 4.9.3. So on a runner they use the path the README already gives for macOS:
 `setup.sh` inside `quay.io/podman/stable`, privileged. The README limits that to a VM, never a
 shared host, and a hosted runner is a single-use VM, so macOS and CI share one code path.
+`dt` takes that path itself. A machine whose podman is missing or older than 5.6 meets the
+`podman` need with Docker, and `dt` then runs each of the cell's commands in that image, at a
+pinned version, as the README's command does: privileged, as the image's user `podman`, with
+podman's own configuration, the checkout at `/src/dittofs`, and the README's two volumes, which
+keep podman's images and `setup.sh`'s cache from one scenario to the next. Before the first test
+it pulls the image and gives the cache volume and all in it to that user, as fixture steps (§4.2). A
+host whose own podman is new enough, as the dedicated host's, runs `setup.sh` on it, and one whose
+podman fails doesn't meet the need, so neither starts the privileged container. On macOS, `dtc`
+gives the cell its Linux and Docker its podman. `setup.sh` ran `apt-get update` for every scenario,
+which stalled for minutes on hosted runners, and now updates apt's lists once per runner. The
+suite runs on the dedicated host alone (below). Should the host be down for long, dropping
+`host:dedicated` from its `needs`, with `shards: 4` and `blocking: false` back, returns it to
+runners until a week of develop runs has no apt stall.
 
 **The dedicated host is not a self-hosted runner.** GitHub's guidance is that "self-hosted runners
 should almost never be used for public repositories", because any pull request could run code on
 them. The host runs `dt run --tier nightly --place dedicated` from cron, on develop's latest commit
-only: just the cells hosted runners can't take, so it doesn't repeat the hosted nightly. It
-publishes its summary to the develop-status issue (§4.8) with a token that can only write issues.
+only: just the cells hosted runners don't take, so it doesn't repeat the hosted nightly. It
+publishes its summary to the develop-status issue (§4.8). Between nightly runs it checks the heads
+of develop, `main` and `feat/storage-v2` every 10 minutes, and when one has moved and nothing else
+runs on the host, it runs `dt run --tier merge --place dedicated --ci` on that commit, the system
+scenarios, and sets the commit status `system (dedicated)` with `dt report --commit-status`
+(§4.4); only develop's new failures go to the develop-status issue. Merges that land during a run
+are taken together by the next one, at the newest. The status isn't required, as the
+workflow's merge run isn't: both come after the merge. Its token can write issues and commit
+statuses, and nothing else.
 
-**Versions come from one place.** Today Go is `1.26.0` in `go.mod`, `1.26.x` in the workflows,
-`1.26.8` in the `dtc` image, and a floating `1.26` in the e2e-linux image. The pjdfstest and pynfs
-revisions are copied into Dockerfiles from `flake.lock`, and CI builds the tools with
-`nix build .#pjdfstest` and `.#pynfs`. Proposed: one Go pin (a `toolchain` line in `go.mod`), read
-by the workflows and the images. The test tools stay pinned in `flake.lock`: CI and laptops with
-Nix build them from it, as today, and `lint-repo` fails a Dockerfile whose copied revision differs
-from it. Only Linux cells use the tools, so no macOS or Windows cell needs Nix.
+**Versions come from one place.** Go is one pin, the `toolchain` line of `go.mod`: the workflows
+read it (`go-version-file`), and `lint-repo` fails an image whose `golang` tag (the root, operator
+and dtc Dockerfiles), or the operator's module whose `toolchain` line, names another release. The
+`go` line stays the oldest release the module builds with. golangci-lint is one version too:
+`lint-repo` fails a pin in `tests.yml` or the operator's Makefile other than the dtc image's.
+The test tools stay pinned in `flake.lock`: CI and laptops with Nix build them
+from it, and `lint-repo` fails a Dockerfile whose copied revision differs from it. Only Linux
+cells use the tools, so no macOS or Windows cell needs Nix.
 
 ### 4.6 Results
 
@@ -1197,12 +1302,22 @@ test/harness/results/20261007T201500Z-d0efaa75/
   report.md           what `dt report --format md` prints
   logs/*.log          one per cell, with the command, commit, exit status and duration
   CELL/               each cell's {out}: what its tool writes, and dfs.log, its server's output
+    failed/SCENARIO/  a failed scenario's logs, from setup.sh's cache
 ```
 
 A fixture's `dfs` writes its output to `dfs.log` in its cell's `{out}`, beside the cell's results,
 and `dt` keeps it after the server stops, whatever the cell's result. So the server's own log is
 one file per cell, apart from `dt`'s log of the cell in `logs/`, and a check of what the server
 logged, such as a search of its lines for a planted secret, reads it there.
+
+A scenario run in podman's image (§4.5) keeps its logs in the cache volume, which a hosted runner
+loses with its VM. So when one fails, `dt` copies the logs `setup.sh` kept for it, its trace and the
+server's and the S3's logs, into `{out}/failed/SCENARIO/`: the last 4 MiB of each file, so a
+scenario that fails on gigabytes uploads megabytes. One that `dt` stopped at its limit gets those of
+its run so far, which `setup.sh` never got to keep. `dt` also prints, in the cell's log, how much
+disk is free where the volumes are once the scenario's container is gone, which is what the scenario
+had to start with: a full disk is the first suspect of one that writes gigabytes. A host whose own
+podman runs `setup.sh` keeps the logs in its own cache.
 
 ```json
 {
@@ -1222,7 +1337,8 @@ logged, such as a search of its lines for a planted secret, reads it there.
       { "name": "rename/09.t", "suite": ["pjdfstest", "badger-s3", "4.1"], "status": "passed",
         "duration": 3310, "flaky": true, "retries": 1 }
     ],
-    "environment": { "commit": "d0efaa75", "branchName": "develop", "osPlatform": "linux" },
+    "environment": { "commit": "d0efaa75", "branchName": "develop", "osPlatform": "linux",
+                     "osRelease": "6.17.0-1022-azure" },
     "extra": {
       "run": "20261007T201500Z-d0efaa75", "dirty": false, "tier": "merge", "in": "host", "exit": 1,
       "cells": [
@@ -1235,10 +1351,13 @@ logged, such as a search of its lines for a planted secret, reads it there.
 }
 ```
 
-The numbers and outcomes above are illustrative; the passing tests are left out. A cell's `result`
-is `passed`, `failed`, `skipped` or `not run`, and its `note` says why, as `dt run` prints it. A
-cell that a cancel or an interrupt stops is `not run` and keeps no per-test results: what its
-tests report after the interrupt can come from the interrupt itself.
+The numbers and outcomes above are illustrative; the passing tests are left out. `osRelease` is the
+kernel the run was on, as `uname -r` gives it. `place` is the place `--place` named, and is left
+out of a run without one, so the dedicated host's nightly run reads apart from one run by hand.
+A cell's `result` is `passed`, `failed`, `skipped`
+or `not run`, and its `note` says why, as `dt run` prints it. A cell that a cancel or an interrupt
+stops is `not run` and keeps no per-test results: what its tests report after the interrupt can
+come from the interrupt itself.
 
 **Formats.** A format is a standard way a tool reports per-test results, not a kind of suite.
 There are seven, each read by one reader in `dt`:
@@ -1320,7 +1439,12 @@ where one fails.
 
 The `system` suite is `exit` per scenario file. When another run holds its lock, `setup.sh` runs
 nothing and exits 75 (since #3018; it used to exit 0, #3000). `dt` reads 75 as not run, exit 2, and
-doesn't take the lock itself, so `setup.sh` stays the lock's only owner.
+doesn't take the lock itself, so `setup.sh` stays the lock's only owner. The suite's `env` sets
+`SLACK_DIR` to a directory that doesn't exist, so `setup.sh` posts nothing to the scenarios' Slack
+channel from a run through `dt`, which reports its results itself; its own runs, such as the
+scenario cron on the dedicated host, keep their messages. The dedicated host's nightly is a `dt`
+run too, and its `perf-night` cell posts the night's figure: its `env` gives `SLACK_DIR` the bot's
+directory (§4.10).
 
 **Metrics.** `metrics` reads numbers, not results: `fio-json` takes bandwidth, IOPS and latency
 per job from fio's JSON, and fails a job whose `error` field is non-zero, a failed verify
@@ -1376,7 +1500,8 @@ CTRF is at version 0.1.0, so `dt` writes one pinned version (§7).
 **In CI**, a step after `dt run` that runs even when it failed or was stopped (`if: always()`)
 appends `dt report --format md` to the job summary. It is the summary's only writer: `dt run --ci`
 writes none, and `dt` rewrites `summary.json` after every cell, so a run that a timeout or a cancel
-stops still reports the cells it finished. This one shared step replaces the ten inline summary
+stops still reports the cells it finished. Until its last cell is done, its exit status counts the
+cells still to run as not run, so a run stopped or killed partway never reads as passed. This one shared step replaces the ten inline summary
 steps, including the two that always print green. `summary.json` and `junit/` are uploaded
 as artifacts. `dt history --ci` reads the last N develop runs' artifacts through the GitHub API;
 the default 90-day retention covers flake rates. Benchmark trends need longer, and can move to a
@@ -1464,7 +1589,8 @@ file, and `dt known import` converts the old lists once.
   Markdown list's tables of tests has no entry in its `known.yaml` that applies where the list does,
   or a known failure in `known.yaml` that applies there has no row in the list, so a change to one
   is made to both; an expected skip needs no row. An entry applies there unless its `where` gives
-  the list's axis other values. The hand-written Markdown lists go with the scripts.
+  the list's axis other values. The hand-written Markdown lists go with the scripts, and the
+  test with smbtorture's, the last it read.
 - **One matcher.** An entry's `test` matches as a row of today's lists does: an exact name; a
   trailing `.*`, which matches every name that starts with what comes before it (`smb2.lock.*`
   matches `smb2.lock.rw` and also `smb2.locking`); a shell glob (`flock/*`, `utimensat/0?.t`); and
@@ -1571,13 +1697,16 @@ then green, a regression shows as a new failure, and a fix shows as an unexpecte
 
 One workflow, `tests.yml`, runs every registered suite:
 
-- **Triggers:** `pull_request` runs tier `pr`, a push to develop `merge`, the schedule `nightly`,
-  and `workflow_dispatch` the tier it's given. Pull requests are those to `develop`, `main` and
-  `feat/storage-v2`, as the workflows it replaces take them.
+- **Triggers:** `pull_request` runs tier `pr`, a push `merge`, the schedule `nightly`, and
+  `workflow_dispatch` the tier it's given, only one suite's cells when it names a suite. Pull requests and pushes are those to `develop`, `main`
+  and `feat/storage-v2`, as the workflows it replaces take them. Only develop's results alert or
+  post: the develop-status issue, a test's own issue (§4.4) and `ci-health.yml` read develop's
+  runs alone.
 - **Jobs:**
   - `plan` runs `dt plan --tier T --json`.
   - `run` is a matrix over its cells, each `dt run CELL --tier T --ci` on the runner `dt plan`
-    named (`ubuntu-latest` for `ubuntu`), with `--retry 1` on develop and the schedule, never on
+    named (`ubuntu-latest` for `ubuntu`), less the cells it places on the dedicated host, which runs
+    them itself (§4.5), with `--retry 1` on develop and the schedule, never on
     PRs, nor on a dispatch. Each job is named after its cell, and uploads its results as the
     artifact `dt-run-CELL-ATTEMPT`, the cell's name with `-` for `/`, without `{bin}` and `{tools}`.
     A cell with `tools` gets nix and the shared nix cache; on a push it builds them as
@@ -1586,18 +1715,28 @@ One workflow, `tests.yml`, runs every registered suite:
   - `gate` needs every job that runs a blocking cell, and always runs. It merges the summaries
     into one report: its job summary is each blocking cell's `report.md`, one after another, from
     the cell's latest attempt. It
-    fails unless `plan` and every `run` job passed, which a `run` job does only when its cell
-    exited 0.
+    fails unless `plan` passed and every other job it needs passed or was skipped: a `run` job
+    passes only when its cell exited 0, and a fixed job (below) is skipped when the plan has no
+    cell of its suite.
   - Non-blocking cells run in a second matrix the gate doesn't wait for, so a slow non-blocking
     cell, such as the Windows unit run, doesn't lengthen the PR. Their new failures are annotated,
     and a failed job still shows on the PR. It is the job `non-blocking`, and its artifacts
     `dt-non-blocking-CELL-ATTEMPT`, so the gate's report doesn't take them. It has
     `continue-on-error`, so a failed one doesn't fail the workflow run, whose result is what
     `ci-health.yml` reads as develop's.
+  - `post` runs after `gate`, on a push to develop and on the schedule only, and not for a
+    cancelled run: `dt report --failures --post` over the blocking cells `plan` gave and the results
+    of every job `gate` waits for, whichever they are, with a token that can write issues and
+    nothing else (§4.4). It runs when `plan` or `gate` failed too, and fails when it has nothing to
+    post. It has `continue-on-error`, so a failed post, as when
+    GitHub answers a request with a 5xx twice in a row, doesn't turn the run red, and a
+    concurrency group of its own that cancels nothing, so posts run one at a time and a merge run's
+    and a nightly run's never overwrite each other's. Non-blocking cells don't post: they never
+    fail the gate, so they never make develop red.
 - **Moving in:** while the suites move into `tests.yml` (§8 step 3), `plan` keeps only the cells
-  of the suites that have moved, pynfs first. A suite joins by being added to that filter, with
-  any step its cells need that `run` doesn't give yet, such as a service; the filter goes once
-  every suite runs there.
+  of the suites that have moved, pynfs first. A suite joins by being added to that filter, less
+  the options that move later, with any step its cells need that `run` doesn't give yet, such as
+  a service or a package; the filter goes once every suite runs there.
 - **Concurrency:** as the other workflows: a newer run of a pull request cancels the older, and
   a scheduled run has a group of its own, so it and a push never replace each other. A push waits
   for the run in progress, and a newer push replaces it while it waits: pushes that land faster
@@ -1607,10 +1746,23 @@ One workflow, `tests.yml`, runs every registered suite:
   Because the gate needs every blocking job, a failing job can't hide behind a green summary, as
   the nightly's baseline job did from 2026-09-10 (#2997).
 - **Lint:** the suites with a `job` run as fixed jobs of that name: `Go Checks`, `Repo Checks` and
-  `ShellCheck`, each `dt run NAME --tier T --ci`, with the workflow run's tier. They move here from `lint.yml` with their names, so the
-  develop ruleset's required checks don't change. `Go Checks` also vets every build-tagged test,
-  as #3002 added. `unit` and `integration` run the same way, as `Unit Tests (1.26.x)` and
-  `Integration Tests (1.26.x)`, until the ruleset requires the gate. On a push to develop,
+  `ShellCheck`, each `dt run NAME --tier T --ci`, with the workflow run's tier and retry. They move here from `lint.yml` with their names, so the
+  develop ruleset's required checks don't change. They don't wait for `plan`, so a docs-only
+  change, which plans no cell, still has its commits and the suite tables checked. `Go Checks`
+  also vets every build-tagged test, as #3002 added, and runs `go mod verify`, as the unit jobs
+  did. `unit` and `integration` run the same way, as `Unit Tests (1.26.x)` and
+  `Integration Tests (1.26.x)`, until the ruleset requires the gate, except that each waits for
+  `plan` and is skipped when the plan has no cell of its suite, which passes the required check.
+  When `plan` fails they run, so a required check never passes on a plan that wasn't made.
+  `Integration Tests (1.26.x)` starts its services with `dt services up postgres kmip`, and runs
+  `integration`'s Kerberos and portmap options as steps after the suite, each even when one
+  before it failed, as the old job ran them, rather than as `run` cells, which only `gate` waits
+  for. `Unit Tests (1.26.x)` uploads the coverage profile `unit` writes to its `{out}` to Codecov, as
+  the unit job did, unless a retry rewrote it with the retried tests' alone. Codecov's project
+  check, set in `codecov.yml`, fails only on a drop of more than 0.5% in total coverage, since the
+  profile moves by up to about 0.1% between runs of the same code. A fixed job's
+  artifact is `dt-run-SUITE-ATTEMPT`, and `gate` needs every fixed job, so its report has theirs
+  too. On a push to develop,
   `{base}` is the commit before the push, so the commit checks still cover commits pushed straight
   to develop. The new-package check, which runs on pull requests only today, runs on pushes too,
   by intent: the commit before a push is as good a base for its merge base. Where there is no
@@ -1630,7 +1782,8 @@ One workflow, `tests.yml`, runs every registered suite:
 `Tests / gate` replaces the per-workflow test checks as the required one, once the `pr` tier has
 been green for two weeks (§9). The PR that makes it required also drops `Unit Tests (1.26.x)` and
 `Integration Tests (1.26.x)` from the ruleset and their `job` names from the registry, in one
-change, so no PR waits for a check that no longer reports. A single gate that always runs avoids
+change, so no PR waits for a check that no longer reports, and `integration`'s Kerberos and portmap
+options go back to being cells of the plan. A single gate that always runs avoids
 GitHub's path-filter trap by construction.
 
 GitHub's merge queue is "available in any public repository owned by an organization". This
@@ -1658,15 +1811,18 @@ file was last written on 2026-10-20, from a `badger-s3` run. Both are manual:
 - `dt run pynfs --knfsd` runs the comparison, graded against pynfs's own known list: its known
   failures are the tests both servers fail, its new failures those only the kernel's server fails,
   and its unexpected passes the entries the kernel's server passes, which are DittoFS's alone. Its
-  results are a run's like any other's; pynfs's `baseline-knfsd.sh` and the `baseline-knfsd.md`
-  it writes go with `nfs-pynfs.yml`'s baseline job (§8 step 3).
+  results are a run's like any other's. In CI, a dispatch of `tests.yml` at the `manual` tier runs
+  it, its cells non-blocking, on a runner that installs the kernel's server and stops the one the
+  package starts. It replaced `nfs-pynfs.yml`, pynfs's `baseline-knfsd.sh` and the
+  `baseline-knfsd.md` it wrote (§8 step 3).
 
 The nightly job that pushes the file to develop goes. It has failed every night since the ruleset
 began requiring pull requests.
 
-**What moves when.** The AD-DC, Kerberos and Windows runs and the performance gates are options of
+**What moves when.** The AD-DC and Kerberos runs and the performance gates are options of
 registered suites, and their workflows move into `tests.yml` after the main ones (§8 step 3); until
-then they keep running as they are.
+then they keep running as they are. The Windows run, and integration's Kerberos and portmap
+options, ran in the unit and integration workflows, and move with them.
 
 Four things stay outside the registry:
 - **the security scans,** gitleaks and CodeQL (Analyze (go)), which are GitHub actions;
@@ -1675,22 +1831,35 @@ Four things stay outside the registry:
 - **the canary** on `dev/test-harness`, which watches a live deployment rather than a commit;
 - **nfstest's knfsd baseline,** `nfs-knfsd-baseline.yml`, a dispatch-only evidence job (§3).
 
-`smb-client-compat.yml` keeps running until the `clients` suite's results match it, and then goes.
+`smb-client-compat.yml` went once the `clients` suite's results matched it on each OS.
 
-**Develop goes red.** This extends `ci-health.yml` and watches `tests.yml`, plus any workflow still
-outside it:
+**Develop goes red.** `tests.yml`'s `post` job does this for `tests.yml`, and the dedicated host for
+its own cells (§4.5). A workflow still outside `tests.yml` runs no `dt`, so it has no failing set
+to post: it keeps `ci-health.yml`'s warning on pull requests until it moves in.
 
 - A merge-tier or nightly run that still exits 1 after `dt`'s retry, with new failures or
-  unexpected passes, opens one issue labelled `develop-red`, or updates it if one is open.
+  unexpected passes, opens one issue labelled `develop-red`, or updates it if one is open. It is
+  the develop-status issue, titled `develop is red`, since the earlier alarm's issues carry the
+  label too. It is always the same issue: the first post creates it, and later posts reopen and
+  close it, so it remembers a cell not run once while develop is green.
 - The issue body is the current failing set, from `summary.json`, with links to each failure's own
-  issue (§4.4). It's rewritten, not commented, so watchers get one notification per change, not per
-  run. A comment is added only when the set of failing tests changes.
-- It closes once nothing in its failing set fails a run on develop any more, in whichever tier runs
-  it: each new failure has passed again, or been listed as a known failure or quarantined; each
-  unexpected pass has had its entry removed; and a test that no longer exists (renamed or deleted)
-  leaves the set. A green run of another tier doesn't close it: a merge-tier run doesn't include the
-  nightly suites, so it would close a nightly failure that reopens the next night.
-- Exit 2 (an environment problem or lost coverage) alerts only after two consecutive runs.
+  issue (§4.4), and, as JSON in a comment at its end, the set and the run posted last, which the
+  next post reads: a re-run of the same workflow run posts nothing, so a run counts once. A cell
+  that failed with no test to name is in the set as itself, as `dt run --ci` annotates it. The body
+  is rewritten, not commented, so watchers get one notification per change, not per run. A comment
+  is added only when the set of failing tests changes while the issue stays open; opening and
+  closing it notify by themselves. The body keeps 50 entries, the alerting ones first, then by cell
+  and test, within what GitHub allows.
+- A run sets the entries of the cells it ran and keeps the rest; a cell that didn't run keeps its
+  tests' entries, since it says nothing of them. The issue closes once nothing in its failing set
+  fails a run on develop any more, in whichever tier runs it: each new failure has passed again, or
+  been listed as a known failure or quarantined; each unexpected pass has had its entry removed; and
+  a test that no longer exists (renamed or deleted) leaves the set. A green run of another tier
+  doesn't close it: a merge-tier run doesn't include the nightly suites, so it would close a nightly
+  failure that reopens the next night. Closing the issue by hand clears its set but for the cells
+  not run once: that is how the entries of a cell that no longer exists leave it.
+- Exit 2 (an environment problem or lost coverage) alerts only after two consecutive runs of the
+  cell.
 - Known failures, expected skips and quarantined tests never alert.
 - E-mail comes from GitHub's own issue notifications: repository watchers, and anyone the issue
   mentions. No mail secrets in the repository.
@@ -1717,19 +1886,35 @@ only when the failing set changes.
 - **A component:** its RFC under `docs/internals/rfcs/` names the suites and groups that cover it
   (R11), so whoever implements the journal, say, knows which suite to extend and adds it to the
   `journal` group. Groups for the components (`journal`, `syncer`, `engine`) are added this way,
-  as their RFCs are revised.
+  as each gets a suite of its own. The names are in one paragraph that starts with **Suites.**,
+  at the end of the RFC's test section, and say which planned checks no suite runs yet.
+  `dt docs --check` fails on an RFC without one and on a name in it that isn't a suite, a group
+  or an option (`suite/option`) of the registry, so a renamed suite can't leave an RFC behind.
+
+**Suites.** `lint-repo` runs dt's own tests and its docs check, which holds every RFC's suites
+paragraph to the registry; `unit` runs the tests of the command, under cmd/dt.
 
 ### 4.10 Benchmarks and long runs
 
 Performance is tracked, not gated. Hosted runners share hardware and are too noisy to fail a PR on
 a percentage.
 - **Checks that the benchmarks still work:** `bench-smoke` (`dfsbench run --smoke`, documented as
-  needing no secrets) runs on PRs, non-blocking, as `bench-smoke.yml` does today. `unit --nonrace`
-  runs nightly: the throughput and allocation gates that skip under `-race` and `-short` today
-  (#2999). The aggregate random-write gate joins once it has a baseline: without one it passes
-  whatever it measures.
-- **Comparisons** run on the dedicated host. A suite whose result is more than an agreed margin
-  below its 7-day median for three nights in a row adds a note to the develop-status issue.
+  needing no secrets, and a parse of the mailbox job files, which `dfsbench` doesn't run) runs on
+  every PR but a docs-only one, where `bench-smoke.yml` ran only on those that touched the
+  benchmark paths, and after every merge and nightly. It is non-blocking on PRs and blocks after a
+  merge and nightly, and writes its results to its `{out}` (§4.6). `unit --nonrace` runs nightly,
+  and blocks there: the throughput and allocation gates that skip under `-race` and `-short`
+  (#2999). A gate that trips again on the retry turns the nightly run red and posts, as
+  `perf-gates.yml`'s run went red, and fails no PR. The aggregate random-write gate joins once it
+  has a baseline: without one it passes whatever it measures.
+- **Comparisons** run on the dedicated host, as the `perf-night` suite, first in its nightly run:
+  `bench/ditto/night.sh` measures DittoFS against Samba over SMB, point by point, and flags a
+  point, an area or the night's figure that falls below its 7-day median by more than its noise
+  band, which a calibration week's repeats set. Slack gets the night by the scenarios' rules. The
+  night ends five minutes before `dt`'s limit (`STOP_AFTER`), so one that overruns still cleans
+  up and posts: `dt` kills at its limit with no cleanup. The
+  cell fails when a step fails or times out, or the night can't be scored, and so reaches the
+  develop-status issue (§4.5); a flag fails nothing.
 - **Manual suites on the dedicated host:** the metadata-scale benchmark (many files, metadata
   only) and the journal simulation (many small files against large segments under heavy writes).
   They use the same result format, so runs compare over time.
@@ -1793,7 +1978,8 @@ a percentage.
 ## 7. Risks
 
 - **One bug in `dt` breaks all of CI.** A workflow moves only once its `dt` cells match its old
-  job (§8), so the old job is there until then. `dt`'s own tests run in `lint-repo` on every PR.
+  job (§8), so the old job is there until then, unless it ran the commands `dt` runs. `dt`'s own
+  tests run in `lint-repo` on every PR.
 - **The `pr` tier misses something.** The merge tier runs after every merge, and the alert names
   the failing set. The cost is a red develop for one merge, not a lost regression.
 - **Expected-skip lists grow into a dumping ground.** Every entry needs a reason and a category,
@@ -1855,20 +2041,25 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      same known failures and the same tests run, counted as the tests that passed or failed,
      expected skips excluded, as smbtorture's failed `CSN 0x7fff` draw is (§4.6). A
      difference whose cause is listed beforehand doesn't reset the count: what `dt` grades that
-     the scripts don't, such as skips and tests with no result (§4.6, §4.7), and where the server
-     runs (§4.2). So `dt`'s skips and tests with no result aren't compared, and a `dt` cell they
-     alone leave not run is as green as the scripts'. A cell whose scripts' grader stopped before
-     grading each test, as it does when one has no result, compares only its verdict, and differs
-     when the scripts pass it. pynfs's scripts reached the server at the host's address, as `dt`
-     does (§4.2); a test whose difference comes from where its server runs is named, with the
-     cause, in the comparer before the runs it is excused in. None is named yet.
+     the scripts don't, such as skips and tests with no result (§4.6, §4.7), a known failure whose
+     entry is `intermittent` between two kernels (§4.7), and where the server runs (§4.2). So
+     `dt`'s skips and tests with no result aren't compared, and a `dt` cell they alone leave not
+     run is as green as the scripts'. An `intermittent` entry's test fails on some kernels only,
+     and the two sides of a cell may run on different ones, so where both name a kernel and the two
+     differ, it isn't compared as a known failure, while the cell's verdict and its tests run still
+     are; on the same kernel, or where a side names none, it is. A cell whose entries the
+     checkout's registry can't find differs. A cell whose scripts' grader stopped before grading
+     each test, as it does when one has no result, compares only its verdict, and differs when the
+     scripts pass it. pynfs's scripts reached the server at the host's address, as `dt` does
+     (§4.2); a test whose difference comes from where its server runs is named, with the cause, in
+     the comparer before the runs it is excused in. None is named yet.
    - **Where:** non-blocking parity jobs beside the scripts' jobs in `conformance.yml` and
      `nfs-pynfs.yml`, on the schedule and on `workflow_dispatch` only, not on pushes to develop.
      They run the cells of the workflow's suites that `dt plan --json` gives, less their options,
      which come in step 3: each `dt run CELL --ci`, at the tier the scripts run at, `nightly` on
      the schedule and on a dispatch naming a suite, and `merge` on another dispatch. cthon04 and
-     nfstest, whose scripts run after no merge, have parity cells at `nightly` only, and so does
-     smbtorture's Kerberos option, which joins in step 3. A last job
+     nfstest, whose scripts run after no merge, have parity cells at `nightly` only, as
+     smbtorture's Kerberos option had from step 3 until it moved. A last job
      compares the two sides' results for each planned cell, writes the comparison to its summary,
      and fails when a cell differs, as a planned cell missing on either side does, or when there
      is none to compare: its result is what the 5 runs count. None of these jobs fails the
@@ -1876,27 +2067,32 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      moves into `tests.yml` (step 3).
    - **The comparer** is `test/conformance/parity`, and goes with `run.sh`. It pairs the cells by
      name, as the scripts' results directories name them (`pjdfstest/badger-s3-4.1` for `dt`'s
-     `pjdfstest/badger-s3/4.1`). For it, `run.sh` saves each cell's exit status, and each grader its
-     grades: each failure, known or new, and the tests run. smbtorture's Kerberos job, which runs
-     its three filters one at a time without `run.sh`, saves the same for its one cell, with the
-     tests run only when each filter's grader counted them.
+     `pjdfstest/badger-s3/4.1`). For it, `run.sh` saves each cell's exit status and the kernel it
+     ran on, and each grader its grades: each failure, known or new, and the tests run.
+     smbtorture's Kerberos job, which ran its three filters one at a time without `run.sh`, saved
+     its exit status and grades for its one cell, with the tests run only when each filter's grader
+     counted them. The comparison names the kernel each side ran on, `dt`'s from its run's
+     `osRelease` (§4.6).
    - For the conformance suites, these are the 5 runs step 3 asks for. The CI jobs that don't run
      through `dt` yet publish through `dt report` when step 3 moves them.
 3. **One workflow and a gate.** `tests.yml` with plan, run and gate.
    - Move `nfs-pynfs.yml` first, as the smallest, then `conformance.yml`, then the unit, Windows,
-     integration, operator and lint jobs, the lint, unit and integration jobs keeping their names.
-     Then AD-DC, the Kerberos runs, the performance gates and `bench-smoke.yml`. When pynfs's
-     cells move, `nfs-pynfs.yml` keeps only its knfsd baseline, on dispatch, until
-     `dt run pynfs --knfsd` replaces it (§4.8), and leaves `ci-health.yml`'s lists, since it no
-     longer tests a commit.
-   - `ci-health.yml` watches `tests.yml` beside the workflows still outside it, from its own list
-     once `suites.json` goes (§4.1), and stops re-running `tests.yml`'s failed jobs, since `dt`'s
-     retry replaces that.
+     integration, operator and lint jobs, the lint, unit and integration jobs keeping their names,
+     and `e2e-tests.yml`, non-blocking on PRs until it has a week with no failure on develop.
+     These move without running beside their old jobs: those ran the commands `dt` runs, and a job
+     that keeps its check name can't report beside an old job of that name. So do AD-DC, the
+     performance gates and `bench-smoke.yml`, whose jobs ran `go test` and `dfsbench run --smoke`
+     with the mailbox job files' parse. When pynfs's cells moved, `nfs-pynfs.yml` kept only its
+     knfsd baseline, on dispatch, and left `ci-health.yml`'s lists, since it no longer tested a
+     commit, until `dt run pynfs --knfsd` replaced it (§4.8).
+   - `ci-health.yml` watches `tests.yml` from its own list once `suites.json` goes (§4.1), and
+     re-runs no workflow's failed jobs once `conformance.yml` goes, since `dt`'s retry replaces
+     that.
    - The suites move in parallel. Each old job runs beside its `dt` cells until their results
      match on 5 consecutive runs (for the conformance suites, step 2's), and the PR that removes
      the old job deletes that suite's scripts. A script that an old job still running uses stays
-     until that job moves too: smbtorture's, which its Kerberos job runs, until the Kerberos runs
-     move.
+     until that job moves too, as smbtorture's, the Compose stack they ran on and their Markdown
+     lists stayed until its Kerberos job moved.
    - `dt docs` replaces `check-docs.sh` as the conformance suites move, and not before, so the
      documentation's suite tables always describe what CI runs (§4.1).
    - `run.sh`, `suites.json`, the NFS `sec=krb5` job and the Makefile's `test-*` targets go with
@@ -1904,22 +2100,27 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    - `dt known baseline` replaces the nightly job that pushes smbtorture's baseline file to
      develop, which fails every night (#2997).
    - Make the gate required, in the same change that drops `Unit Tests (1.26.x)` and
-     `Integration Tests (1.26.x)` from the ruleset (§4.8).
+     `Integration Tests (1.26.x)` from the ruleset and makes `integration`'s options plan cells
+     again (§4.8).
 
    *Exit:* PR p90 ≤ 20 min over a week, the gate required, and none of §3's 35 scripts left.
 4. **System scenarios, clients and fio.** The `system` suite, its known list, its exit 75 read as not
    run, and the podman-in-container path on runners. The `clients` suite on Linux, macOS and Windows,
-   and then `smb-client-compat.yml` goes. Groups 0x–8x run in the merge tier, sharded over runners;
-   the 9x long runs run nightly on the dedicated host, through `needs_by_test` and
-   `dt run --tier nightly --place dedicated`. Then `fio-verify` against the fixture's mount.
+   and then `smb-client-compat.yml` goes. Groups 0x-8x ran in the merge tier, sharded over runners,
+   until the dedicated host set the `system (dedicated)` status on develop's commits: the whole
+   suite runs there now, 0x-8x after each merge and the 9x long runs nightly, in a cell of their
+   own through `needs_by_test`, both by `dt run --place dedicated`. Then `fio-verify` against the fixture's mount.
    *Exit:* the merge tier includes the system scenarios, and has no new failures.
 5. **Alerting, flakes and issues.** The develop-status issue, quarantine, `dt history`,
    `dt report --failures --post`, and `dt known prune`, which reads `dt history`'s recent runs
    (§4.4).
    *Exit:* two weeks with one alert per real regression and none from flakes.
-6. **Benchmarks.** `bench-smoke` and `unit --nonrace` nightly; tracked runs on the dedicated host.
-7. **Component RFCs name their suites.** Once #2894 lands them under `docs/internals/rfcs/`, each
-   RFC gets its section (R11), and the component groups follow.
+6. **Benchmarks.** `bench-smoke` on every tier, non-blocking on PRs, and `unit --nonrace` nightly;
+   tracked runs on the dedicated host.
+7. **Component RFCs name their suites.** Each RFC under `docs/internals/rfcs/` ends its test section
+   with its suites paragraph (R11, §4.9), and the component groups follow as each component gets a
+   suite of its own. While the adapters move onto the VFS service, `e2e/cross-protocol` runs on the
+   pull requests that can break it (§4.3).
 
 Conformance comes first, in steps 1–3, because its suites are already graded, then the system
 scenarios and fio (R8).
@@ -1953,9 +2154,10 @@ From the third review:
   without grading them, and opt in package by package, each with a known list using
   `where: { tier, os }`, starting with e2e, where the silent cases in §1 were.
 - **The dedicated host.** Decided: `ditto`, a server Cubbit rents, stays the dedicated host, with a
-  token that can only write issues. If it has to move, cloud spot VMs are the alternative. Whatever
-  runs it needs x86_64 Linux with passwordless sudo, the kernel NFS and SMB clients, podman, about
-  110 GB of free disk for the long scenarios, and its own bucket and credentials.
+  token that can only write issues and commit statuses. If it has to move, cloud spot VMs are the
+  alternative. Whatever runs it needs x86_64 Linux with passwordless sudo, the kernel NFS and SMB
+  clients, podman, about 110 GB of free disk for the long scenarios, and its own bucket and
+  credentials.
 
 Carried over from earlier reviews:
 
@@ -1964,13 +2166,17 @@ Carried over from earlier reviews:
 - **The operator and Windows jobs on PRs:** the operator job (about 3 minutes) blocks on PRs. The
   Windows unit run (about 17 minutes of runner time) is non-blocking on PRs and blocking after
   merge.
-- **The `clients` suite:** Linux is the default and runs every workload. macOS and Windows run a
-  smoke test each; on Windows it is the fio mailbox workload, through a PowerShell runner (#3050).
+- **The `clients` suite:** Linux is the default and runs every workload but another system's own:
+  the file operations, a rename, and a block reaching S3. macOS and Windows run a smoke test each,
+  the file operations, and on macOS the extended attributes it keeps in SMB named streams. On
+  Windows the fio mailbox workload joins them through a PowerShell runner, once there is one
+  (#3050).
   cthon04 and nfstest come in as suites of their own, on Linux (#3008).
 - **When the gate becomes required:** after two green weeks of the `pr` tier.
 - **The bar for deleting a suite's scripts:** 5 consecutive runs with matching results.
 - **The e2e nightly tier and the stress tests:** they start in `nightly` with known-failure entries.
-  Fixing them is outside this RFC; the dedup tests broken at setup are #2992.
+  Fixing them is outside this RFC; the dedup tests broken at setup are #2992. Until e2e has those
+  entries, `DITTOFS_E2E_NIGHTLY`, which turns the dedup tests on, stays off, as `e2e-tests.yml` left it.
 - **History:** stays in GitHub artifacts for now, and moves to a data branch only if benchmarks
   need more than their 90 days.
 
@@ -2028,6 +2234,6 @@ assumption was wrong, the design follows what was found. It records how the desi
 | smbtorture fits a 20-minute PR tier | No: 23 min on `memory` and 21 on `badger` on a PR run on 2026-10-12 | run 38241347064 |
 | The Go suites skip rarely | No: 331 `Skip` calls on develop, and 71 test files branch on `testing.Short()` | `git grep` on `7d6acc81` |
 | `fio-verify` tests DittoFS | Not as revision 3 wrote it: no fixture or mount, so the jobs write to `/mnt/bench`; none of the 8 job files sets `verify`; `layout.fio` prepares files and isn't a test | `bench/workloads/*.fio` |
-| `dfsbench run --smoke --local` runs | No: the two flags are refused together; `bench-smoke.yml` runs `--smoke` on PRs and develop pushes | `internal/dfsbench/run/bench.go:44` |
+| `dfsbench run --smoke --local` runs | No: the two flags are refused together; `bench-smoke.yml` runs `--smoke` on the PRs and develop pushes that touch the benchmark paths | `internal/dfsbench/run/bench.go:44` |
 | cthon04 and nfstest wait for the harness | No: #3008 added them to `suites.json`, with their own glue and named mount-option sets; cthon04 runs on PRs on `memory` | `test/conformance/suites.json` |
 | The CI tools come from the images | On runners, from Nix: `nix build .#pjdfstest` and `.#pynfs`; the images copy the same revisions | `conformance.yml:352`, `nfs-pynfs.yml:164` |

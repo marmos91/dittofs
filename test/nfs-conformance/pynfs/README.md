@@ -21,7 +21,7 @@ it runs on macOS as happily as on Linux.
 | Suite | pynfs (`github:kofemann/pynfs`, pinned in `flake.lock`) |
 | Versions | NFSv4.0 (689 tests), NFSv4.1 (269 tests) |
 | Known failures and expected skips | [`known.yaml`](known.yaml) |
-| Baseline | [`baseline-knfsd.md`](baseline-knfsd.md): the same suite against Linux knfsd |
+| Comparison | `dt run pynfs --knfsd`: the same suite against Linux knfsd |
 | CI | [`.github/workflows/tests.yml`](../../../.github/workflows/tests.yml), through `dt` |
 
 ## Running
@@ -63,10 +63,13 @@ A run is green when every failing test is a known failure and every skipping
 test an expected skip, each with its reason, where its `where` applies. An entry
 of category `proto` with `fix: wontfix` says the assertion is not one a
 conformant server is expected to satisfy: it is only valid with knfsd evidence,
-in `baseline-knfsd.md`. Without it, such an entry is how a known list quietly
-becomes a place to park bugs. Refresh the evidence with:
+that the kernel's server fails it too. Without it, such an entry is how a known
+list quietly becomes a place to park bugs. The comparison grades the kernel's
+server against this same list: a test both servers fail is a known failure
+there, and an entry the kernel's server passes is an unexpected pass, a failure
+of DittoFS's alone. Run it with:
 
 ```bash
-sudo ./baseline-knfsd.sh              # Linux only, needs the in-kernel nfsd
-gh workflow run nfs-pynfs.yml         # or from CI
+test/harness/bin/dt run pynfs --knfsd                       # Linux, passwordless sudo, the in-kernel nfsd
+gh workflow run tests.yml -f tier=manual -f suite=pynfs     # or from CI, beside DittoFS's own cells
 ```

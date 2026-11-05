@@ -106,14 +106,12 @@ func HasSystemRpcbind() bool {
 
 // SkipIfSystemRpcbind skips the test if a system rpcbind is running on port 111.
 // This is used for tests that rely on rpcinfo behavior, which queries the system
-// portmapper first. For full portmapper testing without system rpcbind, use:
-//
-//	./test/integration/portmap/run.sh
+// portmapper first, so they run only where no system rpcbind holds that port.
 func SkipIfSystemRpcbind(t *testing.T) {
 	t.Helper()
 	if HasSystemRpcbind() {
 		t.Skip("system rpcbind detected on port 111; rpcinfo queries system portmapper first. " +
-			"For full portmapper tests, run: ./test/integration/portmap/run.sh")
+			"For full portmapper tests, run them where no system rpcbind holds port 111")
 	}
 }
 

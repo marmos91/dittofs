@@ -83,12 +83,13 @@ func (v NFS) Serves() bool { return v.Version != "" || v.FromOptions }
 func (v NFS) Mounts() bool { return v.Serves() && v.Version != "export" }
 
 // SMB enables the SMB adapter, optionally with encryption, on a set port, or
-// with a mount.
+// with a mount, at a set dialect.
 type SMB struct {
 	Enabled    bool   `yaml:"-"`
 	Encryption string `yaml:"encryption"`
 	Port       int    `yaml:"port"`
 	Mount      bool   `yaml:"mount"`
+	Dialect    string `yaml:"dialect"` // the dialect the mount asks for and must report; 3.1.1 when empty
 }
 
 func (r *Registry) UnmarshalYAML(n *yaml.Node) error {

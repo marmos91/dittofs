@@ -107,7 +107,7 @@ func TestHandleRPCCall_BadCredentialIsRefused(t *testing.T) {
 			errCh := make(chan error, 1)
 			go func() { errCh <- conn.handleRPCCall(context.Background(), call, nil, data) }()
 			reply := readRPCReply(t, client)
-			<-errCh
+			<-errCh //nolint:errcheck // the reply is what the test checks
 			assertAuthError(t, reply, rpc.AuthBadCred)
 		})
 	}

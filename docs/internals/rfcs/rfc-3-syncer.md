@@ -2136,6 +2136,11 @@ Beside what [the RFC index](rfc-index.md#Test%20tiers) asks every result to reco
 region, round-trip time, bandwidth, block size, the pool sizes and the sizing
 tool's raw figures; for B1–B4, the fake's simulated latency and per-byte time.
 
+**Suites.** §7's Group A and B checks against the fault-injecting fake store and §8's model, memory,
+import, fault-sweep and counted checks run in `unit`, an allocation count the race detector skews in
+`unit/nonrace`; §8.1's real-backend checks, against the local emulator behind a fault proxy, run in
+`integration`. No suite runs yet §7.4's benchmarks or §8.1's nightly soak.
+
 ## 9. Open questions
 
 1. **The fixed values** ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) are proposals until the benchmarks of [§8.5](#8.5%20Performance%20targets)

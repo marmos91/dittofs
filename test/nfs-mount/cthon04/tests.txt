@@ -1,8 +1,8 @@
 # cthon04's programs for dt (test/suites.yaml), in upstream's order, each run on its own:
 # upstream's runtests stop a group at its first failure, which hides every test after it.
 # The words after -- are a program's command line, with the arguments upstream gives it,
-# run in cthon04's tree. A line may give its own limit, as 20m; the suite gives each 10
-# minutes. It holds what nfs-mount/cthon04/run.sh runs, until that script goes.
+# run in cthon04's tree. A line may give its own limit, as 5m; the suite gives each a
+# minute, against 15 s for the slowest of them but lock/tlocklfs.
 
 # basic: test1 builds a tree that test2 removes, so the two share a directory. Each later
 # test deletes its directory and makes it again, and has one of its own: a file test5
@@ -40,5 +40,5 @@ special/bigfile -- env -C {mount} {tools}/cthon04/special/bigfile -s 30 bigfile
 special/bigfile2 -- env -C {mount} {tools}/cthon04/special/bigfile2 bigfile2
 
 # lock: no option set mounts with nolock, so the locks reach the server.
-lock/tlocklfs -- lock/tlocklfs -r {mount}
+lock/tlocklfs 5m -- lock/tlocklfs -r {mount}
 lock/tlock64 -- lock/tlock64 -r {mount}

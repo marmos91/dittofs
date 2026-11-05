@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,13 +64,16 @@ type asked struct {
 }
 
 // fakeFixture makes startFixture call start, and returns the fixtures it was
-// asked for.
+// asked for, from cells that may run at once.
 func fakeFixture(t *testing.T, start func(ctx context.Context) (fixtureServer, error)) *[]asked {
 	t.Helper()
 	var list []asked
+	var mu sync.Mutex
 	real := startFixture
 	startFixture = func(ctx context.Context, f registry.Fixture, services []string, bin, out string, w io.Writer) (fixtureServer, error) {
+		mu.Lock()
 		list = append(list, asked{f, services})
+		mu.Unlock()
 		s, err := start(ctx)
 		if fake, ok := s.(*fakeServer); ok {
 			fake.out = w

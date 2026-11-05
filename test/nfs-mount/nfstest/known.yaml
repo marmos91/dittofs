@@ -37,6 +37,34 @@
   reason: no recall when a second client chmods, renames or removes the delegated file; a conflicting OPEN is recalled
   issue: '#3098'
   where: {mount-options: [default, v4.0, v4.1, v4.1-noac, v4.1-smallio]}
+- test: 'delegation/recall*: CB_RECALL should recall * delegation granted to client'
+  status: fail
+  fix: wontfix
+  category: env
+  reason: "a Linux 7.0 client (`7.0.0-1017-azure`) holds a delegation on the test's directory under `v4.1-noac`, and DittoFS recalls it when the second client removes or renames a file there; nfstest takes that CB_RECALL for the file's, whose own recall is the row above; 6.17 runners hold none and pass"
+  where: {mount-options: [v4.1-noac]}
+  intermittent: true
+- test: 'delegation/recall*: DELEGRETURN should be sent with the stateid of * delegation being recalled'
+  status: fail
+  fix: wontfix
+  category: env
+  reason: as the CB_RECALL should recall row
+  where: {mount-options: [v4.1-noac]}
+  intermittent: true
+- test: 'delegation/recall*: LOCK should be sent before returning the * delegation'
+  status: fail
+  fix: wontfix
+  category: env
+  reason: as the CB_RECALL should recall row
+  where: {mount-options: [v4.1-noac]}
+  intermittent: true
+- test: 'delegation/recall*: READs should be sent to the server with the OPEN stateid after returning the delegation'
+  status: fail
+  fix: wontfix
+  category: env
+  reason: as the CB_RECALL should recall row
+  where: {mount-options: [v4.1-noac]}
+  intermittent: true
 - test: 'posix/link: parent directory st_ctime should be updated'
   status: fail
   fix: wontfix

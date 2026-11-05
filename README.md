@@ -14,11 +14,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat)](LICENSE)
 [![Status](https://img.shields.io/badge/status-experimental-orange?style=flat)](https://github.com/cubbit/dittofs)
 
-[![Unit Tests](https://github.com/cubbit/dittofs/actions/workflows/unit-tests.yml/badge.svg?branch=develop)](https://github.com/cubbit/dittofs/actions/workflows/unit-tests.yml)
-[![Integration Tests](https://github.com/cubbit/dittofs/actions/workflows/integration-tests.yml/badge.svg?branch=develop)](https://github.com/cubbit/dittofs/actions/workflows/integration-tests.yml)
-[![E2E Tests](https://github.com/cubbit/dittofs/actions/workflows/e2e-tests.yml/badge.svg?branch=develop)](https://github.com/cubbit/dittofs/actions/workflows/e2e-tests.yml)
-[![Lint](https://github.com/cubbit/dittofs/actions/workflows/lint.yml/badge.svg?branch=develop)](https://github.com/cubbit/dittofs/actions/workflows/lint.yml)
-[![Conformance](https://github.com/cubbit/dittofs/actions/workflows/conformance.yml/badge.svg?branch=develop)](https://github.com/cubbit/dittofs/actions/workflows/conformance.yml)
 [![Tests](https://github.com/cubbit/dittofs/actions/workflows/tests.yml/badge.svg?branch=develop)](https://github.com/cubbit/dittofs/actions/workflows/tests.yml)
 
 **A modular virtual filesystem written entirely in Go**
@@ -63,7 +58,7 @@ Two binaries drive it:
 | **NFSv4.0** | Compound ops, ACLs, delegations, built-in byte-range locking |
 | **NFSv4.1** | Sessions, sequence slots, backchannel |
 | **NFSv4.2** | Extended attributes (RFC 8276); sparse files — ALLOCATE/DEALLOCATE/SEEK/READ_PLUS; CLONE/reflink (RFC 7862) |
-| **SMB 2.0.2 / 3.0 / 3.0.2 / 3.1.1** | Multi-dialect negotiation, preauth integrity, compound requests |
+| **SMB 2.0.2 / 2.1 / 3.0 / 3.0.2 / 3.1.1** | Multi-dialect negotiation, preauth integrity, compound requests |
 | **SMB3 encryption** | AES-128/256-GCM and AES-128/256-CCM |
 | **SMB3 signing** | AES-128-CMAC / AES-128-GMAC (HMAC-SHA256 for 2.x) |
 | **SMB leases & oplocks** | Leases V2 with directory leasing; oplocks; byte-range locks |

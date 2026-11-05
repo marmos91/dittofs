@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,8 +32,9 @@ func names(cells []Cell) []string {
 
 // The pr tier is today's pull-request checks, with the conformance suites on
 // the production profile, badger-s3, only, and smbtorture over two runners.
-// With no change given, the Kerberos e2e run, which has paths, is planned too.
-// A cell names the test tools it takes from {tools}.
+// With no change given, the Kerberos and cross-protocol e2e runs, which have
+// paths, are planned too, non-blocking as e2e is. A cell names the test tools
+// it takes from {tools}.
 func TestPRTier(t *testing.T) {
 	cells, err := Plan("../../..", repo(t), "pr", nil)
 	if err != nil {
@@ -45,7 +47,7 @@ func TestPRTier(t *testing.T) {
 		"engine-conformance",
 		"integration", "integration/portmap", "integration/kerberos",
 		"operator",
-		"e2e/kerberos",
+		"e2e/kerberos", "e2e/cross-protocol",
 		"pjdfstest/badger-s3/3", "pjdfstest/badger-s3/4", "pjdfstest/badger-s3/4.1",
 		"pynfs/badger-s3/0", "pynfs/badger-s3/1",
 		"wpts/badger-s3", "smbtorture/badger-s3/shard-1", "smbtorture/badger-s3/shard-2",
@@ -56,7 +58,7 @@ func TestPRTier(t *testing.T) {
 		t.Fatalf("pr cells:\n got %v\nwant %v", got, want)
 	}
 	for _, c := range cells {
-		nonBlocking := c.Name == "unit/windows" || c.Name == "bench-smoke"
+		nonBlocking := c.Name == "unit/windows" || c.Name == "bench-smoke" || c.Suite == "e2e"
 		if c.Blocking == nonBlocking {
 			t.Errorf("%s: blocking %t", c.Name, c.Blocking)
 		}
@@ -81,6 +83,40 @@ func TestConformanceRunsBadgerS3(t *testing.T) {
 	for _, c := range cells {
 		if slices.Contains(conformance, c.Suite) && !slices.Contains(c.Needs, "service:localstack") {
 			t.Errorf("%s doesn't run badger-s3: needs %v", c.Name, c.Needs)
+		}
+	}
+}
+
+// The dedicated host runs the system scenarios after each merge and, nightly,
+// the performance night on a host quiet for it, then every scenario, the long
+// ones in a cell of their own. No scenario runs anywhere else, and no pull
+// request sends a cell there. The night stops itself before dt's limit, which
+// kills it with no cleanup and no post.
+func TestDedicatedHost(t *testing.T) {
+	r := repo(t)
+	want := map[string][]string{"merge": {"system"}, "nightly": {"perf-night", "system", "system/dedicated"}}
+	for _, tier := range []string{"pr", "merge", "nightly"} {
+		cells, err := Plan("../../..", r, tier, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, c := range cells {
+			if c.Place == "dedicated" {
+				got = append(got, c.Name)
+			} else if c.Suite == "system" {
+				t.Errorf("%s: %s runs on %s", tier, c.Name, c.Place)
+			}
+			if c.Name == "perf-night" {
+				limit, _ := time.ParseDuration(c.TestTimeout)
+				stop, _ := strconv.Atoi(r.Suite("perf-night").Env.All["STOP_AFTER"])
+				if stop == 0 || time.Duration(stop)*time.Second >= limit {
+					t.Errorf("perf-night stops after %ds, but dt's limit is %s", stop, c.TestTimeout)
+				}
+			}
+		}
+		if !slices.Equal(got, want[tier]) {
+			t.Errorf("%s: the dedicated host's cells %v, want %v", tier, got, want[tier])
 		}
 	}
 }
@@ -171,7 +207,9 @@ suites:
 
 // A fixture adds to each cell's needs what its fields imply there: a service
 // for an S3 profile, root and the client for a mount, but nothing for an
-// export without one, and root and the port for SMB on a set port.
+// export without one, and root and the port for SMB on a set port. An SMB
+// mount on the macos or windows place needs the client alone: the user's own
+// client mounts it there.
 func TestFixtureNeeds(t *testing.T) {
 	root := t.TempDir()
 	y := `version: 1
@@ -184,6 +222,8 @@ suites:
     fixture: { profile: "{profile}", nfs: "{nfs}" }
     needs: [linux, root]
   b: { cmd: "true", fixture: { profile: memory, smb: { mount: true } } }
+  bm: { cmd: "true", fixture: { profile: memory, smb: { mount: true } }, needs: [macos] }
+  bw: { cmd: "true", fixture: { profile: memory, smb: { mount: true } }, needs: [windows] }
   c: { cmd: "true", fixture: { profile: memory, smb: { port: 445 } }, needs: [linux] }
   d: { cmd: "true", fixture: { profile: memory, nfs: { options: "" } } }
   e: { cmd: "true", fixture: { profile: memory, nfs: export, client: namespace, rpcbind: host } }
@@ -204,6 +244,8 @@ suites:
 		"a/badger-s3/export": {"linux", "root", "service:localstack"},
 		"a/badger-s3/4.1":    {"linux", "root", "service:localstack", "nfs-client"},
 		"b":                  {"root", "smb-client"},
+		"bm":                 {"macos", "smb-client"},
+		"bw":                 {"windows", "smb-client"},
 		"c":                  {"linux", "root", "port:445"},
 		"d":                  {"root", "nfs-client"},
 		"e":                  {"root", "nfs-client", "rpcbind"},
@@ -261,8 +303,19 @@ func TestChangedPaths(t *testing.T) {
 	if got := plan("docs/guide/x.md", "README.md", "test/e2e/README.md"); len(got) != 0 {
 		t.Errorf("docs-only change planned %v", got)
 	}
-	if got := plan("pkg/block/engine/flush.go"); slices.Contains(got, "e2e/kerberos") || !slices.Contains(got, "unit") {
+	if got := plan("pkg/block/engine/flush.go"); slices.Contains(got, "e2e/kerberos") || slices.Contains(got, "e2e/cross-protocol") || !slices.Contains(got, "unit") {
 		t.Errorf("a block change: %v", got)
+	}
+	if got := plan("pkg/config/config.go"); slices.Contains(got, "e2e/cross-protocol") {
+		t.Errorf("a configuration change plans e2e/cross-protocol: %v", got)
+	}
+	for _, p := range []string{
+		"internal/adapter/nfs/v4/handlers/open.go", "pkg/adapter/smb/adapter.go", "pkg/metadata/file.go",
+		"pkg/vfs/service.go", "internal/vfs/server.go", "test/e2e/cross_protocol_lock_test.go",
+	} {
+		if got := plan(p); !slices.Contains(got, "e2e/cross-protocol") {
+			t.Errorf("a change to %s doesn't plan e2e/cross-protocol", p)
+		}
 	}
 	for _, p := range []string{
 		"internal/adapter/smb/handlers/session_setup.go", "pkg/metadata/file.go", "test/e2e/smb_kerberos_test.go",

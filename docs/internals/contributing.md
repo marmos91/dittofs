@@ -46,8 +46,7 @@ The Nix flake provides:
 - pynfs for NFSv4 protocol conformance, as `pynfs-4.0` and `pynfs-4.1`
 - `dfs-postgres-start` / `dfs-postgres-stop` for a PostgreSQL test container
 
-`nix flake check` builds both binaries and runs the conformance graders, which is
-what decides whether a suite run counts as green.
+`nix flake check` builds both binaries.
 
 The binaries also run straight from the flake, without a clone:
 
@@ -62,7 +61,7 @@ If you prefer not to use Nix, install dependencies manually:
 
 #### Prerequisites
 
-- Go 1.26 or higher
+- Go 1.26.10; format with its gofmt, since another release indents some code differently and the lint checks fail
 - NFS client tools (for E2E testing)
   - Linux: `nfs-common` package
   - macOS: Built-in NFS client
@@ -157,6 +156,8 @@ make setup-hooks
 The hook checks `gofmt -s` on staged Go files, then runs `go vet ./...` and `golangci-lint run` (if installed) across the full repository. Use `git commit --no-verify` to skip when needed (e.g., WIP commits).
 
 `test/harness/bin/dt hooks install --container` runs the same hooks in the dtc Linux container instead, so the machine needs no Go toolchain, and `dt hooks uninstall` goes back to `.githooks`. Both set `core.hooksPath` without keeping a custom value you had, and `make check-hooks` accepts only `.githooks`, so it fails in container mode.
+
+On a branch stacked on another branch, set `DITTOFS_PREPUSH_BASE=origin/<epic>` for the pre-push hook and pass `dt run --base origin/<epic>`.
 
 ### Linting and Formatting
 
@@ -540,25 +541,16 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 
 | Workflow | Trigger | Purpose | Duration |
 | ---------- | --------- | --------- | ---------- |
-| `lint.yml` | PR, push | Go lint + vet + spec citations | ~2 min |
-| `unit-tests.yml` | PR, push | Unit tests with race detection | ~3 min |
-| `windows-build.yml` | PR, push | Windows build + unit tests | ~5 min |
-| `integration-tests.yml` | push, weekly | Integration tests (S3, BadgerDB) | ~10 min |
-| `e2e-tests.yml` | PR, push | E2E tests (NFS, SMB, cross-protocol, Kerberos) | ~15 min |
-| `conformance.yml` | PR, push, nightly | cthon04, nfstest, Kerberos smbtorture | ~45 min |
-| `smb-client-compat.yml` | push, weekly | macOS/Linux SMB client testing | ~10 min |
-| `tests.yml` | PR, push, nightly | The suites of `test/suites.yaml` through `dt`, pjdfstest, pynfs, WPTS and smbtorture so far, decided by one `gate` check | ~20 min |
-| `nfs-pynfs.yml` | manual | pynfs against Linux knfsd, the evidence for its known failures | ~30 min |
-| `operator-tests.yml` | push, weekly | Operational scenario tests | ~10 min |
+| `tests.yml` | PR, push, nightly, manual | The suites of `test/suites.yaml` through `dt`, decided by one `gate` check: lint, unit (Windows too), integration, operator, pjdfstest, pynfs, WPTS, smbtorture, with its Kerberos option, cthon04, nfstest (nightly), the SMB clients of Linux, macOS and Windows, and e2e (non-blocking on PRs) so far. Dispatched at the `manual` tier with suite `pynfs`, it also runs pynfs against Linux knfsd, the evidence for pynfs's known failures | ~20 min |
 | `combined-tree.yml` | scheduled | Builds the tree two green PRs would produce | seconds when idle |
 
 ### Conformance suites
 
 Every suite's profiles, variants, tier and known file live in the test registry,
 [`test/suites.yaml`](../../test/suites.yaml). `test/harness/bin/dt docs` renders them as the table
-in [testing.md](testing.md#conformance-test-suites), and Repo Checks fails while it is stale. Until
-a suite moves to `dt`, CI runs it as
-[`test/conformance/suites.json`](../../test/conformance/suites.json) describes.
+in [testing.md](testing.md#conformance-test-suites), and Repo Checks fails while it is stale.
+A suite runs beside others under `dt run --parallel` only once it says `parallel: true`, and
+[testing-parallel.md](testing-parallel.md) says how to check whether it may.
 
 ### Combined-tree checks
 
@@ -586,29 +578,21 @@ them is a second prose copy here.
 
 These workflows gate pull request merges and should complete in under 5 minutes:
 
-- **lint.yml** -- Go formatting, vetting, and linting
-- **unit-tests.yml** -- All unit tests with race detection
-- **windows-build.yml** -- Windows cross-compilation verification
-- **conformance.yml** -- cthon04, through its scripts (see the table above)
-- **tests.yml** -- pjdfstest, pynfs, WPTS and smbtorture (over two runners), on badger-s3, through `dt`
-- **e2e-tests.yml** -- Full E2E suite including SMB3, cross-protocol, and Kerberos tests
+- **tests.yml** -- Through `dt`: lint, unit tests with the race detector (on Windows too, non-blocking), integration, operator, and pjdfstest, pynfs, WPTS, smbtorture (over two runners) and cthon04 on badger-s3
+- **e2e**, in tests.yml -- its Kerberos tests, and its cross-protocol tests (one file through NFS and SMB), each on the PRs that can affect them; the whole suite after a merge, and with the stress tests nightly. Non-blocking until it has a quiet week on develop
 
 ### What Runs on Push to Develop (Comprehensive)
 
 These run after merging to develop and should complete in under 30 minutes:
 
 - Everything from PR checks
-- **conformance.yml** -- Kerberos smbtorture
-- **smb-client-compat.yml** -- Multi-OS client compatibility (Linux, macOS)
-- **integration-tests.yml** -- Backend-specific integration tests
+- **tests.yml** -- the `merge` tier, with smbtorture's Kerberos option
 
 ### What Runs Weekly (Full Matrix)
 
 The weekly cron runs the complete test matrix (Sunday evenings UTC):
 
 - Everything from push checks
-- **conformance.yml** -- Kerberos smbtorture (runs only on push/weekly, not PRs)
-- **operator-tests.yml** -- Operational scenarios
 - Auto-creates GitHub issues for regressions
 
 ### How to Manually Trigger Workflows
@@ -617,11 +601,9 @@ All workflows support `workflow_dispatch` for manual triggering:
 
 ```bash
 # Trigger via GitHub CLI
-gh workflow run conformance.yml
-gh workflow run conformance.yml -f suite=cthon04
+gh workflow run tests.yml -f tier=merge
 gh workflow run tests.yml -f tier=nightly
-gh workflow run smb-client-compat.yml
-gh workflow run e2e-tests.yml
+gh workflow run tests.yml -f tier=nightly -f suite=nfstest --ref my-branch   # one suite's cells
 ```
 
 Or use the GitHub Actions UI: navigate to the workflow, click "Run workflow", and select options.

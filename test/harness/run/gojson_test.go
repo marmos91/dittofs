@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/test/harness/registry"
 	"github.com/cubbit/dittofs/test/harness/report"
 )
 
@@ -220,6 +221,29 @@ func TestGoPackages(t *testing.T) {
 	}
 }
 
+// The integration suite runs the KMIP key provider's live tests: its packages
+// include the key provider's, and it needs the KMIP service, without which
+// those tests skip. A tag dropped from their file, or the need from the
+// registry, would leave them out of every run with nothing going red.
+func TestIntegrationRunsTheKMIPTests(t *testing.T) {
+	r, err := registry.Load("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := r.Suite("integration")
+	if !slices.Contains(u.Needs, "service:kmip") {
+		t.Errorf("integration needs %q, without service:kmip", u.Needs)
+	}
+	pkgs, err := goPackages("../../..", u.Packages.Tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const keyProvider = "github.com/cubbit/dittofs/pkg/block/middleware/encryption/keyprovider"
+	if !slices.Contains(pkgs, keyProvider) {
+		t.Errorf("integration's packages leave out %s: %q", keyProvider, pkgs)
+	}
+}
+
 // fakeSudo puts a sudo on the PATH that drops -n, resets the environment as
 // sudo does, marks it, and runs the rest as the user, so the root path runs
 // without real sudo. As root, dt takes the plain path, so there's nothing to
@@ -387,6 +411,47 @@ func TestGoJSONCellLimit(t *testing.T) {
 	files := map[string]string{"go.mod": goModule["go.mod"], "w/w_test.go": "package w\n\nimport (\n\t\"testing\"\n\t\"time\"\n)\n\nfunc TestWait(t *testing.T) { time.Sleep(time.Minute) }\n"}
 	o, _, _ := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json }\n", files)
 	if o.Result != report.Failed || !strings.Contains(o.Note, "stopped at the cell's limit") {
+		t.Errorf("outcome %+v", o)
+	}
+}
+
+// A suite run as root that its limit stops fails, a grace later, even when its
+// tests take the interrupt and then hang, as a cleanup unmounting a wedged
+// mount does: dt kills the go command it started, which needs no root, and
+// nothing left running holds the tests' output, a file, open.
+func TestRootPathCellLimit(t *testing.T) {
+	fakeSudo(t)
+	minute, sudoGrace = 200*time.Millisecond, time.Second
+	t.Cleanup(func() { minute, sudoGrace = time.Minute, 2*time.Minute })
+	started := filepath.Join(t.TempDir(), "started")
+	files := withBins(map[string]string{"go.mod": goModule["go.mod"], "w/w_test.go": `package w
+
+import (
+	"os"
+	"os/signal"
+	"testing"
+	"time"
+)
+
+func TestHang(t *testing.T) {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	_ = os.WriteFile(os.Getenv("DT_STARTED"), nil, 0o644)
+	<-c
+	time.Sleep(time.Minute)
+}
+`})
+	y := "suites:\n  g: { cmd: go test ./..., format: go-json, needs: [root], env: { DT_STARTED: \"" + started + "\" } }\n"
+	start := time.Now()
+	o, out, _ := goRun(t, y, files)
+	if _, err := os.Stat(started); err != nil {
+		t.Fatalf("the test didn't start within the cell's limit: %+v\n%s", o, out)
+	}
+	// The cell's limit is 12 seconds; the hang, a minute.
+	if took := time.Since(start); took > 40*time.Second {
+		t.Errorf("took %s: dt waited for the hung tests", took)
+	}
+	if o.Result != report.Failed || !strings.Contains(o.Note, "TestHang") || !strings.Contains(o.Note, "stopped at the cell's limit") {
 		t.Errorf("outcome %+v", o)
 	}
 }

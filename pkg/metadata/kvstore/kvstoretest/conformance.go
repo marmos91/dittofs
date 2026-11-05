@@ -79,7 +79,8 @@ func testReadCosts(t *testing.T, kvo Opener) {
 		f.create(f.admin, big, fmt.Sprintf("n%04d", i), regular(0o644))
 	}
 	f.c.Take()
-	for range f.s.Namespace().Entries(ctx, f.admin, big, 0) {
+	for _, err := range f.s.Namespace().Entries(ctx, f.admin, big, 0) {
+		must(t, err)
 		break
 	}
 	if n := f.c.Take(); n.Scanned > 257 {

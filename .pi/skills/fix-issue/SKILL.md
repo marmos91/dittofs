@@ -203,9 +203,9 @@ the teardown check that keeps you from destroying a development VM.
 If a listed known-failure starts passing, or a new one fails, do not edit the
 list on a hunch — CI is the authority on what actually fails there. There are
 several, one per suite: the `known` file `test/suites.yaml` names for each,
-and, until its scripts go, smbtorture's
-`test/smb-conformance/smbtorture/KNOWN_FAILURES{,_KERBEROS}.md` beside its
-`known.yaml`. Flakes get fixed, never retried.
+and, until their scripts go, cthon04's and nfstest's
+`test/nfs-mount/*/KNOWN_FAILURES*.md` beside theirs. Flakes get fixed, never
+retried.
 
 ## 7. Simplify and review before the PR
 
@@ -269,18 +269,13 @@ gh pr view <PR> --comments
 gh pr diff <PR>
 ```
 
-**CI.** Ten workflows run per PR — `unit-tests`, `lint`, `integration-tests`,
-`posix-tests`, `smb-conformance`, `operator-tests`, `windows-build`,
-`secret-scan`, `ci-health`, and `e2e-tests` (only its Kerberos tests, path-scoped
-to the Kerberos code). The protocol suites are slow.
+**CI.** On a PR, `tests.yml` runs the suites of `test/suites.yaml` through
+`dt`, and its `gate` check decides, beside the security scans and `ci-health`. The e2e suite runs there non-blocking, and on a PR only its
+Kerberos tests, when the PR touches what they cover. The protocol suites are slow.
 
 ```bash
 gh pr checks <PR> --watch
 ```
-
-Do not wait on `e2e-tests`, `smb-client-compat`, or `ad-dc` — they are
-postsubmit/nightly only and never appear on a PR. Waiting for them hangs step 9
-forever.
 
 When a check goes red, investigate the actual failure rather than re-running.
 Pull the failing job's log, find the assertion, and check whether the same job

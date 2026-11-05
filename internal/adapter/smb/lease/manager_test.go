@@ -596,7 +596,7 @@ func TestBreakParentHandle_ExcludesTriggeringClient(t *testing.T) {
 	}()
 
 	select {
-	case <-done:
+	case <-done: //nolint:errcheck // either error is fine, see below
 		// Returned (either nil or ctx.DeadlineExceeded). Both are acceptable —
 		// what we are asserting is that the call does NOT block forever.
 	case <-time.After(2 * time.Second):

@@ -1,5 +1,6 @@
 # test/suites.yaml: every test suite, one entry each. `dt list` prints it; `dt plan` expands it.
-# Format and rules: docs/internals/rfcs/rfc-29-test-harness.md.
+# Format and rules: docs/internals/rfcs/rfc-29-test-harness.md. A suite runs beside others under
+# dt run --parallel only with parallel: true, set once checked: docs/internals/testing-parallel.md.
 version: 1
 
 defaults:            # any suite field; a suite's own value wins
@@ -11,7 +12,7 @@ groups:              # `dt run GROUP` runs every suite in it
   lint: [lint-go, lint-repo, shellcheck]
   go: [unit, integration, e2e, operator]
   conformance: [pjdfstest, pynfs, wpts, smbtorture]
-  perf: [fio-verify, bench-smoke]
+  perf: [fio-verify, bench-smoke, perf-night]
   journal: [journal-conformance]
   engine: [engine-conformance]
 
@@ -20,8 +21,10 @@ suites:
   # runs even after one fails, so a red job reports every check that failed.
   lint-go:
     job: Go Checks
+    parallel: true
     tier: pr
     cmd:
+      - go mod verify                         # the module cache still matches go.sum
       - { sh: 'test -z "$(gofmt -s -l .)" || { gofmt -s -l .; exit 1; }' }
       - go vet ./...
       # Tagged tests compile in no other check, so one could stop compiling without anything
@@ -34,25 +37,25 @@ suites:
       - golangci-lint run --timeout=5m
   lint-repo:
     job: Repo Checks
+    parallel: true
     tier: pr
     cmd:
       - test/harness/bin/dt docs --check       # the documentation's suite tables match the registry
       - test/harness/bin/dt doctor             # fails on an expired quarantine entry, here alone
-      - test/conformance/run_test.sh
       - test/common/known-failures_test.sh
-      - test/smb-conformance/compose-env_test.sh
+      - test/nfs-mount/nfstest/parse-results_test.sh   # the grader the knfsd baseline keeps
       - test/new-package-tests.sh {base}       # a new package carries a test of its own
       # A docs: commit changes only documentation, and no commit credits an AI tool. Both run
       # on pushes too, since planning commits reach develop without a pull request.
       - test/commit-type-matches-diff.sh {base}
       - test/no-ai-attribution.sh {base}
-      - .github/scripts/run-e2e-selftest.sh    # the e2e wrapper against failing, hung and false-green stand-ins
       - go test ./test/harness/...              # dt's own tests
       - go test ./test/journal/                 # every journal RFC row maps to a test or an owner
   # Every shell script: the *.sh files, and the executables without an extension whose first
   # line is a shell's shebang.
   shellcheck:
     job: ShellCheck
+    parallel: true
     tier: pr
     cmd:
       sh: |
@@ -67,8 +70,10 @@ suites:
         done | xargs -0 shellcheck --severity=warning
   unit:
     job: Unit Tests (1.26.x)
+    parallel: true
     format: go-json
-    cmd: go test -race {args} -timeout=25m ./pkg/... ./internal/... ./cmd/... ./test/...
+    # Its coverage profile goes beside the cell's results, for the coverage report.
+    cmd: go test -race {args} -timeout=25m -coverprofile={out}/coverage.txt ./pkg/... ./internal/... ./cmd/... ./test/...
     args: { pr: "-short" }
     tier: pr
     options:
@@ -79,6 +84,9 @@ suites:
       nonrace:
         # Not the aggregate random-write gate: with no baseline it passes whatever it measures.
         cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
+        # decision: blocking at nightly, the one tier it runs in, so a gate that trips again on the
+        # retry turns the run red and posts to the develop-status issue. The throughput gate
+        # measures on a shared runner, where a busy neighbour can trip it; it fails no pull request.
         tier: nightly
       # The journal index's allocation and memory checks and the profiler's heap checks, which
       # skip under -race.
@@ -112,7 +120,10 @@ suites:
     options:
       portmap:  { cmd: go test -tags=portmap_system -timeout=2m ./test/integration/portmap/..., needs: [linux, rpcbind] }
       kerberos: { cmd: go test -tags=kerberos -timeout=5m ./test/integration/kerberos/, needs: [docker] }
-      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smb-client], tier: merge }
+      # decision: blocking after a merge and nightly, the tiers it runs in, so a failure that
+      # survives the retry turns develop red and posts to the develop-status issue. The flake that
+      # failed about one develop run in seven went when the fixture started the domain once.
+      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smbclient], tier: merge }
   operator:
     dir: k8s/dittofs-operator
     cmd:
@@ -127,10 +138,16 @@ suites:
     env:
       DITTOFS_E2E_REQUIRE_NLM: "1"
       DITTOFS_E2E_REQUIRE_KERBEROS: "1"
-      nightly: { DITTOFS_E2E_NIGHTLY: "1" }
+      # decision: no DITTOFS_E2E_NIGHTLY yet. The two dedup tests it turns on fail in their
+      # setup, so it comes back, under nightly, with their fix or their known-failure entries.
     needs: [linux, root, nfs-client, smb-client, nfs4-acl-tools, "service:localstack"]
+    # decision: non-blocking on pull requests only, so a failure from outside the code, such as a
+    # change to the machine it runs on, can't hold every merge while it's fixed; after a merge and
+    # nightly it blocks, so a red e2e makes develop red and posts. Drop this after a week with no
+    # e2e failure on develop.
+    blocking: { pr: false }
     options:
-      stress: { cmd: "go test -tags=e2e,stress -timeout=60m ./test/e2e/...", tier: nightly }
+      stress: { cmd: "go test -tags=e2e,stress -run ^TestStress -timeout=30m ./test/e2e/", tier: nightly }
       kerberos:                         # the Kerberos mounts, on pull requests that can affect them
         cmd: go test -tags=e2e -run Kerberos -timeout=30m ./test/e2e/
         tier: pr
@@ -148,6 +165,30 @@ suites:
           - "test/e2e/*kerberos*"
           - test/e2e/framework/kerberos.go
           - test/integration/kerberos/**
+      # The tests that reach one file through both protocols, on pull requests that can break
+      # them: a drift between NFS and SMB is invisible to every single-protocol suite. The
+      # Kerberos one runs in kerberos above.
+      # decision: no system scenarios beside them yet. They are the scenarios of the slices that
+      # move the adapters onto the VFS service, and none has landed.
+      cross-protocol:
+        cmd: go test -tags=e2e -run CrossProtocol -skip Kerberos -timeout=30m ./test/e2e/
+        tier: pr
+        # Selection is by test name, so a cross-protocol test named for what it
+        # checks rather than the protocol pair needs its file here or a name it
+        # matches: only tests the -run pattern hits run.
+        paths:
+          - internal/adapter/**
+          - pkg/adapter/**
+          - internal/vfs/**
+          - pkg/vfs/**
+          - pkg/metadata/**
+          - pkg/controlplane/runtime/**       # CheckShareAccess, ApplyIdentityMapping: both adapters' admission
+          - pkg/auth/**                       # the SID mapper both adapters call
+          - "test/e2e/cross_protocol*"
+          - test/e2e/helpers/**               # error_triggers.go, used by CrossProtocol_ErrorConformance
+          - test/e2e/framework/**             # the mount and fixture code the option runs on
+          - test/e2e/grace_period_test.go    # the reclaim across both protocols
+          - test/e2e/nfsv4_acl_test.go        # a file with an NFSv4 ACL, read over SMB
 
   # Conformance runs the production profile, badger-s3, only.
   pjdfstest:
@@ -165,6 +206,7 @@ suites:
     known: test/posix/known.yaml
     tier: pr
     needs: [linux, root, nfs-client]
+    parallel: true   # each cell has its own ports, S3 prefix and mount point: three at once checked
   pynfs:
     format: junit
     cmd: "{tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --rundeps --maketree --xml {out}/junit.xml {names}"
@@ -210,20 +252,20 @@ suites:
   smbtorture:
     format: subunit
     image: quay.io/samba.org/samba-toolbox:v0.8
-    # The options, as smbtorture/run.sh gives them. smbtorture's second connections, to IPC$,
-    # fail unless its NetBIOS name resolves, as localhost does. smb2.maxfid opens handles
-    # until the server refuses one, 65520 by default, which no limit fits: 2000 is far past
-    # any real client, so a pass means 2000 handles work, not that the server's ceiling was
-    # found. smb2.ea.acl_xattr writes the xattr name the server keeps for its ACLs. A space
-    # splits arguments, so the options' names have none: smbtorture ignores them in a name.
+    # smbtorture's second connections, to IPC$, fail unless its NetBIOS name resolves, as
+    # localhost does. smb2.maxfid opens handles until the server refuses one, 65520 by
+    # default, which no limit fits: 2000 is far past any real client, so a pass means 2000
+    # handles work, not that the server's ceiling was found. smb2.ea.acl_xattr writes the
+    # xattr name the server keeps for its ACLs. A space splits arguments, so the options'
+    # names have none: smbtorture ignores them in a name.
     cmd: >-
       smbtorture //{server}/{share} -p {smb-port} -U{user}%{password}
       --option=netbiosname=localhost --option=clientminprotocol=SMB2_02
       --option=clientmaxprotocol=SMB3 --option=torture:smbd=false
       --option=torture:maxopenfiles=2000 --option=torture:acl_xattr_name=security.NTACL {test}
     tests: test/smb-conformance/smbtorture/tests.txt
-    # One limit for every line of the list, as run.sh gives: it stops a hang, it doesn't grade
-    # speed. The slowest suite took 193 s, and one suite 22 s on one profile and 112 s on another.
+    # One limit for every line of the list: it stops a hang, it doesn't grade speed. The
+    # slowest suite took 193 s, and one suite 22 s on one profile and 112 s on another.
     timeout: { test: 5m }
     matrix: { profile: [badger-s3] }
     # smb2.multichannel.bugs.bug_15346 opens its extra connections to 445, whatever -p says.
@@ -235,8 +277,10 @@ suites:
     shards: 2
     needs: [linux, docker]
     options:
-      # The suite's options, as run.sh --kerberos gives them too. smbtorture finds the KDC in
-      # the fixture's krb5.conf, and asks it for a ticket to cifs/{server}, a name here.
+      # The suite's options, with Kerberos required. smbtorture finds the KDC in the fixture's
+      # krb5.conf, and asks it for a ticket to cifs/{server}, a name here. Its tests are session
+      # setup, and read and lock, where a truncated or garbled session key shows too.
+      # smb2.create isn't one: known-kerberos.yaml doesn't list its known failures.
       kerberos:
         cmd: >-
           smbtorture //{server}/{share} -p {smb-port} -U{user}@{realm}%{password} --use-kerberos=required
@@ -245,7 +289,7 @@ suites:
           --option=torture:maxopenfiles=2000 --option=torture:acl_xattr_name=security.NTACL {test}
         volumes: { "{krb5-conf}": /etc/krb5.conf }
         tests: [smb2.session, smb2.read, smb2.lock]
-        timeout: { test: 20m }          # as run.sh --kerberos gives each
+        timeout: { test: 20m }
         matrix: {}
         fixture: { profile: badger-s3, smb: true, shares: test/smb-conformance/shares.yaml, kerberos: true }
         known: test/smb-conformance/smbtorture/known-kerberos.yaml
@@ -276,7 +320,7 @@ suites:
       client: namespace
       rpcbind: host
     known: test/nfs-mount/cthon04/known.yaml
-    timeout: { test: 10m }
+    timeout: { test: 1m }   # each takes 15 s or less, but lock/tlocklfs, which has its own
     tier: pr
     needs: [linux]
   nfstest:
@@ -299,31 +343,71 @@ suites:
     tier: nightly
     needs: [linux]
 
-  # Each OS's own clients mount the fixture's share, and the workloads run over the mount.
-  # The suite itself is the Linux run, with every workload; macOS and Windows run a smoke test.
+  # Each platform's own client mounts the fixture's share over SMB, and the workloads run over the
+  # mount. The suite itself runs on linux, and also sees its blocks reach the bucket.
   clients:
-    tests: test/clients/*
-    cmd: "{test} {mount}"
-    fixture: { profile: badger-s3, smb: { mount: true }, nfs: "4.1" }
-    needs: [linux, root, smb-client, nfs-client]
-    tier: nightly
+    tests: [test/clients/files.sh, test/clients/rename.sh, test/clients/s3.sh]
+    cmd: "{test} {mount} {bucket}"   # s3.sh reads the bucket's listing; the others take the mount alone
+    fixture: { profile: badger-s3, smb: { mount: true } }
+    needs: [linux, root, smb-client]
+    # decision: Linux runs after each merge, as the SMB client workflow this replaces ran on SMB
+    # changes, and on feat/storage-v2 too, which has no nightly; macOS and Windows, on scarcer
+    # runners, run nightly on develop only.
+    tier: merge
     # decision: macOS and Windows stay on memory, since badger-s3 needs Localstack, a Linux
     # container, and their hosted runners run none: macOS's have no Docker, Windows's run Windows
     # containers only. Move them to badger-s3 once an S3 endpoint runs there.
     options:
-      macos:   { needs: [macos], fixture: { profile: memory, smb: { mount: true }, nfs: "4" } }
-      windows: { needs: [windows], fixture: { profile: memory, smb: { mount: true }, nfs: "3" } }
+      # decision: SMB 2.1, the newest dialect of Windows 7 and Server 2008 R2, keeps a real client:
+      # the Linux one asked for it, against the server as it ships. Nightly, as WPTS already checks
+      # its negotiation on every pull request.
+      smb21:
+        fixture: { profile: badger-s3, smb: { mount: true, dialect: "2.1" } }
+        tier: nightly
+      macos:
+        tests: [test/clients/files.sh, test/clients/xattr.sh]
+        cmd: "{test} {mount}"
+        env: { SMB_URL: "//{user}:{password}@{server}:{smb-port}/{share}" }   # xattr.sh mounts the share again
+        needs: [macos]
+        fixture: { profile: memory, smb: { mount: true } }
+        tier: nightly
+      windows:
+        tests: [test/clients/files.ps1]
+        cmd: powershell -NoProfile -ExecutionPolicy Bypass -File {test} {mount}
+        needs: [windows]
+        fixture: { profile: memory, smb: { mount: true } }
+        tier: nightly
 
+  # The nightly performance run on the dedicated host: DittoFS against Samba over SMB, scored
+  # against the night's 7-day medians (bench/ditto). It posts to the scenarios' Slack channel by
+  # their rules; dt keeps its exit status, its summary and slack.txt.
+  # decision: before system, so the dedicated host's nightly runs it first, on a quiet host, and
+  # the long scenarios after it.
+  perf-night:
+    cmd: bench/ditto/night.sh
+    env: { DT_OUT: "{out}", SLACK_DIR: /etc/dittofs-perf, SCENARIO_HOST: ditto, STOP_AFTER: "10500" }
+    tier: nightly
+    needs: [linux, root, host:dedicated]
+    # A night of one repeat takes about 1 h 30 min, its build and lock wait included. STOP_AFTER
+    # cuts it to end 5 minutes before the limit, so it still cleans up and posts.
+    timeout: { test: 3h }
   # The system scenarios: a real server in a container, real clients, faults injected.
+  # setup.sh takes a scenario by its file name, in its own directory. A run through dt is reported
+  # by dt, and never posts to the scenarios' Slack channel.
   system:
-    cmd: test/scenarios/setup.sh {test}
+    cmd: { sh: 'test/scenarios/setup.sh "$(basename {test})"' }
     tests: test/scenarios/[0-9][0-9]-*.sh
     select: { merge: "[0-8]?-*.sh" }
-    needs: [linux, podman]
+    env: { SLACK_DIR: /nonexistent }
+    known: test/scenarios/known.yaml
+    # decision: on the dedicated host alone, which sets the `system (dedicated)` status on the
+    # develop commits it runs. Should it be down for long, dropping host:dedicated and putting back
+    # `shards: 4` and `blocking: false` runs the scenarios on hosted runners again, where apt
+    # mirrors stalled setup.sh for minutes.
+    needs: [linux, podman, host:dedicated]
     needs_by_test:
-      "9?-*.sh": ["host:dedicated", "disk:110"]
+      "9?-*.sh": ["disk:110"]
     timeout: { test: size, cell: 90m }
-    shards: 4
   fio-verify:
     # The job files are templates, as dfsbench's are: fio doesn't expand their ${VAR:-default}s, so
     # perl fills them from the environment into a copy below {out}, which fio runs.
@@ -340,4 +424,17 @@ suites:
     needs: [linux, root, nfs-client, fio]
     options:
       smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client, fio] }
-  bench-smoke: { cmd: go run ./cmd/bench run --smoke, metrics: dfsbench-json, tier: pr, blocking: false }
+  # That the benchmarks still work, not how fast: the smoke run benchmarks a temp dir, not DittoFS.
+  bench-smoke:
+    cmd:
+      - go run ./cmd/bench run --smoke --results {out}
+      # decision: the mailbox job files are only parsed, not run: dfsbench doesn't run them, so
+      # without this nothing would notice one that no longer parses.
+      - { sh: 'for job in bench/workloads/mailbox/*.fio; do TARGET_DIR={out} bench/workloads/mailbox/run.sh "$job" --parse-only || exit 1; done' }
+    metrics: dfsbench-json
+    needs: [fio]
+    tier: pr
+    # decision: non-blocking on pull requests, which it now runs on whatever they touch, so one that
+    # breaks it still merges; after a merge and nightly it blocks, so develop goes red and it posts.
+    # Drop the exception after a week with no bench-smoke failure on develop.
+    blocking: { pr: false }

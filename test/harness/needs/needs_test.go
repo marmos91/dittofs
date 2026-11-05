@@ -9,11 +9,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // The machine's own platform is met and the others aren't.
@@ -85,6 +88,68 @@ func TestToolNotFound(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if err := Check("", "kerberos"); err == nil || !strings.Contains(err.Error(), "kinit") {
 		t.Errorf("got %v", err)
+	}
+}
+
+// The machine's own podman runs the scenarios from 5.6 on, compared as
+// numbers. An older one, or none, leaves the need met only where docker
+// runs, in podman's own image, and unmet with the reason otherwise. A podman
+// that fails leaves it unmet even with docker, never met in the image.
+func TestPodman(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake podman and docker are sh scripts")
+	}
+	const failed = "podman info --format {{.Version.Version}}: exit status 1"
+	for _, c := range []struct {
+		podman string // the version the fake podman reports, or "fail"; none when empty
+		docker bool
+		image  bool   // met in podman's image
+		need   string // the need's error, "" for none
+	}{
+		{podman: "5.6.0"},
+		{podman: "5.10.1"},
+		{podman: "6.0.0"},
+		{podman: "5.6.0", docker: true},
+		{podman: "5.5.2", need: "podman 5.5.2: the scenarios need 5.6 or later"},
+		{podman: "4.9.3", need: "podman 4.9.3: the scenarios need 5.6 or later"},
+		{podman: "4.9.3", docker: true, image: true},
+		{podman: "fail", need: failed},
+		{podman: "fail", docker: true, need: failed},
+		{need: "podman not found"},
+		{docker: true, image: true},
+	} {
+		bin := t.TempDir()
+		t.Setenv("PATH", bin)
+		switch c.podman {
+		case "":
+		case "fail":
+			writeScript(t, filepath.Join(bin, "podman"), "exit 1")
+		default:
+			writeScript(t, filepath.Join(bin, "podman"), `[ "$*" = "info --format {{.Version.Version}}" ] && echo `+c.podman)
+		}
+		if c.docker {
+			writeScript(t, filepath.Join(bin, "docker"), `[ "$*" = info ]`)
+		}
+		errText := func(err error) string {
+			if err == nil {
+				return ""
+			}
+			return err.Error()
+		}
+		if image, err := Podman(); image != c.image || errText(err) != c.need {
+			t.Errorf("podman %q, docker %t: Podman %t, %q, want %t, %q", c.podman, c.docker, image, errText(err), c.image, c.need)
+		}
+		if got := errText(Check("", "podman")); got != c.need {
+			t.Errorf("podman %q, docker %t: Check %q, want %q", c.podman, c.docker, got, c.need)
+		}
+	}
+}
+
+// writeScript writes an sh script that runs body.
+func writeScript(t *testing.T, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(name, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -243,6 +308,48 @@ func TestInDtc(t *testing.T) {
 	for need, bins := range tools {
 		if pkg := cmp.Or(debian[need], bins["linux"]); pkg != "" && slices.Contains(words, pkg) != inDtc[need] {
 			t.Errorf("%s: package %s in the image %t, in dtc %t", need, pkg, slices.Contains(words, pkg), inDtc[need])
+		}
+	}
+}
+
+// A program the AD-DC tests skip without is one a need of their cell looks for
+// on Linux, where the cell runs, so a runner without it fails the cell under
+// --ci instead of the test skipping.
+func TestADDCNeedsWhatItsTestsRun(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "suites.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reg struct {
+		Suites map[string]struct {
+			Options map[string]struct{ Needs []string }
+		}
+	}
+	if err := yaml.Unmarshal(data, &reg); err != nil {
+		t.Fatal(err)
+	}
+	cell := reg.Suites["integration"].Options["ad-dc"].Needs
+	srcs, err := filepath.Glob(filepath.Join("..", "..", "integration", "ad-dc", "*_test.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookPath := regexp.MustCompile(`exec\.LookPath\("([^"]+)"\)`)
+	var progs []string
+	for _, src := range srcs {
+		data, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range lookPath.FindAllStringSubmatch(string(data), -1) {
+			progs = append(progs, m[1])
+		}
+	}
+	if len(progs) == 0 {
+		t.Fatal("no AD-DC test looks for a program")
+	}
+	for _, p := range progs {
+		if !slices.ContainsFunc(cell, func(n string) bool { return n == p || tools[n]["linux"] == p }) {
+			t.Errorf("an AD-DC test skips without %s, which no need of integration/ad-dc, %v, looks for", p, cell)
 		}
 	}
 }

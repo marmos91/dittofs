@@ -1,0 +1,80 @@
+# The system scenarios that fail today, each at its first failing check, with the issue it
+# reproduces. A scenario that starts to pass is an unexpected pass: remove its entry in the fix.
+- test: test/scenarios/10-smb-store-options-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'A misspelt block-store config key ("compresion") is accepted and ignored, at `test -e /tmp/b4.rc`. Past it, a used store''s bucket and prefix edits are accepted too.'
+  issue: '#3048'
+- test: test/scenarios/11-smb-2stores-same-bucket-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'A second block store on the same bucket and prefix is accepted, at `test "$Y" = refused`.'
+  issue: '#3036'
+- test: test/scenarios/13-smb-compression-frame-magic-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'With compression, a file starting with the DFCMP magic reads back wrong once evicted, at `cmp /tmp/z/magic.bin /tmp/back/magic.bin`.'
+  issue: '#2897'
+- test: test/scenarios/20-smb-nfs-case-across-adapters-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'NFS is case-sensitive and SMB is not on the same share, and an SMB create of Readme overwrites README, at the name count check.'
+  issue: '#3037'
+- test: test/scenarios/22-smb-share-modes-s.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'The share root lets an add-file open past a lister that shares only reading, where every other directory refuses it, at the status comparison.'
+  issue: '#3038'
+- test: test/scenarios/23-smb-notify-durable-s.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'An SMB change notify watch never reports changes made over NFS, at `grep -qx ''0001 n.txt'' /tmp/notify.txt`.'
+  issue: '#3039'
+- test: test/scenarios/32-smb-nfs-trash-two-users-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'The first user to delete owns #recycle, so the second user''s delete fails, at `test -z "$(grep ''b1\.txt'' /tmp/root.ls)"`.'
+  issue: '#2920'
+- test: test/scenarios/33-nfs-mount-identity-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'NFSv3 mounts a share with default permission none for root, where NFSv4 refuses, at `grep -q ''Failed to mount'' /tmp/v3-0.out`.'
+  issue: '#3040'
+- test: test/scenarios/43-smb-nfs-open-unlinked-gc-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'A file deleted while open over NFS reads back as zeros through its open handle once evicted, at `cmp /tmp/held /tmp/f`.'
+  issue: '#2927'
+- test: test/scenarios/45-smb-snapshot-survives-gc-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'A share that still has a snapshot is removed, at `test "$R" = refused`.'
+  issue: '#2973'
+- test: test/scenarios/51-smb-2shares-same-content-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Content already stored through one share is never uploaded to the second share''s block store, at its bucket count check.'
+  issue: '#3041'
+- test: test/scenarios/53-smb-2shares-share-scoped-views-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'An empty share''s stats count the files of another share on the same metadata store, at the file and block count check.'
+  issue: '#2906'
+- test: test/scenarios/72-smb-snapshot-s3-down-s.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'A snapshot taken with S3 down restores content written after it, at the restore comparison.'
+  issue: '#2928'

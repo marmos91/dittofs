@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,9 +42,10 @@ const (
 // stopGrace is how long dfs has to shut down before its group is killed.
 const stopGrace = 10 * time.Second
 
-// Unsupported says what of fixture f dt doesn't set up yet, or returns "". A
-// field that holds a matrix placeholder is checked once a cell fills it.
-func Unsupported(f *registry.Fixture) string {
+// Unsupported says what of fixture f dt doesn't set up yet on platform goos,
+// as runtime.GOOS names it, or returns "". A field that holds a matrix
+// placeholder is checked once a cell fills it.
+func Unsupported(f *registry.Fixture, goos string) string {
 	fixed := func(s string) bool { return len(registry.Placeholders(s)) == 0 }
 	if f.Server == "knfsd" {
 		return "" // the registry lets it set only what dt sets
@@ -55,17 +55,17 @@ func Unsupported(f *registry.Fixture) string {
 		return fmt.Sprintf("dt doesn't set up a %s fixture yet", f.Server)
 	case f.Profile != "memory" && f.Profile != "badger" && f.Profile != "badger-s3" && fixed(f.Profile):
 		return fmt.Sprintf("dt doesn't set up the %q profile yet", f.Profile)
+	case f.SMB.Mount && f.NFS.Mounts():
+		return "dt doesn't mount a share over both NFS and SMB yet"
 	case f.NFS.Mounts() && !f.NFS.FromOptions && fixed(f.NFS.Version) && mountVers[f.NFS.Version] == "":
 		return fmt.Sprintf("dt doesn't mount NFS %s yet", f.NFS.Version)
-	case f.NFS.Mounts() && fixed(f.NFS.Version) && runtime.GOOS != "linux":
+	case f.NFS.Mounts() && fixed(f.NFS.Version) && goos != "linux":
 		return "dt mounts NFS only on Linux yet"
-	case f.Client != "" && runtime.GOOS != "linux":
+	case f.Client != "" && goos != "linux":
 		return "dt sets up namespaced clients only on Linux yet"
 	case f.SMB.Encryption != "" && f.SMB.Encryption != "preferred" && fixed(f.SMB.Encryption):
 		return fmt.Sprintf("dt doesn't set SMB encryption %q", f.SMB.Encryption)
-	case f.SMB.Mount:
-		return "dt doesn't mount SMB yet"
-	case f.Kerberos && (runtime.GOOS != "linux" || !f.SMB.Enabled):
+	case f.Kerberos && (goos != "linux" || !f.SMB.Enabled):
 		return "dt sets up Kerberos only for SMB on Linux yet"
 	case f.Reset != "" && f.Reset != "each" && fixed(f.Reset):
 		return fmt.Sprintf("dt doesn't reset shares %q", f.Reset)
@@ -76,8 +76,8 @@ func Unsupported(f *registry.Fixture) string {
 // Placeholders names what fixture f gives a cell's commands, besides {bin}:
 // {server}, {share}, {user}, {user2} and {password}, {nfs-port} when it
 // serves NFS, {smb-port} when it serves SMB, {mount} when it mounts the
-// share, {client2} with a second client, and {realm} and {krb5-conf} with
-// Kerberos.
+// share, {bucket} on an S3 profile, {client2} with a second client, and
+// {realm} and {krb5-conf} with Kerberos.
 func Placeholders(f registry.Fixture) []string {
 	if f.Server == "knfsd" {
 		return []string{"server", "nfs-port"} // the kernel's server has no users, and runs no {bin}
@@ -89,8 +89,11 @@ func Placeholders(f registry.Fixture) []string {
 	if f.SMB.Enabled {
 		names = append(names, "smb-port")
 	}
-	if f.NFS.Mounts() {
+	if f.NFS.Mounts() || f.SMB.Mount {
 		names = append(names, "mount")
+	}
+	if f.Profile == "badger-s3" {
+		names = append(names, "bucket")
 	}
 	if f.Clients == 2 {
 		names = append(names, "client2")
@@ -243,7 +246,7 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 	case err = <-done:
 	case <-ctx.Done():
 		_ = s.Stop()
-		<-done
+		<-done //nolint:errcheck // ctx's error is the one to return
 		err = ctx.Err()
 	}
 	if err == nil && f.Client != "" {
@@ -265,6 +268,9 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 	if s.kdc != nil {
 		s.vals["realm"], s.vals["krb5-conf"] = Realm, filepath.Join(s.kdc.dir, "krb5.conf")
 	}
+	if b != nil {
+		s.vals["bucket"] = b.listURL()
+	}
 	if s.nfsPort > 0 {
 		s.vals["nfs-port"] = strconv.Itoa(s.nfsPort)
 		_, _ = fmt.Fprintf(w, "[dt] fixture: NFS exports %s at %s:%d\n", Share, server, s.nfsPort)
@@ -277,11 +283,17 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 		}
 		_, _ = fmt.Fprintf(w, "[dt] fixture: SMB serves %s at %s:%d\n", strings.Join(names, " "), server, s.smbPort)
 	}
-	if f.NFS.Mounts() {
-		if err := s.mountShare(ctx, server, f.NFS); err != nil {
-			_ = s.Stop()
-			return nil, err
-		}
+	switch {
+	case f.NFS.Mounts():
+		err = s.mountShare(ctx, server, f.NFS)
+	case f.SMB.Mount:
+		err = s.mountSMB(ctx, server, password)
+	}
+	if err != nil {
+		_ = s.Stop()
+		return nil, err
+	}
+	if s.mount != "" {
 		s.vals["mount"] = s.mount
 	}
 	return s, nil
@@ -472,8 +484,9 @@ func secret() string {
 
 // freePorts returns n different TCP ports that are free on every interface.
 func freePorts(n int) ([]int, error) {
-	// ponytail: a port is free when it's chosen, and another process can take
-	// it before dfs binds it; the setup then fails and the cell isn't run.
+	// ponytail: a port is free when it's chosen, and another process, a cell of
+	// the same dt run --parallel among them, can take it before dfs binds it;
+	// the setup then fails and the cell isn't run.
 	// Let dfs choose its own ports and report them if that shows up.
 	var ports []int
 	for range n {

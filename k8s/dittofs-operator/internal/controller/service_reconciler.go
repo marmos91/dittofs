@@ -139,8 +139,8 @@ func adapterResourceName(crName, adapterType string) string {
 // podSelectorLabels returns the standard labels used to select DittoFS server pods.
 func podSelectorLabels(crName string) map[string]string {
 	return map[string]string{
-		"app":      "dittofs-server",
-		"instance": crName,
+		"app":         "dittofs-server",
+		labelInstance: crName,
 	}
 }
 
@@ -304,7 +304,7 @@ func (r *DittoServerReconciler) reconcileAdapterServices(ctx context.Context, ds
 		client.InNamespace(ds.Namespace),
 		client.MatchingLabels{
 			adapterServiceLabel: labelTrue,
-			"instance":          ds.Name,
+			labelInstance:       ds.Name,
 		},
 	); err != nil {
 		return fmt.Errorf("failed to list adapter services: %w", err)

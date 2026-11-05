@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -112,7 +113,7 @@ func checkout(t *testing.T) (here, other string) {
 		"  s: { cmd: \"true\", options: { o: { cmd: \"true\" } } }\n" +
 		"  fails: { cmd: \"false\" }\n" +
 		"  away: { cmd: \"true\", needs: [" + other + "] }\n" +
-		"  fixed: { cmd: \"true\", fixture: { profile: memory, smb: { mount: true } } }\n" +
+		"  fixed: { cmd: \"true\", fixture: { profile: memory, nfs: \"4.1\", smb: { mount: true } } }\n" +
 		"  pictured: { image: x, needs: [" + here + "] }\n" +
 		"  partly: { cmd: \"run {test}\", tests: \"t/*.sh\", select: { merge: \"0?-*.sh\" }, needs: [" + here + "], needs_by_test: { \"9?-*.sh\": [\"host:dedicated\", " + here + "] } }\n"
 	root := t.TempDir()
@@ -147,6 +148,11 @@ func TestRunStatuses(t *testing.T) {
 			t.Errorf("dt run %s: %v, want exit status %d", suite, err, code)
 		}
 	}
+	// Taken as one at a time, --parallel 0 would run away and exit 2.
+	var status exitStatus
+	if _, err := dt(t, "run", "away", "--parallel", "0", "--results", t.TempDir()); err == nil || errors.As(err, &status) {
+		t.Errorf("dt run away --parallel 0: %v, want a usage error", err)
+	}
 }
 
 // An option's flag runs its cells only when it's true.
@@ -156,6 +162,35 @@ func TestRunOptionFlagChoosesItsCells(t *testing.T) {
 		out, _ := dt(t, "run", "s", args, "--results", t.TempDir())
 		if !strings.Contains(out, want) || (args == "--o=false" && strings.Contains(out, "s/o")) {
 			t.Errorf("dt run s %s:\n%s", args, out)
+		}
+	}
+}
+
+// dt run --place P runs the cells of the tier that dt plan gives P, and on
+// the dedicated place the host:dedicated need is met, as no other run meets it.
+func TestRunPlace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the cells run sh")
+	}
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "t", "01-a.sh"), "exit 0\n")
+	writeFile(t, filepath.Join(root, "t", "91-b.sh"), "exit 0\n")
+	writeFile(t, filepath.Join(root, "test", "suites.yaml"), "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n"+
+		"  long: { cmd: \"sh {test}\", tests: \"t/*.sh\", tier: nightly, needs_by_test: { \"9?-*.sh\": [\"host:dedicated\"] }, options: { k: { cmd: \"sh {test}\" } } }\n")
+	t.Chdir(root)
+	out, err := dt(t, "run", "--tier", "nightly", "--place", "dedicated", "--results", t.TempDir())
+	if err != nil || !regexp.MustCompile(`(?m)^long/dedicated\s+passed`).MatchString(out) || !regexp.MustCompile(`(?m)^long/k/dedicated\s+passed`).MatchString(out) || regexp.MustCompile(`(?m)^long(/k)?\s`).MatchString(out) {
+		t.Errorf("dt run --place dedicated: %v\n%s", err, out)
+	}
+	out, _ = dt(t, "run", "long", "--tier", "nightly", "--results", t.TempDir())
+	if regexp.MustCompile(`(?m)^long/dedicated\s+passed`).MatchString(out) {
+		t.Errorf("dt run long ran the dedicated cell elsewhere:\n%s", out)
+	}
+	for _, args := range [][]string{{"long"}, {"--only", "long"}, {"--skip", "long"}, {"--k"}} {
+		args = append(args, "--tier", "nightly", "--place", "dedicated", "--results", t.TempDir())
+		var status exitStatus
+		if _, err := dt(t, append([]string{"run"}, args...)...); err == nil || errors.As(err, &status) {
+			t.Errorf("dt run %s: %v, want a usage error", strings.Join(args, " "), err)
 		}
 	}
 }
@@ -217,7 +252,7 @@ func TestListRunsHere(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatal(err)
 	}
-	fixtures := "dt doesn't mount SMB yet"
+	fixtures := "dt doesn't mount a share over both NFS and SMB yet"
 	want := map[string]suite{
 		"s":        {RunsHere: true},
 		"s/o":      {RunsHere: true},
@@ -309,6 +344,48 @@ func TestRunReportsWhenTheSummaryFails(t *testing.T) {
 	var status exitStatus
 	if err == nil || errors.As(err, &status) || !strings.Contains(out, "breaks  passed") {
 		t.Errorf("dt run: %v\n%s", err, out)
+	}
+}
+
+// --base is the ref {base} stands for, over the event's. The event is a pull
+// request into develop, so {base} is never empty and the command always runs.
+func TestRunBase(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the suite runs test")
+	}
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITHUB_EVENT_NAME", "pull_request")
+	t.Setenv("GITHUB_BASE_REF", "develop")
+	root := tempRepo(t)
+	gitIn(t, root, "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-qm", "x")
+	gitIn(t, root, "update-ref", "refs/remotes/origin/feat/stacked", "HEAD")
+	writeFile(t, filepath.Join(root, "test", "suites.yaml"), "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n"+
+		"  compares: { cmd: \"test {base} = origin/feat/stacked\" }\n")
+	t.Chdir(root)
+	if out, err := dt(t, "run", "compares", "--base", "origin/feat/stacked", "--results", t.TempDir()); err != nil {
+		t.Errorf("dt run --base: %v\n%s", err, out)
+	}
+}
+
+// A --base that names no commit here stops the run, instead of each {base}
+// script failing on it, or passing for want of a diff.
+func TestRunBaseUnknown(t *testing.T) {
+	root := tempRepo(t)
+	gitIn(t, root, "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-qm", "x")
+	writeFile(t, filepath.Join(root, "test", "suites.yaml"), "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n"+
+		"  ok: { cmd: \"true\" }\n")
+	t.Chdir(root)
+	_, err := dt(t, "run", "ok", "--base", "origin/typo", "--results", t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "--base origin/typo is not a commit") {
+		t.Errorf("dt run --base origin/typo: %v", err)
+	}
+}
+
+// gitIn runs git in dir and fails the test when it does.
+func gitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
 

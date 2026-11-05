@@ -90,11 +90,12 @@ func buildDatabaseConfig(ds *dittoiov1alpha1.DittoServer) DatabaseConfig {
 		// and can override them with DITTOFS_DATABASE_POSTGRES_* env vars from K8s Secrets.
 		cfg.Type = "postgres"
 		cfg.SQLite = nil
+		const placeholder = "placeholder"
 		cfg.Postgres = &PostgresConfig{
-			Host:     "placeholder",
-			Database: "placeholder",
-			User:     "placeholder",
-			Password: "placeholder",
+			Host:     placeholder,
+			Database: placeholder,
+			User:     placeholder,
+			Password: placeholder,
 		}
 		return cfg
 	}

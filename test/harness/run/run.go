@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cubbit/dittofs/test/harness/fixture"
@@ -60,23 +61,29 @@ func (r Report) Status() int {
 
 // Options say where a run happens and writes.
 type Options struct {
-	Root    string    // the repository
-	Results string    // where runs are written, each in a directory of its own
-	CI      bool      // --ci: an unmet need is an error, not a skip, and new failures and unexpected passes are annotated
-	Out     io.Writer // where the commands' output passes through
-	Tier    string    // the tier the run was asked for, recorded in its results
-	Retry   int       // --retry: how many times a new failure's test runs again
+	Root     string    // the repository
+	Results  string    // where runs are written, each in a directory of its own
+	CI       bool      // --ci: an unmet need is an error, not a skip, and new failures and unexpected passes are annotated
+	Out      io.Writer // where the commands' output passes through
+	Tier     string    // the tier the run was asked for, recorded in its results
+	Retry    int       // --retry: how many times a new failure's test runs again
+	Place    string    // --place: the place the run is on, which meets that place's host need, recorded in its results
+	Parallel int       // --parallel: how many cells run at once; below 2, one after another
+	Base     string    // --base: the ref {base} stands for; empty leaves it to the event (see base)
 }
 
 // minute is a variable so the tests can shorten a cell's limit.
 var minute = time.Minute
 
-// Run runs the cells one after another, each logged under a new directory in
-// o.Results, where summary.json holds every finished cell's results: it's
+// Run runs the cells, each logged under a new directory in o.Results, where
+// summary.json holds every finished cell's results, in the cells' order: it's
 // written when the run starts and rewritten after each cell, so a run stopped
-// at any point still has them. A summary.json that can't be written doesn't
-// stop the run: dt says so, and Run returns the first such error once the
-// cells are done. Cancelling ctx stops the cell running and the ones after it.
+// at any point still has them. Cells start in order, up to o.Parallel at once,
+// each once none running conflicts with it; with more than one at once, each
+// line a cell prints is led by its name. A summary.json that can't be written
+// doesn't stop the run: dt says so, and Run returns the first such error once
+// the cells are done. Cancelling ctx stops the cells running and the ones
+// after them.
 func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 	commit, branch, dirty := gitState(o.Root)
 	// Absolute, so {out} means the same from any directory a command runs in.
@@ -90,7 +97,9 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 		return Report{}, err
 	}
 	rep := Report{Dir: dir}
-	sum := report.Run{Name: filepath.Base(dir), Start: start, Stop: start, Commit: commit, Branch: branch, Dirty: dirty, OS: runtime.GOOS, In: "host", Tier: o.Tier, Exit: rep.Status()}
+	kernel, _ := exec.Command("uname", "-r").Output() // none where there is no uname
+	sum := report.Run{Name: filepath.Base(dir), Start: start, Stop: start, Commit: commit, Branch: branch, Dirty: dirty, OS: runtime.GOOS,
+		Kernel: strings.TrimSpace(string(kernel)), In: "host", Tier: o.Tier, Place: o.Place, Exit: rep.Status()}
 	if os.Getenv("DT_IN_CONTAINER") == "1" {
 		sum.In = "container"
 	}
@@ -107,27 +116,167 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 	if len(cells) == 0 {
 		_, _ = fmt.Fprintln(o.Out, "[dt] nothing to run")
 	}
-	for _, c := range cells {
-		start := time.Now()
-		cell := runCell(ctx, c, o, rep.Dir, commit)
-		cell.Took = time.Since(start).Round(time.Second)
-		rep.Outcomes = append(rep.Outcomes, cell)
-		_, _ = fmt.Fprintf(o.Out, "[dt] %s: %s %s\n", c.Name, cell.Result, cell.Note)
-		if o.CI {
-			for _, a := range annotations(cell) {
-				_, _ = fmt.Fprintln(o.Out, a)
+	// Cells that run at once would build the run's {bin} and lay out its
+	// {tools} at once: do both before any starts, outside every cell's limits.
+	if o.Parallel > 1 {
+		prepare(ctx, cells, o, rep.Dir)
+	}
+	// mu guards what the cells share: running, done, rep, sum and o.Out.
+	var mu sync.Mutex
+	freed := sync.NewCond(&mu)
+	running := map[int]bool{}
+	done := make([]*report.Cell, len(cells))
+	// waits reports whether c must wait: o.Parallel cells run, or one that
+	// conflicts with c does.
+	waits := func(c Cell) bool {
+		if len(running) >= max(o.Parallel, 1) {
+			return true
+		}
+		for j := range running {
+			if conflict(cells[j], c) {
+				return true
 			}
 		}
-		sum.Cells = append(sum.Cells, cell)
-		sum.Stop, sum.Exit = time.Now(), rep.Status()
-		// ponytail: the whole summary is rewritten after each cell: about
-		// 25 ms for the unit suite's 12,500 results, 0.2 s for 200,000.
-		// Write each cell's results to a file of its own when a run's time
-		// outside its cells, its stop less its start less its cells'
-		// seconds, passes 10 seconds.
-		write()
+		return false
 	}
+	var wg sync.WaitGroup
+	for i, c := range cells {
+		mu.Lock()
+		for waits(c) {
+			freed.Wait()
+		}
+		running[i] = true
+		mu.Unlock()
+		wg.Go(func() {
+			co := o
+			var out *prefixed
+			if o.Parallel > 1 {
+				out = &prefixed{mu: &mu, w: o.Out, prefix: "[" + c.Name + "] "}
+				co.Out = out
+			}
+			start := time.Now()
+			cell := runCell(ctx, c, co, rep.Dir, commit)
+			cell.Took = time.Since(start).Round(time.Second)
+			if out != nil {
+				out.flush()
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			delete(running, i)
+			done[i] = &cell
+			rep.Outcomes = rep.Outcomes[:0]
+			for _, d := range done {
+				if d != nil {
+					rep.Outcomes = append(rep.Outcomes, *d)
+				}
+			}
+			_, _ = fmt.Fprintf(o.Out, "[dt] %s: %s %s\n", c.Name, cell.Result, cell.Note)
+			if o.CI {
+				for _, a := range annotations(cell) {
+					_, _ = fmt.Fprintln(o.Out, a)
+				}
+			}
+			sum.Cells = rep.Outcomes
+			sum.Stop, sum.Exit = time.Now(), rep.Status()
+			// The cells still to run count as not run, so a run killed partway
+			// never reads as passed.
+			if len(rep.Outcomes) < len(cells) && sum.Exit == 0 {
+				sum.Exit = 2
+			}
+			// ponytail: the whole summary is rewritten after each cell: about
+			// 25 ms for the unit suite's 12,500 results, 0.2 s for 200,000.
+			// Write each cell's results to a file of its own when a run's time
+			// outside its cells, its stop less its start less its cells'
+			// seconds, passes 10 seconds.
+			write()
+			freed.Broadcast()
+		})
+	}
+	wg.Wait()
 	return rep, writeErr
+}
+
+// conflict reports whether cells a and b can't run at once: either's suite
+// doesn't say parallel, either needs free disk, which nothing reserves, both
+// need the host's rpcbind, as a knfsd server does too, or both need the same port.
+// The needs are the cell's, its fixture's among them.
+//
+// decision: a suite says parallel only once someone has checked that it
+// holds nothing else of the host's: no fixed port outside its needs, no
+// container with a fixed name, no lock, mount or service of the host's but
+// rpcbind, nothing it measures (docs/internals/testing-parallel.md).
+func conflict(a, b Cell) bool {
+	if !a.Unit.Parallel || !b.Unit.Parallel {
+		return true
+	}
+	disk := func(n string) bool { return strings.HasPrefix(n, "disk:") }
+	if slices.ContainsFunc(a.Needs, disk) || slices.ContainsFunc(b.Needs, disk) {
+		return true
+	}
+	hostRPC := func(c Cell) bool { return slices.Contains(c.Needs, "rpcbind") || slices.Contains(c.Needs, "knfsd") }
+	if hostRPC(a) && hostRPC(b) {
+		return true
+	}
+	return slices.ContainsFunc(a.Needs, func(n string) bool { return strings.HasPrefix(n, "port:") && slices.Contains(b.Needs, n) })
+}
+
+// prepare builds the run's {bin} and lays out its {tools} once, for cells
+// that run at once. A step that fails is said here and left to the cells,
+// which try it again and report it as their own.
+func prepare(ctx context.Context, cells []Cell, o Options, dir string) {
+	var tools []string
+	bin := false
+	for _, c := range cells {
+		tools = append(tools, c.Unit.Tools()...)
+		bin = bin || c.Unit.Fixture != nil && c.Unit.Fixture.Server != "knfsd" || c.Unit.Format == "go-json" && asRoot(c)
+	}
+	if bin {
+		if err := buildBin(ctx, o.Root, filepath.Join(dir, "bin"), os.Environ(), o.Out); err != nil {
+			_, _ = fmt.Fprintf(o.Out, "[dt] dfs and dfsctl didn't build: %v\n", err)
+		}
+	}
+	if len(tools) > 0 {
+		slices.Sort(tools)
+		if err := layOutTools(ctx, o.Root, filepath.Join(dir, "tools"), slices.Compact(tools), o.Out); err != nil {
+			_, _ = fmt.Fprintf(o.Out, "[dt] the tools weren't laid out: %v\n", err)
+		}
+	}
+}
+
+// prefixed passes a cell's output on with each line led by the cell's name, a
+// whole line at a time, so cells that run at once don't cut into each other's
+// lines. mu is the run's, shared by every cell's writer.
+type prefixed struct {
+	mu     *sync.Mutex
+	w      io.Writer
+	prefix string
+	part   []byte // the line not ended yet
+}
+
+func (l *prefixed) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.part = append(l.part, p...)
+	for {
+		i := bytes.IndexByte(l.part, '\n')
+		if i < 0 {
+			return len(p), nil
+		}
+		if _, err := fmt.Fprintf(l.w, "%s%s\n", l.prefix, l.part[:i]); err != nil {
+			return len(p), err
+		}
+		l.part = l.part[i+1:]
+	}
+}
+
+// flush passes on a last line that has no end.
+func (l *prefixed) flush() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.part) > 0 {
+		_, _ = fmt.Fprintf(l.w, "%s%s\n", l.prefix, l.part)
+		l.part = nil
+	}
 }
 
 // runName names a run by its start time and commit, and a job's re-run by its
@@ -140,23 +289,20 @@ func runName(start time.Time, commit string) string {
 	return name
 }
 
-// annotations are a cell's error annotations: one for each new failure, with
-// its message, and one for each unexpected pass, so a fix knows which known
-// entry to remove. A cell that failed or didn't run with no test to name, as
-// one stopped before any test or one whose results it couldn't read, is
-// annotated as itself, with its note, so every cell that turns a run red has
-// an annotation.
+// annotations are a cell's error annotations, one for each of what turns the
+// run red: a new failure with its message, an unexpected pass naming the known
+// entry a fix removes, or the cell itself with its note.
 func annotations(c report.Cell) []string {
+	tests, alone := c.Red()
 	var out []string
-	for _, t := range c.Tests {
-		switch {
-		case t.NewFailure():
-			out = append(out, annotation("dt "+c.Name+": "+t.Title(), cmp.Or(t.Message, "failed")))
-		case t.Grade == report.UnexpectedPass:
-			out = append(out, annotation("dt "+c.Name+": "+t.Title(), "passed unexpectedly: remove its known entry ("+t.Reason+")"))
+	for _, t := range tests {
+		message := cmp.Or(t.Message, "failed")
+		if t.Grade == report.UnexpectedPass {
+			message = "passed unexpectedly: remove its known entry (" + t.Reason + ")"
 		}
+		out = append(out, annotation("dt "+c.Name+": "+t.Title(), message))
 	}
-	if len(out) == 0 && (c.Result == report.Failed || c.Result == report.NotRun) {
+	if alone {
 		out = append(out, annotation("dt "+c.Name, c.Result+": "+c.Note))
 	}
 	return out
@@ -186,11 +332,24 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			return didntRun(err.Error())
 		}
 		// What dt can't do yet decides before the needs, as in Blocked.
-		if why := fixture.Unsupported(&spec); why != "" {
+		if why := fixture.Unsupported(&spec, hostOS); why != "" {
 			return didntRun(why)
 		}
 	}
-	if why, unmet := Blocked(c.Unit, c.Needs, func(n string) error { return needs.Check(o.Root, n) }); why != "" {
+	// Docker meets a podman need the machine's own podman can't, and the
+	// commands then run in podman's image: the need's one check decides both.
+	podman := false
+	check := func(n string) (err error) {
+		if n == "host:"+o.Place {
+			return nil
+		}
+		if n != "podman" {
+			return needs.Check(o.Root, n)
+		}
+		podman, err = needs.Podman()
+		return err
+	}
+	if why, unmet := Blocked(c.Unit, c.Needs, check); why != "" {
 		// A machine that met the needs could run the cell, so without --ci
 		// it's skipped; what dt can't do yet is never a skip.
 		if len(unmet) > 0 && !o.CI {
@@ -199,7 +358,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		return didntRun(why)
 	}
 	out := filepath.Join(dir, report.Slug(c.Name))
-	vals := map[string]string{"base": base(), "out": out, "test": ""}
+	vals := map[string]string{"base": o.base(), "out": out, "test": ""}
 	maps.Copy(vals, matrix)
 	lists := map[string][]string{"args": strings.Fields(c.Unit.Args[c.Tier]), "names": strings.Fields(c.Unit.Names)}
 	if c.Unit.Tests.File != "" {
@@ -356,8 +515,13 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			return setupFailed("the image", err)
 		}
 	}
+	if podman {
+		if err := preparePodman(setup, o.Root, os.Environ(), w); err != nil {
+			return setupFailed("podman's image", err)
+		}
+	}
 	setupDone()
-	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, inside: inside, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, paths: paths, lines: lines, server: server, out: w, log: log}
+	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, inside: inside, podman: podman, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, paths: paths, lines: lines, server: server, out: w, log: log}
 	if c.Unit.Format == "go-json" {
 		result, note, tests := t.goJSON(c.Tests, o.Retry)
 		return report.Cell{Name: c.Name, Result: result, Note: note, Log: logName, Tests: tests}
@@ -367,6 +531,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	timedOut := map[string]string{} // why each test that timed out failed
 	interrupted := false
 	first := vals["share"] // the fixture's first share, which a test's share= replaces
+	cold := true           // until the cell's first test runs
 	// attempt runs one test, and returns its results and why it ran nothing,
 	// when it didn't.
 	attempt := func(test string) ([]report.Test, []string) {
@@ -390,7 +555,12 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			t.capture = &output
 		}
 		start := time.Now()
-		r := t.run(test, plan.TestLimit(c.Unit.Timeout, test, lines))
+		r := t.run(test, c.limit(test, lines, cold))
+		took := time.Since(start) // the test's time, without the copy of its logs below
+		cold = false
+		if t.podman && r.result == report.Failed {
+			t.keepLogs(test, r.timedOut)
+		}
 		interrupted = interrupted || r.interrupted
 		var why []string
 		if len(r.notRun) > 0 {
@@ -409,7 +579,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		case read == nil && r.result == report.NotRun:
 			return nil, why
 		case read == nil:
-			tc := report.Test{Name: test, Status: report.Passed, Duration: time.Since(start)}
+			tc := report.Test{Name: test, Status: report.Passed, Duration: took}
 			if r.result == report.Failed {
 				tc.Status, tc.Message = report.Failed, r.note
 			}
@@ -440,7 +610,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			// result: it has none, and the note says why.
 			return nil, why
 		}
-		got, err := read(report.Ran{Test: test, Prefix: lines[test].Prefix, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Took: time.Since(start), Out: out})
+		got, err := read(report.Ran{Test: test, Prefix: lines[test].Prefix, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Took: took, Out: out})
 		if err != nil {
 			why = append(why, prefix+err.Error())
 		}
@@ -602,15 +772,34 @@ func retried(cases, graded, again []report.Test, n int) {
 	}
 }
 
-// grade grades the cell's results against its suite's known file, at the
-// cell's matrix values, its tier, its option and this machine's OS.
+// limit is a test's limit, zero for none. A scenario's size limit assumes
+// setup.sh's images and caches are there, so the cell's first scenario, which
+// fills them, also gets the fixture's setup time, which the cell's limit
+// counts though the suite has no fixture.
+func (c Cell) limit(test string, lines map[string]plan.Line, first bool) time.Duration {
+	limit := plan.TestLimit(c.Unit.Timeout, test, lines)
+	if first && limit > 0 && c.Unit.Timeout.Test == "size" {
+		limit += fixtureSetup
+	}
+	return limit
+}
+
+// grade grades the cell's results against its suite's known file, where the
+// cell runs on this machine.
 func (c Cell) grade(cases []report.Test) {
-	at := map[string]string{"tier": c.Tier, "option": c.Option, "os": runtime.GOOS}
-	if at["os"] == "darwin" {
-		at["os"] = "macos" // as the platform need names it
+	known.Grade(cases, c.Unit.Known != "", c.Known, c.At(runtime.GOOS))
+}
+
+// At is where the cell runs on goos, as a known entry's where names it: its
+// matrix values, its tier, its option and the OS, named as the platform need
+// names it.
+func (c Cell) At(goos string) map[string]string {
+	at := map[string]string{"tier": c.Tier, "option": c.Option, "os": goos}
+	if goos == "darwin" {
+		at["os"] = "macos"
 	}
 	maps.Copy(at, c.Matrix)
-	known.Grade(cases, c.Unit.Known != "", c.Known, at)
+	return at
 }
 
 // gradeNotes names the results that fail their cell, or leave it not run, by
@@ -651,6 +840,7 @@ type tester struct {
 	root     string   // the repository
 	dir      string   // where the commands run, or the docker client for an image
 	inside   string   // where the commands run in the image, when dir sets it
+	podman   bool     // the commands run in podman's image
 	env      []string // dt's environment and the suite's
 	own      []string // the suite's alone
 	vals     map[string]string
@@ -741,6 +931,10 @@ func (t tester) run(test string, limit time.Duration) testRun {
 			}
 			printed = strings.Join(argv, " ")
 		}
+		if t.podman {
+			argv, container = t.inPodman(argv)
+			printed = strings.Join(argv, " ")
+		}
 		if t.server != nil {
 			wrapped, err := t.server.Command(argv, t.dir, t.own)
 			if err != nil {
@@ -799,7 +993,7 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		case code == exitNotRun:
 			notRun = append(notRun, fmt.Sprintf("`%s` exited %d: it ran nothing", firstLine(shown), code))
 			continue
-		case image != "" && notStarted(code):
+		case (image != "" || t.podman) && notStarted(code):
 			notRun = append(notRun, fmt.Sprintf("`%s` exited %d: its container didn't start", firstLine(shown), code))
 			continue
 		case code != 0:
@@ -958,13 +1152,46 @@ func exitCode(err error) (int, error) {
 	return 0, nil
 }
 
+// hostOS is the platform dt runs on, as runtime.GOOS names it; the tests set it.
+var hostOS = runtime.GOOS
+
+// Container reports whether dt run --in auto moves the run into dtc: a cell
+// that can't run here can there, as the container meets every need check
+// finds missing, and no cell needs what is met here but not in the container,
+// as another platform. A cell dtc can't run counts for neither, unless it runs
+// here, which keeps the run here.
+func Container(cells []Cell, check func(need string) error) bool {
+	move := false
+	for _, c := range cells {
+		if inDtc(c.Unit) != "" {
+			if unsupported(c.Unit, hostOS) == "" && !slices.ContainsFunc(c.Needs, func(n string) bool { return check(n) != nil }) {
+				return false
+			}
+			continue
+		}
+		missing, there := false, true
+		for _, n := range c.Needs {
+			here := check(n) == nil
+			inside := needs.InContainer(n) || strings.HasPrefix(n, "service:") && here
+			if here && !inside {
+				return false
+			}
+			if !here {
+				missing, there = true, there && inside
+			}
+		}
+		move = move || missing && there
+	}
+	return move
+}
+
 // Blocked says why dt can't run a cell of suite u that needs list on this
 // machine, or returns "" when it can. What dt doesn't do yet comes first, and
 // then each need that check finds unmet, as "need: reason"; unmet names those
 // needs, and is empty when what stops the cell is something dt doesn't do
 // yet. dt run and dt list both decide through it, so they can't disagree.
 func Blocked(u *registry.Suite, list []string, check func(need string) error) (why string, unmet []string) {
-	if why := unsupported(u); why != "" {
+	if why := unsupported(u, hostOS); why != "" {
 		return why, nil
 	}
 	var reasons []string
@@ -977,9 +1204,23 @@ func Blocked(u *registry.Suite, list []string, check func(need string) error) (w
 	return strings.Join(reasons, "; "), unmet
 }
 
-// unsupported says why dt can't run the suite yet, or returns "": only a
-// fixture field dt doesn't do yet, since it reads every format.
-func unsupported(u *registry.Suite) string {
+// inDtc says why dt can't run suite u in dtc, or returns "": dtc meets the
+// linux need and runs dt as root, which a fixture whose users hold self
+// refuses.
+func inDtc(u *registry.Suite) string {
+	if why := unsupported(u, "linux"); why != "" {
+		return why
+	}
+	if u.Fixture != nil && slices.Contains(u.Fixture.Users, "self") {
+		return "users: self needs an ordinary user, and dtc runs dt as root"
+	}
+	return ""
+}
+
+// unsupported says why dt can't run the suite yet on platform goos, or
+// returns "": only a fixture field dt doesn't do yet, since it reads every
+// format.
+func unsupported(u *registry.Suite, goos string) string {
 	if u.Format == "go-json" && u.Fixture != nil && u.Fixture.Client != "" {
 		return "dt doesn't run go test on a namespaced client yet"
 	}
@@ -990,9 +1231,18 @@ func unsupported(u *registry.Suite) string {
 		return "dt doesn't run a suite that needs root on a namespaced client yet"
 	}
 	if u.Fixture != nil {
-		return fixture.Unsupported(u.Fixture)
+		return fixture.Unsupported(u.Fixture, goos)
 	}
 	return ""
+}
+
+// base is the ref {base} stands for in a run: o.Base (--base) when given, else
+// the event's (see base).
+func (o Options) base() string {
+	if o.Base != "" {
+		return o.Base
+	}
+	return base()
 }
 
 // base is the ref a change is compared against: the base branch of the pull

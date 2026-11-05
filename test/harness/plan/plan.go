@@ -146,7 +146,8 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 	var cells []Cell
 	for _, p := range points(u.Matrix, values) {
 		for _, g := range groups {
-			needs := union(union(u.Needs, g.needs), fixtureNeeds(u.Fixture, u.Matrix.Fill(p.asMap())))
+			needs := union(u.Needs, g.needs)
+			needs = union(needs, fixtureNeeds(u.Fixture, u.Matrix.Fill(p.asMap()), placeOf(needs)))
 			place := placeOf(needs)
 			shards := 1
 			if u.Shards > 1 && place != dedicated {
@@ -191,10 +192,11 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 }
 
 // fixtureNeeds are the needs fixture f implies at one point of its matrix,
-// for its own steps: a service for an S3 profile, root and the client for a
-// mount, root and the port for SMB on a set port, and docker for Kerberos's
-// KDC.
-func fixtureNeeds(f *registry.Fixture, values map[string]string) []string {
+// on place, for its own steps: a service for an S3 profile, root and the
+// client for a mount, root and the port for SMB on a set port, and docker for
+// Kerberos's KDC. An SMB mount on the macos and windows places needs no root,
+// since the user's own client mounts it there.
+func fixtureNeeds(f *registry.Fixture, values map[string]string, place string) []string {
 	if f == nil {
 		return nil
 	}
@@ -221,8 +223,11 @@ func fixtureNeeds(f *registry.Fixture, values map[string]string) []string {
 	if f.RPCBind != "" {
 		out = append(out, "rpcbind")
 	}
+	if f.SMB.Mount && place != macOS && place != windows {
+		out = union(out, []string{"root"})
+	}
 	if f.SMB.Mount {
-		out = union(out, []string{"root", "smb-client"})
+		out = union(out, []string{"smb-client"})
 	}
 	if f.SMB.Port != 0 {
 		out = union(out, []string{"root", "port:" + strconv.Itoa(f.SMB.Port)})

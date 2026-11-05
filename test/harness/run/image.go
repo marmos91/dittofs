@@ -32,9 +32,7 @@ var notInName = regexp.MustCompile(`[^a-zA-Z0-9_.-]`)
 // running.
 func (t tester) inImage(argv []string) (docker []string, name string, err error) {
 	u := t.cell.Unit
-	b := make([]byte, 4)
-	_, _ = rand.Read(b)
-	name = "dt-" + notInName.ReplaceAllString(report.Slug(t.cell.Name), "-") + "-" + hex.EncodeToString(b)
+	name = containerName(t.cell.Name)
 	// decision: the container runs as its image's own user, root in the
 	// images the registry names, since an image's entrypoint may write paths
 	// of its own that another user can't. An engine that keeps a file's owner
@@ -72,6 +70,13 @@ func (t tester) inImage(argv []string) (docker []string, name string, err error)
 		docker = append(docker, "-v", from+":"+to)
 	}
 	return append(append(docker, u.Image), argv...), name, nil
+}
+
+// containerName names a container of the cell's, unique to it.
+func containerName(cell string) string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return "dt-" + notInName.ReplaceAllString(report.Slug(cell), "-") + "-" + hex.EncodeToString(b)
 }
 
 // pull pulls image unless docker has it, before the cell's first test, so

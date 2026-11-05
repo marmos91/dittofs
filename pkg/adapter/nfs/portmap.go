@@ -130,7 +130,7 @@ func (s *NFSAdapter) startPortmapper(ctx context.Context) error {
 			case <-server.WaitReady():
 				server.Stop()
 				logger.Info("Portmapper start abandoned; late bind stopped")
-			case <-errCh:
+			case <-errCh: //nolint:errcheck // nothing waits for an abandoned start's error
 			}
 		}()
 		return nil // Timeout waiting for ready, but non-fatal

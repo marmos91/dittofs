@@ -93,15 +93,3 @@ func TestGoJSONQuarantined(t *testing.T) {
 		t.Errorf("%s %q, want passed, with the quarantined test counted as known", o.Result, o.Note)
 	}
 }
-
-// From its date an expired entry excuses nothing: its test's failure is new
-// again, and fails the cell.
-func TestExpiredQuarantineExcusesNothing(t *testing.T) {
-	root, r := repo(t, "suites:\n  s: { cmd: \"sh {test}\", tests: \"t/*.sh\" }\n", map[string]string{
-		"t/flaky.sh":            "exit 1\n",
-		registry.QuarantinePath: "- { suite: s, test: t/flaky.sh, issue: '#1', expires: " + time.Now().UTC().Format(time.DateOnly) + " }\n",
-	})
-	if o := runIn(t, root, r, "s").Outcomes[0]; o.Result != report.Failed || len(o.Tests) != 1 || o.Tests[0].Grade != report.New {
-		t.Errorf("%s %q %+v, want failed, its test new", o.Result, o.Note, o.Tests)
-	}
-}

@@ -196,6 +196,20 @@ func TestConfigureSMB(t *testing.T) {
 	}
 }
 
+// A default share the fixture mounts over SMB, as {user}, gives {user} the
+// read-write grant the mount needs, and no more: its root stays unowned.
+func TestConfigureSMBMount(t *testing.T) {
+	f, c, url := newFakeAPI(t)
+	s := testServer(registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true, Mount: true}}, url, 0, 40002)
+	if err := s.configure(c, nil, "pw"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"POST /api/v1/shares /export owner=<nil>", "PUT /api/v1/shares/export/permissions/users/dt-user read-write", "PUT /api/v1/adapters/smb on"}
+	if i := slices.Index(f.calls, want[0]); i < 0 || i+len(want) > len(f.calls) || !slices.Equal(f.calls[i:i+len(want)], want) {
+		t.Errorf("calls:\n%s\nwant, in a row:\n%s", strings.Join(f.calls, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 // With Kerberos, {user}'s principal maps to {user} once the test users are
 // in, as the scripts' bootstrap maps it, and the check finds SMB at {server},
 // a name then, and fails when the name doesn't lead there.

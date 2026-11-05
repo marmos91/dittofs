@@ -1,4 +1,4 @@
-.PHONY: vulncheck vulncheck-main vulncheck-operator setup-hooks check-hooks fmt lint vet build build-bench test-unit test-e2e test-all
+.PHONY: vulncheck vulncheck-main vulncheck-operator setup-hooks check-hooks fmt lint vet build build-bench
 
 # Configure git to use the project's hooks directory and make hooks
 # executable. Safe to re-run.
@@ -68,19 +68,3 @@ build:
 # bench/ source directory at the repo root.
 build-bench:
 	go build -o dfsbench ./cmd/bench
-
-# Run unit + integration tests with the race detector, matching CI.
-test-unit:
-	go test -race ./...
-
-# E2E suite. Requires root + a kernel NFS client, so invoke under sudo:
-# `sudo make test-e2e ARGS="--verbose --s3"`. Flags pass through via ARGS.
-test-e2e:
-	test/e2e/run-e2e.sh $(ARGS)
-
-# Run unit tests followed by the e2e suite. Uses a recipe (not
-# prerequisites) with $(MAKE) so the suites run strictly in order even under
-# `make -j`. Requires root for the e2e stage.
-test-all:
-	$(MAKE) test-unit
-	$(MAKE) test-e2e
