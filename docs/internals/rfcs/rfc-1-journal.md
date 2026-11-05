@@ -1247,7 +1247,7 @@ walk can produce is omitted.
 | `ExtentLimit` | gauge | the configured index entry bound ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) |
 | `Counters` | counters | the cumulative counts of [§3.9](#3.9%20Metrics), since open |
 | `RejectedSegments` | gauge | segments not attached ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
-| `ReadOnly` | value | whether the journal is read-only, the error that made it so, and whether a spare has since been made ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)) |
+| `ReadOnly` | value | whether the journal is read-only, the error that made it so, whether a spare has since been made, and the check the last probe found failing, if any ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)) |
 | `Recovery` | value | how many segments the last open read by catalog and by scan, and how long it took ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
 | `Losses` | value | the most recent loss events, each with a sequence number ([§3.8](#3.8%20Loss%20events)) |
 | `LossGeneration` | value | raised on every loss of corrupt or acknowledged-unreadable content not yet offloaded and every failed sync window, never on a stale loss; never lower than any value this process has exposed for this directory ([§3.8](#3.8%20Loss%20events)) |
@@ -2145,7 +2145,8 @@ reopen's first. A probe whose checks fail creates nothing, so it leaves nothing
 to unlink on a mount that may still be read-only, and the probes hold at most
 one spare. A device that takes writes again but that open would refuse —
 remounted without cache flushes, say — so stays read-only, with
-`journal_read_only` naming the failed check. Once a spare is made, the journal
+`journal_read_only` naming the failed check, which `Stats` carries in `ReadOnly`
+([§3.7](#3.7%20State%20introspection)). Once a spare is made, the journal
 reports the device writable again, and its caller closes and reopens it
 ([RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)), so the state resolves on its own once the cause is removed
 ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)). A reopen before then would fail at recovery's first write and
@@ -2154,7 +2155,8 @@ a running engine ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20st
 foreign journal — a check failing again, or recovery's I/O on a device that
 failed between probe and open — leaves the journal closed: its shares answer
 writes, and reads of content only it held, retry-later, `journal_read_only`
-names the refusal, and the caller retries the open at the same interval. A
+names the refusal, which the caller holds as `Open`'s error, since a closed
+journal has no `Stats` to carry it, and the caller retries the open at the same interval. A
 missing or foreign journal is not this state but a lost journal device
 ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)), gated as at start.
 

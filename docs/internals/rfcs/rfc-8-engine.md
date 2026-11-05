@@ -3220,7 +3220,7 @@ The engine raises these [RFC 25 §3.9](rfc-25-observability.md#3.9%20The%20condi
 `file_offload_failing` (share, naming the file), `existence_commit_failing`
 (share, naming the file, [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)), `offload_age_exceeded` (share,
 [§11.4](#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable)), `removal_stalled` (share, naming the file, [§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)),
-`work_queue_stalled` (journal, naming the source and tenant, [§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)), `journal_read_only` (journal, naming the error that entered it, or the check or reopen that keeps it, [RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)),
+`work_queue_stalled` (journal, naming the source and tenant, [§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)), `journal_read_only` (journal, naming the error that entered it, or the check or reopen that keeps it, [RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write): the error and the check from the journal's `ReadOnly` ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), the reopen's refusal from `Open`'s error, the journal being closed),
 `journal_unsuitable` (journal, naming the directory and what refused the latest
 open or late attach, the rule or another cause, until the late attach serves, [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)),
 `journal_lost` (journal, when a retried open finds the journal missing or
