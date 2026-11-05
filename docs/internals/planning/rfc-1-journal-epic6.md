@@ -286,7 +286,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R39 | A loss event is an extent the journal stopped holding without being asked: dropped as corrupt, as stale, or because a failed window was failed. It names the share, the file, the extent, the content version, the reason, and whether the offloaded bit was set | invariant | RFC 1 §3.8 | T6.2 |
+| R39 | A loss event is an extent the journal stopped holding without being asked: dropped as corrupt, as stale, or because a failed window was failed. It names the share, the file, the extent, the content version, the reason, whether the offloaded bit was set, and whether its loss is deferred (R92) | invariant | RFC 1 §3.8 | T6.2 |
 | R40 | `Stats` keeps the most recent loss events in a bounded ring, each with a sequence number, and counts them all, so a poller sees every new event or knows how many it missed | invariant | RFC 1 §3.8, §3.9 | T6.2 |
 | R41 | A loss is a record. The journal appends a loss record for each record piece a loss event drops, before it publishes the event, naming the file, extent, version and reason, and carrying in its payload the sequence number of the record it drops and whether that record was synced when it was dropped | invariant | RFC 1 §3.8 | T6.2 |
 | R42 | An unsynced loss record (a record of a failed window, or one found corrupt before its sync) reaches nothing else: it names the exact record, never "at or below this version inside the extent" | invariant | RFC 1 §3.8 | T6.2 |
@@ -295,7 +295,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 | R45 | The journal calls out to nothing to report. `Stats` is the one channel. Checked in review, not by a test: an import or a callback no test could assert on fails nothing without the diff showing it (rule 10) | invariant | RFC 1 §3.8 | T6.2 |
 | R46 | A loss record found on disk at open is placed in the ring, marked as found at open, so a restart does not hide a loss nobody read. This epic gives the ring a place for them; epic 7 supplies them | invariant | RFC 1 §3.8 | T6.2 |
 | R47 | A loss record is appended once for a record: a record a loss record already names is not named again, so the next open does not report the same loss twice | invariant | RFC 1 §3.8 | T6.2 |
-| R83 | A loss whose record cannot be appended, because the journal is read-only or the headroom is exhausted, still drops what it drops: the event is published, the generation follows its rules, and the dropped record's sequence number joins the per-directory list of R34, so the next open drops it and appends its loss record. With the headroom exhausted the append fails with `ErrNoSpace` naming the headroom | invariant | RFC 1 §5.4, §6, RFC 28 §3.3 | T6.2, T6.6 |
+| R83 | A loss whose record cannot be appended, because the journal is read-only or the headroom is exhausted, still drops what it drops: the event is published, the generation follows its rules, and the dropped record's sequence number joins the per-directory list of R34, so the next open drops it and appends its loss record. With the headroom exhausted the append fails with `ErrNoSpace` naming the headroom. While the journal serves, the headroom counts as exhausted once only the open reserve is left (epic 8's R111) | invariant | RFC 1 §5.4, §6, RFC 28 §3.3 | T6.2, T6.6 |
 | R84 | A synced loss is live until the caller settles it: it is registered as a marker in epic 4's marker set, so `Since` yields it and `Files` lists its file until `Settle` covers its version. An unsynced loss is not registered | invariant | RFC 1 §3.10, §3.7 | T6.2 |
 
 **The loss generation**
@@ -332,6 +332,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 | R89 | While the journal is read-only, epic 5's background workers (the pool's refill, the idle seal, retirement's unlinks) take no spare, create no file and write nothing. This epic gives them the state; epic 5's workers consult it (its R89). The refill is RFC 1 §5.4's "takes no spare"; stopping the idle seal and the unlinks is this breakdown's decision | MUST, decision | RFC 1 §5.4, §9.4 B | T6.6 |
 | R90 | A read appends nothing and never surfaces an append refusal: a corrupt record's extents are dropped on the read and the generation is raised there, under the stream's leaf mutex (memory only), before `Corrupt` returns, so a `Sync` or a read of the generation that follows already includes the loss (RFC 1 §3.8, RFC 8 §5.1); its loss record and then its event are handed to the stream's worker (RFC 1 §3.8 orders the record before the event, not before the read returns), so a read never rolls, seals or waits on a sync or another file's write (RFC 1 §8.1). `Corrupt` returns `Dropped` with no error, and a loss record the worker cannot append leaves the drop standing (R83) | invariant | RFC 1 §3.8, §5.4, §6, §8.1, RFC 28 §3.3 | T6.7 |
 | R91 | A record found corrupt before its sync reaches nothing else: the content it superseded is held again, as a failed window's is, and its ledger entry is removed, so a later sync does not lift that content and a later failure of its window does not re-append it | invariant | RFC 1 §3.8 | T6.7 |
+| R92 | A loss the open cannot fit in the open reserve is deferred: the extent is dropped and not held, a synced loss outranks what it superseded and is registered in E4's marker set as if its record were on disk (R84), the generation follows its rules, and the event is published marked deferred, but no record is appended. The record is written with the copy that retires the dropped record's segment (epic 9's repack and epic 7's emptying), never on the headroom. `Settle` ends only the marker; the record is still owed | invariant | RFC 1 §3.8, §6, §3.10 | T6.2 |
 | R86 | Every drop and re-hold this epic makes in the index (a retained extent lifted on sync, a failed window's drop and re-hold, the read-only undo, a corrupt record's drop) is passed, with epic 4's change, to the account function the journal registers, so held and dirty bytes, the per-share figures and the dirty-file list stay maintained counters | invariant | RFC 1 §3.7 | T6.4, T6.6, T6.7 |
 
 **Test rows of the RFCs for this area**
@@ -718,7 +719,7 @@ pkg/block/journal/
 
 - **Track:** A. **Depends on:** S2; E5's `Append` and the headroom (T5.4b, T5.6); E3's loss
   record encoder; E1's `LossEvent`; E4's marker set (E4-5), which takes a loss kind (§9).
-- **Covers:** R39–R53, R56, R62, R76–R79, R83, R84.
+- **Covers:** R39–R53, R56, R62, R76–R79, R83, R84, R92.
 - **Deliverables:** `internal/durability/loss.go`: `Lose(ctx, Loss) (core.LossEvent, error)`
   (D6) with `Loss` naming the share, file, extent, version, sequence number, reason (corrupt,
   stale, failed window), the extent's offloaded bit as it was, and whether the record was
@@ -727,7 +728,11 @@ pkg/block/journal/
   the event (R51). It checks no admission rule of its own (D6). A record it cannot append, the journal
   being read-only or E5 reporting the headroom exhausted, leaves the drop standing, publishes the
   event and adds the dropped record's sequence number to R34's per-directory list, returning the
-  headroom's `ErrNoSpace` to the caller (R83). A synced loss is registered as a marker in E4's
+  headroom's `ErrNoSpace` to the caller (R83). A `Loss` marked `Deferred` (epic 7 sets it for what
+  an open drops past the open reserve) appends nothing and goes on: the extent is dropped, the
+  generation raised and the event published marked deferred, and a synced one is registered as
+  below (R92). A `Loss` marked `AtOpen` is admitted from the open reserve, which no other loss
+  draws on (epic 8's R111). A synced loss is registered as a marker in E4's
   marker set (E4-5), which `Settle` drops like a removal's, so `Since` and `Files` see it until
   then (R84). The ring: bounded, oldest first, every event numbered, a count of all of them
   including those that fell out, and `Place(found at open)` for E7 (R46). The counters
@@ -754,6 +759,8 @@ pkg/block/journal/
   - `corrupt_extents` is labelled `data_loss` when the bit was unset and `repairable` when set,
     and a stale loss moves `stale_extents`.
   - With the journal at its maximum, a loss record is appended from the headroom.
+  - A deferred loss appends no record, still drops the extent, raises the generation, publishes
+    the event marked deferred and, if synced, is yielded by `Since` until `Settle` covers it.
   - With the headroom exhausted, the append fails with `ErrNoSpace` naming the headroom, the
     extent is still dropped, the event is published and the sequence number is in the
     per-directory list. (The same in a read-only journal is T6.6's.)
@@ -777,7 +784,7 @@ pkg/block/journal/
   sequence number, the flag and the absence of a range (catches a loss keyed on version, the
   RFC's own example, R42); the ring overflow case; the headroom case on a seam that refuses `ENOSPC` for
   content; the headroom drawn to exhaustion, then a corrupt loss, asserting the drop, the event
-  and the list entry (catches a drop undone because its record could not be appended, R83); a synced and an unsynced loss read back through E4's markers, and a
+  and the list entry (catches a drop undone because its record could not be appended, R83), and the same with only the open reserve left, where a `Lose` from a read is refused and an `AtOpen` one succeeds (R83); a deferred synced loss read back through `Since` and `Files`, and one that appended nothing (catches a deferred loss that is lost or written to the headroom, R92); a synced and an unsynced loss read back through E4's markers, and a
   `Settle` above the synced one (catches a synced loss `Since` never yields, R84); a second `Lose`
   of one sequence number; the record's durability through the crash seam (R79, write half); and for the generation, the four loss reasons in a table, asserting
   the generation after each; the order hooks (generation before event, before the failing
@@ -1218,7 +1225,7 @@ pkg/block/journal/
   read returns before the seal does (catches a read that rolls, RFC 1 §8.1, R90), with the worker
   held and `Sync` of the file and `Generation` read in between (catches a generation that lags the
   loss, RFC 8 §5.1); a corrupt read followed at once by `Stop` (catches a queued loss record never
-  written); the headroom drawn to exhaustion, then a corrupt read (R90); a failed segment's
+  written); the headroom drawn to exhaustion, then a corrupt read (R90), the same with only the open reserve left (R83); a failed segment's
   original whose page cache returns stale bytes with a matching read-back checksum (catches a copy
   verified against itself, RFC 1 §5.3); the damage count before and after the extents are
   dropped (R60); an `EIO` at the seam (D11). Conformance rows that stay red until `Open`: corrupt
@@ -1353,6 +1360,7 @@ suggestion only: one pull request per subtask works as well.
 - **`Corrupt` for epic 9's callers (D9).** An offer and a repack copy call `Corrupt` too. Each
   must release its segment reference before the call, and a repack copy, which holds the file's
   append domain, passes `DomainHeld`. Confirm with epic 9's owner that both can.
+- **What an open's loss needs from `Lose` (R92).** RFC 1 §6 (merged in #3730) gives an open's own loss records an open reserve inside the headroom and has the open defer what does not fit. `Loss` therefore carries `AtOpen` and `Deferred`, set by epic 7's open, and epic 8's admission table (T8.6) names the class. A deferred loss's record is written by epic 9's repack and epic 7's emptying, so each must carry it (RFC 1 §6, §7.2). Confirm the field names with epic 7's owner.
 - **A copy used at read time (D10).** RFC 28 §3.3 spares a record whose other copy verifies,
   and RFC 1 §5.3 says a resolved failed segment backs only records synced before the failure.
   `Corrupt` serves the copy in place, and outside a read-only journal the worker re-appends it to
