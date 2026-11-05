@@ -2188,7 +2188,7 @@ engine refuses a write for quota.
 // kept under, zero for a create's inode before the file exists.
 type Charge struct {
 	Share        ShareID
-	Owner, Group Principal // the file's, or for a create those RFC 7 §2.4 gives the new file: the resolved caller after squashing (RFC 7 §7.4), never the parent directory's owner, and the caller's group, or the parent's under setgid
+	Owner, Group Principal // the file's, or for a create those RFC 7 §2.4 gives the new file: an owner or group the create names, else the resolved caller after squashing (RFC 7 §7.4), never the parent directory's owner, and the caller's group, or the parent's under setgid
 	Project      uint64
 	File         FileID
 }
