@@ -104,7 +104,9 @@ func (w *IdleSealer) Start() {
 
 // Stop stops the worker and joins it: a seal in flight finishes before Stop
 // returns (R70 — the caller stops the idle seal before the segments it
-// touches are closed), and no pass a Stop raced can still seal, for the
+// touches are closed). A pass already running when Stop closes done is
+// joined the same way — it does not check done again, so it may seal every
+// stream still due in its turn; a pass that has not started cannot, for the
 // worker checks done first at each turn's top as well. It returns at once
 // before Start, and a second Stop is a no-op.
 func (w *IdleSealer) Stop() {
@@ -152,9 +154,14 @@ func (w *IdleSealer) run() {
 // The fallback wait is core.IdleSealAge, never 0, so a refusing check or a
 // failed seal cannot spin the worker on After(0). It is safe as a bound too:
 // a stream that is not a candidate now can only become one through an append
-// at a time t at or past now, so its deadline t+IdleSealAge is never before
-// now+IdleSealAge. Waking then and recomputing arms the exact remaining wait,
-// so no seal is ever late.
+// that stamped some time t of the clock, and a stamp can predate this pass's
+// reading only by the span its own append spent waiting — a lock, a drain
+// park, a roll — which the append stamps as its arrival rather than its
+// reservation. So its deadline t+IdleSealAge is never before this reading
+// minus that span, and waking at the fallback and recomputing arms the
+// exact remaining wait. That span apart, no seal is late: the worker wakes
+// no more than one IdleSealAge after a stream's deadline, and the stamp's
+// own error errs toward sealing sooner, never later.
 //
 // decision: core.IdleSealAge and the threshold are unmeasured constants, as
 // the constructor's decision comment carries in full. What would change them
@@ -162,11 +169,15 @@ func (w *IdleSealer) run() {
 // first read, or a trickle workload whose early seals cost more than they
 // return.
 func (w *IdleSealer) pass() time.Duration {
-	now := w.clock.Elapsed()
 	next := core.IdleSealAge
 
 	for i := 0; i < w.streams.Len(); i++ {
 		s := w.streams.Stream(i)
+		// Each stream is read against the clock as the pass reaches it, not
+		// against one reading held for the whole pass: a seal this pass runs
+		// for an earlier stream spends real time the later streams' waits
+		// must not carry, for the pass arms them only when it returns.
+		now := w.clock.Elapsed()
 		due, wait := s.idleDue(now, w.threshold)
 		if !due {
 			if wait > 0 {
@@ -196,19 +207,30 @@ func (w *IdleSealer) pass() time.Duration {
 			// The re-check under the seal's own hold refused: an append
 			// landed, another seal ran, the stream closed. The stream is
 			// exactly as its own holder left it — nothing to report.
-		case err != nil && (errors.Is(err, ErrStreamClosed) || errors.Is(err, ErrWrongState)):
-			w.log.Debug("segment: the idle seal lost the segment to a close or an explicit seal",
+		case errors.Is(err, ErrStreamClosed):
+			// The one race the idle seal can really lose: a close of the
+			// stream beat the seal's drain park and the seal came back
+			// refused — refused by the stream's own closed flag, not by
+			// the stream's ErrWrongState above, which the held check
+			// rules out, and not by a ledger refusal, which the case
+			// below reports.
+			w.log.Debug("segment: the idle seal lost the segment to a close",
 				"stream", i, "err", err)
 		case err != nil:
 			// The segment is ended: its next Sync reports ErrSegmentEnded to
 			// the durability layer, which owns the records it acknowledged.
+			// A ledger refusal lands here as well, for the idle seal's own
+			// held check and its state switch under the same hold rule out
+			// the stream's ErrWrongState — a refusal that still says it is
+			// the ledger's, a state the stream and the set disagree on,
+			// which is never a lost race, so it keeps the same Error.
 			// The worker retries no segment and never rolls.
 			w.log.Error("segment: the idle seal failed and its segment is ended",
 				"stream", i, "err", err)
 		case res.TailErr != nil:
 			w.log.Warn("segment: the idle seal left the tail; the segment is sealed at its cap",
 				"stream", i, "err", res.TailErr)
-		case sealed:
+		default:
 			w.log.Debug("segment: the idle seal returned the segment's tail",
 				"stream", i, "marker", res.Marker, "size", res.Size)
 		}

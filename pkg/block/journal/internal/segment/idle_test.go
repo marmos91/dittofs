@@ -1,7 +1,11 @@
 package segment
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -80,6 +84,13 @@ func idleRigOver(t *testing.T, n int, cap int64, threshold int64, admit func() e
 	return r
 }
 
+// withLog replaces the rig's worker with one that logs to log, before any
+// start: the check that reads the level a verdict was logged at.
+func (r *idleRig) withLog(log *slog.Logger) *idleRig {
+	r.worker = NewIdleSealer(r.worker.streams, r.worker.clock, r.worker.threshold, r.worker.admit, log)
+	return r
+}
+
 // start starts the rig's worker and returns the rig.
 func (r *idleRig) start() *idleRig {
 	r.worker.Start()
@@ -91,12 +102,12 @@ func (r *idleRig) stream(i int) *Stream {
 	return r.streams.Stream(i)
 }
 
-// advance waits until the worker has armed its wait on the clock — an unarmed
-// worker is stuck, not slow, and the wait names that itself — and then moves
-// the clock by d.
+// advance waits until the worker has armed its wait on the clock — an
+// unarmed worker is stuck, not slow, which is what armed checks for — and
+// then moves the clock by d.
 func (r *idleRig) advance(t *testing.T, d time.Duration) {
 	t.Helper()
-	r.armedWait(t)
+	r.armed(t)
 	r.clock.Advance(d)
 }
 
@@ -106,8 +117,16 @@ func (r *idleRig) advanceRaw(d time.Duration) {
 	r.clock.Advance(d)
 }
 
-// armedWait blocks until the clock holds at least one armed wait.
-func (r *idleRig) armedWait(t *testing.T) {
+// armed blocks until the clock holds at least one armed wait, so a check
+// that is about to advance never releases a wait the worker has not taken
+// yet. Past a firing advance it means the pass the advance released has
+// finished and the worker is armed on its next wait: a pass returns only
+// once every seal it made is durable, accounted in the ledger and moved in
+// the stream's own state, and the next wait is armed only after that, so
+// what a check reads once armed holds is the pass's settled result. It never
+// returns beside a stopped worker, so a pass that never re-arms is a worker
+// that died mid-seal, which the bound reports rather than a hang hides.
+func (r *idleRig) armed(t *testing.T) {
 	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
 		if r.clock.Pending() >= 1 {
@@ -119,29 +138,20 @@ func (r *idleRig) armedWait(t *testing.T) {
 	}
 }
 
-// settle waits until the pass the last advance released has finished and
-// re-armed its next wait, so the absence of a seal is a settled fact rather
-// than a race: the worker's seal writes complete before its pass returns, and
-// the next wait is armed only after that.
-func (r *idleRig) settle(t *testing.T) {
-	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
-		if r.clock.Pending() >= 1 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the worker never finished its pass: the clock holds no wait it armed")
-		}
-	}
-}
-
-// sealed polls, bounded in real time, until the ledger holds n sealed
-// segments, failing the test outright if it never does — an idle seal that
-// never runs must be called that, not waited for.
+// sealed polls, bounded in real time, until the ledger holds at least n
+// sealed segments, then waits for the pass that sealed them to finish: the
+// ledger counts a segment sealed inside the seal's write, before the free
+// tail is returned and before the stream's own seal state moves, so the
+// count alone can name a seal still running, and no verdict the checks read
+// off the stream or the footprint is settled until the pass has returned and
+// the worker is armed on its next wait. It fails the test outright if the
+// count never arrives — an idle seal that never runs must be called that,
+// not waited for.
 func (r *idleRig) sealed(t *testing.T, n int64) {
 	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
 		if got := r.set.Counters().Sealed; got >= n {
+			r.armed(t)
 			return
 		}
 		if time.Now().After(deadline) {
@@ -206,7 +216,11 @@ func TestTheIdleSealComesAtExactlyTheIdleAge(t *testing.T) {
 	// seal's fall is measured against.
 	footprintBefore := r.set.Counters().UsedBytes
 
-	r.clock.Advance(time.Nanosecond)
+	// The advance crosses the armed wait too: arming first settles the
+	// pass the previous advance released, so the nanosecond moves the clock
+	// onto the wait that pass itself armed, and cannot slip past it before
+	// the worker takes it.
+	r.advance(t, time.Nanosecond)
 	r.sealed(t, 1)
 	if state := idleState(s); state != sealSealed {
 		t.Fatalf("a nanosecond past the idle age: state %v, want sealed", state)
@@ -241,7 +255,7 @@ func TestTheIdleSealNeedsMoreThanTheThreshold(t *testing.T) {
 			t.Fatalf("the record holds %d bytes beyond the header, want exactly the threshold %d", beyond, idleRecordBytes(64))
 		}
 		r.advance(t, 2*core.IdleSealAge)
-		r.settle(t)
+		r.armed(t)
 		if state, sealed := idleState(s), r.set.Counters().Sealed; state != sealOpen || sealed != 0 {
 			t.Fatalf("at exactly the threshold past two idle ages: state %v, %d sealed, want open and none", state, sealed)
 		}
@@ -273,7 +287,7 @@ func TestAStreamBelowTheThresholdStaysOpenForAnyIdleTime(t *testing.T) {
 	idleAppend(t, s, 64, 0)
 	for step := 1; step <= 5; step++ {
 		r.advance(t, 2*core.IdleSealAge)
-		r.settle(t)
+		r.armed(t)
 		if state, sealed := idleState(s), r.set.Counters().Sealed; state != sealOpen || sealed != 0 {
 			t.Fatalf("after %d advances past whole idle ages: state %v, %d sealed, want open and none", step, state, sealed)
 		}
@@ -325,7 +339,10 @@ func TestAnIdleSealTakesNoSpare(t *testing.T) {
 // append or from the worker's start: an append a second before the deadline
 // moves it, so two more seconds of idleness — past the original deadline —
 // leave the segment open, and it takes the whole age from the second append
-// to seal it.
+// to seal it. The last advance lands exactly on the second append's
+// deadline, so a worker that ignores a stream's remaining wait and sleeps the
+// fallback age instead misses it — the check asks the armed wait, not just
+// the sealed count.
 func TestAnAppendResetsTheIdleTime(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -337,12 +354,15 @@ func TestAnAppendResetsTheIdleTime(t *testing.T) {
 	idleAppend(t, s, 64, 64)
 
 	r.advance(t, 2*time.Second)
-	r.settle(t)
+	r.armed(t)
 	if state := idleState(s); state != sealOpen {
 		t.Fatalf("two seconds past the first append's deadline: state %v, want open", state)
 	}
 
-	r.advance(t, core.IdleSealAge)
+	// The second append stamped core.IdleSealAge-1s-2s of idleness away, so
+	// the deadline it arms is exactly core.IdleSealAge-2s from the last
+	// advance: the advance crosses the deadline exactly, no more.
+	r.advance(t, core.IdleSealAge-2*time.Second)
 	r.sealed(t, 1)
 	if state := idleState(s); state != sealSealed {
 		t.Fatalf("a whole age past the second append: state %v, want sealed", state)
@@ -376,7 +396,7 @@ func TestARefusedAdmissionStopsTheIdleSeal(t *testing.T) {
 	syncs := r.seam.CallsFor(journaltest.OpSync, name)
 
 	r.advance(t, 3*core.IdleSealAge)
-	r.settle(t)
+	r.armed(t)
 	if after := r.seam.CallsFor(journaltest.OpWrite, name); after != writes {
 		t.Fatalf("the seam saw %d writes of %s while the check refused, want the %d it held", after, name, writes)
 	}
@@ -462,7 +482,7 @@ func TestTheSealerStopsAndJoins(t *testing.T) {
 		r := idleRigOver(t, 1, 64<<10, 8, nil)
 		r.worker.Start()
 		r.worker.Start() // idempotent: one goroutine arms one wait
-		r.settle(t)
+		r.armed(t)
 		// The wait the running worker armed is abandoned by Stop — the clock
 		// never closes it — so what the check holds is its count: nothing
 		// further arms while the worker is gone.
@@ -517,7 +537,12 @@ func TestStopWaitsForASealInFlight(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Stop never returned after the hold lifted")
 	}
-	r.sealed(t, 1)
+	// The join settled the seal whole — the pass it ran in is waited out by
+	// Stop — so the count is read directly rather than through sealed, which
+	// waits for a re-arm no stopped worker ever makes.
+	if got := r.set.Counters().Sealed; got != 1 {
+		t.Fatalf("after the in-flight seal the ledger holds %d sealed segments, want 1", got)
+	}
 	if state := idleState(s); state != sealSealed {
 		t.Fatalf("the segment after the in-flight seal: %v, want sealed", state)
 	}
@@ -543,8 +568,7 @@ func TestAFailingSealDoesNotKillTheWorker(t *testing.T) {
 	}
 	r.advance(t, 2*core.IdleSealAge)
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
-		_, st0 := r.streamState(s0)
-		_, st1 := r.streamState(s1)
+		st0, st1 := idleState(s0), idleState(s1)
 		if st0 == sealEnded && st1 == sealSealed {
 			break
 		}
@@ -567,15 +591,77 @@ func TestAFailingSealDoesNotKillTheWorker(t *testing.T) {
 	r.advance(t, 2*core.IdleSealAge)
 	r.sealed(t, 3)
 	for _, s := range []*Stream{s0, s1} {
-		if _, state := r.streamState(s); state != sealSealed {
+		if state := idleState(s); state != sealSealed {
 			t.Fatalf("a stream whose successor should have idle-sealed: %v, want sealed", state)
 		}
 	}
 }
 
-// streamState reads the stream's segment id and seal state under its lock.
-func (r *idleRig) streamState(s *Stream) (id core.SegmentID, state sealState) {
-	s.appendMu.Lock()
-	defer s.appendMu.Unlock()
-	return s.id, s.sealState
+// TestALedgerRefusalIsErrorNotTheLostRaceLog checks the log level the worker
+// gives a seal whose ledger call was refused out of band: the segment,
+// ended in the ledger from outside while the stream still held it open and
+// sealable, is a disagreement between the stream and the ledger — not a
+// race the worker lost, for the one the worker can lose is a close of the
+// stream itself. What the level is, the captured log answers: Debug for a
+// real lost race alone, Error for this one.
+func TestALedgerRefusalIsErrorNotTheLostRaceLog(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	var buf idleLogBuffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	r := idleRigOver(t, 1, 64<<10, 8, nil).withLog(log)
+	// The worker has not started: the out-of-band end lands with no seal in
+	// flight anywhere.
+	s := r.stream(0)
+	w := idleAppend(t, s, 64, 0)
+	if err := r.set.End(w.Loc.Segment); err != nil {
+		t.Fatalf("the out-of-band end: %v", err)
+	}
+	r.start()
+
+	r.advance(t, 2*core.IdleSealAge)
+	r.armed(t)
+
+	line := buf.line(t, "the idle seal")
+	if !strings.Contains(line, "level=ERROR") {
+		t.Fatalf("the ledger-refused seal's log line = %q, want level=ERROR", line)
+	}
+	if strings.Contains(line, "lost the segment to a close") {
+		t.Fatalf("the ledger-refused seal's log line passes itself off as a lost race: %q", line)
+	}
+
+	// The stream saw the same thing its next Sync does: the segment ended,
+	// never sealed.
+	if state := idleState(s); state != sealEnded {
+		t.Fatalf("the stream's seal state after the ledger-refused seal: %v, want ended", state)
+	}
+}
+
+// idleLogBuffer is a synchronized sink for one worker's log lines, so a test
+// can read the line a level check names without racing the worker that
+// writes it.
+type idleLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *idleLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+// line returns the first line containing want, or the empty string when none
+// arrived.
+func (b *idleLogBuffer) line(t *testing.T, want string) string {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for line := range strings.SplitSeq(b.buf.String(), "\n") {
+		if strings.Contains(line, want) {
+			return line
+		}
+	}
+	return ""
 }
