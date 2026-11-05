@@ -358,6 +358,37 @@ func TestAFailedBindLeavesNothing(t *testing.T) {
 	}
 }
 
+// A share with no record in the store, one whose removal has finished, is
+// bound like any other: Bind answers nil and binds it, opens its handle, and
+// writes no version limit for it.
+func TestBindOfAShareWithNoRecordBindsIt(t *testing.T) {
+	u := newUnit(t, unbound())
+	ctx := t.Context()
+	s := u.share
+	s.ID = entity.NewShareID()
+
+	if err := u.e.Bind(ctx, s); err != nil {
+		t.Fatalf("Bind of a share with no record = %v, want it bound", err)
+	}
+
+	if err := u.e.BindingOf(s.ID); err != nil {
+		t.Errorf("the share is not bound: %v", err)
+	}
+
+	if n := u.rec.shares(); n != 1 {
+		t.Errorf("the journal saw %d Share calls, want 1", n)
+	}
+
+	limits, err := u.fs.Store.Lifecycle().VersionLimits(ctx, []entity.ShareID{s.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !limits[s.ID].IsZero() {
+		t.Errorf("Bind wrote version limit %d for a share with no record", limits[s.ID].Counter())
+	}
+}
+
 // An invalid share is refused before any I/O: a share not served is left
 // unbound with no journal or store call, and a served one keeps the binding
 // it had.
