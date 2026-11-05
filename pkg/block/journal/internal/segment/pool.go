@@ -7,7 +7,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // The pool's own refusals, beside the NoSpaceError the shared limits return.
