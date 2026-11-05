@@ -695,6 +695,26 @@ func (r *endRecorder) count() int {
 	return len(r.ev)
 }
 
+// awaitCount fails the test unless at least n events arrived within a bounded
+// spin, and returns all that did: a check whose scenario hands over more
+// than one event waits for the last of them without pinning the ones before.
+func (r *endRecorder) awaitCount(t *testing.T, n int, what string) []segment.EndEvent {
+	t.Helper()
+
+	for range endAttempts {
+		if r.count() >= n {
+			break
+		}
+		runtime.Gosched()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.ev) < n {
+		t.Fatalf("%s: %d end event(s) arrived, want at least %d", what, len(r.ev), n)
+	}
+	return slices.Clone(r.ev)
+}
+
 // one returns the single event the recorder holds, failing the test when it
 // holds any other count.
 func (r *endRecorder) one(t *testing.T) segment.EndEvent {
@@ -1536,4 +1556,414 @@ func TestEndEveryEndedSegmentHandsOneEventUnderRace(t *testing.T) {
 	if failures := failed.Load(); int64(len(evs)) > failures {
 		t.Fatalf("%d events arrived over %d failures, want the events to name only ends the appends made", len(evs), failures)
 	}
+}
+
+// endStopBuilder builds the environment the stop checks run over: an open
+// maker maximum (a banned stream may still owe its windows to other checks'
+// streams sharing the pool), four content spares the takes below draw in id
+// order, and a recording consumer registered before anything appends.
+func endStopBuilder(t *testing.T) (e rollEnv, rec *endRecorder) {
+	t.Helper()
+
+	e = rollBuild(t, streamCap, segment.Targets{Content: 4}, nil)
+	awaitCounters(t, "the content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares == 4 })
+	e = e.withStream(t, 1)
+	rec = &endRecorder{}
+	e.s.OnEnd(rec.OnEnd)
+	return e, rec
+}
+
+// endStopStreamEnv adapts the roll env to the stream checks' helpers.
+func endStopStreamEnv(e rollEnv) streamEnv {
+	return streamEnv{seam: e.seam, set: e.set, maker: e.maker, cache: e.cache, budget: e.budget, s: e.s, cap: streamCap}
+}
+
+// endStopEndsSegment sets up a single segment with one failed append, waiting
+// for its event, and returns its segment id. The caller holds pool counters
+// and seam writes to confirm the later stop consumed nothing.
+func endStopEndsSegment(t *testing.T, e rollEnv, rec *endRecorder, fail error) core.SegmentID {
+	t.Helper()
+
+	se := endStopStreamEnv(e)
+	seg := streamSegName(1)
+	aPayload := streamTestBody(64, 0x42)
+	ah, abody := streamWriteHeader(streamFileID(1), 0, aPayload, 7, core.Version{Counter: 1})
+	placed := streamAppendWrite(t, se, ah, abody)
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg, 1, fail)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	bPayload := streamTestBody(64, 0x55)
+	bh, bbody := streamWriteHeader(streamFileID(2), 64, bPayload, 7, core.Version{Counter: 2})
+	if _, err := e.s.Append(bh, bbody); !errors.Is(err, fail) {
+		t.Fatalf("the failed Append = %v, want the fault's %v", err, fail)
+	}
+	if err := e.seam.Schedule(); err != nil {
+		t.Fatalf("disarming the write fault: %v", err)
+	}
+	evs := rec.awaitCount(t, 1, "the end of the failed append")
+	if ev := evs[len(evs)-1]; ev.Segment != placed.Loc.Segment {
+		t.Fatalf("the event names segment %d, want the ended one %d", ev.Segment, placed.Loc.Segment)
+	}
+	_ = se
+	return placed.Loc.Segment
+}
+
+// TestEndASecondFailureInARowStopsTheStream checks RFC 1 §5.4's stop: a
+// stream that took its spare to leave a failed segment meets a failure in
+// it before any sync there has succeeded, and the stream stops — the
+// second segment's event names the stop, every later Append answers
+// ErrStreamStopped wrapping the second failure, and no third spare is
+// taken: the pool's ready count and the seam's create and write counts are
+// exactly what the two takes left them.
+func TestEndASecondFailureInARowStopsTheStream(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, rec := endStopBuilder(t)
+	if got := endStopEndsSegment(t, e, rec, syscall.EIO); got != core.SegmentID(1) {
+		t.Fatalf("the first ended segment is %d, want 1", got)
+	}
+
+	// The appends below must meet no fault and no take: their pool and seam
+	// counts are pinned first.
+	sparesBefore := e.pool.Counters().Spares
+	createsBefore := e.seam.Calls(journaltest.OpCreate)
+	writes := 0
+	for _, op := range []string{journaltest.OpCreate, journaltest.OpWrite, journaltest.OpOpen, journaltest.OpAllocate} {
+		writes += e.seam.Calls(op)
+	}
+
+	// The second failure: the roll takes the spare, its header write passes,
+	// and the first record write in it - the next write the fault can take -
+	// fails. No sync of the segment has succeeded, the fault landing before
+	// any, so a failure there is the second segment in a row, and its event
+	// must say the stream stopped (RFC 1 §5.4).
+	seg2 := streamSegName(2)
+	writesBefore2 := e.seam.CallsFor(journaltest.OpWrite, seg2)
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg2, 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	cPayload := streamTestBody(64, 0x7d)
+	ch, cbody := streamWriteHeader(streamFileID(3), 0, cPayload, 7, core.Version{Counter: 3})
+	if _, err := e.s.Append(ch, cbody); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the second failed Append = %v, want the fault's EIO", err)
+	}
+	if err := e.seam.Schedule(); err != nil {
+		t.Fatalf("disarming the write fault: %v", err)
+	}
+	if got := e.seam.CallsFor(journaltest.OpWrite, seg2); got != writesBefore2+1 {
+		t.Fatalf("segment 2 saw %d writes in all, want the header's and the failed record's one alone", got)
+	}
+
+	if state, err := e.set.State(2); err != nil || state != segment.Ended {
+		t.Fatalf("the second segment's state is %v, %v, want Ended", state, err)
+	}
+	// The second segment's event names the stop; the first segment's own
+	// stands in the recorder ahead of it.
+	evs := rec.awaitCount(t, 2, "the end of the second failed append")
+	ev := evs[len(evs)-1]
+	if ev.Segment != core.SegmentID(2) {
+		t.Fatalf("the event names segment %d, want the second segment 2", ev.Segment)
+	}
+	if !errors.Is(ev.Err, syscall.EIO) {
+		t.Fatalf("the event's error is %v, want the fault's EIO", ev.Err)
+	}
+	if !ev.Stopped {
+		t.Fatal("the event does not name the stream stopped, want Stopped: a second segment in a row failed before any sync in it succeeded")
+	}
+
+	// Every later Append answers ErrStreamStopped, wrapping the second
+	// failure itself, and takes no spare: the pool's ready count and the
+	// seam's create and write counts are unchanged by them.
+	for i := range 4 {
+		payload := streamTestBody(64, byte(0x20+i))
+		h, body := streamWriteHeader(streamFileID(4+i), int64(i)*64, payload, 7, core.Version{Counter: uint64(4 + i)})
+		_, err := e.s.Append(h, body)
+		if !errors.Is(err, segment.ErrStreamStopped) {
+			t.Fatalf("Append %d after the stop = %v, want ErrStreamStopped", i, err)
+		}
+		if !errors.Is(err, syscall.EIO) {
+			t.Fatalf("Append %d after the stop = %v, want the second failure's EIO wrapped in it", i, err)
+		}
+	}
+	if got := e.pool.Counters().Spares; got != sparesBefore {
+		t.Fatalf("the pool holds %d ready spares after the stop's appends, want the %d the two takes left: no third spare is taken", got, sparesBefore)
+	}
+	if got := e.seam.Calls(journaltest.OpCreate); got != createsBefore {
+		t.Fatalf("the seam saw %d creates after the stop's appends, want the %d the two takes made", got, createsBefore)
+	}
+	after := 0
+	for _, op := range []string{journaltest.OpCreate, journaltest.OpWrite, journaltest.OpOpen, journaltest.OpAllocate} {
+		after += e.seam.Calls(op)
+	}
+	if after != writes {
+		t.Fatalf("the seam saw %d of the four I/O ops after the stop's appends, want the %d before them: the stop reserves nothing and takes nothing", after, writes)
+	}
+
+	// The ledger holds the three takes' segments — two ended, one spared
+	// aside — and the two events are all the consumer ever sees.
+	c := e.set.Counters()
+	if c.Segments != 2 {
+		t.Fatalf("the ledger holds %d segments after the stop, want the two the takes drew %d", c.Segments, len(evs))
+	}
+	endEventsStable(t, rec, "the appends after the stop")
+}
+
+// TestEndAFailureAfterTheSparesFirstSyncRolls checks the other side of RFC 1
+// §5.4's second-refusal rule: a sync of the spare taken to leave a failed
+// segment has succeeded, so a failure in it is not the second in a row and
+// the stream keeps rolling — its event does not name a stop, and the next
+// append lands in a third segment.
+func TestEndAFailureAfterTheSparesFirstSyncRolls(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, rec := endStopBuilder(t)
+	if got := endStopEndsSegment(t, e, rec, syscall.EIO); got != core.SegmentID(1) {
+		t.Fatalf("the first ended segment is %d, want 1", got)
+	}
+
+	// The spare's own Sync succeeds, so the failure below meets a segment
+	// whose first sync did. A first landed record is what the Sync covers.
+	lPayload := streamTestBody(64, 0x3c)
+	lh, lbody := streamWriteHeader(streamFileID(3), 0, lPayload, 7, core.Version{Counter: 3})
+	if p := streamAppendWrite(t, endStopStreamEnv(e), lh, lbody); p.Loc.Segment != 2 {
+		t.Fatalf("the spare's first append landed in segment %d, want the taken spare 2", p.Loc.Segment)
+	}
+	if err := e.s.Sync(); err != nil {
+		t.Fatalf("the spare's first Sync: %v", err)
+	}
+
+	// The failure there: not the second in a row, for the spare's first
+	// sync succeeded.
+	seg2 := streamSegName(2)
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg2, 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	fPayload := streamTestBody(64, 0x7d)
+	fh, fbody := streamWriteHeader(streamFileID(4), 64, fPayload, 7, core.Version{Counter: 4})
+	if _, err := e.s.Append(fh, fbody); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the failed Append in the synced spare = %v, want the fault's EIO", err)
+	}
+	if err := e.seam.Schedule(); err != nil {
+		t.Fatalf("disarming the write fault: %v", err)
+	}
+
+	// The event is handed over, and it names no stop.
+	evs := rec.awaitCount(t, 2, "the end of the synced spare's failed append")
+	ev := evs[len(evs)-1]
+	if ev.Segment != core.SegmentID(2) {
+		t.Fatalf("the event names segment %d, want the second segment 2", ev.Segment)
+	}
+	if ev.Stopped {
+		t.Fatal("the event names the stream stopped, want it rolling: the spare's first sync succeeded before the failure")
+	}
+
+	// The next append rolls to a third segment, and is served.
+	nPayload := streamTestBody(64, 0x13)
+	nh, nbody := streamWriteHeader(streamFileID(5), 0, nPayload, 7, core.Version{Counter: 5})
+	next := streamAppendWrite(t, endStopStreamEnv(e), nh, nbody)
+	if next.Loc.Segment != 3 {
+		t.Fatalf("the append after the synced spare's failure landed in segment %d, want the next one 3", next.Loc.Segment)
+	}
+	if hdr := rollHeader(t, e, next.Loc.Segment); hdr.Predecessor != 0 {
+		t.Fatalf("the new segment names predecessor %d, want none: a failed append ends its segment whatever syncs it saw", hdr.Predecessor)
+	}
+}
+
+// TestEndEROFSStopsTheStream checks the read-only half of RFC 1 §5.4: a
+// failure an EROFS carries, wherever it lands, stops the stream with the
+// end — the event says so — and the next appendix takes no spare at all.
+func TestEndEROFSStopsTheStream(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, rec := endStopBuilder(t)
+	sparesBefore := e.pool.Counters().Spares
+	createsBefore := e.seam.Calls(journaltest.OpCreate)
+
+	// The first landed record gives the segment a sync and the count a
+	// value, so the fault below takes the second write alone.
+	aPayload := streamTestBody(64, 0x42)
+	ah, abody := streamWriteHeader(streamFileID(1), 0, aPayload, 7, core.Version{Counter: 1})
+	landed := streamAppendWrite(t, endStopStreamEnv(e), ah, abody)
+	seg1 := streamSegName(landed.Loc.Segment)
+
+	// The second write carries EROFS: the device is read-only, so the
+	// stream stops with this very end.
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg1, 1, syscall.EROFS)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	bPayload := streamTestBody(64, 0x55)
+	bh, bbody := streamWriteHeader(streamFileID(2), 64, bPayload, 7, core.Version{Counter: 2})
+	if _, err := e.s.Append(bh, bbody); !errors.Is(err, syscall.EROFS) {
+		t.Fatalf("the EROFS Append = %v, want the fault's EROFS", err)
+	}
+	if err := e.seam.Schedule(); err != nil {
+		t.Fatalf("disarming the write fault: %v", err)
+	}
+
+	// The event names the stop: an EROFS failure ends the stream's rolling
+	// wherever it met it.
+	ev := rec.awaitOne(t, "the end of the EROFS append")
+	if ev.Segment != landed.Loc.Segment {
+		t.Fatalf("the event names segment %d, want the ended one 1", ev.Segment)
+	}
+	if !errors.Is(ev.Err, syscall.EROFS) {
+		t.Fatalf("the event's error is %v, want the fault's EROFS", ev.Err)
+	}
+	if !ev.Stopped {
+		t.Fatal("the event does not name the stream stopped, want Stopped: an EROFS says the journal calls would keep failing")
+	}
+
+	// The next Append answers ErrStreamStopped with the EROFS wrapped in it,
+	// and takes no spare: the pool's ready count and the seam's create
+	// count are exactly what the stream held before the failure's own roll.
+	cPayload := streamTestBody(64, 0x66)
+	ch, cbody := streamWriteHeader(streamFileID(3), 0, cPayload, 7, core.Version{Counter: 3})
+	_, err := e.s.Append(ch, cbody)
+	if !errors.Is(err, segment.ErrStreamStopped) {
+		t.Fatalf("the Append after the EROFS = %v, want ErrStreamStopped", err)
+	}
+	if !errors.Is(err, syscall.EROFS) {
+		t.Fatalf("the Append after the EROFS = %v, want the EROFS wrapped in the stop", err)
+	}
+	if got := e.pool.Counters().Spares; got != sparesBefore {
+		t.Fatalf("the pool holds %d ready spares after the stop, want the %d it held: a stopped stream takes none", got, sparesBefore)
+	}
+	if got := e.seam.Calls(journaltest.OpCreate); got != createsBefore {
+		t.Fatalf("the seam saw %d creates after the stop, want the %d before it: a stopped stream makes no spare", got, createsBefore)
+	}
+	if state, serr := e.set.State(landed.Loc.Segment); serr != nil || state != segment.Ended {
+		t.Fatalf("the EROFS segment's state is %v, %v, want Ended", state, serr)
+	}
+	endEventsStable(t, rec, "the Appends after the EROFS stop")
+}
+
+// TestEndAFailedSuccessorHeaderStopsTheStream checks the stop's third path:
+// after a failed append, the roll onto the successor fails at the
+// successor's own header write — the write the spare's name first sees.
+// The append carries the header's refusal, the taken spare ends with no
+// event, the stream stays on its ended segment, and every later Append
+// answers ErrStreamStopped and takes no further spare.
+func TestEndAFailedSuccessorHeaderStopsTheStream(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, rec := endStopBuilder(t)
+	if got := endStopEndsSegment(t, e, rec, syscall.EIO); got != core.SegmentID(1) {
+		t.Fatalf("the first ended segment is %d, want 1", got)
+	}
+
+	// The successor's header write: the next write the seam sees after the
+	// first segment's hurts, for the stream sits on an ended segment and
+	// the next append rolls. Its refusal is the second the stream meets
+	// leaving the ended segment, so the stream stops.
+	seg2 := streamSegName(2)
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg2, 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	cPayload := streamTestBody(64, 0x7d)
+	ch, cbody := streamWriteHeader(streamFileID(3), 0, cPayload, 7, core.Version{Counter: 3})
+	if _, err := e.s.Append(ch, cbody); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the Append whose successor header write failed = %v, want the fault's EIO", err)
+	}
+	if err := e.seam.Schedule(); err != nil {
+		t.Fatalf("disarming the write fault: %v", err)
+	}
+	if state, err := e.set.State(2); err != nil || state != segment.Ended {
+		t.Fatalf("the failed successor's state is %v, %v, want Ended: the spare the failed header write left is held at its cap", state, err)
+	}
+
+	// No second event for the spare — nothing was ever reserved in it — and
+	// the one event the recorder holds is the first segment's own.
+	rec.awaitCount(t, 1, "the first segment's end")
+	endEventsStable(t, rec, "the spare the failed header write ended")
+
+	// Every later Append answers ErrStreamStopped, wrapping the header
+	// write's own refusal, and no further spare is taken: the two takes
+	// spent two of the maker's spares and the count says so.
+	sparesBefore := e.pool.Counters().Spares
+	createsBefore := e.seam.Calls(journaltest.OpCreate)
+	dPayload := streamTestBody(64, 0x13)
+	dh, dbody := streamWriteHeader(streamFileID(4), 0, dPayload, 7, core.Version{Counter: 4})
+	_, err := e.s.Append(dh, dbody)
+	if !errors.Is(err, segment.ErrStreamStopped) {
+		t.Fatalf("the Append after the stopped roll = %v, want ErrStreamStopped", err)
+	}
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the Append after the stopped roll = %v, want the header write's EIO wrapped in the stop", err)
+	}
+	if got := e.pool.Counters().Spares; got != sparesBefore {
+		t.Fatalf("the pool holds %d ready spares after the stop, want the %d before it: no further spare is taken", got, sparesBefore)
+	}
+	if got := e.seam.Calls(journaltest.OpCreate); got != createsBefore {
+		t.Fatalf("the seam saw %d creates after the stop, want the %d before it", got, createsBefore)
+	}
+	if state, err := e.set.State(3); err != nil || state != segment.Active {
+		t.Fatalf("the third spare's state is %v, %v, want none taken: it never entered the ledger", state, err)
+	}
+}
+
+// TestEndRequestedSecondFailureStops checks the requested end's half of the
+// stop: the durability code ends a segment whose Sync failed, in the spare
+// the stream took to leave a failed segment, before any sync of that spare
+// has succeeded, and the requested end's event says the stream stopped.
+func TestEndRequestedSecondFailureStops(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, rec := endStopBuilder(t)
+	if got := endStopEndsSegment(t, e, rec, syscall.EIO); got != core.SegmentID(1) {
+		t.Fatalf("the first ended segment is %d, want 1", got)
+	}
+
+	// The spare's first Sync fails before anything of its own has
+	// succeeded, and the durability code asks for its end.
+	seg2 := streamSegName(2)
+	aPayload := streamTestBody(64, 0x3c)
+	ah, abody := streamWriteHeader(streamFileID(3), 0, aPayload, 7, core.Version{Counter: 3})
+	if p := streamAppendWrite(t, endStopStreamEnv(e), ah, abody); p.Loc.Segment != 2 {
+		t.Fatalf("the spare's first append landed in segment %d, want the taken spare 2", p.Loc.Segment)
+	}
+	syncFault := fmt.Errorf("the failed sync: %w", syscall.EIO)
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, seg2, 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if err := e.s.Sync(); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the spare's faulted Sync = %v, want the fault's EIO", err)
+	}
+	if err := e.seam.Schedule(); err != nil {
+		t.Fatalf("disarming the sync fault: %v", err)
+	}
+	if err := e.s.End(core.SegmentID(2), syncFault); err != nil {
+		t.Fatalf("the requested End of the sync-failed spare = %v, want nil", err)
+	}
+
+	// The requested end's event names the stop: no sync of the spare
+	// succeeded before the failure, so the end is the second refusal the
+	// stream met in a row.
+	evs := rec.awaitCount(t, 2, "the requested end of the unsynced spare")
+	ev := evs[len(evs)-1]
+	if ev.Segment != core.SegmentID(2) {
+		t.Fatalf("the event names segment %d, want the spare 2", ev.Segment)
+	}
+	if ev.Cause != segment.EndRequested {
+		t.Fatalf("the event's cause is %s, want the requested end", ev.Cause)
+	}
+	if !errors.Is(ev.Err, syscall.EIO) {
+		t.Fatalf("the event's error is %v, want the caller's EIO", ev.Err)
+	}
+	if !ev.Stopped {
+		t.Fatal("the event does not name the stream stopped, want Stopped: the spare's first sync failed before any succeeded")
+	}
+
+	// The later appends answer the stop, and take nothing.
+	sparesBefore := e.pool.Counters().Spares
+	nPayload := streamTestBody(64, 0x13)
+	nh, nbody := streamWriteHeader(streamFileID(4), 0, nPayload, 7, core.Version{Counter: 4})
+	_, err := e.s.Append(nh, nbody)
+	if !errors.Is(err, segment.ErrStreamStopped) {
+		t.Fatalf("the Append after the requested stop = %v, want ErrStreamStopped", err)
+	}
+	if got := e.pool.Counters().Spares; got != sparesBefore {
+		t.Fatalf("the pool holds %d ready spares after the stop, want the %d before it", got, sparesBefore)
+	}
+	endEventsStable(t, rec, "the Append after the requested stop")
 }
