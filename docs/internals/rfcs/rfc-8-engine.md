@@ -864,7 +864,10 @@ running.
 2. Stop the work queue: the scheduler's `Stop` refuses new dispatch, cancels the
    passes and batches in flight, clone batches included, and joins them. Then commit every file's pending
    existence in a last group commit per journal, within the stop bound, so a
-   clean stop leaves no append or hole fill for recovery to replay.
+   clean stop leaves no append or hole fill for recovery to replay. A file whose
+   phase-1 retry was cancelled stays out of that last group commit, and
+   its pending operations, the removal's included, are left for recovery
+   ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)).
 3. Cancel the other background loops, then join them: the age tick, the
    rescan, eviction, the reseed and the retried open of a journal refused at
    `Start`.
@@ -1281,10 +1284,11 @@ after a loss, each client resends its recent unstable writes once.
   ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)) at the newest version that transaction committed for the
   file, never above it: a write staged after the batch claimed the file's
   operations is not settled by it, and stays for the next commit or for
-  recovery ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). Nor does it settle above a pending removal: a
-  group commit does not capture a file whose guard a removal holds
-  ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow), [§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), so the file's next settle comes after the
-  removal's phase 1, and RFC 1 §3.10's precondition holds.
+  recovery ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). A group commit commits a file's pending
+  operations in version order and stops at a removal whose phase 1 has not
+  committed ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), so neither `applied` nor `Settle` reaches that removal's
+  version, and RFC 1 §3.10's precondition holds; the guard only spares the
+  retry ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow)).
 - **`Done` is called exactly once for every write `Write` accepted.** The
   existence commit that commits a write also records the usage it adds
   ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)) and then calls the write's `Done`, so the filesystem
@@ -1415,7 +1419,8 @@ after a loss, each client resends its recent unstable writes once.
 3. Answer, with the verifier and the loss sequence, both sampled now.
 4. Otherwise later, within the existence age, the journal's group commit ([§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)) writes, under the primary epoch:
    `size`, holes, `mtime`, `ctime`, `applied` advanced to the newest version
-   covered, and the file's version advanced ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)). It then stamps
+   covered, never to or past a removal whose phase 1 has not committed
+   ([§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)), and the file's version advanced ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)). It then stamps
    the covered versions in the journal with the cut the transaction read
    ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)), a replicated operation where replication is
    composed ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)). A file's existence commits are serialised:
@@ -1470,7 +1475,9 @@ older content served as newer.
 - Pending existence of one journal that is due together — every file synced
   since the last group commit, or captured, removed or cut meanwhile — **MUST**
   be committed together, one transaction per bounded batch (below), not one per
-  write or per file.
+  write or per file. A file's share of it runs in version order up to its first
+  removal whose phase 1 has not committed ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)); what lies above waits for
+  that phase 1.
 - A batch **MUST** be bounded: at most `G` files, and at most the key budget `K`
   of [RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) in keys written. `G` is the `group_commit.max_files` setting ([RFC 13](rfc-13-configuration.md);
   proposal: 256), overturned by B5's transactions per stability point rising at
