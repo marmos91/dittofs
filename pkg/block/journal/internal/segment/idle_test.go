@@ -54,14 +54,7 @@ func idleRigOver(t *testing.T, n int, cap int64, threshold int64, admit func() e
 	pool := NewPool(maker, Targets{Content: 2 * n}, nil)
 	t.Cleanup(func() { pool.Stop() })
 	pool.Start()
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
-		if c := pool.Counters(); c.Spares >= int64(2*n) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the pool never readied its %d content spares: %+v", 2*n, pool.Counters())
-		}
-	}
+	waitSpares(t, pool, int64(2*n))
 	cache := NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(8))
 	t.Cleanup(func() {
 		if err := cache.Shutdown(); err != nil {
@@ -89,6 +82,30 @@ func idleRigOver(t *testing.T, n int, cap int64, threshold int64, admit func() e
 func (r *idleRig) withLog(log *slog.Logger) *idleRig {
 	r.worker = NewIdleSealer(r.worker.streams, r.worker.clock, r.worker.threshold, r.worker.admit, log)
 	return r
+}
+
+// waitSpares waits, bounded in real time — a failure deadline only, never the
+// thing that moves the code under test, which is what the pool's own refill
+// worker supplies — until the pool's ready content spares reach want. It is
+// the settle every read of a counter the refill moves needs: a roll spends a
+// spare and kicks the refill, whose whole make — the ledger reservation that
+// raises the set's footprint by a cap before any storage call runs, the file
+// it allocates, its rename into place — lands in the refill worker's own
+// time. A check that reads a footprint or a spare count before the refill it
+// kicked has finished reads one the refill can still move under it, and the
+// idle seal's footprint fall is measured against a before the refill raises
+// by a whole cap mid-test. Called after a test's last roll, it settles the
+// refill that roll kicked before the counters are read.
+func waitSpares(t *testing.T, p *Pool, want int64) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		if c := p.Counters(); c.Spares >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the pool never readied %d content spares: %+v", want, p.Counters())
+		}
+	}
 }
 
 // start starts the rig's worker and returns the rig.
@@ -205,9 +222,11 @@ func TestTheIdleSealComesAtExactlyTheIdleAge(t *testing.T) {
 	if got := r.seam.CallsFor(journaltest.OpTruncate, name); got != 0 {
 		t.Fatalf("a nanosecond before the idle age the segment saw %d truncations, want none", got)
 	}
-	// The pool's refill has settled by here — the roll's own spare was spent
-	// and replaced long before — so the footprint read now is the one the
-	// seal's fall is measured against.
+	// The pool's refill the first append's roll kicked has settled by here
+	// — settled by the wait itself, not by the advances above, which move no
+	// real time for the refill to run in — so the footprint read now is the
+	// one the seal's fall is measured against.
+	waitSpares(t, r.pool, 2)
 	footprintBefore := r.set.Counters().UsedBytes
 
 	// The first pass armed a whole idle age — whether it read the stream
