@@ -1415,6 +1415,13 @@ may yield the marker again, for the caller to discard again, until repack drops
 its record ([§7.2](#7.2%20Repack)). Repack drops it only once no record it outranks is left, so
 once it does the extent still reads **Lost** wherever nothing offloaded holds it.
 
+> decision: `Settle` drops a synced loss record on the caller's word about
+> removals only. It is safe while every settle is at or below `applied`, which
+> holds for group commit and recovery ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal), [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). A loss reported
+> after its write committed lies at or below `applied`, so `Since` never yields
+> it and no existence is committed from it. Overturned once the store-side loss
+> path has an owner.
+
 ### 3.11 Snapshot holds
 
 ```go
