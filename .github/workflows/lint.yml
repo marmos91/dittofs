@@ -5,6 +5,8 @@ on:
     branches: [develop, feat/storage-v2]
   pull_request:
     branches: [develop, main, feat/storage-v2]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -17,9 +19,10 @@ concurrency:
   # executing, not one still queued: a newer run replaces the pending one.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# The tier each job's suite runs at: pr on pull requests, merge on pushes.
+# The tier each job's suite runs at: pr on pull requests and in the merge
+# queue, merge on pushes.
 env:
-  TIER: ${{ github.event_name == 'pull_request' && 'pr' || 'merge' }}
+  TIER: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'pr' || 'merge' }}
 
 # Ten jobs became three. Each one held a runner slot in a fan-out that queues
 # far longer than it executes, and seven of them spent most of their wall-clock
