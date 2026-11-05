@@ -248,7 +248,9 @@ func TestDrainsDeadlineEndsALastClosesRelease(t *testing.T) {
 		close(m.free)
 		t.Error("Drain still waited 5s past its deadline for a last close's release")
 	}
-	<-closed
+	if err := <-closed; err != nil {
+		t.Errorf("the last close: %v", err)
+	}
 }
 
 // probingClose is open state's opens, trying each close's file lock as open

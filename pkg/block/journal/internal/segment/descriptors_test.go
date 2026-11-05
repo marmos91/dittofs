@@ -727,8 +727,8 @@ func TestDescriptorsShutdownWaitsAndUnregisters(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- e.c.Shutdown() }()
 	select {
-	case <-done:
-		t.Fatal("Shutdown returned while a reference was still held, want it to wait")
+	case err := <-done:
+		t.Fatalf("Shutdown returned %v while a reference was still held, want it to wait", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -1471,8 +1471,8 @@ func TestDescriptorsShutdownDoesNotPinItsIdleDescriptors(t *testing.T) {
 	}
 
 	select {
-	case <-shutdown:
-		t.Fatal("journal A's Shutdown returned while its reader still held its reference, want it to wait")
+	case err := <-shutdown:
+		t.Fatalf("journal A's Shutdown returned %v while its reader still held its reference, want it to wait", err)
 	default:
 	}
 

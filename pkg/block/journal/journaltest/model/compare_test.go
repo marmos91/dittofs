@@ -100,6 +100,11 @@ func changes(cs []journal.Change) iter.Seq2[journal.Change, error] {
 	}
 }
 
+// failed yields err alone, as a Since that fails.
+func failed(err error) iter.Seq2[journal.Change, error] {
+	return func(yield func(journal.Change, error) bool) { yield(journal.Change{}, err) }
+}
+
 // Each planted divergence is reported: Compare can fail on every answer it
 // reads.
 func TestCompareReportsEachPlantedDivergence(t *testing.T) {
@@ -155,7 +160,10 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 		{"a marker missing from Since", func(h modelView) View {
 			return planted{modelView: h, since: func(id journal.FileID, from journal.Version) iter.Seq2[journal.Change, error] {
 				var cs []journal.Change
-				for c := range h.Since(t.Context(), id, from) {
+				for c, err := range h.Since(t.Context(), id, from) {
+					if err != nil {
+						return failed(err)
+					}
 					if c.Kind == journal.ChangeWrite {
 						cs = append(cs, c)
 					}
@@ -166,7 +174,10 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 		{"a write's mtime in Since", func(h modelView) View {
 			return planted{modelView: h, since: func(id journal.FileID, from journal.Version) iter.Seq2[journal.Change, error] {
 				var cs []journal.Change
-				for c := range h.Since(t.Context(), id, from) {
+				for c, err := range h.Since(t.Context(), id, from) {
+					if err != nil {
+						return failed(err)
+					}
 					c.Mtime++
 					cs = append(cs, c)
 				}
@@ -176,7 +187,10 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 		{"Since out of version order", func(h modelView) View {
 			return planted{modelView: h, since: func(id journal.FileID, from journal.Version) iter.Seq2[journal.Change, error] {
 				var cs []journal.Change
-				for c := range h.Since(t.Context(), id, from) {
+				for c, err := range h.Since(t.Context(), id, from) {
+					if err != nil {
+						return failed(err)
+					}
 					cs = append([]journal.Change{c}, cs...)
 				}
 				return changes(cs)
@@ -195,7 +209,10 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 		{"Since names a byte not held", func(h modelView) View {
 			return planted{modelView: h, since: func(id journal.FileID, from journal.Version) iter.Seq2[journal.Change, error] {
 				cs := []journal.Change{{Kind: journal.ChangeWrite, Extent: ext(1000, 1), Version: ver(1)}}
-				for c := range h.Since(t.Context(), id, from) {
+				for c, err := range h.Since(t.Context(), id, from) {
+					if err != nil {
+						return failed(err)
+					}
 					cs = append(cs, c)
 				}
 				return changes(cs)
@@ -271,7 +288,10 @@ func TestCompareReadsAToEndMarkerInOneForm(t *testing.T) {
 		return planted{modelView: view,
 			since: func(id journal.FileID, from journal.Version) iter.Seq2[journal.Change, error] {
 				var cs []journal.Change
-				for c := range view.Since(t.Context(), id, from) {
+				for c, err := range view.Since(t.Context(), id, from) {
+					if err != nil {
+						return failed(err)
+					}
 					if c.Kind == journal.ChangeTruncate {
 						c.Extent.Len = n
 					}
@@ -319,7 +339,10 @@ func TestCompareReadsAToEndMarkerInOneForm(t *testing.T) {
 	h := modelView{j, shareB}
 	misplaced := planted{modelView: h, since: func(id journal.FileID, from journal.Version) iter.Seq2[journal.Change, error] {
 		var cs []journal.Change
-		for c := range h.Since(t.Context(), id, from) {
+		for c, err := range h.Since(t.Context(), id, from) {
+			if err != nil {
+				return failed(err)
+			}
 			if c.Kind == journal.ChangeDelete {
 				c.Extent = ext(7, 0)
 			}
