@@ -1396,24 +1396,21 @@ at or below `applied` and is not yielded. `Since` reads a consistent view of the
 and **MUST NOT** block writes to it for longer than a read does.
 
 `Settle(id, v)` is the caller's statement that metadata has recorded every
-removal of `id` at or below `v`. The journal drops those markers, and every
-synced loss record of `id` at or below `v`; it **MUST NOT** drop a held extent,
-whatever its version. It works by version, not by record: one `Settle` drops
-every unsettled marker of `id` at or below `v`. A caller **MUST NOT** settle at `v`
-while a removal of `id` at or below `v` is unrecorded, unless it is discarding that
-removal; [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) says how the engine keeps to it.
-`Settle` is not persisted and appends nothing: recovery rebuilds the markers from the removal
-records ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)), and the caller settles again ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)). Settling too early
-is the caller's error, not the journal's: a marker dropped before its removal is
-recorded is one a crash may leave metadata never learning of, until recovery
-rebuilds it. The one exception is deliberate: `Settle` is also how a caller
-discards a marker it has decided never to apply, as the engine does for a removal
-a terminal failure ends ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)). The journal cannot tell the two apart and
-need not: the caller owns the cost, which is that the removal's extent reads
-**Lost** wherever nothing offloaded holds it, and that after a crash recovery
-may yield the marker again, for the caller to discard again, until repack drops
-its record ([§7.2](#7.2%20Repack)). Repack drops it only once no record it outranks is left, so
-once it does the extent still reads **Lost** wherever nothing offloaded holds it.
+removal of `id` at or below `v`. The journal drops every unsettled marker and
+every synced loss record of `id` at or below `v`, however many, and **MUST NOT**
+drop a held extent, whatever its version. `Settle` is not persisted and appends
+nothing: recovery rebuilds the markers from the removal records
+([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)), and the caller settles again ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)).
+
+A caller **MUST NOT** settle at `v` while a removal of `id` at or below `v` is
+unrecorded: a crash could leave metadata never learning of it.
+[RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) says how the engine keeps to this; the journal does not check it.
+A caller may still settle a marker it has decided never to apply, as the engine
+does for a removal a terminal failure ends ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)). The caller owns that
+cost: the removal's extent reads **Lost** wherever nothing offloaded holds it,
+both before and after repack drops the removal record ([§7.2](#7.2%20Repack)), and until
+then recovery may yield the marker again after a crash, for the caller to
+discard again.
 
 > decision: `Settle` drops a synced loss record on the caller's word about
 > removals only. It is safe while every settle is at or below `applied`, which
