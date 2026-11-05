@@ -3079,3 +3079,132 @@ func TestEndACloseDuringTheSealWaitAnswersClosed(t *testing.T) {
 	<-aDone
 	<-closeDone
 }
+
+// endAwaitParked fails the test unless a goroutine is blocked in the drain
+// cond's wait inside the named stream method within a bounded spin. The seal
+// and the requests behind it park on that cond, which the test cannot hold
+// at a seam, so the goroutine stacks are what shows them parked.
+func endAwaitParked(t *testing.T, method, what string) {
+	t.Helper()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		buf := make([]byte, 1<<20)
+		buf = buf[:runtime.Stack(buf, true)]
+		for _, g := range bytes.Split(buf, []byte("\n\n")) {
+			if bytes.Contains(g, []byte("(*Stream)."+method+"(")) && bytes.Contains(g, []byte("sync.runtime_notifyListWait")) {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: no goroutine parked in Stream.%s", what, method)
+		}
+		runtime.Gosched()
+	}
+}
+
+// TestEndAnAppendFailingDuringTheSealsDrainLeavesTheEndToTheSeal checks RFC
+// 28 §4.2's zero-slot row against a seal in flight: an append held at the
+// seam while its stream seals the segment fails, and the segment is ended by
+// the seal alone — one event, caused by the seal, naming the held slot — with
+// no seal marker written and the stream continuing in a segment that names no
+// predecessor. The append's own failure path must leave the end to the seal.
+func TestEndAnAppendFailingDuringTheSealsDrainLeavesTheEndToTheSeal(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, rec := endStopBuilder(t)
+	se := endStopStreamEnv(e)
+	seg1 := streamSegName(1)
+
+	ah, ab := endWrite(1, 0, 0x41)
+	a := streamAppendWrite(t, se, ah, ab)
+	bOff := a.Loc.Off + a.Loc.Len
+	holdB := e.seam.HoldFirst(t, journaltest.OpWrite, seg1)
+	bDone := endAppend(se, 2, 64, 0x42)
+	<-holdB.Reached()
+
+	sealDone := make(chan error, 1)
+	go func() {
+		_, err := e.s.Seal(false)
+		sealDone <- err
+	}()
+	endAwaitParked(t, "Seal", "the seal behind the held append")
+
+	// B's write fails once released.
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg1, 1, syscall.EIO)); err != nil {
+		t.Fatal(err)
+	}
+	holdB.Release()
+	b := <-bDone
+	if !errors.Is(b.err, syscall.EIO) {
+		t.Fatalf("B's append = %v, want the fault's EIO", b.err)
+	}
+	if err := e.seam.Schedule(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-sealDone; !errors.Is(err, segment.ErrSegmentEnded) {
+		t.Fatalf("the seal = %v, want ErrSegmentEnded", err)
+	}
+
+	ev := rec.awaitOne(t, "the seal's end")
+	if ev.Cause != segment.EndSeal {
+		t.Fatalf("the event's cause is %v, want the seal's: the append's failure leaves the end to the seal that owns the segment", ev.Cause)
+	}
+	if ev.Failed != bOff {
+		t.Fatalf("the event names failed offset %d, want the held slot's %d", ev.Failed, bOff)
+	}
+	endEventsStable(t, rec, "the seal's end")
+	if state, err := e.set.State(1); err != nil || state != segment.Ended {
+		t.Fatalf("segment 1 stands %v, %v, want Ended", state, err)
+	}
+
+	// No seal marker, and the stream continues in a segment naming none.
+	nextRes := <-endAppend(se, 3, 0, 0x43)
+	if nextRes.err != nil || nextRes.p.Loc.Segment != 2 {
+		t.Fatalf("the append after the failure = %v in segment %d, want a landing in 2", nextRes.err, nextRes.p.Loc.Segment)
+	}
+	if hdr := endHeaderOf(t, se, 2); hdr.Predecessor != 0 {
+		t.Fatalf("the new segment names predecessor %d, want none", hdr.Predecessor)
+	}
+}
+
+// TestEndRequestWaitsOutARunningSeal checks that an End request arriving
+// while a seal runs does not end the segment under it: the request parks until
+// the seal settles, and a seal that sealed the segment makes it answer
+// ErrWrongState with no event.
+func TestEndRequestWaitsOutARunningSeal(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, rec := endStopBuilder(t)
+	se := endStopStreamEnv(e)
+	seg1 := streamSegName(1)
+
+	ah, ab := endWrite(1, 0, 0x41)
+	streamAppendWrite(t, se, ah, ab)
+	holdB := e.seam.HoldFirst(t, journaltest.OpWrite, seg1)
+	bDone := endAppend(se, 2, 64, 0x42)
+	<-holdB.Reached()
+
+	sealDone := make(chan error, 1)
+	go func() {
+		_, err := e.s.Seal(false)
+		sealDone <- err
+	}()
+	endAwaitParked(t, "Seal", "the seal behind the held append")
+
+	endDone := make(chan error, 1)
+	go func() { endDone <- e.s.End(1, fmt.Errorf("the failed sync: %w", syscall.EIO)) }()
+	endAwaitParked(t, "End", "the request behind the running seal")
+
+	holdB.Release()
+	if b := <-bDone; b.err != nil {
+		t.Fatalf("B's append = %v", b.err)
+	}
+	if err := <-sealDone; err != nil {
+		t.Fatalf("the seal = %v, want nil", err)
+	}
+	if err := <-endDone; !errors.Is(err, segment.ErrWrongState) {
+		t.Fatalf("End across a seal that sealed the segment = %v, want ErrWrongState", err)
+	}
+	rec.awaitNone(t, "an End request over a sealed segment")
+}
