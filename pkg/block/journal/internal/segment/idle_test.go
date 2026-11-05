@@ -1,0 +1,581 @@
+package segment
+
+import (
+	"errors"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
+)
+
+// idleRig is the worker's rig: the streams the sealer walks, the sealer
+// itself, and everything they are built over. Start is the caller's, so no
+// goroutine runs before the check is ready to drive it.
+type idleRig struct {
+	streams *Streams
+	worker  *IdleSealer
+	seam    *journaltest.Seam
+	set     *Set
+	pool    *Pool
+	clock   *idleClock
+	cap     int64
+}
+
+// idleRigOver builds the worker's rig of n streams: a seam, a ledger, a
+// maker, a started pool whose content spares are awaited before the build
+// returns — twice the stream count, so no roll in any check below ever races
+// the refill — a descriptor cache, the streams over them all, and the
+// IdleSealer watching every stream on the rig's test clock, not started yet.
+// A non-nil admit is the sealer's read-only check, nil a writable journal.
+//
+// The cleanups are registered in the order they must run: the earlier a
+// component holds what a later one waits on, the earlier its cleanup is
+// registered, for t.Cleanup runs them last-registered first. The sealer joins
+// — R70: the streams and the segments close only after it has — then the
+// streams release their refs, then the cache shuts down, then the pool stops.
+// One rig per subtest: the profiler's watches must not overlap.
+func idleRigOver(t *testing.T, n int, cap int64, threshold int64, admit func() error) *idleRig {
+	t.Helper()
+
+	seam, err := journaltest.NewSeam(t.TempDir())
+	if err != nil {
+		t.Fatalf("the seam could not be made: %v", err)
+	}
+	set := NewSet(cap, nil)
+	maker := NewMaker(seam.FS(), set, 1<<62, 0, nil)
+	pool := NewPool(maker, Targets{Content: 2 * n}, nil)
+	t.Cleanup(func() { pool.Stop() })
+	pool.Start()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		if c := pool.Counters(); c.Spares >= int64(2*n) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the pool never readied its %d content spares: %+v", 2*n, pool.Counters())
+		}
+	}
+	cache := NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(8))
+	t.Cleanup(func() {
+		if err := cache.Shutdown(); err != nil {
+			t.Errorf("the cache's Shutdown: %v", err)
+		}
+	})
+	streams := NewStreams(n, probeIdentity, set, pool, cache)
+	t.Cleanup(func() { _ = streams.Close() })
+	clock := newIdleClock()
+	r := &idleRig{
+		streams: streams,
+		seam:    seam,
+		set:     set,
+		pool:    pool,
+		clock:   clock,
+		cap:     cap,
+	}
+	r.worker = NewIdleSealer(streams, clock, threshold, admit, nil)
+	t.Cleanup(func() { r.worker.Stop() })
+	return r
+}
+
+// start starts the rig's worker and returns the rig.
+func (r *idleRig) start() *idleRig {
+	r.worker.Start()
+	return r
+}
+
+// stream returns the rig's stream i.
+func (r *idleRig) stream(i int) *Stream {
+	return r.streams.Stream(i)
+}
+
+// advance waits until the worker has armed its wait on the clock — an unarmed
+// worker is stuck, not slow, and the wait names that itself — and then moves
+// the clock by d.
+func (r *idleRig) advance(t *testing.T, d time.Duration) {
+	t.Helper()
+	r.armedWait(t)
+	r.clock.Advance(d)
+}
+
+// advanceRaw moves the clock with no wait for the worker's arm, for the
+// checks that drive a stopped or unstarted worker.
+func (r *idleRig) advanceRaw(d time.Duration) {
+	r.clock.Advance(d)
+}
+
+// armedWait blocks until the clock holds at least one armed wait.
+func (r *idleRig) armedWait(t *testing.T) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		if r.clock.Pending() >= 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the test clock holds %d waits, want at least 1: the worker never armed its wait", r.clock.Pending())
+		}
+	}
+}
+
+// settle waits until the pass the last advance released has finished and
+// re-armed its next wait, so the absence of a seal is a settled fact rather
+// than a race: the worker's seal writes complete before its pass returns, and
+// the next wait is armed only after that.
+func (r *idleRig) settle(t *testing.T) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		if r.clock.Pending() >= 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the worker never finished its pass: the clock holds no wait it armed")
+		}
+	}
+}
+
+// sealed polls, bounded in real time, until the ledger holds n sealed
+// segments, failing the test outright if it never does — an idle seal that
+// never runs must be called that, not waited for.
+func (r *idleRig) sealed(t *testing.T, n int64) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		if got := r.set.Counters().Sealed; got >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the ledger holds %d sealed segments, want at least %d", r.set.Counters().Sealed, n)
+		}
+	}
+}
+
+// idleRecordBytes is the bytes one write record of n payload bytes takes
+// whole: its header, its body and its padding, the exact size a segment holds
+// of it beyond the header. Thresholds are derived from it, never hard-coded.
+func idleRecordBytes(n int64) int64 {
+	return format.RecordHeader{Kind: format.KindWrite, Extent: core.Extent{Len: n}}.Size()
+}
+
+// TestTheConstructorRefusesItsBugs checks NewIdleSealer's panics: a nil
+// Streams, a nil clock and a negative threshold are caller bugs the
+// constructor names on the spot.
+func TestTheConstructorRefusesItsBugs(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	r := idleRigOver(t, 1, 64<<10, 8, nil)
+	for name, call := range map[string]func(){
+		"a nil streams":        func() { _ = NewIdleSealer(nil, r.clock, 0, nil, nil) },
+		"a nil clock":          func() { _ = NewIdleSealer(r.streams, nil, 0, nil, nil) },
+		"a negative threshold": func() { _ = NewIdleSealer(r.streams, r.clock, -1, nil, nil) },
+	} {
+		call := call
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if rec := recover(); rec == nil {
+					t.Fatalf("NewIdleSealer with %s did not panic", name)
+				}
+			}()
+			call()
+		})
+	}
+}
+
+// TestTheIdleSealComesAtExactlyTheIdleAge catches the worker's off-by-one on
+// the time bound: a stream past the threshold stays open a nanosecond short of
+// the idle age with its tail uncut, and the nanosecond that crosses it seals
+// the segment early — tail returned, the ledger holding it at the truncated
+// size.
+func TestTheIdleSealComesAtExactlyTheIdleAge(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	r := idleRigOver(t, 1, 64<<10, 8, nil).start()
+	s := r.stream(0)
+	w := idleAppend(t, s, 64, 0)
+
+	r.advance(t, core.IdleSealAge-time.Nanosecond)
+	if state, sealed := idleState(s), r.set.Counters().Sealed; state != sealOpen || sealed != 0 {
+		t.Fatalf("a nanosecond before the idle age: state %v, %d sealed, want open and none", state, sealed)
+	}
+	name := format.SegmentName(w.Loc.Segment)
+	if got := r.seam.CallsFor(journaltest.OpTruncate, name); got != 0 {
+		t.Fatalf("a nanosecond before the idle age the segment saw %d truncations, want none", got)
+	}
+	// The pool's refill has settled by here — the roll's own spare was spent
+	// and replaced long before — so the footprint read now is the one the
+	// seal's fall is measured against.
+	footprintBefore := r.set.Counters().UsedBytes
+
+	r.clock.Advance(time.Nanosecond)
+	r.sealed(t, 1)
+	if state := idleState(s); state != sealSealed {
+		t.Fatalf("a nanosecond past the idle age: state %v, want sealed", state)
+	}
+	if got := r.seam.CallsFor(journaltest.OpTruncate, name); got == 0 {
+		t.Fatal("the idle seal truncated nothing: the tail was not returned")
+	}
+	// The ledger fell by the whole returned tail: the segment is accounted at
+	// the trailer's end — the header, the one record, the marker, its footer
+	// entry and the trailer — and the footprint keeps the spares the pool
+	// holds beside it, so the fall is the assertion, not the absolute.
+	trailerEnd := format.SegmentHeaderSize + w.Loc.Len + format.SealMarkerSize + format.CatalogEntrySize + format.TrailerSize
+	if fall := footprintBefore - r.set.Counters().UsedBytes; fall != r.cap-trailerEnd {
+		t.Fatalf("the footprint fell by %d across the idle seal, want the whole tail %d", fall, r.cap-trailerEnd)
+	}
+}
+
+// TestTheIdleSealNeedsMoreThanTheThreshold catches the worker's off-by-one on
+// the bytes bound: a stream holding exactly the threshold beyond its header
+// stays open past whole idle ages, and one slot — eight bytes — past it is
+// sealed by the same advance.
+func TestTheIdleSealNeedsMoreThanTheThreshold(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// One 64-byte write record takes idleRecordBytes(64) bytes past the
+	// header — the whole threshold of the first part and more than the
+	// second's.
+	t.Run("at exactly the threshold it stays open", func(t *testing.T) {
+		r := idleRigOver(t, 1, 64<<10, idleRecordBytes(64), nil).start()
+		s := r.stream(0)
+		if beyond := idleAppend(t, s, 64, 0).Loc.Len; beyond != idleRecordBytes(64) {
+			t.Fatalf("the record holds %d bytes beyond the header, want exactly the threshold %d", beyond, idleRecordBytes(64))
+		}
+		r.advance(t, 2*core.IdleSealAge)
+		r.settle(t)
+		if state, sealed := idleState(s), r.set.Counters().Sealed; state != sealOpen || sealed != 0 {
+			t.Fatalf("at exactly the threshold past two idle ages: state %v, %d sealed, want open and none", state, sealed)
+		}
+	})
+
+	t.Run("one slot past it seals", func(t *testing.T) {
+		r := idleRigOver(t, 1, 64<<10, idleRecordBytes(64)-8, nil).start()
+		s := r.stream(0)
+		idleAppend(t, s, 64, 0)
+		r.advance(t, 2*core.IdleSealAge)
+		r.sealed(t, 1)
+		if state := idleState(s); state != sealSealed {
+			t.Fatalf("one slot past the threshold past two idle ages: state %v, want sealed", state)
+		}
+	})
+}
+
+// TestAStreamBelowTheThresholdStaysOpenForAnyIdleTime checks that a stream
+// well below the threshold is never a candidate: one whole advance at a time,
+// past many idle ages, it stays open — the rule's age applies only to a
+// segment whose bytes past its header pass the threshold.
+func TestAStreamBelowTheThresholdStaysOpenForAnyIdleTime(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// The threshold sits far above everything a segment cap can hold: no
+	// stream can ever pass it.
+	r := idleRigOver(t, 1, 64<<10, 1<<40, nil).start()
+	s := r.stream(0)
+	idleAppend(t, s, 64, 0)
+	for step := 1; step <= 5; step++ {
+		r.advance(t, 2*core.IdleSealAge)
+		r.settle(t)
+		if state, sealed := idleState(s), r.set.Counters().Sealed; state != sealOpen || sealed != 0 {
+			t.Fatalf("after %d advances past whole idle ages: state %v, %d sealed, want open and none", step, state, sealed)
+		}
+	}
+}
+
+// TestAnIdleSealTakesNoSpare checks the spare the seal itself takes: none.
+// Across an idle seal the pool's ready content spares never fall — the
+// refill may raise them, and only the next append's roll spends one — and
+// the ledger's segment count stands, for the stream stays on its sealed
+// segment until the next append, which rolls onto a new segment whose header
+// names the sealed one as its predecessor.
+func TestAnIdleSealTakesNoSpare(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	r := idleRigOver(t, 1, 64<<10, 8, nil).start()
+	s := r.stream(0)
+	w := idleAppend(t, s, 64, 0)
+
+	spares := r.pool.Counters().Spares
+	segments := r.set.Counters().Segments
+	r.advance(t, 2*core.IdleSealAge)
+	r.sealed(t, 1)
+	if after := r.pool.Counters().Spares; after < spares {
+		t.Fatalf("the pool's content spares across the idle seal fell to %d from %d: the seal took a spare", after, spares)
+	}
+	if after := r.set.Counters().Segments; after != segments {
+		t.Fatalf("the ledger's segment count across the idle seal = %d, want the same %d", after, segments)
+	}
+
+	p := idleAppend(t, s, 64, 64)
+	if p.Loc.Segment == w.Loc.Segment {
+		t.Fatal("the append after an idle seal landed in the sealed segment")
+	}
+	raw := make([]byte, format.SegmentHeaderSize)
+	if _, err := s.ReadAt(p.Loc.Segment, raw, 0); err != nil {
+		t.Fatalf("ReadAt of the successor's header: %v", err)
+	}
+	hdr, err := format.DecodeSegmentHeader(raw, probeIdentity)
+	if err != nil {
+		t.Fatalf("the successor's header does not decode: %v", err)
+	}
+	if hdr.Predecessor != w.Loc.Segment {
+		t.Fatalf("the successor's predecessor = %d, want the idle-sealed %d", hdr.Predecessor, w.Loc.Segment)
+	}
+}
+
+// TestAnAppendResetsTheIdleTime catches a deadline measured from the first
+// append or from the worker's start: an append a second before the deadline
+// moves it, so two more seconds of idleness — past the original deadline —
+// leave the segment open, and it takes the whole age from the second append
+// to seal it.
+func TestAnAppendResetsTheIdleTime(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	r := idleRigOver(t, 1, 64<<10, 8, nil).start()
+	s := r.stream(0)
+	idleAppend(t, s, 64, 0)
+
+	r.advance(t, core.IdleSealAge-time.Second)
+	idleAppend(t, s, 64, 64)
+
+	r.advance(t, 2*time.Second)
+	r.settle(t)
+	if state := idleState(s); state != sealOpen {
+		t.Fatalf("two seconds past the first append's deadline: state %v, want open", state)
+	}
+
+	r.advance(t, core.IdleSealAge)
+	r.sealed(t, 1)
+	if state := idleState(s); state != sealSealed {
+		t.Fatalf("a whole age past the second append: state %v, want sealed", state)
+	}
+}
+
+// TestARefusedAdmissionStopsTheIdleSeal checks R89 at the worker: while the
+// read-only check refuses, a stream past both bounds stays open with no write
+// and no sync of its file at the seam and no seal for idle ages on end, and
+// the worker never spins on the refusal; once the check passes, the next pass
+// seals the still-idle segment. core holds no read-only sentinel on this
+// base, so the check answers a local error, which its contract allows: any
+// non-nil refusal stops the seal.
+func TestARefusedAdmissionStopsTheIdleSeal(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	var allow atomic.Bool
+	readOnly := errors.New("segment: the journal is read-only")
+	admit := func() error {
+		if allow.Load() {
+			return nil
+		}
+		return readOnly
+	}
+
+	r := idleRigOver(t, 1, 64<<10, 8, admit).start()
+	s := r.stream(0)
+	w := idleAppend(t, s, 64, 0)
+	name := format.SegmentName(w.Loc.Segment)
+	writes := r.seam.CallsFor(journaltest.OpWrite, name)
+	syncs := r.seam.CallsFor(journaltest.OpSync, name)
+
+	r.advance(t, 3*core.IdleSealAge)
+	r.settle(t)
+	if after := r.seam.CallsFor(journaltest.OpWrite, name); after != writes {
+		t.Fatalf("the seam saw %d writes of %s while the check refused, want the %d it held", after, name, writes)
+	}
+	if after := r.seam.CallsFor(journaltest.OpSync, name); after != syncs {
+		t.Fatalf("the seam saw %d syncs of %s while the check refused, want the %d it held", after, name, syncs)
+	}
+	if state, sealed := idleState(s), r.set.Counters().Sealed; state != sealOpen || sealed != 0 {
+		t.Fatalf("past both bounds under the refusing check: state %v, %d sealed, want open and none", state, sealed)
+	}
+
+	allow.Store(true)
+	r.advance(t, core.IdleSealAge)
+	r.sealed(t, 1)
+	if state := idleState(s); state != sealSealed {
+		t.Fatalf("after the check passed: state %v, want sealed", state)
+	}
+}
+
+// TestEachStreamSealsOnItsOwnBytes checks a pass that seals only the streams
+// past both bounds: stream 0, holding a record the threshold names, is
+// sealed; stream 1, idle as long but holding the threshold exactly, stays
+// open — a pass that seals every stream, or stops at the first.
+func TestEachStreamSealsOnItsOwnBytes(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// The threshold sits exactly at the small record's size, so stream 1's
+	// lone 32-byte write holds exactly it — never a candidate — while stream
+	// 0's 64-byte write passes it.
+	threshold := idleRecordBytes(32)
+	r := idleRigOver(t, 2, 64<<10, threshold, nil).start()
+	s0, s1 := r.stream(0), r.stream(1)
+	if beyond := idleAppend(t, s0, 64, 0).Loc.Len; beyond <= threshold {
+		t.Fatalf("the big record holds %d bytes beyond the header, want past the threshold %d", beyond, threshold)
+	}
+	if beyond := idleAppend(t, s1, 32, 0).Loc.Len; beyond != threshold {
+		t.Fatalf("the small record holds %d bytes beyond the header, want exactly the threshold %d", beyond, threshold)
+	}
+
+	r.advance(t, 2*core.IdleSealAge)
+	r.sealed(t, 1)
+	if state := idleState(s0); state != sealSealed {
+		t.Fatalf("stream 0, past the threshold, after two idle ages: %v, want sealed", state)
+	}
+	if state := idleState(s1); state != sealOpen {
+		t.Fatalf("stream 1, at exactly the threshold, after two idle ages: %v, want open", state)
+	}
+	if sealed := r.set.Counters().Sealed; sealed != 1 {
+		t.Fatalf("the ledger holds %d sealed segments, want exactly stream 0's", sealed)
+	}
+}
+
+// TestTheSealerStopsAndJoins checks the lifecycle's edges: Stop before Start
+// returns at once and leaves Start starting nothing; Start is idempotent; a
+// second Stop is a no-op. A worker Stop fails to join shows as the leaked
+// goroutine prof.Watch reports, so each part also asserts the worker's clock
+// holds no wait the stopped worker would have armed.
+func TestTheSealerStopsAndJoins(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	t.Run("Stop before Start", func(t *testing.T) {
+		r := idleRigOver(t, 1, 64<<10, 8, nil)
+		r.worker.Stop()  // returns at once: nothing is running
+		r.worker.Stop()  // and again: a no-op
+		r.worker.Start() // after Stop: starts nothing
+		s := r.stream(0)
+		idleAppend(t, s, 64, 0)
+		r.clock.Advance(2 * core.IdleSealAge)
+		for deadline := time.Now().Add(200 * time.Millisecond); ; {
+			if state, sealed := idleState(s), r.set.Counters().Sealed; state == sealSealed || sealed != 0 {
+				t.Fatalf("a worker stopped before it started sealed something: state %v, %d sealed", state, sealed)
+			}
+			if pending := r.clock.Pending(); pending != 0 {
+				t.Fatalf("the stopped worker armed %d waits on the clock, want none: Start after Stop started a goroutine", pending)
+			}
+			if time.Now().After(deadline) {
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	})
+
+	t.Run("Start then Stop joins", func(t *testing.T) {
+		r := idleRigOver(t, 1, 64<<10, 8, nil)
+		r.worker.Start()
+		r.worker.Start() // idempotent: one goroutine arms one wait
+		r.settle(t)
+		// The wait the running worker armed is abandoned by Stop — the clock
+		// never closes it — so what the check holds is its count: nothing
+		// further arms while the worker is gone.
+		armed := r.clock.Pending()
+		if armed != 1 {
+			t.Fatalf("the doubly-started worker armed %d waits, want the one of a single goroutine", armed)
+		}
+		r.worker.Stop()
+		r.worker.Stop()  // the second is a no-op
+		r.worker.Start() // after Stop: starts nothing
+		r.advanceRaw(10 * time.Millisecond)
+		if pending := r.clock.Pending(); pending != armed {
+			t.Fatalf("after Stop the clock holds %d waits, want the same %d it abandoned", pending, armed)
+		}
+	})
+}
+
+// TestStopWaitsForASealInFlight checks R70's near half: a Stop that arrives
+// while a seal is writing has not returned while the seal's own sync is held
+// at the seam, and returns — the segment sealed — once the hold lifts, so the
+// caller that stops the sealer may then close the segments under it.
+func TestStopWaitsForASealInFlight(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	r := idleRigOver(t, 1, 64<<10, 8, nil).start()
+	s := r.stream(0)
+	w := idleAppend(t, s, 64, 0)
+	name := format.SegmentName(w.Loc.Segment)
+	held := r.seam.HoldFirst(t, journaltest.OpSync, name)
+
+	r.advance(t, 2*core.IdleSealAge)
+	select {
+	case <-held.Reached():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the worker never reached the seal's first sync")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		r.worker.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned while the seal was still held at the seam")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	held.Release()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop never returned after the hold lifted")
+	}
+	r.sealed(t, 1)
+	if state := idleState(s); state != sealSealed {
+		t.Fatalf("the segment after the in-flight seal: %v, want sealed", state)
+	}
+}
+
+// TestAFailingSealDoesNotKillTheWorker checks the worker's error half: a seal
+// whose every sync fails at the seam ends its segment — the stream's next
+// Sync answers ErrSegmentEnded — and the same worker goes on to seal that
+// stream's successor, and a second stream beside it, once the fault is
+// disarmed and they idle past both bounds again.
+func TestAFailingSealDoesNotKillTheWorker(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	r := idleRigOver(t, 2, 64<<10, 8, nil).start()
+	s0, s1 := r.stream(0), r.stream(1)
+	w0 := idleAppend(t, s0, 64, 0)
+	idleAppend(t, s1, 64, 0)
+
+	// Every sync of stream 0's first segment fails; stream 1's own file is
+	// not named, so its seal runs clean through the same pass.
+	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(w0.Loc.Segment), 0, errors.New("the sync failed"))); err != nil {
+		t.Fatalf("the fault schedule: %v", err)
+	}
+	r.advance(t, 2*core.IdleSealAge)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		_, st0 := r.streamState(s0)
+		_, st1 := r.streamState(s1)
+		if st0 == sealEnded && st1 == sealSealed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after the failing seal: stream 0 %v, stream 1 %v, want ended and sealed", st0, st1)
+		}
+	}
+	if err := s0.Sync(); !errors.Is(err, ErrSegmentEnded) {
+		t.Fatalf("stream 0's Sync after its failed seal = %v, want ErrSegmentEnded", err)
+	}
+
+	// The fault disarmed, the same worker seals both streams' successors once
+	// they idle again: stream 0's next append rolls off its ended segment, and
+	// stream 1's off its sealed one.
+	if err := r.seam.Schedule(); err != nil {
+		t.Fatalf("disarming the fault: %v", err)
+	}
+	idleAppend(t, s0, 64, 128)
+	idleAppend(t, s1, 64, 128)
+	r.advance(t, 2*core.IdleSealAge)
+	r.sealed(t, 3)
+	for _, s := range []*Stream{s0, s1} {
+		if _, state := r.streamState(s); state != sealSealed {
+			t.Fatalf("a stream whose successor should have idle-sealed: %v, want sealed", state)
+		}
+	}
+}
+
+// streamState reads the stream's segment id and seal state under its lock.
+func (r *idleRig) streamState(s *Stream) (id core.SegmentID, state sealState) {
+	s.appendMu.Lock()
+	defer s.appendMu.Unlock()
+	return s.id, s.sealState
+}
