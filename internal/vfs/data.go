@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"errors"
 
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -105,7 +106,8 @@ func stable(a *admitted, ref vfs.OpenRef, st vfs.Stability) bool {
 // written while it was open was lost, judged under the admission lock taken
 // again once the sync completed. A failed sync answers its own error, and
 // still records the file's loss sequence for the open, so a loss is answered
-// at most once, whether as ErrLost or as the failure.
+// at most once, whether as ErrLost or as the failure; a retry, ErrDelay, or a
+// cancelled call records nothing, so the retried flush still answers ErrLost.
 //
 // decision: a commit decides no right and asks open state nothing but an SMB
 // flush's loss: it changes no content, only makes what was staged durable,
@@ -135,6 +137,10 @@ func (fs *Filesystem) Commit(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 	}
 	v, loss, err := fs.engine.Commit(ctx, f.Share, f.ID, off, length)
 	if err != nil {
+		err = storeErr(err)
+		if errors.Is(err, vfs.ErrDelay) || ctx.Err() != nil {
+			return vfs.Verifier{}, err
+		}
 		loss = fs.engine.LossSeq(f.Share, f.ID)
 	}
 	if c.Protocol == entity.ProtocolSMB && ref.Kind == openstate.RefOpened {
@@ -148,7 +154,7 @@ func (fs *Filesystem) Commit(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 		}
 	}
 	if err != nil {
-		return vfs.Verifier{}, storeErr(err)
+		return vfs.Verifier{}, err
 	}
 	return v, nil
 }

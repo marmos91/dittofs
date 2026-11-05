@@ -314,7 +314,8 @@ func TestTheVerifierAndAFlushAcrossALoss(t *testing.T) {
 
 // A flush whose sync fails answers the engine's error and still records
 // the loss it was across for its open, so the next flush answers no ErrLost
-// for that loss again.
+// for that loss again; one answered a retry records nothing, so its retry
+// answers ErrLost.
 func TestAFailedFlushRecordsTheLoss(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
@@ -332,6 +333,21 @@ func TestAFailedFlushRecordsTheLoss(t *testing.T) {
 	s.engine.commitErr = nil
 	if _, err := s.Commit(ctx, pc, ref, 0, 0); err != nil {
 		t.Errorf("the flush after a failed one across the same loss: %v", err)
+	}
+
+	// A flush answered a retry is told nothing, so it records nothing: its
+	// retry still answers ErrLost for the loss it was open across.
+	other := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
+	s.engine.mu.Lock()
+	s.engine.loss = 2
+	s.engine.mu.Unlock()
+	s.engine.commitErr = entity.ErrDelay
+	if _, err := s.Commit(ctx, pc, other, 0, 0); !errors.Is(err, vfs.ErrDelay) {
+		t.Errorf("a flush whose sync answers a retry: %v, want ErrDelay", err)
+	}
+	s.engine.commitErr = nil
+	if _, err := s.Commit(ctx, pc, other, 0, 0); !errors.Is(err, vfs.ErrLost) {
+		t.Errorf("the retried flush across the loss: %v, want ErrLost", err)
 	}
 }
 
