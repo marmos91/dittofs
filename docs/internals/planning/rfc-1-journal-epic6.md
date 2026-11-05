@@ -104,7 +104,7 @@ sync and to end a segment, and epic 4's index to drop and re-hold extents.
   unlink, and when a segment is not held: epics 5 and 9. This epic publishes which records are
   durable (R12); it applies none of those rules.
 - Selecting a segment for repack, and refusing to select a damaged one that still backs held
-  extents it cannot produce: epic 9. This epic reports the damage and clears it (R60).
+  extents it cannot produce: epic 9. This epic reports the damage, keeps it counted until close, and ends the block (R60).
 - `Offered`'s whole-record verification, repack's verification, and `report`'s in-memory-only
   offloaded bits in a read-only journal: epic 9. They call this epic's handler and read its
   state.
@@ -320,7 +320,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 | R57 | The refusal is confined to the records that do not verify: one bad record says nothing of its neighbours | MUST | RFC 28 §3.3 | T6.7 |
 | R58 | Each record dropped as corrupt is a loss event with a loss record, unless another copy of it verifies. Among copies with equal numbers the one that verifies is used, and a copy that does not verify while another with its sequence number does is not a loss and gets no loss record. A copy used this way is served in place; outside a read-only journal it is then re-appended to a healthy segment, so a resolved failed segment never again backs a record of its window (RFC 1 §5.3) | invariant | RFC 28 §3.3, RFC 1 §5.3 | T6.5, T6.7 |
 | R59 | A record found corrupt before its sync is dropped with an unsynced loss record, and one found corrupt after its sync with a synced one | invariant | RFC 1 §3.8 | T6.7 |
-| R60 | A segment holding one or more unreadable records is reported, in `DamagedSegments` and its per-segment row, and is not selected by a reclamation pass while it still backs held extents it cannot produce. Once those extents are dropped it may proceed. (Selection is epic 9's; this epic reports and clears the damage) | MUST | RFC 28 §3.3, RFC 1 §3.7 | T6.7 |
+| R60 | A segment holding one or more unreadable records is reported, in `DamagedSegments` and its per-segment row, and stays counted, with its row, until the journal closes, even after the extents it backed are dropped. It is not selected by a reclamation pass while it still backs held extents it cannot produce; once those are dropped only that block ends (a repack-ready signal), never the count or the row. (Selection is epic 9's; this epic reports the damage and ends the block) | MUST | RFC 28 §3.3, RFC 1 §3.7 | T6.7 |
 | R61 | A read that fails with an I/O error, not a verification failure, drops nothing and reports no loss. What the journal does with such a read is open (D11) | invariant | RFC 28 §3.3 | T6.7 |
 
 **Stats and metrics of this area**
@@ -460,7 +460,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
   retained extent lifted on sync, a failed window's drop and re-hold, the read-only undo and a
   corrupt record's drop change held and dirty bytes, the per-share figures and the dirty-file
   list, which epic 8 keeps as maintained counters (RFC 1 §3.7). `Durability` takes, when it is
-  built, the account function epic 8's constructor passes (`datapath.Account`, epic 8's D16), and
+  built, the account function epic 8's constructor passes (`datapath.Account`, epic 8's D16, which takes the `index.HeldDelta` epic 4's mutators return), and
   every index change it makes is passed to it with epic 4's change (R86). The file append
   domain's table is passed the same way: epic 8's `datapath` owns it (its D15) and imports this
   package, so this package declares the small interface it needs (lock a file's domain, get its
@@ -494,7 +494,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
   record when another copy with its sequence number verifies. At read time the index holds one
   location per extent, so the only other copies the journal knows are the failed segment's
   originals of a re-append (T6.5), until that segment is retired. `Durability` keeps those in a
-  table by sequence number, which T6.7 builds and T6.5 fills through `RegisterCopy`, each with the payload checksum the ledger kept when the record was
+  table by sequence number, drops a segment's entries when epic 5's retirement executor reports the segment retired (a hook its constructor takes, T5.9), so the table is bounded by the failed segments still on disk, and treats a copy it cannot read as one that does not verify, which T6.7 builds and T6.5 fills through `RegisterCopy`, each with the payload checksum the ledger kept when the record was
   first written, so a copy is verified against that checksum and never against the one read back
   with it (RFC 1 §5.3: a failed segment's pages are not evidence). A copy that verifies is never
   a loss (RFC 28 §3.3): `Corrupt` repoints the index to it in place and returns `UseCopy` with its
@@ -1081,12 +1081,12 @@ pkg/block/journal/
 **Subtask T6.7 estimate: 5.75 man-days.**
 
 - **Track:** A. **Depends on:** T6.1 (`Durable`, the ledger), T6.2, T6.3 (the pending window it takes a record out of), T6.4 (the file marks it sets); E3's record codec; E4's index
-  and its failed-window operation (E4-6). The read-only check is the function `Durability` holds
+  and its failed-window operation (E4-6); T5.9's retirement executor, which calls `Retired` (a hook its constructor takes). The read-only check is the function `Durability` holds
   (D10), so T6.6 is not a dependency.
 - **Covers:** R17, R44, R54–R62, R69, R70, R76, R80, R81, R86, R87, R90, R91.
 - **Deliverables:** `internal/durability/corrupt.go`: `Corrupt(ctx, Corruption) (CorruptOutcome,
   error)` (D9), and the copy table of D10 with `RegisterCopy(seq, location, checksum)`, which
-  T6.5 fills. Given the record a reader found not to verify (checksum, or header against its
+  T6.5 fills, and `Retired(segment)`, the hook epic 5's retirement executor calls after each retirement (T5.9), which drops that segment's entries. A copy whose read fails, whether `ENOENT`, `EIO` or a short read, counts as one that does not verify, so the record that failed verification goes to `Lose` rather than the read erroring for ever (D11 concerns the read of the record itself, not of its copy). Given the record a reader found not to verify (checksum, or header against its
   catalog entry), it first looks for another copy of it with the same sequence number in the copy
   table (D10) and verifies it against the payload checksum the table kept from the write, never
   the one read back with it. When that copy verifies, it repoints the index to the copy in place
@@ -1126,8 +1126,9 @@ pkg/block/journal/
   its per-segment row, and returns `Dropped`, after which the caller reports the extent missing;
   the read appends nothing and an append refusal reaches only the worker, where the drop stands
   (R83, R90). A read that failed with an I/O error is returned as such and drops
-  nothing (D11). `Stats().DamagedSegments` and the row; a call that clears the damage once the
-  segment backs no extent it cannot produce. The `decision:` of D11 and the `ponytail:` of D10 sit
+  nothing (D11). `Stats().DamagedSegments` and the row stay until the journal closes, since `Corrupt` drops the
+  extents in the same call that marks the segment; the one thing cleared is the block on
+  reclamation selection, once the segment backs no extent it cannot produce. The `decision:` of D11 and the `ponytail:` of D10 sit
   here.
 - **Why over 5 man-days:** the copy, the re-hold of an unsynced record and the synced flag
   decided against the ledger are the outcomes of the one decision this handler makes; split off,
@@ -1188,8 +1189,13 @@ pkg/block/journal/
     claim on it until the worker's re-append lands: a retirement of the segment, started after the
     retirer read "resolved" and while a `Corrupt` on another file of the segment takes its claim,
     is refused, and a copy whose segment epic 5 reports retired is a loss.
-  - The segment is counted damaged while it backs an extent it cannot produce, and a repack-ready
-    signal is given once none remains.
+  - A segment's table entries are dropped when it is retired: a re-appended record found corrupt
+    after the original's segment was retired finds no entry and is a loss, never an error, and the
+    table holds no entry for a retired segment. A copy that cannot be read is treated as one that
+    does not verify.
+  - The segment is counted damaged from the call that reports it until the journal closes, with its
+    row, even though `Corrupt` has already dropped its extents (so `DamagedSegments` never reads 0
+    at once); the repack-ready signal is given once no held extent it cannot produce remains.
   - A read that fails with `EIO` drops nothing and reports no loss.
 - **Tests:** a fuzz-driven flip at every byte of a record's header and payload, asserting no byte
   of the record is ever served (R54); the dirty and offloaded rows through the index and the ring
@@ -1211,7 +1217,7 @@ pkg/block/journal/
   with no mark, so that its `Sync` returns nil for a lost write; the second call must return nil); a failed segment announced resolved with copies of two files
   in it, a retirement held after it read "resolved", and `Corrupt` on the second file's record
   taking its claim (catches a resolved state guarded by one file's domain, which excludes no other
-  file's `Corrupt`, and a segment retired under a read); two corrupt reads on a failed segment's
+  file's `Corrupt`, and a segment retired under a read); a corrupt read after the copy's segment was retired, with the copy file removed (catches a stale entry that errors every read and reports no loss, and a table that grows, R44); two corrupt reads on a failed segment's
   records, the first re-append landing before the second (catches a segment announced resolved,
   and its claim released, while a second record still points at it); two corrupt reads on two records of a failed segment while a repack holds its claim, then the
   repack letting go and the worker retrying (catches a second read that repoints into a segment
@@ -1227,8 +1233,7 @@ pkg/block/journal/
   loss, RFC 8 §5.1); a corrupt read followed at once by `Stop` (catches a queued loss record never
   written); the headroom drawn to exhaustion, then a corrupt read (R90), the same with only the open reserve left (R83); a failed segment's
   original whose page cache returns stale bytes with a matching read-back checksum (catches a copy
-  verified against itself, RFC 1 §5.3); the damage count before and after the extents are
-  dropped (R60); an `EIO` at the seam (D11). Conformance rows that stay red until `Open`: corrupt
+  verified against itself, RFC 1 §5.3); the damage count and row at once after the extents are dropped and after the repack-ready signal, still counted (catches a gauge cleared with the extents, R60); an `EIO` at the seam (D11). Conformance rows that stay red until `Open`: corrupt
   dirty, corrupt offloaded, a synced loss masks what it superseded, neighbours survive, a loss
   raises the loss generation.
 

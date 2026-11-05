@@ -730,8 +730,10 @@ pkg/block/journal/internal/
   `freed_bytes` is raised after an unlink has happened. A queue and a worker retire the
   segments epic 9 hands over (D5); the executor, through both entry points, asks the read-only
   check its constructor takes before each unlink or recycle, and the worker leaves the queue as
-  it is while the check fails (R89); it has a `Stop` that joins it,
-  which T5.11 calls.
+  it is while the check fails (R89); after each retirement it calls the retired-segment hook its constructor takes (nil does nothing;
+  epic 6's `Durability` passes the one that drops the segment's copy table entries), once the
+  segment has left the set, so a copy that names a retired segment is never looked up; it has a
+  `Stop` that joins it, which T5.11 calls.
 - **Acceptance criteria:**
   - The seam sees, per recycle, a rename, a directory sync, two zero writes and one sync, and
     no allocation and no zero-fill. `UsedBytes` does not move across a recycle.

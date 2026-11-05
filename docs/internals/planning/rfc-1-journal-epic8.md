@@ -201,7 +201,7 @@ format, no recovery and no reclamation.
 | 3 Metrics and tracing | T8.1, T8.4, T8.5, T8.6, T8.7, T8.13 | `written_bytes` (T8.1), `TagConflicts` (T8.4), `reservation_refused` and `index_refusals` (T8.5), `headroom_draws` (T8.6), `filled_bytes` and `fill_refused` (T8.7) are incremented at the event with an atomic add and served by `Stats` (T8.13), never from a walk. Spans through E1's `Tracer`: `fill` (T8.7) and `reserve_refused` (T8.5). Open and recovery, sync, offload and repack are other epics' |
 | 4 Profiling | all | every test runs under E2's profiler. T8.14 asserts allocations per call for `WriteAt`, `ReadAt` and `Stats`, outside `-race` (R101), once for all three. T8.12 is where goroutines could leak: it checks that none outlives `Close` |
 | 5 Public and internals, `-race` | T8.1 to T8.13, T8.15 | each subtask tests its internal package and the public `Handle` behaviour it enables, at the layer that consumes the value: a version is checked where `ReadAt` returns it, a refusal where the caller sees its `ErrNoSpace`. `-race` runs with two files on two streams and two shares, as RFC 1 §9.3 requires |
-| 6 Known failures | T8.15 and every later subtask | once T8.15's `Open` exists, every subtask removes from `test/journal/known.yaml` the conformance tests it turns green, in the same change; the runner fails on a listed test that passes. Tests that reopen a journal holding segments stay listed until epic 7. No subtask adds an entry |
+| 6 Known failures | T8.15 and every later subtask | once T8.15's `Open` exists, every subtask removes from `test/journal/known.yaml` the conformance tests it turns green, in the same change; the runner fails on a listed test that passes. Tests that reopen a journal holding segments stay listed until epic 7, and tests that call epic 9 operations until epic 9. No subtask adds an entry |
 | 7 v2 ignores v1 | all | enforced by the import test. Nothing of v1's journal is read |
 | 8 Real storage | T8.1, T8.2, T8.5 to T8.10, T8.12, T8.15 | every test of a record write, a read of stored bytes, a refusal that performs no I/O, a close, or an `Init` and `Open` runs on a real directory through E2's seam. T8.4's conflict logic, T8.12's context checks and T8.11's recorder are pure logic and test in memory |
 | 9 Comment markers | T8.1, T8.2, T8.5, T8.6, T8.11 | see §4: each decision names its marker and where it goes. The RFC's `ponytail:` and `decision:` notes on headroom (half rule, default `journal.headroom_records`) go at the admission table in T8.6, the one on counting pieces as interleaved at the reservation in T8.10, the one on the version limit at the draw in T8.3, and the one on checking the tag per file at the claim in T8.4 |
@@ -387,7 +387,7 @@ sections found every one of them below, in §1.2, or in the closing note of this
 | R104 | The edge cases of RFC 1 §9.2 for extent shape (a zero-length write, a write near the largest offset, a three-way split, an overwrite covering several extents, the same extent overwritten many times, a write across a segment boundary, a record that exactly fills a segment, a first held byte far from offset zero), for truncate and deallocate, for `Fill` over partly held, dirty and absent extents, and for capacity (a reservation of exactly the remaining space and one byte over, `ENOSPC` against a refusal, records without bytes at the maximum) | test row | RFC 1 §9.2 | T8.1, T8.5, T8.7, T8.8 |
 | R105 | Journals in tests carry at least two files on two streams and at least two shares, so that locking and per-share accounting are exercised | test row | RFC 1 §9.3 | T8.4, T8.11, T8.14 |
 | R106 | The model-based run draws random sequences of this epic's operations and compares each file's bytes and the removal markers `Since` yields with the reference model after every step | test row | RFC 1 §9.1 | T8.14 |
-| R107 | The rows of RFC 1 §9.4 that name this area, mapped test by test in §6: no zero-fill, fill safety, fill sets the bit, a read's `asOf` against a change in flight, removals survive to `Since`, no resurrection, a file is its share's, an attached share raises the counter, a cancelled call changes nothing or completes, a clone target survives a crash, reservation, reserve ahead, handle close, named refusal, share limit, index bound refuses, records without bytes at the limit, offloaded records below half the headroom, floor buckets, no version repeats, no deadlock, background joined, the wedge is visible, stats are cheap, the named inequalities hold, clean bytes count as occupancy, metrics are reachable | test row | RFC 1 §9.4 | T8.2, T8.3, T8.4, T8.5, T8.6, T8.7, T8.8, T8.10, T8.11, T8.12, T8.13 |
+| R107 | The rows of RFC 1 §9.4 that name this area, mapped test by test in §6: no zero-fill, fill safety, fill sets the bit, a read's `asOf` against a change in flight, removals survive to `Since`, no resurrection, a file is its share's, an attached share raises the counter, a cancelled call changes nothing or completes, a clone target survives a crash, reservation, reserve ahead, handle close, named refusal, share limit, index bound refuses, records without bytes at the limit, offloaded records below half the headroom, floor buckets, no version repeats, no deadlock, background joined, the wedge is visible, stats are cheap, the named inequalities hold, clean bytes count as occupancy, metrics are reachable. Each is scoped to the part that runs in this epic: a test that calls an epic 9 operation (`mark`, `MarkOffloaded`, `Release`, `Repack`, `repackAll`) or reopens a journal (`Reopen`, `Crash`) runs here only up to that call, and the rest stays in `known.yaml` until epic 9 or epic 7 | test row | RFC 1 §9.4 | T8.2, T8.3, T8.4, T8.5, T8.6, T8.7, T8.8, T8.10, T8.11, T8.12, T8.13 |
 | R109 | `UnreclaimedBytes`, journal-wide and per share, is a maintained counter: the share's record bytes still on disk less the whole of every record that still backs a held or retained extent (its header and footer entry with the bytes it backs) and of every live header-only record, so a journal of clean held content reads zero and `Stats` names released but unrepacked storage without a walk | invariant | RFC 1 §3.7 | T8.13 |
 | R110 | `Init` creates a journal only in an empty directory (one holding at most a `format.tmp`), refusing any other with `ErrNotEmpty`, after the platform checks, which refuse with `ErrUnsuitableStorage`; it writes the `format` file with a fresh identity and the installation ID it is given and returns the identity. `Open` fails with `ErrUnidentified` on a directory holding a segment and no `format` file, refuses an identity other than `expect` and an `expect` of zero, the latter with an error naming the journal identity and installation ID its `format` file holds and whether the directory holds any segment, fails on a directory with neither a `format` file nor a segment as holding no journal, and creates no journal. (An `Open` that recovers segments is epic 7's) | MUST | RFC 1 §3, RFC 28 §2.1, §3.4 | T8.15 |
 | R111 | The last 4,096 records of the headroom, or half of it where `HeadroomRecords` is below 8,192, are the open reserve: only the header-only records an open appends before it serves (the unsynced loss records of a read-only journal's failed records, then the loss records of the records it drops as corrupt) draw on it. No record appended while the journal serves does, and headroom the journal regains goes to the reserve first. A corrupt record's loss an open cannot fit in it is deferred, never refused (epic 7 and epic 6's `Loss.Deferred`). A record a read-only journal failed is never deferred: past the reserve the open leaves it out of the copy that empties its segment | MUST | RFC 1 §6 | T8.6 |
@@ -521,8 +521,11 @@ the rule that a persisted index is not authoritative (E3, E5, epic 7).
   `ponytail:` marker names the ceiling, a shard lock on every write's entry and exit, and the
   upgrade, the lock stored in E4's file entry, which needs E4's entry to outlive a file's last
   extent (R7).
-- **D16, one function for every change to held state.** `datapath.Account(index.Change)` applies a
-  change epic 4's index made to this epic's counters and lists: held and dirty bytes, the
+- **D16, one function for every change to held state.** `datapath.Account(index.HeldDelta)` applies the
+  delta epic 4's index mutators return, a type distinct from `Since`'s `index.Change`, which has no
+  tag and no byte deltas: `HeldDelta{Tag, File, HeldBytes, DirtyBytes, RetainedBytes, the offloaded bit's transition}`.
+  It is an addition to epic 4's mutators (they return it with their `error`; confirm in §9), so no
+  caller computes a delta itself (R108). It applies the delta to this epic's counters and lists: held and dirty bytes, the
   per-share figures (T8.13) and the dirty-file list (T8.9). Every path that changes held state
   calls it: a write's and a fill's publish, a removal, and the drops and re-holds epic 6 makes,
   which reach it through the function `New` passes to epic 6's `Durability` (epic 6's D16).
@@ -586,7 +589,7 @@ pkg/block/journal/
     file append domain's table (D15), which satisfies the interface epic 6 declares,
     and returns the core; one share is registered by the test helper until T8.3, with the tag it
     names. T8.5 adds the wrapping of the storage seam by T6.6's `Observe`.
-  - `account.go`: `Account(index.Change)` (D16), called by the write's publish and by epic 6.
+  - `account.go`: `Account(index.HeldDelta)` (D16), called by the write's publish and by epic 6.
   - `filelock.go`: the file append domain as a table of reference-counted mutexes (D15).
   - `write.go`: `WriteAt(ctx, h, id, off, p, mtime)`. It takes the file's append domain, draws
     the version from E4-4's counter, splits the write at the cap by looping on E5's `Append` (which
@@ -770,8 +773,7 @@ pkg/block/journal/
   builder, with every call refused through both tags (R8); a `testing.F` target driving claims
   from two handles against a one-owner-per-file oracle (R6); a write to an untagged file refused at
 its share's limit, then a write through another share that must claim it (catches a claim made
-before admission); the recorder's order across a tagged write, asserting the file index is not
-held when `Take` runs (catches a capacity lock taken under the file index, RFC 1 §8.3).
+before admission). The recorder's order across a tagged write is T8.11's test.
 
 ### T8.5 Capacity: counters, admission and named refusals
 
@@ -784,10 +786,14 @@ held when `Take` runs (catches a capacity lock taken under the file index, RFC 1
   capacity domain (D9). Before it draws a version or writes a byte, `WriteAt` and `Fill` pass it
   once; it checks, in D6's order, a read-only journal (T6.6's `Admit`, which returns `ErrJournalReadOnly`, R27) and then
   the limits, and on success reserves the record bytes against the share's limit, the entries
-  against `ExtentLimit` through E4-8's pre-check, and asks E5 whether the current segment holds
-  the record, or whether a content spare is ready and one can be made against the journal's
-  maximum. The grant is released by the append: `ReservedBytes` falls and the share's
-  `UsedBytes` rises, in that order, only after the record is written (R76). A refusal is an
+  against `ExtentLimit` through E4-8's pre-check, and asks E5 whether the pieces the write splits
+  into fit: it counts them the way `Reserve` does (T8.10), one spare for every segment cap the
+  write crosses after the current segment's room, and is granted only if the current segment and
+  that many ready spares, or spares that can be made against the journal's maximum, cover them
+  all, so a write is never published in part (R70). The grant is released by the append: the
+  share's `UsedBytes` rises and `ReservedBytes` falls, in that order, only after the record is
+  written (R76). A grant whose append fails (`EIO`, or `Draw` refusing after `Take`) is returned
+  whole, so `ReservedBytes` never leaks. A refusal is an
   `ErrNoSpace` carrying the limit and the missing amount (D7), performs no I/O and does not wait;
   `ENOSPC` from the filesystem is passed through as itself. The refusal counts in
   `reservation_refused` (and `index_refusals` for the index) and opens the `reserve_refused`
@@ -796,6 +802,8 @@ held when `Take` runs (catches a capacity lock taken under the file index, RFC 1
   seam with T6.6's `Observe`, so an `EROFS` from any call turns the journal read-only, and passes
   T6.6's `Admit` to E5's pool, idle seal and retirement executor (E5's R89). Nothing here evicts.
 - **Acceptance criteria:**
+  - A write of 2.5 segment caps with one spare ready is refused in `Take` with no I/O and no
+    version drawn, and a failed append returns the unused grant, so `ReservedBytes` is zero after it.
   - A share at its limit refuses the next write naming the share's limit and the bytes
     missing, with no I/O at the seam and without waiting, while another share still writes; a
     release and repack that return those bytes (simulated by epic 5's retirement) make the
@@ -924,7 +932,7 @@ its counter (R75); `ReservedBytes` read at the
   releases the file's append domain once the marker is published, then returns only after
   T6.1's `WaitDurable(at)` covers its own record, with no context and no mark consulted or
   cleared; a failed window re-appends the record (T6.5) and the wait follows it, a read-only
-  journal returns `ErrJournalReadOnly` and a closed one `ErrClosed`, never `SyncError`; it waits
+  journal returns `ErrJournalReadOnly`, never `SyncError`; a removal parked in the wait when `Close` is called is a call in flight, which `Close` waits for (D14) and which returns once its sync is released or failed, since `Durability.Stop` runs only after the drain; it waits
   for no reclamation (R50). Holding the domain across the wait would deadlock with epic 6's
   worker, which resolves the file's window under it. It
   is admitted as a record without bytes (T8.6): refused by the headroom, the version limit, and the
@@ -953,7 +961,7 @@ its counter (R75); `ReservedBytes` read at the
   call returns and asserts the record is on disk (catches a return before the sync, R50); a
   zero-length call that counts the draws (R48); a removal over unoffloaded bytes asserting the
   drop (R51); a removal issued while a held callback runs, which must return (R52); the index
-  cap's refusal with its counter (R75); an ordering test for the headroom's refusal of a removal of content not held (R77); a read-only journal at the seam refusing a removal at once with no version drawn (R27); each removal's record found in epic 6's ledger, and a truncate in a failed window re-appended, not lost (catches a removal whose wait returns before its record is durable, R26, R50); a timer-failed window, then a truncate, then a `Sync` of the file (catches a removal that returns the old window's error and clears the mark, R50); a truncate whose context is cancelled while its sync is held at the seam (catches a removal returning the context's error after appending, R13, R50); a truncate waiting while the journal turns read-only, and one waiting at `Close` (catches a removal that hangs, R50); the recorder asserting the file's append domain is released before the wait (catches the deadlock with epic 6's worker).
+  cap's refusal with its counter (R75); an ordering test for the headroom's refusal of a removal of content not held (R77); a read-only journal at the seam refusing a removal at once with no version drawn (R27); each removal's record found in epic 6's ledger, and a truncate in a failed window re-appended, not lost (catches a removal whose wait returns before its record is durable, R26, R50); a timer-failed window, then a truncate, then a `Sync` of the file (catches a removal that returns the old window's error and clears the mark, R50); a truncate whose context is cancelled while its sync is held at the seam (catches a removal returning the context's error after appending, R13, R50); a truncate waiting while the journal turns read-only, and one waiting when `Close` is called, with `Close` asserted to return once the held sync is released (catches a `Close` that hangs on a parked removal, R50). The recorder's check that the file's append domain is released before the wait is T8.11's test.
 
 ### T8.9 `Since`, `Settle`, `Extents`, `Files` and `DirtyFiles`
 
@@ -1047,7 +1055,7 @@ its counter (R75); `ReservedBytes` read at the
 
 **Subtask T8.11 estimate: 4 man-days.**
 
-- **Track:** B. **Depends on:** T8.1, T8.2, T8.5; E4's file index and file map locks (E4-3);
+- **Track:** B. **Depends on:** T8.1, T8.2, T8.4, T8.5, T8.8; E4's file index and file map locks (E4-3);
   E5's segment append lock and read drain (T5.4b, T5.2).
 - **Covers:** R19, R38, R40, R52, R74, R88–R95, R105, R107.
 - **Deliverables:** `internal/lockorder`: the six ranks (file append, capacity, file index, file
@@ -1074,7 +1082,7 @@ its counter (R75); `ReservedBytes` read at the
   `-race` run of two files on two streams (R19, R95); a probe that a read of file A does not take a
   lock a write of file B holds (R40); a removal while a held callback runs (R52); the refused-write
   probe of T8.5 under the recorder (R74); the read's index release before the segment reference
-  (R38); the recorder asserting that the file map's lock is held only across a lookup, with nothing acquired under it (R94); a journal of two files, two streams and two shares for every run above (R105); the import and domain table check that each piece of state names its domain (R88).
+  (R38); the recorder asserting that the file map's lock is held only across a lookup, with nothing acquired under it (R94); the recorder's order across a tagged write, asserting the file index is not held when `Take` runs (catches a capacity lock taken under the file index, RFC 1 §8.3; T8.4's order, run here because the recorder lands here); a removal's wait asserting the file's append domain is released before it (catches the deadlock with epic 6's worker, R50; T8.8's); a journal of two files, two streams and two shares for every run above (R105); the import and domain table check that each piece of state names its domain (R88).
 
 ### T8.12 Cancellation and `Journal.Close`
 
@@ -1211,7 +1219,7 @@ its counter (R75); `ReservedBytes` read at the
   state, the counter raised above `floor`. A directory holding a segment returns
   `ErrNotImplemented`: recovering it is epic 7's (D2). That includes every reopen, since a
   journal that has run leaves its spares as `.seg` files (RFC 28 §2.2); this is intended, and the
-  conformance tests that reopen stay in `known.yaml` until epic 7. The public `Init` and `Open` stop being
+  conformance tests that reopen stay in `known.yaml` until epic 7, and those that call epic 9 operations until epic 9. The public `Init` and `Open` stop being
   stubs. The conformance tests this turns green leave `known.yaml` in the same change, and from
   here on every subtask removes the ones it turns green (rule 6).
 - **Acceptance criteria:**
@@ -1288,6 +1296,8 @@ flowchart TD
   E6l --> T13
   T2 --> T11["T8.11 Lock domains and recorder"]
   T5 --> T11
+  T4 --> T11
+  T8 --> T11
   T1 --> T12["T8.12 Cancellation and Close"]
   T3 --> T12
   T7 --> T12
@@ -1314,7 +1324,7 @@ Checkpoints:
 - After T8.9: the engine can write, fill, remove and re-apply after a crash, which is what
   epic 9 and epic 11 build on.
 - After T8.14: the data path meets its counted checks, and what remains for the conformance
-  tests is epic 7's recovering `Open`.
+  tests is epic 7's recovering `Open` and the epic 9 operations some of them call.
 
 ## 8. Suggested pull requests
 
@@ -1333,6 +1343,7 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
+- **`index.HeldDelta` is epic 4's to return (D16).** The counters can be exact only from a delta the mutator itself computes, and epic 4's mutators return only `error` on `feat/storage-v2`. Confirm with epic 4's owner that they return `HeldDelta`; epic 6's D16 cites the same type.
 - **A minimal `Init` and `Open` here, not in epic 7 (T8.15).** The plan gives `Init` and `Open` to
   epic 7, in a later milestone, but S3 needs the public `Open` for the conformance suite to turn
   any test green. T8.15 takes `Init` and an `Open` of a directory with no segment into this epic,
