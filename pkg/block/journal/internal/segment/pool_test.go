@@ -1786,8 +1786,10 @@ func TestPoolARecycledContentSparePaysTheDemandLevel(t *testing.T) {
 // that loops instead of ending its pass (a `continue` where the pass returns)
 // spins the count up without a kick. Second, bounded: each wait fails within
 // poolAttempts yields rather than hanging, so a worker that never wakes is a
-// failure, not a timeout. Once the check clears, the next kick fills every
-// class, which catches a check that wedged the worker (R89).
+// failure, not a timeout. A check that returns nil again lets the next kick
+// fill every class: a property of the refill, not a claim that a journal
+// clears (a read-only journal stays so until it is reopened, which builds a
+// new pool), and it catches a check that wedged the worker (R89).
 func TestPoolReadOnlyMakesNoSpare(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -1855,8 +1857,9 @@ func TestPoolReadOnlyMakesNoSpare(t *testing.T) {
 		t.Fatalf("over the read-only interval the check was asked %d times, want once per kick: a read-only pass ends, it does not spin", got)
 	}
 
-	// The check clears: the next kick — not the clearing itself — refills,
-	// every class to its target. A worker the check wedged would leave the
+	// The check returns nil again (the refill's property; a journal does not
+	// clear): the next kick — not the change itself — refills, every class to
+	// its target. A worker the check wedged would leave the
 	// pool short past this wait.
 	seam.SetFault(nil)
 	ro.set(false)

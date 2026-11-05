@@ -94,10 +94,14 @@ type RetirerConfig struct {
 	// unlink, whether or not its directory sync then succeeds; a recycle's
 	// own sync comes earlier and has already returned by then. Nil does
 	// nothing. It is called holding no lock of the executor's, from the
-	// caller of Retire or from the worker goroutine.
+	// caller of Retire or from the worker goroutine, so for different
+	// segments at the same time (only ClaimRetirement serialises, and only per
+	// segment): it must be safe for concurrent calls.
 	Retired func(id core.SegmentID)
 	// Durable is the durable-retirement signal: called once per retirement
-	// whose directory sync returned nil. Nil means no signal.
+	// whose directory sync returned nil. Nil means no signal. Like Retired it
+	// can run from a Retire caller and from the worker at once, for different
+	// segments, so it must be safe for concurrent calls.
 	Durable func(Retirement)
 	// Log is the executor's logger; nil keeps it silent.
 	Log *slog.Logger

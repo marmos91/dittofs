@@ -582,10 +582,11 @@ func (p *Pool) Stop() {
 // no timer of its own. Ceiling: an idle journal
 // whose last make failed makes no spare until something takes or retires,
 // and a failing device sees one make attempt per refused roll, coalesced by
-// the one-slot kick. A pool left short by a read-only interval refills at
-// the next kick after the check clears, not when it clears. Upgrade to a
-// timed retry on the pool's clock once spare refusals show them persisting
-// on an idle device that has recovered.
+// the one-slot kick. A read-only journal stays so until it is closed and
+// reopened, and the reopen builds a new pool, so a pool never sees the check
+// clear and no read-only interval is retried. Upgrade to a timed retry on the
+// pool's clock once spare refusals show them persisting on an idle device
+// that has recovered.
 func (p *Pool) worker() {
 	defer p.wg.Done()
 
@@ -642,14 +643,17 @@ func (p *Pool) refill() bool {
 		// above — so a pool already at its target never asks. It is asked
 		// holding no lock: it is the journal's own policy, not a function of
 		// the capacity domain, and no lock of the domain may be held across
-		// it. Withdrawn if the journal ever needs spares made while
-		// read-only (to leave read-only state, say).
+		// it. The one spare a read-only journal does make, the probe's (RFC 1
+		// §5.4), is made through Maker.Make, not this refill, so this does not
+		// stop it. Withdrawn if that spare ever has to come from the pool, or
+		// if the journal ever needs the refill to run while read-only.
 		if p.readOnly != nil {
 			if err := p.readOnly(); err != nil {
 				p.log.Debug("segment: the pool made no spare: the journal is read-only",
 					"err", err)
-				// The pass ends rather than the worker: a pool left short by a
-				// read-only interval waits for the next kick, alive.
+				// The pass ends rather than the worker: a read-only journal
+				// stays so until it is reopened, which builds a new pool, so
+				// the worker idles until Stop rather than exiting early.
 				return true
 			}
 		}
