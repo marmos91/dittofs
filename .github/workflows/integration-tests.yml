@@ -5,6 +5,8 @@ on:
     branches: [develop, feat/storage-v2]
   pull_request:
     branches: [develop, main, feat/storage-v2]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -43,11 +45,12 @@ jobs:
       # block every pull request that touches no integration-relevant file — a
       # job whose steps are skipped reports "Success" instead. The filter is not
       # allowed to fail quietly: a failure fails this job, so the check can
-      # never go green having run nothing. Overturn this if the check stops
-      # being required, or if the workflow gains a merge_group trigger, which
-      # needs the filter's answer for a base the merge queue supplies rather
-      # than a pull request.
+      # never go green having run nothing. In the merge queue the filter is
+      # skipped and every step runs, so a queued change is never judged by a
+      # filter that has no pull request to diff. Overturn this if the check
+      # stops being required.
       - name: Check for integration-relevant changes
+        if: github.event_name != 'merge_group'
         uses: dorny/paths-filter@v4
         id: filter
         with:
