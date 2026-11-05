@@ -315,8 +315,9 @@ durable reconnect re-attaches an open only for its opener's principal
 When every open of the grant is disconnected, the break goes only to a session
 of that client signed in as one of the openers, which the adapter on the node
 holding it picks from its own session table
-([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)); when there is none, it is sent nowhere and runs to its deadline
-(§5.3). The nodes asked are `Reach.Sessions`: an SMB `Connect` adds its node,
+([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)); when there is none, it is sent nowhere and asked again
+at an interval, so a session signed in as an opener meanwhile takes it, until
+its deadline (§5.3). The nodes asked are `Reach.Sessions`: an SMB `Connect` adds its node,
 and the adapter calls it at each node's first authenticated session of the
 client, so no other `SESSION_SETUP` makes a mutating call; an NFSv4.1
 `AddSession` adds its node too. A node asked that holds no session of the
@@ -1121,7 +1122,10 @@ leaves no waiter, and its client retries. A recall is not a conflict: a
   answers — acknowledges, refuses, cancels — or its state ends: its host
   restarts, an administrator
   revokes it ([§4.3](#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)),
-  or `DropShare` ends its share. `WaitAnswered` returns the client's answer
+  or `DropShare` ends its share. For a client other than an NLM host, the
+  service **MAY** stop calling after one lease period unanswered: the lock stays granted and the
+  grant offered, unsent, until the client answers or its state ends. An NLM
+  host's grant is sent until it answers or its state ends. `WaitAnswered` returns the client's answer
   ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)): on an acknowledgement the
   calls stop; on a refusal or a cancel the primary releases the lock as an
   unlock would and considers the next waiter. A lock granted by callback
