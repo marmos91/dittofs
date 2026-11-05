@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	nfs_types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	nfs_types "github.com/cubbit/dittofs/internal/adapter/nfs/types"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // ============================================================================

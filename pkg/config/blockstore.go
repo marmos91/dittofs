@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/pathutil"
+	"github.com/cubbit/dittofs/internal/pathutil"
 )
 
 // defaultBackpressureMaxWait is how long a write stalls waiting for the

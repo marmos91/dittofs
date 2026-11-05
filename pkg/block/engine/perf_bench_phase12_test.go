@@ -24,8 +24,8 @@ import (
 
 	"lukechampine.com/blake3"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
 
 // phase12FixtureFileSize is the seeded file size for the rand-read

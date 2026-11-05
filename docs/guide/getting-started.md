@@ -17,14 +17,14 @@ Pick one:
 
 ```bash
 # Nix (temporary shell with dfs and dfsctl; no permanent install)
-nix shell github:marmos91/dittofs
+nix shell github:cubbit/dittofs
 
 # Homebrew (macOS / Linux)
-brew tap marmos91/tap
-brew install --cask marmos91/tap/dfs marmos91/tap/dfsctl
+brew tap cubbit/tap
+brew install --cask cubbit/tap/dfs cubbit/tap/dfsctl
 
 # Quick install script (macOS / Linux)
-curl -fsSL https://github.com/marmos91/dittofs/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/cubbit/dittofs/releases/latest/download/install.sh | sh
 ```
 
 Docker, the Kubernetes operator, APT/YUM/Arch packages, and Scoop (Windows) are in the
@@ -33,7 +33,7 @@ Docker, the Kubernetes operator, APT/YUM/Arch packages, and Scoop (Windows) are 
 **Build from source** (needs Go 1.26+):
 
 ```bash
-git clone https://github.com/marmos91/dittofs.git
+git clone https://github.com/cubbit/dittofs.git
 cd dittofs
 go build -o dfs    cmd/dfs/main.go
 go build -o dfsctl cmd/dfsctl/main.go

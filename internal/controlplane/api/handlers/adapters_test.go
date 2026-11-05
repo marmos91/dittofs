@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
-	"github.com/marmos91/dittofs/pkg/health"
 )
 
 // setupAdapterTest wires an in-memory control-plane store, a real

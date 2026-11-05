@@ -18,8 +18,8 @@ import (
 	"errors"
 	"io"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/health"
 )
 
 // ErrChunkReadUnsupported reports that a value reached the block-read path

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 )
 
 // TestStop_ResolverUnsubsRaceConfigChange is a -race guard. Stop read and nil'd

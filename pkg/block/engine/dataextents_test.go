@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // TestStore_DataExtents_UnionsLocalAndCAS verifies the #1481 fix at the engine

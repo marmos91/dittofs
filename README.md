@@ -10,11 +10,11 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![Nix Flake](https://img.shields.io/badge/Nix-flake-5277C3?style=flat&logo=nixos)](https://nixos.org/)
-[![Go Report Card](https://goreportcard.com/badge/github.com/marmos91/dittofs)](https://goreportcard.com/report/github.com/marmos91/dittofs)
+[![Go Report Card](https://goreportcard.com/badge/github.com/cubbit/dittofs)](https://goreportcard.com/report/github.com/cubbit/dittofs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat)](LICENSE)
-[![Status](https://img.shields.io/badge/status-experimental-orange?style=flat)](https://github.com/marmos91/dittofs)
+[![Status](https://img.shields.io/badge/status-experimental-orange?style=flat)](https://github.com/cubbit/dittofs)
 
-[![Tests](https://github.com/marmos91/dittofs/actions/workflows/tests.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/tests.yml)
+[![Tests](https://github.com/cubbit/dittofs/actions/workflows/tests.yml/badge.svg?branch=develop)](https://github.com/cubbit/dittofs/actions/workflows/tests.yml)
 
 **A modular virtual filesystem written entirely in Go**
 
@@ -106,14 +106,14 @@ more at [dittofs.io/pro](https://dittofs.io/pro).
 
 ```bash
 # Nix (temporary shell with dfs and dfsctl; no permanent install)
-nix shell github:marmos91/dittofs
+nix shell github:cubbit/dittofs
 
 # Homebrew
-brew tap marmos91/tap
-brew install marmos91/tap/dfs marmos91/tap/dfsctl
+brew tap cubbit/tap
+brew install cubbit/tap/dfs cubbit/tap/dfsctl
 
 # Quick install script (macOS / Linux)
-curl -fsSL https://github.com/marmos91/dittofs/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/cubbit/dittofs/releases/latest/download/install.sh | sh
 ```
 
 Docker, the Kubernetes operator, APT/YUM/Arch packages, and Scoop (Windows) are
@@ -122,7 +122,7 @@ covered in **[docs/guide/install.md](docs/guide/install.md)**.
 ### Build from source
 
 ```bash
-git clone https://github.com/marmos91/dittofs.git
+git clone https://github.com/cubbit/dittofs.git
 cd dittofs
 go build -o dfs    cmd/dfs/main.go
 go build -o dfsctl cmd/dfsctl/main.go

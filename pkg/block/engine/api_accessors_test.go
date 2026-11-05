@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/health"
 )
 
 // TestStore_GetSize_Exists drives the public GetSize/Exists accessors for

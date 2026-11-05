@@ -14,7 +14,7 @@ const list = `# Known failures
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| CSESS26 | bug | session validation | [#1234](https://github.com/marmos91/dittofs/issues/1234) |
+| CSESS26 | bug | session validation | [#1234](https://github.com/cubbit/dittofs/issues/1234) |
 | flock/* | feature | NLM not implemented | - |
 | unlink/14.t | proto | silly rename | - |
 | open/03.t | env | PATH_MAX with the mount's prefix | - |

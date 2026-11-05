@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/errors"
 )
 
 // TestErrorConstructorsCarryDiagnostics pins that the diagnostic parameters each

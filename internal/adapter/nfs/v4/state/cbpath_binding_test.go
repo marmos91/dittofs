@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
 )
 
 // newBackchannelClient registers a v4.1 client and gives it n sessions, each

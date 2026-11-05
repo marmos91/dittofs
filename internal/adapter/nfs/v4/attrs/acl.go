@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
-	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/cubbit/dittofs/pkg/metadata/acl"
 )
 
 // ============================================================================

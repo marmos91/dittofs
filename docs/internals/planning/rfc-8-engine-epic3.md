@@ -267,7 +267,10 @@ subtasks and tests can cite them.
   caller's own context error, `ctx.Err()`, whether the journal or the store returned it or
   the engine saw it, passes through as itself, unwrapped, wherever it ends the call, a
   re-ask's `ReadAt` included: the adapters map a context error as they map any other, and
-  R12 names it as the one value that is not `vfserr`'s.
+  R12 names it as the one value that is not `vfserr`'s. Epic 7's refusal path is the one
+  exception: a context that ends while a capacity or version-limit refusal stands answers
+  `ErrDelay` with that refusal's cause, since RFC 8 §10.2 keeps an `ErrDelay` standing at
+  the deadline as `ErrDelay` (epic 7's R8).
   A `decision:` marker on the `NoSpaceError` line says that until the refusal table is
   built every capacity refusal is answered as retry-later, never as a false disk-full, and
   is replaced by epic 7's mapping.

@@ -19,7 +19,7 @@ package basestore
 import (
 	"sort"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // QuotaKey identifies a per-identity usage bucket: an owner id within a scope

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block/chunker"
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/block/chunker"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // ShareJournalDir returns where a share's local storage lives beneath the

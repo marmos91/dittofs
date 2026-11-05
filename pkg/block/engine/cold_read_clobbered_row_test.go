@@ -6,12 +6,12 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/cubbit/dittofs/pkg/block"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	metadatabadger "github.com/cubbit/dittofs/pkg/metadata/store/badger"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // overwrite is one [from, to) range to rewrite, chosen from the manifest as it

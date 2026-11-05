@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/types"
 )
 
 // TestNLMLockRoundTrip_WidthVariants verifies that an NLM lock encoded with a

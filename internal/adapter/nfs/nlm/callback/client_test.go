@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/types"
 )
 
 // TestValidateCallbackAddr_RejectsUnsafe is the negative control for the SSRF

@@ -3,7 +3,7 @@ package nfs
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // Stop initiates graceful shutdown of the NFS server.

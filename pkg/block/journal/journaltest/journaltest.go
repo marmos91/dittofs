@@ -5,7 +5,7 @@ package journaltest
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // New opens a journal store rooted in a fresh temp dir, taking the store's own

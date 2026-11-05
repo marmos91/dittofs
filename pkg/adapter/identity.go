@@ -5,13 +5,13 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
-	"github.com/marmos91/dittofs/pkg/identity"
-	identitykerberos "github.com/marmos91/dittofs/pkg/identity/kerberos"
-	identityldap "github.com/marmos91/dittofs/pkg/identity/ldap"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/identity"
+	identitykerberos "github.com/cubbit/dittofs/pkg/identity/kerberos"
+	identityldap "github.com/cubbit/dittofs/pkg/identity/ldap"
 )
 
 // ExtractRealm extracts the Kerberos realm from a service principal

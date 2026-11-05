@@ -3,8 +3,8 @@ package handlers
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/testruntime"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/internal/adapter/testruntime"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 )
 
 // The fixture lives in testruntime because all three adapters need it and each

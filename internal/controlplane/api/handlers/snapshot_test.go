@@ -15,10 +15,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/api/dto"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
+	"github.com/cubbit/dittofs/pkg/controlplane/api/dto"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
 )
 
 // fakeSnapshotRuntime is a minimal SnapshotRuntime test double. Each

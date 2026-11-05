@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/health"
 )
 
 // normalizeShareNameForAPI spells a share name for the path segment it is about

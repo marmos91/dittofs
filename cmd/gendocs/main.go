@@ -17,8 +17,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	dfs "github.com/marmos91/dittofs/cmd/dfs/commands"
-	dfsctl "github.com/marmos91/dittofs/cmd/dfsctl/commands"
+	dfs "github.com/cubbit/dittofs/cmd/dfs/commands"
+	dfsctl "github.com/cubbit/dittofs/cmd/dfsctl/commands"
 )
 
 func main() {

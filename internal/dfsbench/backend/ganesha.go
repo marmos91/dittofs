@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/dfsbench/exec"
+	"github.com/cubbit/dittofs/internal/dfsbench/exec"
 )
 
 // nfs-ganesha is the native userspace-NFS baseline: like DittoFS it serves NFS

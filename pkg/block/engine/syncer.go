@@ -6,11 +6,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/remote"
-	"github.com/marmos91/dittofs/pkg/block/syncer"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/remote"
+	"github.com/cubbit/dittofs/pkg/block/syncer"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // ponytail: one struct and one m.mu span fetch-dedup, readahead, health and

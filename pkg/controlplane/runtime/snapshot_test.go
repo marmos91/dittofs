@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
-	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
+	cpstore "github.com/cubbit/dittofs/pkg/controlplane/store"
 )
 
 // snapTestTimeout bounds a wedged snapshot operation so a stuck test fails

@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // UsageRecomputeResult reports what a share's used-bytes repair moved, or —

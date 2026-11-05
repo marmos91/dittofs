@@ -623,7 +623,7 @@ listener clients are sent to is down.
 | starting: opening stores, recovering journals, re-applying existence | yes | no | starting |
 | serving | yes | yes | from its conditions |
 | in grace after a restart | yes | yes — clients must reach it to reclaim | from its conditions; grace is information |
-| self-fenced: no write transaction committed for 30 s ([RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)) | yes | yes — reads continue | unhealthy, `node_fenced` |
+| self-fenced: a write transaction outstanding or failing for 30 s with none committed ([RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)) | yes | yes — reads continue | unhealthy, `node_fenced` |
 | some shares refused: a journal device lost, a journal directory refused as unsuitable storage, a share's store denied | yes | yes | unhealthy for those shares |
 | started from a copied image the platform reports | yes | yes — reads of offloaded content continue | unhealthy, `copied_image`; each namespace also raises `namespace_unclaimed` (copy) until its copy is accepted |
 | a namespace's claim answered copy, foreign or pending, or could not be read ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) | yes | yes — the node's other shares serve, and a copy's serve reads | unhealthy for that namespace's shares, `namespace_unclaimed` naming it and the answer |

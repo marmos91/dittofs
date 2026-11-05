@@ -29,7 +29,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 // TestSMBNTLMNetlogonPassthrough boots DittoFS with the machine account

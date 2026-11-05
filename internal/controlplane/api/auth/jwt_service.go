@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 // Common errors for JWT operations.

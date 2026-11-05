@@ -1,6 +1,6 @@
 package basestore
 
-import "github.com/marmos91/dittofs/pkg/metadata"
+import "github.com/cubbit/dittofs/pkg/metadata"
 
 // DefaultCapabilities returns the filesystem capabilities a backend reports
 // when the operator has not configured any: 1 MiB transfers, POSIX-shaped

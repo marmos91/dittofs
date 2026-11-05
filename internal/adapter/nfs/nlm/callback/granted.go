@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/blocking"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/types"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // ProcessGrantedCallback sends NLM_GRANTED callback to a waiter and handles failures.

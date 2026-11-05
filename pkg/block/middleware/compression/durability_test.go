@@ -3,8 +3,8 @@ package compression
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/block"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 )
 
 // TestDecorator_Durable_DelegatesToInner verifies the compression decorator

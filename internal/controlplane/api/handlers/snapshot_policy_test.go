@@ -11,8 +11,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/api/dto"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/api/dto"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 type fakeSnapshotPolicyRuntime struct {

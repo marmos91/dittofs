@@ -17,7 +17,7 @@ package wsd
 import (
 	"github.com/google/uuid"
 
-	"github.com/marmos91/dittofs/pkg/discovery/hostinfo"
+	"github.com/cubbit/dittofs/pkg/discovery/hostinfo"
 )
 
 // dittofsNamespace is a fixed namespace UUID used to derive a stable per-host

@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // setupShareForSIDPerms creates the prerequisite stores + a share and returns

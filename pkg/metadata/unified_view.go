@@ -13,7 +13,7 @@ package metadata
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // FileLocksInfo contains the result of querying all locks on a file.

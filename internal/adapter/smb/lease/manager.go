@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // parentLeaseBreakWaitTimeout bounds how long a CREATE/MODIFY waits for other

@@ -5,11 +5,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/controlplane/api/auth"
-	"github.com/marmos91/dittofs/internal/controlplane/api/middleware"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/internal/controlplane/api/auth"
+	"github.com/cubbit/dittofs/internal/controlplane/api/middleware"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
 )
 
 // AuthHandler handles authentication-related API endpoints.

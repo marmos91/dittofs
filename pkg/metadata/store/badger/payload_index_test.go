@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/cubbit/dittofs/pkg/metadata"
 	badgerdb "github.com/dgraph-io/badger/v4"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/stretchr/testify/require"
 )
 

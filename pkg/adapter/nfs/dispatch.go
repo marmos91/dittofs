@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"time"
 
-	mount_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
-	"github.com/marmos91/dittofs/internal/logger"
+	mount_handlers "github.com/cubbit/dittofs/internal/adapter/nfs/mount/handlers"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc/gss"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/xdr"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // handleRPCCall dispatches an RPC call to the appropriate handler.

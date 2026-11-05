@@ -1,8 +1,8 @@
 package metadata
 
 import (
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/metadata/acl"
 )
 
 // CloneBlocks returns a deep copy of a []block.ChunkRef. ChunkRef is a value

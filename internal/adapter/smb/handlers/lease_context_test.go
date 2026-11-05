@@ -5,8 +5,8 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/smb/lease"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // staticLockResolver is a test resolver that returns the same Manager for any

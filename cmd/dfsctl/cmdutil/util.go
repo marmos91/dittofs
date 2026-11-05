@@ -9,10 +9,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/marmos91/dittofs/internal/cli/credentials"
-	"github.com/marmos91/dittofs/internal/cli/output"
-	"github.com/marmos91/dittofs/internal/cli/prompt"
-	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/internal/cli/credentials"
+	"github.com/cubbit/dittofs/internal/cli/output"
+	"github.com/cubbit/dittofs/internal/cli/prompt"
+	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 // ConfirmInput is the source ConfirmDestructive reads its Y/N answer from.

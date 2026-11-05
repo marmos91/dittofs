@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
 // Refs #514 — REST layer surfaces AclFlagInheritedCanonicalization end to end.

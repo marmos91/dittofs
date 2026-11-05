@@ -1,7 +1,7 @@
 // register_v42.go — NFSv4.2 (RFC 8276) extended-attribute operation registration.
 package handlers
 
-import "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+import "github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
 
 // registerV42Ops registers the NFSv4.2 operations into v42DispatchTable, kept
 // separate from v4.0/v4.1 so the minor-version boundary is explicit:

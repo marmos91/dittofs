@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"lukechampine.com/blake3"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	metadatabadger "github.com/cubbit/dittofs/pkg/metadata/store/badger"
 )
 
 // newBadgerCommitter builds a badger metadata store with one regular file whose

@@ -5,10 +5,10 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/marmos91/dittofs/pkg/block/carver"
-	"github.com/marmos91/dittofs/pkg/block/chunker"
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/syncer"
+	"github.com/cubbit/dittofs/pkg/block/carver"
+	"github.com/cubbit/dittofs/pkg/block/chunker"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/syncer"
 )
 
 // defaultBlockUploadWindow is the fallback window for a local store exposing no

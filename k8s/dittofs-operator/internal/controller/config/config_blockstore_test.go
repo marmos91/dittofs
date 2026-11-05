@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
+	dittoiov1alpha1 "github.com/cubbit/dittofs/k8s/dittofs-operator/api/v1alpha1"
 	"gopkg.in/yaml.v3"
 )
 

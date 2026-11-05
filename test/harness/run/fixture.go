@@ -4,9 +4,9 @@ import (
 	"context"
 	"io"
 
-	"github.com/marmos91/dittofs/test/harness/fixture"
-	"github.com/marmos91/dittofs/test/harness/plan"
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/fixture"
+	"github.com/cubbit/dittofs/test/harness/plan"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // fixtureSetup limits a fixture's own steps together: building {bin},

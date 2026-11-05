@@ -51,7 +51,7 @@
 package header
 
 import (
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // HeaderSize is the fixed size of SMB2 header (64 bytes).

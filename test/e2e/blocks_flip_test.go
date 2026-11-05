@@ -32,8 +32,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/test/e2e/framework"
-	"github.com/marmos91/dittofs/test/e2e/helpers"
+	"github.com/cubbit/dittofs/test/e2e/framework"
+	"github.com/cubbit/dittofs/test/e2e/helpers"
 	"github.com/stretchr/testify/require"
 )
 

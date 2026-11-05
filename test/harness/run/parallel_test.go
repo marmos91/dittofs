@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // at runs group g with up to n cells at once, and returns the report and what

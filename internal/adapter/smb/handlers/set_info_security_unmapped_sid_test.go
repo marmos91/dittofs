@@ -26,7 +26,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // buildSDWithOwnerGroup assembles a self-relative SD carrying an optional owner

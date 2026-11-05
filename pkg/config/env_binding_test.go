@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
 )
 
 // writeConfigFile writes content to a temp config.yaml and returns its path.

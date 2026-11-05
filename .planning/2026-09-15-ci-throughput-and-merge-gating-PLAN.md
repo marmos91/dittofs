@@ -734,13 +734,13 @@ The failure mode to avoid is "rerun until green", which is how green stops meani
 
 ```bash
 # Phase 0.1: cache budget must fall well under the 10 GB cap, and NAR entries must stop dominating.
-gh api repos/marmos91/dittofs/actions/cache/usage \
+gh api repos/cubbit/dittofs/actions/cache/usage \
   --jq '"\(.active_caches_count) entries, \(.active_caches_size_in_bytes/1e9|floor) GB"'
-gh api --paginate "repos/marmos91/dittofs/actions/caches?per_page=100" \
+gh api --paginate "repos/cubbit/dittofs/actions/caches?per_page=100" \
   --jq '.actions_caches[].key' | grep -c '\.nar' || true
 
 # Phase 0.2: an explicit go-build cache must exist and must NOT be a 10 MB stub.
-gh api --paginate "repos/marmos91/dittofs/actions/caches?per_page=100" \
+gh api --paginate "repos/cubbit/dittofs/actions/caches?per_page=100" \
   --jq '.actions_caches[]|select(.key|startswith("gocache-"))|"\(.size_in_bytes) \(.key)"'
 
 # Phase 0.3: the probe step must print "(cached)" on its second go test.
@@ -752,10 +752,10 @@ grep -n 'go test' .github/workflows/unit-tests.yml
 # NOTE: the inner `gh api` must not inherit stdin, or it eats the remaining ids and
 # the loop silently processes one run. Also filter out skipped jobs: .total_count
 # counts them, and a skipped job is not a slot.
-gh api "repos/marmos91/dittofs/actions/runs?head_sha=<sha>&per_page=100" \
+gh api "repos/cubbit/dittofs/actions/runs?head_sha=<sha>&per_page=100" \
   --jq '.workflow_runs[]|select(.event=="pull_request")|.id' > /tmp/runids
 while read -r id; do
-  gh api "repos/marmos91/dittofs/actions/runs/$id/jobs" </dev/null \
+  gh api "repos/cubbit/dittofs/actions/runs/$id/jobs" </dev/null \
     --jq '[.jobs[]|select(.conclusion!="skipped")]|length'
 done < /tmp/runids | paste -sd+ | bc
 
@@ -764,9 +764,9 @@ gh run list --workflow=Lint --limit 5 --json createdAt,updatedAt \
   --jq '.[]|(((.updatedAt|fromdate)-(.createdAt|fromdate))|floor)'
 
 # Phase 2: required checks must exist and be non-empty
-gh api repos/marmos91/dittofs/rulesets --jq '.[].id' > /tmp/rulesetids
+gh api repos/cubbit/dittofs/rulesets --jq '.[].id' > /tmp/rulesetids
 while read -r id; do
-  gh api "repos/marmos91/dittofs/rulesets/$id" </dev/null \
+  gh api "repos/cubbit/dittofs/rulesets/$id" </dev/null \
     --jq '.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context'
 done < /tmp/rulesetids
 

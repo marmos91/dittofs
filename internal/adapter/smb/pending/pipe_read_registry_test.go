@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // newTestPipeRead builds a PendingPipeRead. If done is non-nil it receives the

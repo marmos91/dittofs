@@ -5,12 +5,12 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	metadatabadger "github.com/cubbit/dittofs/pkg/metadata/store/badger"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // These tests reproduce the #953 silent cold-read corruption re-opened by the

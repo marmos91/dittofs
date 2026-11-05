@@ -10,11 +10,11 @@ import (
 	"github.com/jcmturner/gokrb5/v8/gssapi"
 	"github.com/jcmturner/gokrb5/v8/types"
 
-	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
-	"github.com/marmos91/dittofs/internal/logger"
-	nfsidentity "github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
-	pkgidentity "github.com/marmos91/dittofs/pkg/identity"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	kerbauth "github.com/cubbit/dittofs/internal/auth/kerberos"
+	"github.com/cubbit/dittofs/internal/logger"
+	nfsidentity "github.com/cubbit/dittofs/pkg/adapter/nfs/identity"
+	pkgidentity "github.com/cubbit/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // apOptionsMutualRequired is the bit mask for mutual authentication in AP-Options.

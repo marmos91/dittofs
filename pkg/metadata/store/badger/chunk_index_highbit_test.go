@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	blockpkg "github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	blockpkg "github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger"
 )
 
 // 2^63: one above MaxInt64, so it parses as a uint64 but not as an offset.

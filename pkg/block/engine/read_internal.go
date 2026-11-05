@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // blockRefHashes extracts the ContentHash slice from a ChunkRef list

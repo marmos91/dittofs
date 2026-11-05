@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // TestErrStopWalk_DetectsThroughWrap pins the Walk callback contract

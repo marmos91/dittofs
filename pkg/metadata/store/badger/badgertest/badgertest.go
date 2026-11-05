@@ -5,7 +5,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger"
 )
 
 // NewInMemory opens an in-memory Badger metadata store with the default

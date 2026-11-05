@@ -3,9 +3,9 @@ package handlers
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/session"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/internal/adapter/smb/session"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // logoffDuringAdmission installs a hook that runs a LOGOFF's retirement of the

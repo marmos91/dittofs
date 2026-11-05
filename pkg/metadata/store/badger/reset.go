@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 var _ metadata.Resetable = (*BadgerMetadataStore)(nil)

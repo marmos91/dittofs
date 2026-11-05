@@ -27,9 +27,9 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/cubbit/dittofs/internal/logger"
 	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/types"
-	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // Wrap token constants per RFC 4121 Section 4.2.6.2

@@ -7,12 +7,12 @@ import (
 	"net/http"
 	"slices"
 
+	"github.com/cubbit/dittofs/internal/controlplane/api/middleware"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
 	"github.com/go-chi/chi/v5"
-	"github.com/marmos91/dittofs/internal/controlplane/api/middleware"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
 // AdapterSettingsHandler handles adapter settings API endpoints.

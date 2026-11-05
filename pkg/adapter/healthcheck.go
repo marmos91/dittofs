@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/health"
 )
 
 // Healthcheck is the default implementation for the [Adapter] interface.

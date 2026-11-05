@@ -21,10 +21,10 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
-	"github.com/marmos91/dittofs/pkg/auth/sid"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	"github.com/cubbit/dittofs/internal/adapter/smb/smbenc"
+	"github.com/cubbit/dittofs/pkg/auth/sid"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata/acl"
 )
 
 // Security information flags for AdditionalInfo field in QUERY_INFO/SET_INFO.

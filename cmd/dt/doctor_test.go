@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // An expired quarantine entry is an error from dt doctor, exit status 3,

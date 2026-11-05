@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/xdr"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/portmap/xdr"
 )
 
 // ============================================================================

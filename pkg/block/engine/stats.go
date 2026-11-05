@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // BlockStoreStats holds comprehensive block store statistics for a Store.

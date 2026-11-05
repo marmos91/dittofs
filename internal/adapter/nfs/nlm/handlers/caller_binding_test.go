@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/auth"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/blocking"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/types"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // recordingLockService records whether UnlockFileNLM was invoked, so a test can

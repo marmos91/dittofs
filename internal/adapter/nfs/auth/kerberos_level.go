@@ -1,8 +1,8 @@
 package auth
 
 import (
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc/gss"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 )
 
 // protectionForGSSService maps a negotiated RPCSEC_GSS service level (RFC 2203

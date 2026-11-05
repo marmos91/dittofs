@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 func putFileForTest(t testing.TB, s *BadgerMetadataStore, share, path string, mode uint32, nBlocks int) metadata.FileHandle {

@@ -5,8 +5,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/internal/adapter/common"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // TestFlushRelaxed_CrashBeforeMetadataFsync_SizeReconciled is THE merge gate for

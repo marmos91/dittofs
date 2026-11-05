@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/identity"
 )
 
 // Regression tests for #1317: SMB Kerberos must accept an AD/LDAP user that the

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 var (

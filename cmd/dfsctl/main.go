@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/marmos91/dittofs/cmd/dfsctl/commands"
+	"github.com/cubbit/dittofs/cmd/dfsctl/commands"
 )
 
 // Build-time variables injected via ldflags

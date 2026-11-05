@@ -1,7 +1,7 @@
 package runtime
 
 import (
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/mounts"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/mounts"
 )
 
 // Type aliases re-exported for backward compatibility.

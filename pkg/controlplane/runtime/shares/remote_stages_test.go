@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/middleware/compression"
-	"github.com/marmos91/dittofs/pkg/block/middleware/encryption"
-	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/block/middleware/compression"
+	"github.com/cubbit/dittofs/pkg/block/middleware/encryption"
+	"github.com/cubbit/dittofs/pkg/block/middleware/encryption/keyprovider"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // TestRemoteStages_CompressionBeforeEncryption pins the production stage order.

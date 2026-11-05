@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 func TestCaptureWccAttr_NilReturnsNil(t *testing.T) {

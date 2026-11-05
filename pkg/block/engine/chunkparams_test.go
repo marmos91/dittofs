@@ -5,9 +5,9 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/chunker"
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/block/chunker"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 )
 
 // TestFlushFnAppliesConfiguredChunkParams proves a share's FastCDC profile

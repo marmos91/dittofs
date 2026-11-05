@@ -17,10 +17,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/marmos91/dittofs/internal/controlplane/api/handlers"
-	"github.com/marmos91/dittofs/pkg/controlplane/api/dto"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/internal/controlplane/api/handlers"
+	"github.com/cubbit/dittofs/pkg/controlplane/api/dto"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 )
 
 // fakeRuntime is the canonical SnapshotRuntime test double for the e2e

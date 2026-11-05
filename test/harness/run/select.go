@@ -7,9 +7,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/marmos91/dittofs/test/harness/known"
-	"github.com/marmos91/dittofs/test/harness/plan"
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/known"
+	"github.com/cubbit/dittofs/test/harness/plan"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // Cell is a planned cell with the suite or option it runs, the tier it runs

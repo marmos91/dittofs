@@ -29,9 +29,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/remote/s3"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/block/remote/s3"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/health"
 )
 
 // Probe runs a one-shot health check against the given block store

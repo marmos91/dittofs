@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/dfsbench/exec"
+	"github.com/cubbit/dittofs/internal/dfsbench/exec"
 )
 
 // captureCmdOut redirects command output into a buffer for the test's duration.

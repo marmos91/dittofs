@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/auth/netlogon"
-	pkgidentity "github.com/marmos91/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/auth/netlogon"
+	pkgidentity "github.com/cubbit/dittofs/pkg/identity"
 )
 
 // fakeNetlogon is a stub NetlogonAuthenticator that returns a canned result.

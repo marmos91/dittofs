@@ -3,9 +3,9 @@ package handlers
 import (
 	"net"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/xdr"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/portmap/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/portmap/xdr"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // netidToProtocol maps an RPCBIND netid to the v2 IPPROTO value the registry

@@ -7,12 +7,12 @@ import (
 	"io"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/attrs"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/pseudofs"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
+	xdr "github.com/cubbit/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // maxcount bounds the READDIR4resok structure, which is the cookieverf

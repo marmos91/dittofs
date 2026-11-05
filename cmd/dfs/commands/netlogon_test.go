@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/auth/netlogon"
-	"github.com/marmos91/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/internal/auth/netlogon"
+	"github.com/cubbit/dittofs/pkg/config"
 )
 
 func TestBuildNetlogonAuthenticator_Disabled(t *testing.T) {

@@ -5,9 +5,9 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/internal/adapter/common"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	cpstore "github.com/cubbit/dittofs/pkg/controlplane/store"
 )
 
 // TestColdReadThenDeleteReclaimsLocal reproduces the blocks-flip SMB local-disk

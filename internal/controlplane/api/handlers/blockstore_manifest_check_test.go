@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
 )
 
 // fakeManifestCheckRuntime is a recording stand-in for ManifestCheckRuntime.

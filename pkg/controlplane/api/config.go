@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/tlsconfig"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/tlsconfig"
 )
 
 // redactedSecret is the sentinel substituted for sensitive fields when a

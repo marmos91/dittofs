@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/pkg/auth"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/pkg/auth"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // UnixTranslator implements auth.Translator for NFS AUTH_UNIX credentials

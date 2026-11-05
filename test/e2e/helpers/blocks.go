@@ -21,8 +21,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/marmos91/dittofs/pkg/apiclient"
-	"github.com/marmos91/dittofs/test/e2e/framework"
+	"github.com/cubbit/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/test/e2e/framework"
 )
 
 // ListBlockKeys returns the sorted list of object keys under the "blocks/"

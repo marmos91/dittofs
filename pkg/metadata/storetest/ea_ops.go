@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // runEAOpsTests asserts cross-backend parity for FileAttr.EAs: UpdateAttrs/GetFile

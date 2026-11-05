@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
+	"github.com/cubbit/dittofs/internal/adapter/smb/changenotify"
 )
 
 // SMB2 encoders declared with StructureSize=N must emit (N-1) bytes of fixed

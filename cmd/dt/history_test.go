@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // writeRuns writes runs into the checkout's results, as dt run does.

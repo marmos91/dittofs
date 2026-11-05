@@ -6,11 +6,11 @@ package mount
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/middleware"
-	mount "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/middleware"
+	mount "github.com/cubbit/dittofs/internal/adapter/nfs/mount/handlers"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 )
 
 // ============================================================================

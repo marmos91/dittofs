@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // Places a cell can run on.

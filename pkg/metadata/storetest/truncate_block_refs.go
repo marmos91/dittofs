@@ -3,8 +3,8 @@ package storetest
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // runTruncateChunkRefTests dispatches the truncate-down block-ref pruning

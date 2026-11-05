@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/session"
+	"github.com/cubbit/dittofs/internal/adapter/smb/session"
 )
 
 // reprimePAC mirrors what primeAuthContext does: copy the session's current PAC

@@ -3,7 +3,7 @@ package handlers
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // These tests pin the DesiredAccess-vs-GrantedAccess fix class for COPYCHUNK:

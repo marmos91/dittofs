@@ -16,8 +16,8 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	"github.com/marmos91/dittofs/internal/pathutil"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/internal/pathutil"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // DatabaseType defines the supported database backends.

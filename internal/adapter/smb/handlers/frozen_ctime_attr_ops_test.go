@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // openFrozenCtimeHandle returns the fixture's file handle with full access and

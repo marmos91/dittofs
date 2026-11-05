@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/dfsbench/fio"
+	"github.com/cubbit/dittofs/internal/dfsbench/fio"
 )
 
 func TestRenderTable_HeadlineDashing(t *testing.T) {

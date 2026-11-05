@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/auth/sid"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	"github.com/cubbit/dittofs/pkg/auth/sid"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata/acl"
 )
 
 const allSecInfo = OwnerSecurityInformation | GroupSecurityInformation | DACLSecurityInformation

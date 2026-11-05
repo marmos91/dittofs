@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // Outcome is what the tool reported for a result, before dt graded it:

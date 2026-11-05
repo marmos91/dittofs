@@ -6,10 +6,10 @@ import (
 	"net"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/header"
-	"github.com/marmos91/dittofs/internal/adapter/smb/session"
-	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/header"
+	"github.com/cubbit/dittofs/internal/adapter/smb/session"
+	"github.com/cubbit/dittofs/internal/adapter/smb/signing"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // recordingConn captures Close calls so teardown-class tests can assert the

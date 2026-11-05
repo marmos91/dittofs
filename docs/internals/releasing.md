@@ -35,7 +35,7 @@ DittoFS uses [Semantic Versioning](https://semver.org/) and automated releases v
    - Uploads packages and version marker to S3
    - Verifies all uploaded artifacts are publicly accessible
 
-5. **Verify** at https://github.com/marmos91/dittofs/releases
+5. **Verify** at https://github.com/cubbit/dittofs/releases
 
 ## Versioning
 
@@ -74,18 +74,18 @@ Release checksums are signed with [Sigstore cosign](https://docs.sigstore.dev/) 
 cosign verify-blob \
   --bundle checksums.txt.sigstore.json \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/marmos91/dittofs/\.github/workflows/release\.yml@refs/tags/' \
+  --certificate-identity-regexp '^https://github\.com/cubbit/dittofs/\.github/workflows/release\.yml@refs/tags/' \
   checksums.txt
 ```
 
 ## Homebrew Tap
 
-Releases automatically publish Homebrew casks to [`marmos91/homebrew-tap`](https://github.com/marmos91/homebrew-tap). Users can install via:
+Releases automatically publish Homebrew casks to [`cubbit/homebrew-tap`](https://github.com/cubbit/homebrew-tap). Users can install via:
 
 ```bash
-brew tap marmos91/tap
-brew install marmos91/tap/dfs      # Server daemon
-brew install marmos91/tap/dfsctl   # Client CLI
+brew tap cubbit/tap
+brew install cubbit/tap/dfs      # Server daemon
+brew install cubbit/tap/dfsctl   # Client CLI
 ```
 
 ### How It Works
@@ -98,8 +98,8 @@ Each cask:
 
 ### Prerequisites
 
-1. **Tap repository**: `marmos91/homebrew-tap` must exist on GitHub with a `Casks/` directory
-2. **Personal Access Token**: A fine-grained token scoped to `marmos91/homebrew-tap` with Contents read+write permission, stored as `HOMEBREW_TAP_TOKEN` in the `marmos91/dittofs` repository secrets
+1. **Tap repository**: `cubbit/homebrew-tap` must exist on GitHub with a `Casks/` directory
+2. **Personal Access Token**: A fine-grained token scoped to `cubbit/homebrew-tap` with Contents read+write permission, stored as `HOMEBREW_TAP_TOKEN` in the `cubbit/dittofs` repository secrets
 
 ### Local Testing
 
@@ -120,16 +120,16 @@ ls dist/dfsctl_*
 
 If the `HOMEBREW_TAP_TOKEN` needs to be rotated:
 
-1. Create a new fine-grained PAT at https://github.com/settings/tokens scoped to `marmos91/homebrew-tap` (Contents: read+write)
-2. Update the `HOMEBREW_TAP_TOKEN` secret in `marmos91/dittofs` repository settings
+1. Create a new fine-grained PAT at https://github.com/settings/tokens scoped to `cubbit/homebrew-tap` (Contents: read+write)
+2. Update the `HOMEBREW_TAP_TOKEN` secret in `cubbit/dittofs` repository settings
 3. The old token is invalidated automatically when the new PAT is created with the same name
 
 ## Scoop Bucket (Windows)
 
-Releases automatically publish Scoop manifests to [`marmos91/scoop-bucket`](https://github.com/marmos91/scoop-bucket). Users can install via:
+Releases automatically publish Scoop manifests to [`cubbit/scoop-bucket`](https://github.com/cubbit/scoop-bucket). Users can install via:
 
 ```powershell
-scoop bucket add dittofs https://github.com/marmos91/scoop-bucket
+scoop bucket add dittofs https://github.com/cubbit/scoop-bucket
 scoop install dfs       # Server daemon
 scoop install dfsctl    # Client CLI
 ```
@@ -140,8 +140,8 @@ GoReleaser's `scoops` section generates JSON manifest files and pushes them to t
 
 ### Prerequisites
 
-1. **Bucket repository**: `marmos91/scoop-bucket` must exist on GitHub
-2. **Personal Access Token**: A fine-grained token scoped to `marmos91/scoop-bucket` with Contents read+write permission, stored as `SCOOP_BUCKET_TOKEN` in the `marmos91/dittofs` repository secrets
+1. **Bucket repository**: `cubbit/scoop-bucket` must exist on GitHub
+2. **Personal Access Token**: A fine-grained token scoped to `cubbit/scoop-bucket` with Contents read+write permission, stored as `SCOOP_BUCKET_TOKEN` in the `cubbit/dittofs` repository secrets
 
 ### Local Testing
 
@@ -160,8 +160,8 @@ cat dist/scoop/dfsctl.json
 
 If the `SCOOP_BUCKET_TOKEN` needs to be rotated:
 
-1. Create a new fine-grained PAT at https://github.com/settings/tokens scoped to `marmos91/scoop-bucket` (Contents: read+write)
-2. Update the `SCOOP_BUCKET_TOKEN` secret in `marmos91/dittofs` repository settings
+1. Create a new fine-grained PAT at https://github.com/settings/tokens scoped to `cubbit/scoop-bucket` (Contents: read+write)
+2. Update the `SCOOP_BUCKET_TOKEN` secret in `cubbit/dittofs` repository settings
 3. The old token is invalidated automatically when the new PAT is created with the same name
 
 ## Delete a Tag

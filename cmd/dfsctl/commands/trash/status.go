@@ -6,9 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/marmos91/dittofs/internal/bytesize"
-	"github.com/marmos91/dittofs/internal/cli/output"
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/cubbit/dittofs/internal/bytesize"
+	"github.com/cubbit/dittofs/internal/cli/output"
 )
 
 // statusCmd prints the recycle-bin roll-up for a share.

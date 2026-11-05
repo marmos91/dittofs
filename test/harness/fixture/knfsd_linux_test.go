@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/needs"
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/needs"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // Where root, the kernel's NFS server and client are there, and nothing

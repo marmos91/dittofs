@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/block/middleware/encryption/keyprovider"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // encryptedRemoteCfg builds a remote BlockStoreConfig (kind=remote, type=memory)

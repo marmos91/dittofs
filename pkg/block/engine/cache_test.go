@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

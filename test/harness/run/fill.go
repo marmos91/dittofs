@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // fill turns a command into the arguments it runs with, its placeholders

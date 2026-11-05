@@ -2,7 +2,7 @@
 
 This is the interop reference for what the DittoFS SMB Security Descriptor (SD)
 path actually round-trips, derived from the code — not from the spec. It is the
-"documented interop matrix" required by [#1228](https://github.com/marmos91/dittofs/issues/1228).
+"documented interop matrix" required by [#1228](https://github.com/cubbit/dittofs/issues/1228).
 
 For the cross-protocol ACL *model* (why NFSv4 ACEs are the canonical form, the
 evaluation algorithm, mode sync), see [Access Control](access-control.md). This document is
@@ -102,9 +102,9 @@ are distinct and only meaningful as inheritable placeholders (see Inheritance).
 
 The SACL is stored on the same `acl.ACL` carrier as the DACL (`ACL.SACL`
 slice) and never participates in access checks. The store-layer round-trip
-shipped under [#1228](https://github.com/marmos91/dittofs/issues/1228); the SMB
+shipped under [#1228](https://github.com/cubbit/dittofs/issues/1228); the SMB
 wire parse/serialize under
-[#1381](https://github.com/marmos91/dittofs/pull/1381).
+[#1381](https://github.com/cubbit/dittofs/pull/1381).
 
 ## GENERIC_* mask expansion
 
@@ -118,9 +118,9 @@ wire parse/serialize under
 
 | Aspect | State | Notes |
 |--------|-------|-------|
-| Foreign domain SID → local UID/GID (write) | Unsupported / out of scope | A SID outside the joined domain is not decodable to a local UID/GID. As an owner/group it is ignored; inside a DACL ACE it round-trips as the `sid:<canonical>` principal form (preserved verbatim by `SIDToPrincipal`/`PrincipalToSID`), so the ACE is kept but the SID maps to no local UID/GID. AD integration shipped under [#1231](https://github.com/marmos91/dittofs/issues/1231) (Kerberos/NTLM logon, NETLOGON machine credential, `idmap_rid` for the *joined* domain); mapping a *foreign* (non-joined) domain SID to a local UID/GID remains out of scope. Foreign-SID → **name** display does resolve — see below. |
+| Foreign domain SID → local UID/GID (write) | Unsupported / out of scope | A SID outside the joined domain is not decodable to a local UID/GID. As an owner/group it is ignored; inside a DACL ACE it round-trips as the `sid:<canonical>` principal form (preserved verbatim by `SIDToPrincipal`/`PrincipalToSID`), so the ACE is kept but the SID maps to no local UID/GID. AD integration shipped under [#1231](https://github.com/cubbit/dittofs/issues/1231) (Kerberos/NTLM logon, NETLOGON machine credential, `idmap_rid` for the *joined* domain); mapping a *foreign* (non-joined) domain SID to a local UID/GID remains out of scope. Foreign-SID → **name** display does resolve — see below. |
 | Named NFS principal → SID (e.g. `alice@EXAMPLE.COM`) | Partial (lossy) | `PrincipalToSID` synthesizes a hash-based fallback SID (full 32-bit hash as a 6th sub-authority) so it is NOT decodable back to a numeric UID and round-trips through `sid:`. Deterministic but not a real AD SID. |
-| SID → name resolution (display) | Works | LSA `\pipe\lsarpc` is implemented (`internal/adapter/smb/rpc/lsarpc.go`, all 7 ops incl. `LsarLookupSids2/3`, `LsarOpenPolicy3`). Windows Explorer's Security tab resolves machine-domain user/group SIDs and well-known SIDs to names; foreign AD-domain SIDs resolve via the foreign resolver (`pkg/adapter/smb/lsarpc_foreign.go`). Shipped under [#236](https://github.com/marmos91/dittofs/issues/236) / [#1341](https://github.com/marmos91/dittofs/issues/1341). |
+| SID → name resolution (display) | Works | LSA `\pipe\lsarpc` is implemented (`internal/adapter/smb/rpc/lsarpc.go`, all 7 ops incl. `LsarLookupSids2/3`, `LsarOpenPolicy3`). Windows Explorer's Security tab resolves machine-domain user/group SIDs and well-known SIDs to names; foreign AD-domain SIDs resolve via the foreign resolver (`pkg/adapter/smb/lsarpc_foreign.go`). Shipped under [#236](https://github.com/cubbit/dittofs/issues/236) / [#1341](https://github.com/cubbit/dittofs/issues/1341). |
 
 ## Unmappable-SID-on-write behavior
 
@@ -156,7 +156,7 @@ project memory):
   in favor of Allow-only DACLs (Samba convention) so Explorer no longer shows
   spurious "Write: Deny"; CREATE-context (MxAc) parsing and SET_INFO attribute
   persistence (Hidden/ReadOnly) were fixed. SID-to-name resolution is
-  implemented (LSA `lsarpc` pipe, [#236](https://github.com/marmos91/dittofs/issues/236)),
+  implemented (LSA `lsarpc` pipe, [#236](https://github.com/cubbit/dittofs/issues/236)),
   so Explorer resolves user/group and well-known SIDs to names; raw SIDs appear
   only for principals with no directory entry.
 - **AD / Kerberos SMB.** `alice@REALM` → uid 10001 verified live against an
@@ -184,14 +184,14 @@ project memory):
    participates in access checks or event emission.
 2. **Foreign AD/LDAP SIDs are not mapped to local UID/GID.** They round-trip
    as opaque `sid:<canonical>` principals (so the ACE survives) but resolve to
-   no local UID/GID. AD interop shipped under [#1231](https://github.com/marmos91/dittofs/issues/1231)
+   no local UID/GID. AD interop shipped under [#1231](https://github.com/cubbit/dittofs/issues/1231)
    (logon + `idmap_rid` for the joined domain); foreign-SID → local-UID idmap
    specifically stays out of scope. Foreign-SID → **name** display does resolve
    via `lsarpc` (see limitation 4).
 3. **Hash-based fallback SIDs for named principals are lossy.** Deterministic
    but not real AD SIDs; collisions are vanishingly rare but theoretically
    possible.
-4. **LSA SID→name pipe is implemented** ([#236](https://github.com/marmos91/dittofs/issues/236),
+4. **LSA SID→name pipe is implemented** ([#236](https://github.com/cubbit/dittofs/issues/236),
    `internal/adapter/smb/rpc/lsarpc.go`). Explorer resolves machine-domain and
    well-known SIDs — and foreign AD-domain SIDs via the foreign resolver
    (`pkg/adapter/smb/lsarpc_foreign.go`) — to names. Raw SIDs appear only for
@@ -217,9 +217,9 @@ project memory):
 
 ## References
 
-- [#1228](https://github.com/marmos91/dittofs/issues/1228) — Windows-ACL / stable-handle fidelity (this matrix).
-- [#1231](https://github.com/marmos91/dittofs/issues/1231) — AD/LDAP enterprise integration (shipped).
-- [#236](https://github.com/marmos91/dittofs/issues/236) — SID-to-name (LSA) resolution (shipped).
+- [#1228](https://github.com/cubbit/dittofs/issues/1228) — Windows-ACL / stable-handle fidelity (this matrix).
+- [#1231](https://github.com/cubbit/dittofs/issues/1231) — AD/LDAP enterprise integration (shipped).
+- [#236](https://github.com/cubbit/dittofs/issues/236) — SID-to-name (LSA) resolution (shipped).
 - [Access Control](access-control.md) — cross-protocol ACL model and tradeoff analysis.
 - [MS-DTYP §2.4.4–2.4.6](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/) — SID / ACE / ACL / Security Descriptor formats.
 - [RFC 7530 §6](https://www.rfc-editor.org/rfc/rfc7530#section-6) — NFSv4 ACL model.
