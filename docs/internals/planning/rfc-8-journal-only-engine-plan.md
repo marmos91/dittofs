@@ -379,10 +379,10 @@ harness (`journalv2test/prof`) wired to the fixture.
 | 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 15.25 | B | 6, 8 |
 | 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 9 | 24.75 | C | 7, 8 |
 | 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 4 | 12.5 | C | 9 |
-| 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 7 | 19.5 | A | 9 |
+| 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 7 | 19.5 | A | 5, 9 |
 | 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over stage 2's fake and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
 | 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 4 | 12.5 | team | the second part |
-| | **Total** | | **60** | **166.5** | | |
+| | **Total** | | **61** | **166.5** | | |
 
 **Plan estimate: 61 subtasks, 166.5 man-days.**
 
@@ -512,7 +512,7 @@ flowchart TD
   report and the fake journal, its version-limit row wired to epic 6's raise once that
   lands, and its last step built against §6 point 8's sealing `Repack` and per-segment
   figure once RFC 1 names them, so
-  track A builds it then and track C keeps the rest of epic 7. T8.1's admission checks,
+  track A builds it then and track C keeps the rest of epic 7. T8.1a's admission checks,
   which need no removal, fill the rest.
 - **The fake journal grows with the epics:** T2.4's fake covers the data path's calls only,
   and each middle epic extends `enginev2test`'s fake with the journal calls it owns, so no
@@ -755,7 +755,7 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   abort's `ErrFileOpen`, or `ErrUnavailable` when `Close` or `Drop` ends the loop mid-retry, which leaves the marker for start
   step 3 and needs no `done(...)`. A retry that keeps failing raises `removal_stalled` for
   the file after five failures, as a phase 2 batch does, and a commit or an abort clears
-  it. Into an extent a clone registered (T8.1): pending too, answered before the journal's
+  it. Into an extent a clone registered (T8.1a): pending too, answered before the journal's
   `Delete`, so nothing is dropped, with the same channel, which yields `ErrDelay` with
   `DelayClone` once the clone drops its registration, or `ErrUnavailable` when `Close` or `Drop`
   comes first, the unlink's
@@ -763,7 +763,7 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   the release again on that `ErrDelay`. Either way `err` is nil while `retry` is pending:
   the unlink answers success, and the service waits on `retry` in the background, never
   inside `Sink.Closed`, and finishes the release with its outcome, or stops waiting at the
-  server's stop with no `done(...)` (C11). That branch reads T8.1's registration, so it is built and
+  server's stop with no `done(...)` (C11). That branch reads T8.1a's registration, so it is built and
   tested in T8.2. The routine that settles and reports an abort
   is built here, once; start step 3 reuses it (T6.5). Unit-tested over the fake journal;
   tested over the real open-state table once `Releasing` exists (§3.3): an open by handle

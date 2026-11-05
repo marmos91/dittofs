@@ -182,7 +182,7 @@ a clone rebuilt at start; `Unbind`'s and `Close`'s join of clones; the fake jour
 | 2 Fuzz | none | no parser. RFC 8 §15's `ponytail:` names `Copy`'s extents among the parts its tables check; T8.5's table test is that check, and the marker already stands at the read-resolution table, so no second one |
 | 3 Observability | T8.2, T8.3, T8.6 | no new counter and no new condition: a clone's phase 2 is a removal of kind clone, counted in epic 5's `engine_removal_batches_total`, `engine_removals_pending` and `engine_removals_oldest_seconds`, and its `removal_stalled` condition is unhealthy, not degraded (RFC 8 §8.1). T8.3 opens each clone's `Resume` as the removal loop's root span, its kind an attribute. RFC 8 §14's span events for a wait on a registration are not recorded: the `Tracer` declares no event, and a call never waits on one here (D3). T8.2 logs a phase-1 refusal met after the journal step at `Error` (D8); T8.3 a failed `Hold` at `Error`; T8.6 a rebuilt clone at `Info`, naming both files, and reports a rebuilt clone whose source's shard is not served after five backoffs as `removal_stalled` for its clone `Removal` (D11) |
 | 4 Profiling | all | the unit composition's `prof.Watch` covers every test, a clone's detached goroutine (D6) included: one leaked past `Close` fails it |
-| 5 Public and internal | all | internal tests of admission (T8.1a), the replay of a clone operation (T8.2) and `Copy`'s chunking (T8.5); `Clone` and `Copy` tested through `*Engine`; `-race` in T8.1, T8.4 and T8.5. The spec handed `CloneTarget` is asserted where the journal yields it back, from `Since` over the real journal (T8.6); the `CloneOp` handed `Existence.Clone` where `kvstore` reads it, by the destination's `Covering` and the source's open record after phase 1 (T8.2); `CloneSrc` where open state matches it, by `CloneOpen` over the real table (T8.3) |
+| 5 Public and internal | all | internal tests of admission (T8.1a), the replay of a clone operation (T8.2) and `Copy`'s chunking (T8.5); `Clone` and `Copy` tested through `*Engine`; `-race` in T8.1a, T8.1b, T8.4 and T8.5. The spec handed `CloneTarget` is asserted where the journal yields it back, from `Since` over the real journal (T8.6); the `CloneOp` handed `Existence.Clone` where `kvstore` reads it, by the destination's `Covering` and the source's open record after phase 1 (T8.2); `CloneSrc` where open state matches it, by `CloneOpen` over the real table (T8.3) |
 | 6 Known failures | T8.2, T8.3, T8.4, T8.6 | the rows of R33 to R40 are E2's, red in `known.yaml`; a row this epic turns green over the real journal leaves it in that change. T8.3's tests over the open-state table enter `known.yaml` naming this epic's issue until `Releasing` and the journal's `CloneTarget` and `Reserve` exist |
 | 7 v2 ignores v1 | all | the import walk stays as it is: nothing new is imported. The engine still imports no `pkg/openstate`: `Deps.Holds` is the engine's own `CloneHold` |
 | 8 Real dependencies | T8.2, T8.3, T8.6 | the store's answers come from the real `kvstore`; the open record and its matching from the real open-state table in E2's fixture; recovery from a clone marker over the real journal and its crash seam |
@@ -754,9 +754,11 @@ over the fake journal. T8.4 and T8.6 can run in parallel once T8.3 and epic 6 ha
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T8.1a, T8.1b, T8.2 | 8.5 | epic 3; epic 5's T5.1 and T5.4; epic 4's T4.3 and T4.5 | the clone up to phase 1, with the registrations it rests on and the fake's clone calls |
-| 2 | T8.3, T8.4 | 6.5 | PR 1; T5.3, T6.8, T6.9 | phase 2 and the clone's answer: the hold, the join, the deadline |
-| 3 | T8.5, T8.6 | 4.5 | PR 2; T6.5, T6.6 | `Copy` and the restart, each a consumer of the finished clone |
+| 1 | T8.1a | 2.5 | epic 3 | admission and the registrations, which epic 5's T5.1 reads |
+| — | T8.1b | 1 | lands in epic 5's PR 1 | the removal checks, in T5.1's entry-lock section |
+| 2 | T8.2 | 5 | PR 1; epic 5's PR 1 and PR 2 (T5.1, T5.4); epic 4's T4.3 and T4.5 | the clone up to phase 1 and the fake's clone calls |
+| 3 | T8.3, T8.4 | 6.5 | PR 2; T5.3, T6.8, T6.9 | phase 2 and the clone's answer: the hold, the join, the deadline |
+| 4 | T8.5, T8.6 | 4.5 | PR 3; T6.5, T6.6 | `Copy` and the restart, each a consumer of the finished clone |
 
 A suggestion only: one pull request per subtask works as well.
 

@@ -131,7 +131,7 @@ the engine test package's `newUnitOver`.
    health source exist on neither branch, so the engine exposes its counters and
    conditions as `Stats` fields, and the root that composes it adapts them. Counters are
    named for RFC 8 §14's metrics, under the `engine_` prefix (RFC 25 §2.1), never
-   `engine_`, with no share label on a per-operation series. Spans are RFC 8 §14's
+   `enginev2_`, with no share label on a per-operation series. Spans are RFC 8 §14's
    proposals, `engine.sync` and `engine.existence_commit`, and a removal batch opens a root
    span. Each epic names the counters, conditions and spans it owns; the units, labels and
    logging rules are RFC 25's, applied as written.
@@ -238,7 +238,7 @@ subtasks and tests can cite them.
 | R19 | A file's existence commits are serialised, a removal's phase 1 and a clone's among them: none starts on a file while a batch that captured it has not returned, so no commit at a higher version lands first and leaves the captured operations at or below `applied`, skipped | invariant | §5.1 step 4, RFC 6 §3.4 | T4.3 |
 | R20 | An entry dropped once its operations commit never orphans a write: a write that found the entry before the drop lands in a live entry, and the next commit commits it | invariant | §5.1, E15 | T4.3 |
 | R21 | §5.1 sync before existence, the write and `Commit` half: every committed `size` is backed by synced records | test row | §15.1 | T4.3 |
-| R21a | A commit is reported only once durable: no `Commit` answers, and no `Settle` covers a version, before the existence commit holding it has returned | MUST | §5.1 | T4.2, T4.3 |
+| R21a | A commit is reported only once durable: no `Commit` that waits on an existence commit answers, and no `Settle` covers a version, before that commit has returned; a `Commit` over appends answers on its sync alone (RFC 8 §5.1 step 3) | MUST | §5.1 | T4.2, T4.3 |
 | R21b | A stability point never waits for an offload. Nothing in this part offloads, so it holds by construction; the second part's offload commit carries its test | MUST NOT | §5.1 | none here |
 
 **The split and conflicts**
@@ -249,7 +249,7 @@ subtasks and tests can cite them.
 | R23 | A file that still fails alone is backed off by itself and raises `existence_commit_failing` naming it; its stability points answer `ErrDelay` meanwhile, and no other file waits on it | MUST | §5.2, §11.1 | T4.4 |
 | R24 | A metadata conflict is retried under the caller's deadline and never reaches a client as an I/O error; one unresolved at the deadline answers `ErrDelay` with `DelayConflict` | MUST, MUST NOT | §11.3 | T4.4 |
 | R25 | A failed existence commit is retried by the next group commit, and fails a reply only through R11's rule | invariant | §5.1 | T4.4 |
-| R26 | §5.2 group commit: 64 writers flushing while `chmod` hits random files of the journal; one file's File record undecodable, and another's existence fence | test row | §15.2 | T4.4 |
+| R26 | §5.2 group commit: 64 writers flushing while `chmod` hits random files of the journal; one file's File record undecodable, and another's removal record (an adaptation: §15.2's row names the File record only; the existence fence is checked for presence, never decoded) | test row | §15.2 | T4.4 |
 
 **Losses**
 
@@ -311,8 +311,8 @@ subtasks and tests can cite them.
   file's transactions are done. Each existence commit runs under its own bound,
   `conflictBound`, 1 s, because `kv.Update` retries a conflict until its context ends; a
   whole-call error splits the batch (T4.4) unless it is store-wide: the bound expiring with
-  no conflict (a stalled store) or the store closed. A file's existence fence or masks that
-  do not decode reach the engine as a whole-call error, so the split is what isolates them
+  no conflict (a stalled store) or the store closed. A file's removal records (its masks) or the
+  hole and overwrite records a commit loads that do not decode reach the engine as a whole-call error, so the split is what isolates them
   (RFC 8 §5.2's "any other per-file failure"). On return the committed operations leave their entries, the
   in-batch mark is cleared and its waiters woken. A batch wakes the waiters on every file it
   took from the due set, whether it captured the file or not, so a `commitNow` on a file it
@@ -556,7 +556,7 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   and the condition names it (catches a whole-batch failure, R22, R23). A conflict held past
   a `Commit`'s deadline answers `DelayConflict`, never `ErrUnavailable` (catches a conflict
   surfaced as an I/O error, R24); a conflict held past `conflictBound` splits the batch, and so
-  does one file's existence fence or mask key made undecodable over the real `kvstore` (the
+  does one file's removal record made undecodable over the real `kvstore` (the
   other files commit, that file fails alone: catches a split on conflicts only, RFC 8
   §5.2); a store stalled past the bound, or closed, does not split (catches 2G−1 bounded
   calls on a store-wide failure, or a commit left retrying until the caller's deadline); the condition cleared on `dropShare` and on `lostWhole`
