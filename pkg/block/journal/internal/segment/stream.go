@@ -899,9 +899,17 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 			// The record is registered before its slot completes: the bytes
 			// are written, and no sync's start can cover the slot until
 			// complete runs under this same lock, so every Synced that
-			// covers the record is reported after its Track. The record is
-			// registered even if the ledger refuses it below, for it was
-			// written all the same.
+			// covers the record is reported after its Track.
+			//
+			// decision: the record is registered even if the ledger
+			// refuses it below, for it was written all the same, and a
+			// record the sink lacks could be reissued by a failed window
+			// while its bytes sit in the segment. The ledger's refusal is
+			// unreachable today, because the drain holds the segment Active
+			// until the append leaves; overturned by any path that can end
+			// or retire the segment between the write and the ledger's
+			// add, which would leave a registered record with no location
+			// returned to its caller.
 			s.sink.Track(written)
 		}
 		s.tracker.complete(slot, werr == nil)

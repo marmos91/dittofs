@@ -166,7 +166,6 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 	}
 
 	// Step 3: the free tail, cut and made durable.
-	size := earlyEnd
 	//
 	// decision: a failed truncation, or a failed sync of one, returns a nil
 	// error with TailErr set, because "the seal is complete after the second
@@ -178,14 +177,14 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 	// the same rule's ledger half: it runs only once the cut is durable,
 	// and its refusal is a sealed segment's too, not an ended one's.
 	tailErr := func() error {
-		if err := ref.Truncate(size); err != nil {
+		if err := ref.Truncate(earlyEnd); err != nil {
 			return err
 		}
 		if err := ref.Sync(); err != nil {
 			return err
 		}
-		synced(id, size)
-		if err := set.Shrink(id, size); err != nil {
+		synced(id, earlyEnd)
+		if err := set.Shrink(id, earlyEnd); err != nil {
 			return fmt.Errorf("%w: %w", ErrLedgerDisagrees, err)
 		}
 		return nil
@@ -193,7 +192,7 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 	if tailErr != nil {
 		return SealResult{Marker: marker, Size: set.cap, TailErr: tailErr}, nil
 	}
-	return SealResult{Marker: marker, Size: size}, nil
+	return SealResult{Marker: marker, Size: earlyEnd}, nil
 }
 
 // checkSeal validates the seal's facts against the ledger and the cap: the

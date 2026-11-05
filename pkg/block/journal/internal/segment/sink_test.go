@@ -27,6 +27,9 @@ func nopSink() segment.Sink {
 	}
 }
 
+// nopSinkFor gives every stream a sink that drops its events.
+func nopSinkFor(uint32) segment.Sink { return nopSink() }
+
 // nopSynced drops every sync report, for the direct WriteSeal callers that
 // care for none.
 func nopSynced(core.SegmentID, int64) {}
@@ -149,9 +152,11 @@ func TestSinkTracksEveryRecordOnce(t *testing.T) {
 	}
 }
 
-// TestSinkTrackBeforeReturnAndAfterWrite pins that Track runs after the
-// record's bytes are readable and before Append returns.
-func TestSinkTrackBeforeReturnAndAfterWrite(t *testing.T) {
+// TestSinkTrackRunsBeforeAppendReturns pins that Track has run by the time
+// Append returns and that the bytes it names are readable then. That Track
+// runs only after the write succeeded is pinned by
+// TestSinkFailedWriteNotTracked and TestSinkShortWriteWithNilErrorNotTracked.
+func TestSinkTrackRunsBeforeAppendReturns(t *testing.T) {
 	var tracked []segment.Written
 	e := sinkStream(t, segment.Sink{
 		Track:  func(w segment.Written) { tracked = append(tracked, w) },
@@ -621,10 +626,12 @@ func TestSinkHandOffDoesNotBlockAppend(t *testing.T) {
 				case <-signal:
 					continue
 				case <-stop:
-					if _, more := pop(); !more {
+					// One last look: an event pushed before stop is
+					// processed, not dropped.
+					ev, ok = pop()
+					if !ok {
 						return
 					}
-					continue
 				}
 			}
 			if ev.track {
@@ -649,6 +656,8 @@ func TestSinkHandOffDoesNotBlockAppend(t *testing.T) {
 	case <-appended:
 	case <-time.After(10 * time.Second):
 		close(gate)
+		// The appender may still call t.Errorf, so it ends before the test.
+		<-appended
 		t.Fatal("16 appends did not return while the sink's worker was parked")
 	}
 
@@ -661,5 +670,64 @@ func TestSinkHandOffDoesNotBlockAppend(t *testing.T) {
 	}
 	if err := e.s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestSinkEachStreamReportsToItsOwnSink pins that NewStreams asks for one
+// sink per stream number and a stream reports only to its own: a Track and a
+// Synced of one stream never reach another's sink, so a consumer finds its
+// stream's state without a map from segment to stream.
+func TestSinkEachStreamReportsToItsOwnSink(t *testing.T) {
+	e := rollBuild(t, streamCap, segment.Targets{Content: 4}, nil)
+	awaitCounters(t, "the content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares >= 2 })
+
+	const n = 4
+	recs := make([]*recordingSink, n)
+	asked := map[uint32]int{}
+	ss := segment.NewStreams(n, streamIdentity, e.set, e.pool, e.cache, func(no uint32) segment.Sink {
+		asked[no]++
+		recs[no] = &recordingSink{}
+		return recs[no].sink()
+	})
+	t.Cleanup(func() { _ = ss.Close() })
+	for no := uint32(0); no < n; no++ {
+		if asked[no] != 1 {
+			t.Fatalf("NewStreams asked for stream %d's sink %d times, want once", no, asked[no])
+		}
+	}
+
+	fid := streamFileID(3)
+	h, body := streamWriteHeader(fid, 0, bytes.Repeat([]byte{0xA}, 100), 7, core.Version{Counter: 1})
+	s := ss.For(fid)
+	if _, err := s.Append(h, body); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := s.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	owner := -1
+	for no, r := range recs {
+		if len(r.tracked()) > 0 {
+			if owner != -1 {
+				t.Fatalf("streams %d and %d both tracked the record", owner, no)
+			}
+			owner = no
+		}
+	}
+	if owner == -1 {
+		t.Fatal("no stream's sink tracked the record")
+	}
+	for no, r := range recs {
+		r.mu.Lock()
+		nSynced := len(r.synced)
+		r.mu.Unlock()
+		if no == owner && nSynced == 0 {
+			t.Errorf("stream %d synced and its own sink saw no Synced", no)
+		}
+		if no != owner && nSynced != 0 {
+			t.Errorf("stream %d's sink saw %d Synced of another stream's sync", no, nSynced)
+		}
 	}
 }

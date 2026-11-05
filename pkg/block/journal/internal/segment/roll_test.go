@@ -1014,7 +1014,7 @@ func TestRollTwoFilesOnTwoStreamsNeverBlockEachOther(t *testing.T) {
 	e := rollBuild(t, streamCap, segment.Targets{Content: 4}, nil)
 	awaitCounters(t, "the content spares ready", e.pool,
 		func(c segment.PoolCounters) bool { return c.Spares >= 2 })
-	ss := segment.NewStreams(4, streamIdentity, e.set, e.pool, e.cache, nopSink())
+	ss := segment.NewStreams(4, streamIdentity, e.set, e.pool, e.cache, nopSinkFor)
 	t.Cleanup(func() {
 		if err := ss.Close(); err != nil {
 			t.Errorf("the streams' Close: %v", err)
@@ -1145,7 +1145,7 @@ func TestRollSixteenAppendersOverFourStreamsWithTheRefillUnderRace(t *testing.T)
 	e := rollBuild(t, rollCap, segment.Targets{Content: 4}, nil)
 	awaitCounters(t, "the content spares ready", e.pool,
 		func(c segment.PoolCounters) bool { return c.Spares == 4 })
-	ss := segment.NewStreams(4, streamIdentity, e.set, e.pool, e.cache, nopSink())
+	ss := segment.NewStreams(4, streamIdentity, e.set, e.pool, e.cache, nopSinkFor)
 	t.Cleanup(func() {
 		if err := ss.Close(); err != nil {
 			t.Errorf("the streams' Close: %v", err)
@@ -1508,7 +1508,7 @@ func TestRollTheConstructorGuardsAndTheBadRollOptions(t *testing.T) {
 				t.Error("NewStreams with a count below one did not panic")
 			}
 		}()
-		segment.NewStreams(0, streamIdentity, e.set, e.pool, e.cache, nopSink())
+		segment.NewStreams(0, streamIdentity, e.set, e.pool, e.cache, nopSinkFor)
 	}()
 
 	// A sink missing either function is a caller bug: the stream could not
@@ -1532,7 +1532,7 @@ func TestRollTheConstructorGuardsAndTheBadRollOptions(t *testing.T) {
 					t.Errorf("NewStreams with a sink of %s did not panic", name)
 				}
 			}()
-			segment.NewStreams(2, streamIdentity, e.set, e.pool, e.cache, sink)
+			segment.NewStreams(2, streamIdentity, e.set, e.pool, e.cache, func(uint32) segment.Sink { return sink })
 		}()
 	}
 
