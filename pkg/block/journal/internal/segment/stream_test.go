@@ -302,9 +302,12 @@ func TestStreamSixteenConcurrentAppendsCoverTheSegment(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	close(reads)
-	// The reader drains what it can until stopped; what it does not read the
-	// buffered channel keeps without blocking the appenders.
+	// Stop the reader, never the channel it drains: a closed buffered channel
+	// is always ready to receive, so the select's other arm would loop on a
+	// zero result forever — reading segment 0 at offset 0 — until stopped.
+	// The stop channel is the reader's only exit; whatever the buffered
+	// channel still holds is simply left, for the appenders sent on it only
+	// to give the reader something to read.
 	close(readStop)
 	readerWG.Wait()
 
