@@ -431,7 +431,7 @@ func cDiskMaxima(t *testing.T, f *journaltest.Fixture) (uint64, journal.Version)
 // and the next assigned content version each exceed every one on disk, and
 // that recovery run in a shuffled segment order yields an identical index.
 func TestRFC1C_Monotonicity(t *testing.T) {
-	f := journaltest.NewWithSegmentCap(t, 3<<10)
+	f := journaltest.NewWithSegmentCap(t, 3<<10, nil)
 	for k := range 2 {
 		h, id := f.Share(k), journaltest.File(k)
 		// Several sealed segments per stream, so the shuffle has an order to

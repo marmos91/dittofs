@@ -30,3 +30,10 @@
   category: feature
   reason: 'Epic 8: the engine calls every declared method once epics 3 to 8 are built, the clone calls last.'
   issue: '#3591'
+- test: TestRFC8_WriteStagesTheClocksTime
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: the engine opens its journals at start. Fails at the fixture until the journal has Init, Open, WriteAt and Since.'
+  issue: '#3589'
