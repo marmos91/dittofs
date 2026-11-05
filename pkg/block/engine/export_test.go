@@ -275,6 +275,9 @@ func (e *Engine) Due(j Journal, f entity.FileID) bool {
 // LostWhole is lostWhole on journal j.
 func (e *Engine) LostWhole(j Journal) { e.lostWhole(j) }
 
+// OnWritten runs f in each Write between its journal's WriteAt and its insert.
+func (e *Engine) OnWritten(f func()) { e.hooks.written.Store(&f) }
+
 // OnDrain runs f in each drain that read new losses, before it marks writes.
 func (e *Engine) OnDrain(f func()) { e.hooks.drained.Store(&f) }
 

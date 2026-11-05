@@ -42,7 +42,21 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	if err != nil {
 		return vfserr.Verifier{}, e.journalErr(err)
 	}
+	if h := e.hooks.written.Load(); h != nil {
+		(*h)()
+	}
 	fe := e.files.lockFor(f)
+	// A loss drained since WriteAt answered found no pending write to apply
+	// to and was kept: a corrupt loss inserts the write lost, a failed
+	// window's drops it, its Done run and nothing charged.
+	ev, lost := b.gc.losses.unmatched(f, ver)
+	if lost && ev.Reason == journal.LossFailedWindow {
+		e.files.unlock(f, fe)
+		if o.Done != nil {
+			o.Done()
+		}
+		return v, nil
+	}
 	if len(fe.ops) == 0 {
 		// Refused once the engine closed or the journal's device was lost:
 		// the write is answered unavailable and its Done is not called, as for
@@ -58,6 +72,7 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 		extent:    journal.Extent{Off: off, Len: int64(len(p))},
 		at:        now,
 		setsMtime: mtime != 0,
+		lost:      lost,
 		done:      o.Done,
 	})
 	e.files.unlock(f, fe)
