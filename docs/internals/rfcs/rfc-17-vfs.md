@@ -1075,8 +1075,9 @@ deadline: it calls `RecallGrant` with a zero session and the openers'
 principals, through `Peers.Recall` on another node. The adapter there picks one
 of its own sessions of the client signed in now as one of the openers, from the
 per-node session table that re-authentication updates, or none, and answers
-whether it sent; when no node sent, the break is sent nowhere and runs to its
-deadline. Only the adapter holds which principal a session is signed in as, so
+whether it sent; when no node sent, the break is sent nowhere and asked again
+at an interval, by the same route, so a session signed in as an opener meanwhile
+takes it, until its deadline. Only the adapter holds which principal a session is signed in as, so
 no copy of it goes stale when a session re-authenticates as another principal,
 null or guest included.
 

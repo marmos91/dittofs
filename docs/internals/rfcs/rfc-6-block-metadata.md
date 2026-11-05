@@ -1555,7 +1555,9 @@ no write can land in the extent, since the share admits none.
 
 **Phase 1 — one transaction, O(1) keys written, writes no ref:**
 
-- commits the file's pending existence ([§3.4](#3.4%20Ordering%20against%20the%20journal));
+- commits the file's pending existence ([§3.4](#3.4%20Ordering%20against%20the%20journal)); the store may commit it in its own
+  transaction just before, under the same guard ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), since a
+  pending operation at or below `applied` is skipped on a retry;
 - updates existence ([§3.5](#3.5%20Operations%20that%20make%20holes)) in O(1) keys written: sets `size` for a
   truncate; narrows at most the two holes that straddle the extent's edges (for
   a deallocate, joins them into its merged hole instead, below), and
@@ -1591,6 +1593,10 @@ no write can land in the extent, since the share admits none.
   phase 1 narrows or splits that hole like any other: a merged hole written
   only by phase 2's last batch would cover a write committed between the two
   and read its bytes as zeros;
+- for a truncate whose new size is above `size`, sets `size`, records the gap
+  as a hole joined with any it touches, and writes no removal record: the size
+  the truncate was taken against counted a write a failed sync window dropped
+  ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)), so it never committed;
 - copies the File's `MaxOverwrite` into the removal record as `ovSpan`;
 - writes `Removal(file, v)` with its extent, kind and `cut` — the `k` it reads
   from `Cut(share)`, admitted through the share's cut gate like any transaction
