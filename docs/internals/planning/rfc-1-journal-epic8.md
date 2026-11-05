@@ -857,8 +857,9 @@ its counter (R75); `ReservedBytes` read at the
     not `ErrNoSpace`.
   - With the headroom below half, a hold and a stamp are refused naming the headroom, releases
     and removals still succeed, and no offloaded record is appended.
-  - With only the open reserve left, a removal of content not held is refused naming the headroom,
-    and an `Open`-class record is admitted; a reserve of 4,096 records, or half the headroom
+  - At the reserve's edge, a removal of content not held is admitted with one record more than the
+    reserve left and refused naming the headroom with exactly the reserve left, and an
+    `Open`-class record is admitted; a reserve of 4,096 records, or half the headroom
     below 8,192.
   - A header-only record counts in its share's `UsedBytes` but a share at its limit still takes
     it.
@@ -1380,7 +1381,7 @@ A suggestion only: one pull request per subtask works as well.
   I/O error as itself and changes nothing. If #3511 merges, T8.2's failure path follows it.
 - **Open RFC changes that touch this epic.** The merged ones (#3509 binds a record header to its
   own offset, which T8.2's header comparison uses; #3512 turns a journal read-only on its first
-  `EROFS`, which T8.5's gate follows) are in the RFCs. Open: #3511, above, #3731 (RFC 1 §3.10: `Settle` never drops a
+  `EROFS`, which T8.5's gate follows) are in the RFCs. Merged: #3730 (RFC 1 §6's open reserve inside the headroom, which R79, R80 and D8 now measure without; T8.6 tests the reserve's edge, R111). Open: #3511, above, #3731 (RFC 1 §3.10: `Settle` never drops a
   held extent, settles every older marker, and discards one its caller will not apply, which R58
   and T8.9 state; RFC 8 §8.1's terminal failure that discards a marker has merged, in #3716), and
   #3502 (a descriptor that has written stays open until a sync covers it), which changes epic 5's
