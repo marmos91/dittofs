@@ -2478,7 +2478,7 @@ which calls the journal's `Delete`, never its `Release`, which evicts
   the shard's primary ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)). After five consecutive failed batches
   the removal is the condition `removal_stalled`, naming the file and the
   removal's kind, cleared by its next batch that commits; the count is kept by
-  file in the binding's policy state, as O6's is. A stalled clone holds writes to
+  the removal, which the file's guard makes the file's only one at a time. A stalled clone holds writes to
   its destination extent, so its condition is unhealthy rather than degraded.
 - A release that cannot finish within its call is pending, not failed: one
   whose phase 1 has not committed at the call's deadline, the journal's

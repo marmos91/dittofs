@@ -1555,7 +1555,9 @@ no write can land in the extent, since the share admits none.
 
 **Phase 1 — one transaction, O(1) keys written, writes no ref:**
 
-- commits the file's pending existence ([§3.4](#3.4%20Ordering%20against%20the%20journal));
+- commits the file's pending existence ([§3.4](#3.4%20Ordering%20against%20the%20journal)); the store may commit it in its own
+  transaction just before, under the same guard ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), since a
+  pending operation at or below `applied` is skipped on a retry;
 - updates existence ([§3.5](#3.5%20Operations%20that%20make%20holes)) in O(1) keys written: sets `size` for a
   truncate; narrows at most the two holes that straddle the extent's edges (for
   a deallocate, joins them into its merged hole instead, below), and
