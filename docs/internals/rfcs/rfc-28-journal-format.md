@@ -1523,8 +1523,9 @@ Sync and unlink, per platform ([§2.2](#2.2%20Segments), [RFC 1 §5.2](rfc-1-jou
   `fcntl(F_FULLFSYNC)` for every sync, the directory's included.
 - **Linux**: `fdatasync` on the file ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Syncing)), and `fsync` on the directory's
   descriptor after a create, a rename or an unlink. Open **MUST** refuse a
-  filesystem mounted without cache flushes where the mount options say so
-  (`nobarrier` or `barrier=0` on ext4, `nobarrier` on older XFS): there no sync
+  filesystem mounted without cache flushes where its options say so
+  (`nobarrier` or `barrier=0` on ext4, read from the effective options named
+  below, `nobarrier` on older XFS): there no sync
   reaches the device, and a synced record does not survive power loss. Open
   **MUST** also refuse ext4 data journaling — the `data=journal` mode, read from
   the filesystem's effective options (`/proc/fs/ext4/<dev>/options`, `<dev>` the

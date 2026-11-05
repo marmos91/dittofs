@@ -1120,13 +1120,13 @@ limit at start, and divides the result:
 | a half | client connections: the ceiling on `connection_limit` (§4.4) |
 | a quarter | everything else: listeners, the metadata store's files, remote-store connections, one per transfer worker, logs, and the journal's counted overruns past `DescriptorLimit` |
 
-A first quarter below the journals' descriptor floor ([RFC 1 §7.4](rfc-1-journal.md#7.4%20Open%20descriptors)) is refused at the
-engine's `Apply`, naming the open-file limit and the figure it needs.
+A `DescriptorLimit` below the journals' descriptor floor ([RFC 1 §7.4](rfc-1-journal.md#7.4%20Open%20descriptors)) is refused at the
+engine's `Apply`, naming the journals, the open-file limit and the figure it needs.
 
 If the last quarter is smaller than `upload_workers` plus `fetch_workers`
 plus 256, the node starts and raises the health condition `fd_limit_low`
 naming the limit and the figure it needs. A descriptor refused by the system
-anyway is a failed accept or a failed transfer, counted, never a crash.
+anyway is a failed accept, a failed transfer or a failed journal call ([RFC 1 §7.4](rfc-1-journal.md#7.4%20Open%20descriptors)), counted, never a crash.
 
 ## 7. Composing the storage bounds
 
