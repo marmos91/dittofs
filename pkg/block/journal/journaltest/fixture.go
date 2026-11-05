@@ -40,7 +40,7 @@ const (
 	FixtureIdleSealBytes = FixtureSegmentCap / 16
 
 	// IdleSealAge is how long a segment takes no append before the journal
-	// seals it, if it is at least FixtureIdleSealBytes full.
+	// seals it, if it is more than FixtureIdleSealBytes full.
 	IdleSealAge = core.IdleSealAge
 
 	// OfferPins is the most segments one offer pins. JournalPins is the count
