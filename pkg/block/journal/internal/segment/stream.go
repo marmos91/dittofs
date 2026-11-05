@@ -7,7 +7,9 @@ import (
 	"math"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -233,6 +235,12 @@ func (t *tracker) syncFail() {
 	t.syncFailed = true
 }
 
+// clockBox holds the clock the idle sealer installs on a stream. idleClock
+// below is an atomic pointer, so the interface value it stores needs a box
+// to point at: the box is the unit the pointer's loads and stores trade in,
+// published whole by one Store.
+type clockBox struct{ c core.Clock }
+
 // Stream is one append stream of a journal: it takes segments from the spare
 // pool, appends records to one active segment at a time, seals the segment
 // once a record does not fit or a seal is asked for, and rolls — takes its
@@ -249,10 +257,10 @@ type Stream struct {
 	// decision: every field below is guarded by appendMu, the segment append
 	// domain of RFC 1 §8.2 — next, count, entries, the tracker, the active
 	// segment and its ref, the roll's single-flight gate, the closed flag,
-	// and the seal state with its pending-drain. The lock is held for a
-	// record's reservation and its completion only — never across I/O, and
-	// nothing else is acquired under it, so no set call and no storage call
-	// sit inside it.
+	// the last append's idle stamp, and the seal state with its
+	// pending-drain. The lock is held for a record's reservation and its
+	// completion only — never across I/O, and nothing else is acquired under
+	// it, so no set call and no storage call sit inside it.
 	appendMu sync.Mutex
 	next     int64 // the first free record slot of the active segment
 	count    int64 // records reserved in the active segment
@@ -265,6 +273,19 @@ type Stream struct {
 	rolling  chan struct{} // armed while one caller runs a roll for all
 	closed   bool
 	inflight sync.WaitGroup // the appends, syncs and seals Close waits for, added to under the lock
+
+	// idleClock is the clock the idle sealer installed, boxed so the
+	// pointer's loads and stores are lock-free reads before a sealer exists.
+	// It is read before appendMu is taken — the decision comment there says
+	// nothing else is acquired under that lock, while Clock.Elapsed takes
+	// the clock's own mutex — so it cannot sit among the fields the lock
+	// guards. Nil until a sealer installs one; a stream with no sealer
+	// stamps nothing and is never idle-sealed.
+	idleClock atomic.Pointer[clockBox]
+	// lastAppend is the Elapsed of the clock above at the stream's last
+	// append that reserved — the stamp the idle sealer ages. Guarded by
+	// appendMu, like every field of its block.
+	lastAppend time.Duration
 
 	// sealState names where the stream's seal stands. The zero value is
 	// sealOpen: the stream is appending.
@@ -528,6 +549,23 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		return Placed{}, fmt.Errorf("%w: a hold covers content writes, not a kind with no payload", ErrBadRoll)
 	}
 
+	// The idle stamp's time is read here, before the lock, so appendMu is
+	// never held across Clock.Elapsed — the decision comment at appendMu
+	// holds for the clock's own mutex too. The stamp taken below therefore
+	// names the call's arrival, not its reservation: the lock's wait, a
+	// drain park while a seal runs, and the roll's own segment-sealing I/O
+	// can each sit between the reading here and the reservation below, and
+	// only shorten the measured idle time by the span, never lengthen it —
+	// harmless, for it errs toward sealing sooner, never toward stranding a
+	// segment past its age. A seal's pass that reads the stream while this
+	// append is in flight can therefore see a stamp below its own now by
+	// that same span; the pass's own wait bound comment covers that side.
+	var now time.Duration
+	stamp := false
+	if b := s.idleClock.Load(); b != nil {
+		now, stamp = b.c.Elapsed(), true
+	}
+
 	s.appendMu.Lock()
 	if s.closed {
 		s.appendMu.Unlock()
@@ -702,6 +740,13 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 
 		slot := s.tracker.reserve(h.Offset, h.Offset+size)
 		s.next += size
+		// The arrival time read before the lock becomes the stream's last
+		// append. Only a reservation stamps: a refused append — a closed
+		// stream, a segment with no room, a failed roll — wrote nothing, so
+		// it does not count as one.
+		if stamp && now > s.lastAppend {
+			s.lastAppend = now
+		}
 		s.count++
 		// pending names this append to a seal that may start while it is
 		// in flight, and leaves at the append's final exit — after its
@@ -1055,6 +1100,15 @@ func (s *Stream) Sync() error {
 // one takes no seal (R32, R33).
 func (s *Stream) Seal(early bool) (SealResult, error) {
 	s.appendMu.Lock()
+	return s.sealLocked(early)
+}
+
+// sealLocked is Seal under the append lock: the caller enters holding
+// appendMu and this body releases it on every path, exactly as Seal does,
+// so a caller that has the lock — the idle seal's check-and-take below —
+// can run the whole seal without releasing it between deciding and acting.
+// Behaviour, error values and comments are Seal's own.
+func (s *Stream) sealLocked(early bool) (SealResult, error) {
 	if s.closed {
 		s.appendMu.Unlock()
 		return SealResult{}, ErrStreamClosed
@@ -1190,6 +1244,79 @@ func (s *Stream) Seal(early bool) (SealResult, error) {
 	s.drained.Broadcast() // the Syncs parked on the seal leave with the seal
 	s.appendMu.Unlock()
 	return res, nil
+}
+
+// watchIdle installs the clock the stream's idle time is read from: the
+// stream counts as just active from the reading the sealer makes here, so a
+// segment that idled before the sealer existed is never sealed the moment
+// the sealer appears. The clock is stored before the stamp is taken, so an
+// append that lands between the two stamps the clock's own now; the store is
+// published by the lock below for any reader that loads the pointer first.
+func (s *Stream) watchIdle(c core.Clock) {
+	now := c.Elapsed()
+	s.idleClock.Store(&clockBox{c: c})
+	s.appendMu.Lock()
+	if now > s.lastAppend {
+		s.lastAppend = now
+	}
+	s.appendMu.Unlock()
+}
+
+// idleDueLocked reports, under the append lock the caller holds, whether the
+// stream's active segment is a candidate the idle seal may close at now, and
+// the wait until it becomes due. The bytes beyond the segment's last
+// catalogued point are next past the segment header: an active segment
+// carries no catalog of its own — RFC 28 writes a catalog only in a seal's
+// footer — so its last catalogued point is the end of its 48-byte header, and
+// every reserved record slot lies beyond it.
+//
+// The bounds follow the rule's own words: "more than" the threshold is a
+// strict comparison — a segment holding exactly the threshold stays open —
+// and "has taken no append for 30 s" means an idle time at least the age.
+// A stream that is not a candidate answers (false, -1), the wait that tells
+// the sealer to ignore it rather than arm one.
+func (s *Stream) idleDueLocked(now time.Duration, threshold int64) (due bool, wait time.Duration) {
+	// The candidate: a live stream with an open segment holding more than
+	// the threshold beyond its last catalogued point.
+	if s.closed || s.id == 0 || s.sealState != sealOpen ||
+		s.next-format.SegmentHeaderSize <= threshold {
+		return false, -1
+	}
+	idle := now - s.lastAppend
+	if idle >= core.IdleSealAge {
+		return true, 0
+	}
+	return false, core.IdleSealAge - idle
+}
+
+// idleDue is idleDueLocked under the append lock, taken and released here,
+// with no I/O: the peek the idle sealer makes on each of its passes. It is
+// a peek alone — the state it reads can change the moment it returns — and
+// every caller that acts on a due verdict runs sealIdle, which re-checks
+// under the same hold the seal takes.
+func (s *Stream) idleDue(now time.Duration, threshold int64) (due bool, wait time.Duration) {
+	s.appendMu.Lock()
+	defer s.appendMu.Unlock()
+	return s.idleDueLocked(now, threshold)
+}
+
+// sealIdle seals the stream's active segment early when it is still due at
+// now, re-checked under the same hold the seal takes: an append that
+// reserved since the sealer's peek wins here and the segment stays open, for
+// the reservation and the seal's move to sealSealing happen under one hold
+// of appendMu, so no check ever acts on a state a later append moved. An
+// append arriving after that move parks on the seal's drain cond and then
+// rolls, exactly as for an explicit seal (R85). Not due any more — an append
+// landed, another seal ran, the stream closed — the stream is left exactly
+// as the peek's caller found it and nothing is written.
+func (s *Stream) sealIdle(now time.Duration, threshold int64) (sealed bool, res SealResult, err error) {
+	s.appendMu.Lock()
+	if due, _ := s.idleDueLocked(now, threshold); !due {
+		s.appendMu.Unlock()
+		return false, SealResult{}, nil
+	}
+	res, err = s.sealLocked(true)
+	return true, res, err
 }
 
 // ReadAt reads len(p) bytes at offset off of segment seg through the
