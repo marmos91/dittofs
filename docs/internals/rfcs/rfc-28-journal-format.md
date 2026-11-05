@@ -931,7 +931,7 @@ threshold stays open: sealing it would cost a footer and a new segment every
 **Recovery does not trust a tail it cannot prove synced.** After the process
 died but the host did not, records written and never synced are still in the
 operating system's cache: they verify at reopen, and a later power loss takes
-them. So in the newest segment of each stream, unless a seal marker that verifies ends it ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), every record past the highest
+them. So in the newest segment of each stream, unless a seal marker that verifies on the device ends it ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), every record past the highest
 synced-through offset any verifying record names ([§2.3](#2.3%20Records)) — past the last point
 a sync is proven to have reached — is **verified in place** before the journal
 serves: the journal syncs the segment, then re-reads each such record bypassing
@@ -1016,6 +1016,22 @@ before it synced, as it proves the segment header ([§3.1](#3.1%20Rebuilding)): 
 append reserved below it to complete, and makes its records durable before it writes
 the marker ([§2.5](#2.5%20Catalog%20layout)); an append that fails there ends the segment instead ([§2.2](#2.2%20Segments)). So a bad record before
 such a marker, a zero slot included, is corruption, not a torn slot or torn tail.
+
+**A seal marker no successor names is proven on the device, not in the page
+cache.** Its seal may never have made it durable: the process died before the
+seal's second sync, or that sync failed, the journal turned read-only and it is
+reopened in place ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)), by the same process over the same cache. Read
+through the cache, the marker verifies, recovery takes the segment as sealed and
+the stream's next segment names it; a power loss then leaves a named segment
+with no marker, reported as damaged though no record was lost. So recovery
+syncs such a segment and re-reads its marker bypassing the page cache, as it
+verifies an unproven tail ([§3.1](#3.1%20Rebuilding)), and only a marker that verifies there ends the
+segment. One that does not, or whose segment's sync fails, is treated as
+absent: the segment is unsealed, its tail is verified as [§3.1](#3.1%20Rebuilding) gives, and the
+marker is part of its torn tail. A read through the cache after that sync
+succeeds proves nothing more: after a failed sync, a later one can succeed
+without writing the pages the failed one dropped ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)).
+
 A seal marker that does not verify is part of the
 torn tail unless a successor names its segment, which proves the seal durable
 ([§2.2](#2.2%20Segments)). A named one is damage, and its segment is reported as damaged. An unnamed
@@ -1730,6 +1746,7 @@ A check here fails by **coming back up describing something other than what is o
 | [§3.2](#3.2%20Offload%20state%20after%20recovery) bits survive restart | Offload and mark an extent, write another and leave it dirty, crash and reopen; before any `MarkOffloaded`, assert `Release` permits the first and refuses the second. Crash before the offloaded record syncs; assert the extent comes back unmarked, never the reverse. |
 | [§3.2](#3.2%20Offload%20state%20after%20recovery) reseed by version | Offload A, overwrite with B, crash before B is offloaded; `MarkOffloaded` the extent at A's versions; assert B stays unmarked and `Release` refuses it. |
 | [§2.5](#2.5%20Catalog%20layout) trailer torn | Truncate a segment mid-footer, and separately corrupt one entry byte; assert both are treated as "no footer", the segment is scanned, and the resulting index is identical to the footer-read one. |
+| [§3.3](#3.3%20Torn%20and%20corrupt%20records) a seal marker only the cache holds | Append and `Sync` A, then seal its segment with the marker's write reaching the seam's cache and the seal's second sync failing, then fail the first sync in the spare the stream takes, so the journal turns read-only ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)). Reopen in place with the seam serving the marker from the cache and not the device, and let the reopen's sync of the segment succeed without writing it; then drop every write the seam never saw synced and reopen again. Assert the first reopen re-read the marker from the device, did not take the segment as sealed until its own seal of it was durable, A reads back both times, and the second reopen reports no damage. Repeat with the process killed after the marker's write and before the seal's second sync, reopening in a new process with the cache kept: assert the same. A recovery that verifies the marker through the cache has the next segment name it, and the second reopen reports a segment as damaged that lost no record. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) truncated sealed segment | Truncate a segment that a later one names as its predecessor, mid-record and with its footer gone; assert it is reported as corruption, not as a torn tail. Truncate the newest segment of a stream the same way; assert it is treated as a torn tail. |
 | [§3.1](#3.1%20Rebuilding) foreign segment | Copy a valid segment from another journal into the directory; assert it is not attached, no read serves its bytes, it is reported and left on disk. |
 | [§3.1](#3.1%20Rebuilding) version floor | Reopen with a floor above every version on disk; assert the next write's version exceeds the floor, and that `MarkOffloaded` with the floor as `newest` leaves that write unmarked. |

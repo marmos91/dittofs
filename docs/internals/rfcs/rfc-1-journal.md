@@ -2009,7 +2009,7 @@ failed sync of a segment, **everything written to that segment since its last
 successful sync is not durable**, the segment takes no further append — not
 even a seal marker: **a failed segment is never sealed while the journal runs** (a seal whose own sync
 failed may leave a durable seal marker and catalog, but no successor names the
-segment, so recovery does not treat it as sealed, though a marker that verifies still proves the records before it synced, [RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) — and the stream
+segment, so recovery does not treat it as sealed, though a marker that verifies on the device still proves the records before it synced, [RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) — and the stream
 continues in a new segment whose header names no predecessor ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). The
 failed segment stays accounted at its cap to the journal until it is unlinked
 ([§7.3](#7.3%20Accounting)), and is a repack candidate once its window is resolved, not before:
