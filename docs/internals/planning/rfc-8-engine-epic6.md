@@ -22,7 +22,7 @@ E2's fault-injecting `kv.KV` (T2.3), which is not built yet, to fail the start t
 T6.7 needs epic 3's `Write` and `Draw` (T3.2, T3.3), where a version is issued, and the same
 `kv.KV` to block the raise. T6.5 needs epic 4's per-file existence commit (T4.3) and epic
 5's abort routine (T5.4); T6.6 and T6.8 epic 5's removal loop (T5.3); T6.9 epic 4's due set
-(T4.3) and reservation counter (T4.7), and T6.8. T6.10 needs T6.9 and `journalv2` to declare
+(T4.3) and reservation counter (T4.7), and T6.8. T6.10 needs T6.9 and `journal` to declare
 `ErrUnsuitableStorage` (RFC 1 §3). #3608 and #3609 put the share on every content call and
 give a pending release its retry channel. Epic 8's T8.6 builds a rebuilt clone's `Served`
 wait under a context that `Close` cancels and `Unbind` waits out (its D11).
@@ -85,7 +85,7 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
 - The salvage export of a stranded tag and its `Forget` while serving (`salvage.path`): the
   second part. Here a stranded tag stays stranded until the next start.
 - A read-only journal reopened in place (RFC 8 §2.5, E42): it needs RFC 1 §5.4's read-only
-  state, spares and probe, which `journalv2` does not have. No epic of this part owns it
+  state, spares and probe, which `journal` does not have. No epic of this part owns it
   (§9 point 8).
 - `Bind` with `State: Closing` (a re-home's finish, RFC 27) and `Fenced` (RFC 8 §11.2's
   copied-image row): out, and epic 7 for the self-fence, which is not a share state.
@@ -101,7 +101,7 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
 
 ### 1.3 Names used here
 
-- **E1**, epic 1, interfaces: `pkg/block/enginev2`'s exported surface, `Deps` and its
+- **E1**, epic 1, interfaces: `pkg/block/engine`'s exported surface, `Deps` and its
   interfaces, frozen at S1.
 - **E2**, epic 2, red e2e suite and test foundations: `engine-conformance` with its
   `known.yaml`, the fixture over the real journal, `kvstore` and the real open-state table,
@@ -155,15 +155,15 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
    passes to the journal or the store is asserted where they read it, over the real journal
    and `kvstore`, not where the engine builds it.
 6. **Known failures shrink.** An e2e test that turns green leaves the suite's `known.yaml`
-   (`test/enginev2/known.yaml`) in the same change: `dt` fails the run if a listed test
+   (`test/engine/known.yaml`) in the same change: `dt` fails the run if a listed test
    passes, so the change that turns it green removes it, a journal pull request included. A
    test over the real journal that starts red sits in that suite behind its build tag, never
    in `unit`, which keeps no known list.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1, enforced by
-   the engine's one import test, a walk over every package of `pkg/block/enginev2` with
-   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/engine`,
-   `pkg/block/journal`, `pkg/block/syncer`, `pkg/block/carver`, `pkg/block/remote` or the
-   v1 metadata service `pkg/metadata`. The walk checks every package on its own, so its
+   the engine's one import test, a walk over every package of `pkg/block/engine` with
+   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/syncer`,
+   `pkg/block/carver`, `pkg/block/remote` or the v1 metadata service `pkg/metadata`; v1's
+   engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
    allowlist names each package an exception applies to, test packages included. v1 is not
    touched: it is deleted at the cutover.
 8. **Real dependencies for properties of those dependencies.** No fake stands in for a
@@ -186,7 +186,7 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
     stays a review rule.
 11. **A symbol is exported only if the RFC's interface uses it.** Everything exported is
     frozen at S1. Helpers the engine's own files need stay unexported or move to an
-    `internal/` package of `enginev2`.
+    `internal/` package of `engine`.
 12. **Each subtask creates only what it declares.** No empty package and no stub without a
     caller. A package, an option or a test helper lands with its first consumer.
 
@@ -350,7 +350,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 - **D5, the floor at `Open`.** One number per journal: the largest of every share's version
   floor (`Content.VersionFloor`) and every share's limit (`VersionLimits`) among the shares
   the journal may serve, removed ones included, read through the `ShareID`s `Tags` names
-  (D2) whose shard lives on that journal (D10). `journalv2`'s doc for `Open` names the
+  (D2) whose shard lives on that journal (D10). `journal`'s doc for `Open` names the
   smallest limit; both are above every version issued, and the largest also covers a
   share whose limit was raised ahead of the others. A `decision:` marker at the computation
   says so. RFC 8 §2.5 and §2.7, RFC 28 §3.1 and RFC 1 §3 take the largest since #3710
@@ -435,7 +435,7 @@ pkg/metadata/kvstore/
                            the shard codec with the journal identity (D10)
   kvstoretest/
     lifecycle.go     T6.1  the view's cases
-pkg/block/enginev2/
+pkg/block/engine/
   deps.go            T6.1  Lifecycle's new shape (D2, D4, D10)
   share.go           T6.2  the share table (D1), the binding, Bind
                      T6.9  Unbind, Drop, the removed state (D9)
@@ -452,7 +452,7 @@ pkg/block/enginev2/
                            condition set Stats reports, which T6.3 or epic 7's T7.3
                            creates, whichever lands first
   export_test.go     T6.7  the block hook; T6.2 the unit composition through Bind
-  enginev2test/
+  enginetest/
     fake.go          T6.3  Open's refusals, Forget, Strand, Stats' tags and versions
                      T6.5  Files, Since, Settle
                      T6.7  SetVersionLimit and a counter bounded by it
@@ -462,7 +462,7 @@ pkg/block/enginev2/
   conformance/
     rfc8_a_test.go   T6.2 to T6.7, T6.10  the rows of §15.1 this epic owns
     rfc8_b_test.go   T6.2, T6.9  the rows of §15.2
-test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's issue
+test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's issue
 ```
 
 ## 6. Subtasks
@@ -854,7 +854,7 @@ test/enginev2/known.yaml  T6.2 to T6.10  each new red row, naming this epic's is
 
 **Subtask T6.10 estimate: 3.75 man-days.**
 
-- **Track:** C. **Depends on:** T6.6 and T6.9 (`Close`, `Unbind` and `Drop`); `journalv2`
+- **Track:** C. **Depends on:** T6.6 and T6.9 (`Close`, `Unbind` and `Drop`); `journal`
   declaring `ErrUnsuitableStorage`.
 - **Covers:** R5, R31 to R33, R41.
 - **Deliverables:** in `recover.go`, an `Open` refused with `ErrUnsuitableStorage` leaving its
@@ -913,7 +913,7 @@ flowchart TD
   T6_5 --> T6_6["T6.6 Start steps 4 and 5"]
   T6_5 & T6_7 --> T6_8["T6.8 Close"]
   T6_8 --> T6_9["T6.9 Unbind and Drop"]
-  J(["journalv2: ErrUnsuitableStorage"]):::sync -.-> T6_10
+  J(["journal: ErrUnsuitableStorage"]):::sync -.-> T6_10
   T6_6 & T6_9 --> T6_10["T6.10 Unsuitable journal at start"]
   T6_6 & T6_9 & T6_10 --> S3(["S3 engine complete over the fake journal"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
@@ -963,7 +963,7 @@ A suggestion only: one pull request per subtask works as well. PR 2 can be open 
    the two cannot both hold.
 4. **The floor at `Open`** (D5), settled by #3710. RFC 8 §2.5 step 1 and §2.7, RFC 28 §3.1
    and RFC 1 §3 now take the largest of every served share's version floor and version
-   limit, as D5 does. `journalv2`'s doc for `Open` still names the smallest limit, which is
+   limit, as D5 does. `journal`'s doc for `Open` still names the smallest limit, which is
    safe; it follows in a code change.
 5. **Who writes `J‖journal`** (D3), pending #3635. RFC 16 §4.2 has the key "written when the journal is
    created", and no interface of RFC 16 §3 writes it; RFC 16 §3.2's `Init` writes `\x00format`,
@@ -981,11 +981,11 @@ A suggestion only: one pull request per subtask works as well. PR 2 can be open 
    estimates include them. E2's fault-injecting `kv.KV` (its T2.3) is not built either.
    T6.4 and T6.7 depend on it, and its days stay in E2's estimate.
 8. **A read-only journal reopened in place** (RFC 8 §2.5, E42, and §15.2's read-only row) is
-   in no epic of this part. It needs RFC 1 §5.4's read-only state, which `journalv2` does not
+   in no epic of this part. It needs RFC 1 §5.4's read-only state, which `journal` does not
    have yet; once it does, it is a subtask of this epic or of the second part.
 9. **`Unbind` with `keepHolds`** is refused: no snapshot exists in this part. A removal that
    keeps snapshots is RFC 12's, out.
-10. **No row over the real journal turns green in this epic** until `journalv2`'s `Init`,
+10. **No row over the real journal turns green in this epic** until `journal`'s `Init`,
     `Open`, `Share`, `Forget`, `Strand`, `SetVersionLimit`, `Files`, `Since` and `Settle`
     exist. Each row leaves `known.yaml` in the change that turns it green.
 11. **Two text fixes, merged.** RFC 1 §4.3 now sends the version limit's sizing to RFC 8
