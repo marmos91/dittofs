@@ -1008,7 +1008,7 @@ excluded. Spans: a clone's batches as root spans.
   otherwise from the journal's clone marker, holding the source until the
   clone is done; the open is T8.3's, taken before `Resume`, so no start step calls
   `Hold`. The "source registration rebuilt" row of §1.4 holds in substance, its
-  wording ("from its clone-kind open record") in a cluster (epic 8's open point 6). A source unlinked before the restart is reported by neither of T8.3's paths: the
+  wording ("from its clone-kind open record") in a cluster (epic 8's open point 5). A source unlinked before the restart is reported by neither of T8.3's paths: the
   hold `install` makes carries no unlink, so `Releasing` refuses the pending release while
   it stands and `Release` reports no orphan. Its bytes stay until the next start, the
   ceiling `openstate`'s `decision:` on `CloneClose` names (§6 point 11).
