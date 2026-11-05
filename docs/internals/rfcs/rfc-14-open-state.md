@@ -1688,8 +1688,12 @@ so the new primary, already named, writes `GraceInstance` = its incarnation by
 compare-and-swap before it serves
 ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)).
 Every start of a node, the single node's included, **MUST** raise the
-incarnation of every shard it serves in the transaction that starts it, before
-any open-state request is answered, so a grace instance never repeats
+incarnation of every shard it serves, in as many transactions as the key budget
+`K` takes ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). Until the last of them commits it **MUST NOT**
+answer an open-state request, return a verifier in a `WRITE` or `COMMIT`, send
+an NSM restart notice or begin a grace instance, so a grace instance never repeats. A start cut off
+between two of them is not a start: the next one raises every shard again, those
+already raised included, and since a raise only goes up, no incarnation repeats
 ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)).
 Were it to repeat, the `ReclaimComplete` a client sent at mount would end the
 new instance at once, and another client could take its lock.
