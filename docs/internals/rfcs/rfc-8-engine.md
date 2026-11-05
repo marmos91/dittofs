@@ -870,7 +870,7 @@ stopping the node:
    references, and the files' pass registry entries, which the drain has
    emptied. Steps 3 and 4 rebuild each from the journal and the store, as at a
    crash: pending existence from the records above `applied`, which the journal
-   still holds or, for a failed window, drops as losses ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)). Nothing
+   still holds or, for a record the read-only journal failed, drops as losses ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)). Nothing
    is committed first: a commit syncs the file, which the read-only journal
    refuses. Open state ([RFC 14](rfc-14-open-state.md)) and the files' marks in its table are kept.
 - **Close and open.** Close each share's handle, then the journal
@@ -910,7 +910,7 @@ every 60 s (proposal), and an operator's acknowledgement ends it as above.
 > generation once for them ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write), [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)), so any acknowledged write the
 > reopen's recovery does not hold, torn tail included, is one the generation
 > already counts; the reopen drops the failed records by the process's list and
-> never raises it again. The generation stays monotonic across the close and
+> raises it for none of them. The generation stays monotonic across the close and
 > the open because the process keeps it per journal directory. Overturned if a reopen can lose open state,
 > or if any entry into read-only can drop an acknowledged write without
 > raising the generation.
@@ -1292,8 +1292,8 @@ inputs:
   the same process changes the verifier though neither the node nor the process
   did;
 - the **loss generation** of the journal holding the file ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), which the
-  journal raises on every loss of an extent not yet offloaded and on every sync
-  window it fails ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)), and on nothing else: a loss of content the remote
+  journal raises on every loss of an extent not yet offloaded, on every sync
+  window it fails ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)) and once as it turns read-only ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)), and on nothing else: a loss of content the remote
   tier already holds makes no client resend.
 
 It changes whenever an acknowledged but unstable write might have been lost —
@@ -3223,7 +3223,7 @@ The engine raises these [RFC 25 §3.9](rfc-25-observability.md#3.9%20The%20condi
 `file_offload_failing` (share, naming the file), `existence_commit_failing`
 (share, naming the file, [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)), `offload_age_exceeded` (share,
 [§11.4](#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable)), `removal_stalled` (share, naming the file, [§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)),
-`work_queue_stalled` (journal, naming the source and tenant, [§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)), `journal_read_only` (journal, naming the error that entered it, or the check or reopen that keeps it, [RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write): the error and the check from the journal's `ReadOnly` ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), the reopen's refusal from `Open`'s error, the journal being closed),
+`work_queue_stalled` (journal, naming the source and tenant, [§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)), `journal_read_only` (journal, naming the error that entered it, or the check or reopen that keeps it, [RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write); the error and the check come from the journal's `ReadOnly` ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), and a refused reopen's cause from `Open`'s error, since the journal is then closed),
 `journal_unsuitable` (journal, naming the directory and what refused the latest
 open or late attach, the rule or another cause, until the late attach serves, [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)),
 `journal_lost` (journal, when a retried open finds the journal missing or

@@ -931,7 +931,7 @@ threshold stays open: sealing it would cost a footer and a new segment every
 **Recovery does not trust a tail it cannot prove synced.** After the process
 died but the host did not, records written and never synced are still in the
 operating system's cache: they verify at reopen, and a later power loss takes
-them. So in the newest segment of each stream, unless a seal marker that verifies on the device ends it ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), every record past the highest
+them. So in the newest segment of each stream, unless a seal marker proven on the device follows its last record ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), every record past the highest
 synced-through offset any verifying record names ([§2.3](#2.3%20Records)) — past the last point
 a sync is proven to have reached — is **verified in place** before the journal
 serves: the journal syncs the segment, then re-reads each such record bypassing
@@ -945,7 +945,8 @@ then synced; one that verified at neither read is dropped by
 read that fails ([§3.3](#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify)). Once its tail is proven, the segment is sealed after its last verifying
 record, unless its sync failed ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)), recovery ends it instead (a torn header above, a torn slot in [§3.3](#3.3%20Torn%20and%20corrupt%20records)), or it holds an unread record. The re-appends draw on the repack reserve ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), never on a share's
 limit, so a journal opened at its maximum after the process was killed still
-opens. The cost is one sync and one read of the writes past the last proven
+opens. The cost, with the sync and 32-byte read that prove a seal marker no
+successor names ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), is one sync and one read of the writes past the last proven
 sync point per stream — at most one sync bound's worth, besides the segments recovery
 ends ([§3.3](#3.3%20Torn%20and%20corrupt%20records)) — and it makes "verified at open" mean "on the device"; in the
 common case it re-appends nothing, and leaves no duplicate copies behind.
@@ -1021,12 +1022,12 @@ such a marker, a zero slot included, is corruption, not a torn slot or torn tail
 cache.** Its seal may never have made it durable: the process died before the
 seal's second sync, or that sync failed, the journal turned read-only and it is
 reopened in place ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)), by the same process over the same cache. Read
-through the cache, the marker verifies, recovery takes the segment as sealed and
-the stream's next segment names it; a power loss then leaves a named segment
-with no marker, reported as damaged though no record was lost. So recovery
-syncs such a segment and re-reads its marker bypassing the page cache, as it
-verifies an unproven tail ([§3.1](#3.1%20Rebuilding)), and only a marker that verifies there ends the
-segment. One that does not, or whose segment's sync fails, is treated as
+through the cache, the marker verifies, recovery trusts it, and a later segment
+of the stream may name the segment as its predecessor; a power loss then leaves a named segment
+with no marker, reported as damaged though no record was lost. Such a segment is one that could have been open at a crash ([§2.2](#2.2%20Segments)),
+whether or not its stream went on in another. So recovery syncs it and re-reads
+its marker bypassing the page cache, as it verifies an unproven tail ([§3.1](#3.1%20Rebuilding)),
+and only a marker that verifies there proves the seal. One that does not, or whose segment's sync fails, is treated as
 absent: the segment is unsealed, its tail is verified as [§3.1](#3.1%20Rebuilding) gives, and the
 marker is part of its torn tail. A read through the cache after that sync
 succeeds proves nothing more: after a failed sync, a later one can succeed
