@@ -114,7 +114,7 @@ func (n Namespace) rename(tx kv.Txn, id entity.Identity, from entity.Handle, fro
 	// A file stays in its project, but a project's root, a directory in a
 	// project its parent is not in, may move to any directory in none.
 	root := child.Project != sd.Project
-	if child.Project != dd.Project && !(root && dd.Project == 0) {
+	if child.Project != dd.Project && (!root || dd.Project != 0) {
 		return Orphaned{}, entity.ErrCrossProject
 	}
 	moved := child.IsDir() && sd.ID != dd.ID
