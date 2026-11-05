@@ -190,3 +190,57 @@ func newRoot(tx kv.Txn, s entity.Share) entity.File {
 		Version: nextFileVersion(tx, entity.JournalVersion{}), Number: rootNumber, Shard: uint64(s.Shard),
 	}
 }
+
+// SetProject makes the empty directory h the root of a new project, a tree
+// quota, and returns its number; every file created below it inherits it. On
+// a project's root it returns that project and writes nothing, so a lost
+// reply can be retried. Only a privileged caller makes one. A directory with
+// an entry is refused not empty, its entries guarded so a create racing this
+// either lands first and refuses it or lands after and inherits the project;
+// a directory inside another project is refused invalid, as projects do not
+// nest.
+//
+// decision: a project is numbered by its root's file number, which is unique
+// in the share and never reused, so it needs no allocator of its own. A
+// project outlives its root and its number stays taken with it. Overturned if
+// a project must be numbered apart from any file, as one made without a root
+// would be.
+func (f Files) SetProject(ctx context.Context, id entity.Identity, h entity.Handle) (project uint64, err error) {
+	if !id.Privileged {
+		return 0, merrs.NewPrivilegeRequiredError("set project")
+	}
+	err = f.s.kv.Update(ctx, func(tx kv.Txn) error {
+		share, _, err := h.Parse()
+		if err != nil {
+			return err
+		}
+		_, d, err := resolveIn(tx, share, h)
+		switch {
+		case err != nil:
+			return err
+		case !d.IsDir():
+			return merrs.NewInvalidArgumentError("a project's root is a directory")
+		case d.Project != 0 && d.Project == d.Number:
+			project = d.Project
+			return nil
+		case d.Project != 0:
+			return merrs.NewInvalidArgumentError("projects do not nest")
+		}
+		if err := provedEmpty(tx, d); err != nil {
+			return err
+		}
+		stored := d.Version
+		if _, _, err := foldDeltas(tx, &d, -1); err != nil {
+			return err
+		}
+		next := d
+		next.Project = d.Number
+		changed(tx, &next)
+		if err := chargeFile(tx, share, &d, &next); err != nil {
+			return err
+		}
+		project = next.Project
+		return putFile(tx, stored, next)
+	})
+	return project, err
+}

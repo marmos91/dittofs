@@ -8,6 +8,7 @@ import (
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
 	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -159,9 +160,13 @@ func creating(dir vfs.Handle) lockorder.Set {
 }
 
 // createLocked is a create of name in dir for op, holding creating's locks:
-// the add right and open state's refusal of a delete-pending dir, then the
-// store's create of a file with ID id, or one the store draws when id is
-// zero.
+// the add right and open state's refusal of a delete-pending dir, then one
+// inode reserved, charged to the new file's owner and group, unless name is
+// already in dir, where the create adds no file and the store answers the
+// file an exclusive create's retry made, or ErrExist, and a check for name
+// failing for any other cause fails the create; then the store's create of a
+// file with ID id, or one the store draws when id is zero. The locks held
+// keep any other call from adding name between the two.
 func (fs *Filesystem) createLocked(ctx context.Context, a *admitted, c vfs.Call, op vfs.Op, dir vfs.Handle, name []byte, ca vfs.CreateArgs, id entity.FileID) (vfs.CreateResult, error) {
 	nf, err := newFile(ca)
 	if err != nil {
@@ -169,8 +174,25 @@ func (fs *Filesystem) createLocked(ctx context.Context, a *admitted, c vfs.Call,
 	}
 	nf.ID = id
 	var r vfs.CreateResult
-	if err := fs.addable(ctx, a, c, op, dir, name, addRight(nf.Type), &r.Dir); err != nil {
+	d, err := fs.addable(ctx, a, c, op, dir, name, addRight(nf.Type), &r.Dir)
+	if err != nil {
 		return r, err
+	}
+	if _, _, err := fs.meta.Namespace().Lookup(ctx, a.caller.Identity, dir, name); err != nil {
+		if !merrs.IsNotFoundError(err) {
+			return vfs.CreateResult{}, storeErr(err)
+		}
+		owner, err := fs.newOwner(ctx, a, d, ca)
+		if err != nil {
+			return vfs.CreateResult{}, err
+		}
+		// The inode is charged in the create's own transaction, so its
+		// reservation is released once that has answered.
+		res, err := fs.reserve(ctx, a, owner, entity.Usage{Files: 1})
+		if err != nil {
+			return vfs.CreateResult{}, err
+		}
+		defer res.Release()
 	}
 	r.Handle, r.File, err = fs.meta.Namespace().Create(ctx, a.caller.Identity, dir, name, nf)
 	if err != nil {
@@ -213,7 +235,7 @@ func (fs *Filesystem) Link(ctx context.Context, c vfs.Call, dir vfs.Handle, name
 	}
 	defer unlock()
 	r := vfs.CreateResult{Handle: target}
-	if err := fs.addable(ctx, a, c, vfs.OpLink, dir, name, entity.AddFile, &r.Dir); err != nil {
+	if _, err := fs.addable(ctx, a, c, vfs.OpLink, dir, name, entity.AddFile, &r.Dir); err != nil {
 		return r, err
 	}
 	if err := fs.meta.Namespace().Link(ctx, a.caller.Identity, dir, name, target); err != nil {
@@ -408,7 +430,7 @@ func (fs *Filesystem) renameLocked(ctx context.Context, a *admitted, c vfs.Call,
 		r.From.After, r.To.After = fs.attrs(ctx, a, from.H), fs.attrs(ctx, a, to)
 		return r, false, nil
 	}
-	if err := fs.addable(ctx, a, c, vfs.OpRename, to, toName, addRight(src.Type), &r.To); err != nil {
+	if _, err := fs.addable(ctx, a, c, vfs.OpRename, to, toName, addRight(src.Type), &r.To); err != nil {
 		return vfs.RenameResult{}, false, err
 	}
 	if err := onSession(c, from.Open); err != nil {
@@ -471,22 +493,22 @@ func (fs *Filesystem) admitChange(ctx context.Context, c vfs.Call, h vfs.Handle)
 // addable is the checks before a name is added in dir, in their order: the
 // add right on dir, so a caller without it is refused that whatever else
 // holds, then open state, which refuses a delete-pending dir. It reads dir
-// under its accept lock, its attributes kept as w's Before.
-func (fs *Filesystem) addable(ctx context.Context, a *admitted, c vfs.Call, op vfs.Op, dir vfs.Handle, name []byte, want vfs.Access, w *vfs.WCC) error {
+// under its accept lock and answers it, its attributes kept as w's Before.
+func (fs *Filesystem) addable(ctx context.Context, a *admitted, c vfs.Call, op vfs.Op, dir vfs.Handle, name []byte, want vfs.Access, w *vfs.WCC) (vfs.File, error) {
 	if err := fs.authz.Decide(ctx, a.caller, op, dir, nil, name, want|entity.Execute); err != nil {
-		return storeErr(err)
+		return vfs.File{}, storeErr(err)
 	}
 	d, err := fs.meta.Files().Get(ctx, a.caller.Identity, dir)
 	if err != nil {
-		return storeErr(err)
+		return vfs.File{}, storeErr(err)
 	}
 	if err := fs.checks.CheckChange(ctx, a.who(), keyOf(d), nil, openstate.ChangeAddEntry); err != nil {
-		return openErr(err)
+		return vfs.File{}, openErr(err)
 	}
 	if c.Protocol != entity.ProtocolNFSv3 {
 		w.Before = &d
 	}
-	return nil
+	return d, nil
 }
 
 // unlinkDurable runs remove, the store's unlink or rename taking a name of

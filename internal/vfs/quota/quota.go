@@ -1,0 +1,458 @@
+// Package quota is the filesystem's one enforcer of quotas. A write that
+// grows a file, a create, and an owner or group change, reserves what it
+// adds before anything is staged, an owner or group change moving with it
+// what the file's writes hold reserved; the reservation is judged against
+// every quota covering it, the share's, the project's, the owner's and the
+// group's, in that order, and held in memory until the commit that charges
+// it lands or the write is dropped. It reads the store only through Store,
+// and emits each quota event where it decides.
+package quota
+
+import (
+	"context"
+	"slices"
+	"sync"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/vfs"
+)
+
+// Target is what one quota limits in a share: a user or group, a project,
+// or, with neither set, the share itself.
+type Target struct {
+	Principal entity.Principal
+	Project   uint64
+}
+
+// Store is what quota reads: a target's limits and when its usage first went
+// above its soft limit, zero when it is not above it; its committed usage,
+// unfolded changes included; and the one write, SoftExceeded, which records
+// whether usage is above the soft limit and answers since when.
+type Store interface {
+	Quota(ctx context.Context, share entity.ShareID, t Target) (q entity.Quota, since time.Time, err error)
+	Usage(ctx context.Context, share entity.ShareID, t Target) (entity.Usage, error)
+	SoftExceeded(ctx context.Context, share entity.ShareID, t Target, above bool) (since time.Time, err error)
+}
+
+// Charge is whom a reservation charges: the file's owner and group, or for a
+// create the new file's, and the project it is in. File is the file the
+// reservation is kept under until it is released, so an owner or group
+// change finds it; a create's names none.
+type Charge struct {
+	Share        entity.ShareID
+	Owner, Group entity.Principal
+	Project      uint64
+	File         entity.FileID
+}
+
+// Quotas holds every reservation made on this node and not yet released.
+type Quotas struct {
+	store Store
+	emit  func(context.Context, vfs.QuotaEvent)
+
+	mu      sync.Mutex
+	held    map[slot]entity.Usage
+	byFile  map[entity.FileID][]*Reservation // every reservation not yet released, under the file it names
+	expired map[slot]time.Time               // the soft-limit crossing whose grace expiry has been emitted
+	// above is whether this node last found each quota above its soft
+	// limit; a quota it has not judged is as the store records it.
+	//
+	// ponytail: an entry stays once a quota has crossed its soft limit, so
+	// the map holds one per quota ever crossed on this node. Drop entries
+	// with no reservation held once the count of quotas makes that show.
+	above map[slot]bool
+}
+
+type slot struct {
+	share entity.ShareID
+	t     Target
+}
+
+// New is quota over s, emitting each event to emit, which never blocks.
+func New(s Store, emit func(context.Context, vfs.QuotaEvent)) *Quotas {
+	return &Quotas{store: s, emit: emit, held: map[slot]entity.Usage{}, byFile: map[entity.FileID][]*Reservation{}, expired: map[slot]time.Time{}, above: map[slot]bool{}}
+}
+
+// Reservation is one write's, create's or owner change's reservation.
+// Release returns it, once whatever how many times it is called; a nil one
+// holds nothing.
+type Reservation struct {
+	q     *Quotas
+	file  entity.FileID
+	slots []scoped // the quotas it is held against; moved by a Rehome
+	add   entity.Usage
+	done  bool   // released; under q.mu
+	moved []move // a Rehome's: the writes it moved, each with the quotas it was held against before
+}
+
+// scoped is one quota a reservation is held against, and its scope.
+type scoped struct {
+	scope vfs.QuotaScope
+	slot
+}
+
+// move is one reservation a Rehome moved, and the quotas it left.
+type move struct {
+	r    *Reservation
+	from []scoped
+}
+
+// Release returns the reservation.
+func (r *Reservation) Release() {
+	if r == nil {
+		return
+	}
+	r.q.mu.Lock()
+	defer r.q.mu.Unlock()
+	r.q.release(r)
+}
+
+// Revert, for a Rehome whose change did not apply, moves every reservation
+// it moved and not yet released back to the quotas it left, then releases
+// the Rehome's own.
+func (r *Reservation) Revert() {
+	if r == nil {
+		return
+	}
+	r.q.mu.Lock()
+	defer r.q.mu.Unlock()
+	if r.done {
+		return
+	}
+	for _, m := range r.moved {
+		if !m.r.done {
+			r.q.unhold(m.r)
+			m.r.slots = m.from
+			r.q.hold(m.r)
+		}
+	}
+	r.q.release(r)
+}
+
+// release returns r, once, and drops it from its file's. The caller holds mu.
+func (q *Quotas) release(r *Reservation) {
+	if r.done {
+		return
+	}
+	r.done = true
+	q.unhold(r)
+	rs := slices.DeleteFunc(q.byFile[r.file], func(o *Reservation) bool { return o == r })
+	if len(rs) == 0 {
+		delete(q.byFile, r.file)
+	} else {
+		q.byFile[r.file] = rs
+	}
+}
+
+// hold adds r to what its quotas hold; unhold takes it off. The caller
+// holds mu.
+func (q *Quotas) hold(r *Reservation) {
+	for _, s := range r.slots {
+		q.held[s.slot] = plus(q.held[s.slot], r.add)
+	}
+}
+
+func (q *Quotas) unhold(r *Reservation) {
+	for _, s := range r.slots {
+		if u := minus(q.held[s.slot], r.add); u == (entity.Usage{}) {
+			delete(q.held, s.slot)
+		} else {
+			q.held[s.slot] = u
+		}
+	}
+}
+
+// judged is one quota covering a reservation, as read before it is decided.
+type judged struct {
+	scope vfs.QuotaScope
+	slot  slot
+	lim   entity.Quota
+	since time.Time
+	used  entity.Usage
+}
+
+// Reserve reserves add, charged to c, for writer, judging it against every
+// quota covering c in scopes, in the scopes' order: share, project, user,
+// group; no scopes names all four. The reservation holds only the scopes it
+// judged, and is kept under c.File until released. A quota refuses when what
+// is committed, plus what this node holds reserved, plus add, passes its hard
+// limit, or its soft limit once its grace has run from when usage first went
+// above it; the first refusing scope is answered as a *vfs.QuotaError, and a
+// hard refusal emitted. An admitted reservation
+// emits the advisory and soft-limit crossings it makes and, when it finds
+// usage back under a soft limit recorded as exceeded, clears the record. A
+// zero add reserves nothing and answers a nil reservation.
+//
+// Usage is read before the reservations are, so a commit landing between
+// the two, its reservation released, is counted by neither: a hard limit is
+// passed by at most what commits concurrently add.
+//
+// decision: a principal with no quota of its own has no limit, as the store
+// keeps no default per kind for it to fall back on. Read the share's default
+// for the principal's kind once the store keeps one.
+//
+// ponytail: no reservation is refused for slack, as every primary of a share
+// is this one node, where slack bounds nothing. Refuse ErrDelay (DelayCommit)
+// past each primary's slack once a quota's writers can span primaries.
+//
+// ponytail: each reservation reads every covering quota's record and, for
+// each that limits, the share's usage, on the write path. Cache the limits
+// per share, dropped when one is set, when a write profile shows the reads.
+func (q *Quotas) Reserve(ctx context.Context, writer vfs.Identity, c Charge, add entity.Usage, scopes ...vfs.QuotaScope) (*Reservation, error) {
+	if add == (entity.Usage{}) {
+		return nil, nil
+	}
+	return q.reserve(ctx, writer, c, add, false, scopes)
+}
+
+// Rehome, for a change of c.File's owner or group, under the file's
+// admission lock, reserves add, the file's committed charge and its one
+// inode, charged to c, the owner and group it moves to, and moves there
+// every reservation still kept under the file, judging add and those
+// together against the quotas of scopes alone: the user scope for a new
+// owner, the group scope for a new group. Each write's reservation it moves
+// is still released by that write's Done, now from the new owner and
+// group, so a write staged before the change, a hole fill or an overwrite
+// whose charge no size shows included, counts against them. Refused, it
+// moves nothing. Admitted, its Release keeps the moves once the change has
+// applied, and its Revert moves them back when it did not.
+//
+// It reads the quotas' committed usage, unfolded changes included, from the
+// store before taking the tracker's mutex, which every Release takes too, so
+// no Release waits on a store read. Under the mutex it only reads what is
+// kept under the file, judges in memory and moves, so no Release lands
+// between that read, the judgement and the move.
+func (q *Quotas) Rehome(ctx context.Context, writer vfs.Identity, c Charge, add entity.Usage, scopes ...vfs.QuotaScope) (*Reservation, error) {
+	return q.reserve(ctx, writer, c, add, true, scopes)
+}
+
+// reserve is Reserve, and with rehome Rehome.
+func (q *Quotas) reserve(ctx context.Context, writer vfs.Identity, c Charge, add entity.Usage, rehome bool, scopes []vfs.QuotaScope) (*Reservation, error) {
+	covering := []struct {
+		scope vfs.QuotaScope
+		t     Target
+		ok    bool
+	}{
+		{vfs.QuotaShare, Target{}, true},
+		{vfs.QuotaProject, Target{Project: c.Project}, c.Project != 0},
+		{vfs.QuotaUser, Target{Principal: c.Owner}, !c.Owner.IsZero()},
+		// A group that is also the owner, as a privileged caller may make
+		// it, is charged once, as the store charges it.
+		{vfs.QuotaGroup, Target{Principal: c.Group}, !c.Group.IsZero() && c.Group != c.Owner},
+	}
+	r := &Reservation{q: q, file: c.File, add: add}
+	var js []judged
+	for _, s := range covering {
+		if !s.ok || len(scopes) > 0 && !slices.Contains(scopes, s.scope) {
+			continue
+		}
+		sl := slot{c.Share, s.t}
+		r.slots = append(r.slots, scoped{s.scope, sl})
+		lim, since, err := q.store.Quota(ctx, c.Share, s.t)
+		if err != nil {
+			return nil, err
+		}
+		if lim.Unlimited() {
+			continue
+		}
+		used, err := q.store.Usage(ctx, c.Share, s.t)
+		if err != nil {
+			return nil, err
+		}
+		js = append(js, judged{s.scope, sl, lim, since, used})
+	}
+	now := time.Now()
+	before, expired, flipped, refused, res, add := q.decide(js, r, rehome, now)
+	for _, i := range expired {
+		q.event(ctx, js[i], vfs.QuotaGraceExpired, overSoft(js[i].lim, before[i]), before[i], now, vfs.Identity{})
+	}
+	if refused >= 0 {
+		j := js[refused]
+		q.event(ctx, j, vfs.QuotaHardRefused, res, before[refused], now, writer)
+		return nil, &vfs.QuotaError{Scope: j.scope}
+	}
+	for i, j := range js {
+		after := plus(before[i], add)
+		if res, over := passes(after, j.lim.Advisory); over {
+			if _, was := passes(before[i], j.lim.Advisory); !was {
+				q.event(ctx, j, vfs.QuotaAdvisoryCrossed, res, after, now, vfs.Identity{})
+			}
+		}
+		if !flipped[i] {
+			continue
+		}
+		res, above := passes(after, j.lim.Soft)
+		// A record that fails to be written is forgotten here, so the next
+		// check judges against the store's record and writes it; the
+		// reservation stands either way.
+		//
+		// ponytail: the flip is decided under the mutex and written after
+		// it, so two opposite flips of one quota, racing, can reach the
+		// store in the other order: memory left above the soft limit and
+		// the store not, no later reservation flips it again, and its grace
+		// never starts until a restart rereads the store or usage crosses
+		// back. Write each flip with the sequence it was decided at, the
+		// store keeping the latest, or serialise the writes per quota,
+		// once a soft limit is seen unenforced past its grace.
+		since, err := q.store.SoftExceeded(ctx, c.Share, j.slot.t, above)
+		if err != nil {
+			q.mu.Lock()
+			delete(q.above, j.slot)
+			q.mu.Unlock()
+			continue
+		}
+		if above {
+			j.since = since
+			q.event(ctx, j, vfs.QuotaSoftExceeded, res, after, now, vfs.Identity{})
+		} else {
+			q.event(ctx, j, vfs.QuotaBackUnder, overSoft(j.lim, before[i]), after, now, vfs.Identity{})
+		}
+	}
+	return r, nil
+}
+
+// decide judges js, in order, under the lock every reservation is made
+// under, and adds r to what is held unless one refuses: before is each
+// quota's usage with what this node holds reserved, without r; expired the
+// quotas whose grace has run, each named once per crossing; refused the first
+// that refuses r, -1 for none, and res the resource it refuses on. With
+// rehome, add is r's plus every reservation kept under r's file, judged
+// together, and those are moved to r's quotas when admitted; otherwise add
+// is r's, and r is kept under its file. Admitted, flipped marks the quotas
+// add takes across their soft limit, either way, each crossing claimed by
+// one reservation alone; one going back under forgets its grace expiry.
+func (q *Quotas) decide(js []judged, r *Reservation, rehome bool, now time.Time) (before []entity.Usage, expired []int, flipped []bool, refused int, res vfs.QuotaResource, add entity.Usage) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	add = r.add
+	var writes []*Reservation
+	if rehome {
+		writes = q.byFile[r.file]
+		for _, w := range writes {
+			add = plus(add, w.add)
+		}
+	}
+	for i, j := range js {
+		b := plus(j.used, q.held[j.slot])
+		before = append(before, b)
+		if graceRun(j, now) && q.expired[j.slot] != j.since {
+			q.expired[j.slot] = j.since
+			expired = append(expired, i)
+		}
+		if res, over := passes(plus(b, add), hard(j, now)); over {
+			return before, expired, nil, i, res, add
+		}
+	}
+	q.hold(r)
+	for _, w := range writes {
+		r.moved = append(r.moved, move{w, w.slots})
+		q.unhold(w)
+		w.slots = rehomed(w.slots, r.slots)
+		q.hold(w)
+	}
+	if !rehome && r.file != (entity.FileID{}) {
+		q.byFile[r.file] = append(q.byFile[r.file], r)
+	}
+	flipped = make([]bool, len(js))
+	for i, j := range js {
+		_, above := passes(plus(before[i], add), j.lim.Soft)
+		was, ok := q.above[j.slot]
+		if !ok {
+			was = !j.since.IsZero()
+		}
+		if above == was {
+			continue
+		}
+		q.above[j.slot], flipped[i] = above, true
+		if !above {
+			delete(q.expired, j.slot)
+		}
+	}
+	return before, expired, flipped, -1, 0, add
+}
+
+// rehomed is from with each of to's quotas in place of from's of the same
+// scope, or added where from has none of it.
+func rehomed(from, to []scoped) []scoped {
+	out := slices.Clone(from)
+	for _, t := range to {
+		if i := slices.IndexFunc(out, func(s scoped) bool { return s.scope == t.scope }); i >= 0 {
+			out[i] = t
+		} else {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// graceRun reports whether j's soft limit is enforced as its hard one: usage
+// went above it, and the grace has run since.
+func graceRun(j judged, now time.Time) bool {
+	return !j.since.IsZero() && !now.Before(j.since.Add(j.lim.Grace))
+}
+
+// hard is the limit j refuses past: its hard limit, and, once its grace has
+// run, its soft limit where that is tighter.
+func hard(j judged, now time.Time) entity.Limit {
+	l := j.lim.Hard
+	if graceRun(j, now) {
+		l.Bytes, l.Files = tighter(l.Bytes, j.lim.Soft.Bytes), tighter(l.Files, j.lim.Soft.Files)
+	}
+	return l
+}
+
+// tighter is the lower of two limits, where zero limits nothing.
+func tighter(a, b int64) int64 {
+	if a == 0 || b != 0 && b < a {
+		return b
+	}
+	return a
+}
+
+// passes reports whether u passes l in either count, and which; a zero count
+// limits nothing. Bytes are judged first.
+func passes(u entity.Usage, l entity.Limit) (vfs.QuotaResource, bool) {
+	switch {
+	case l.Bytes > 0 && u.Bytes > l.Bytes:
+		return vfs.QuotaBytes, true
+	case l.Files > 0 && u.Files > l.Files:
+		return vfs.QuotaFiles, true
+	}
+	return 0, false
+}
+
+// overSoft is the resource a soft limit counts that u is judged in: the one
+// it passes, else bytes when it limits bytes, else files.
+func overSoft(l entity.Quota, u entity.Usage) vfs.QuotaResource {
+	if r, over := passes(u, l.Soft); over {
+		return r
+	}
+	if l.Soft.Bytes > 0 {
+		return vfs.QuotaBytes
+	}
+	return vfs.QuotaFiles
+}
+
+// event emits one event on j's quota, judged in resource r at usage u.
+func (q *Quotas) event(ctx context.Context, j judged, kind vfs.QuotaEventKind, r vfs.QuotaResource, u entity.Usage, now time.Time, writer vfs.Identity) {
+	e := vfs.QuotaEvent{
+		Time: now, Share: j.slot.share, Scope: j.scope, Subject: j.slot.t.Principal, Project: j.slot.t.Project,
+		Resource: r, Kind: kind, Used: u.Bytes, Soft: j.lim.Soft.Bytes, Hard: j.lim.Hard.Bytes, Writer: writer,
+	}
+	if r == vfs.QuotaFiles {
+		e.Used, e.Soft, e.Hard = u.Files, j.lim.Soft.Files, j.lim.Hard.Files
+	}
+	if !j.since.IsZero() {
+		e.GraceEnd = j.since.Add(j.lim.Grace)
+	}
+	q.emit(ctx, e)
+}
+
+func plus(a, b entity.Usage) entity.Usage {
+	return entity.Usage{Bytes: a.Bytes + b.Bytes, Files: a.Files + b.Files}
+}
+
+func minus(a, b entity.Usage) entity.Usage {
+	return entity.Usage{Bytes: a.Bytes - b.Bytes, Files: a.Files - b.Files}
+}

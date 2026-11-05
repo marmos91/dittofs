@@ -48,10 +48,17 @@ type fakeContent struct {
 	commits []entity.Extent
 	// committing, when set, runs as Commit is called, before it syncs.
 	committing func(entity.FileID)
+	// existence, when set, runs as CommitExistence is called, and is its
+	// answer; otherwise nothing commits.
+	existence func(entity.FileID) error
 	// readErr, when set, is answered by every Read after the bytes it read.
 	readErr error
 	// reading, when set, runs as Read is called, before it reads anything.
 	reading func(entity.FileID)
+	// hold, when set, keeps each accepted write's Done in dones, uncalled,
+	// as for a write whose commit has not landed; otherwise Write calls it.
+	hold  bool
+	dones []func()
 }
 
 var _ Content = (*fakeContent)(nil)
@@ -110,6 +117,10 @@ func (c *fakeContent) Write(ctx context.Context, share entity.ShareID, f entity.
 	ov := c.staged(f)
 	ov.Size = max(ov.Size, off+int64(len(p)))
 	c.overlays[f] = ov
+	if c.hold {
+		c.dones = append(c.dones, o.Done)
+		o.Done = nil
+	}
 	c.mu.Unlock()
 	if o.Done != nil {
 		o.Done()
@@ -131,6 +142,33 @@ func (c *fakeContent) Commit(ctx context.Context, share entity.ShareID, f entity
 	}
 	c.commits = append(c.commits, entity.Extent{Offset: off, Length: n})
 	return c.synced, c.loss, nil
+}
+
+// CommitExistence runs existence, and once it succeeds calls the Done of
+// every write held before it ran, as the commit charging them would,
+// leaving held those of writes staged while it ran.
+func (c *fakeContent) CommitExistence(ctx context.Context, share entity.ShareID, f entity.FileID) error {
+	if c.existence == nil {
+		return nil
+	}
+	c.mu.Lock()
+	if err := c.placed(share, f); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	n := len(c.dones)
+	c.mu.Unlock()
+	if err := c.existence(f); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	done := c.dones[:n:n]
+	c.dones = c.dones[n:]
+	c.mu.Unlock()
+	for _, d := range done {
+		d()
+	}
+	return nil
 }
 
 func (c *fakeContent) LossSeq(share entity.ShareID, f entity.FileID) uint64 {
