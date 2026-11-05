@@ -84,7 +84,7 @@ a clone rebuilt at start; `Unbind`'s and `Close`'s join of clones; the fake jour
 
 ### 1.3 Names used here
 
-- **E1**, epic 1, interfaces: `pkg/block/enginev2`'s exported surface, `Deps` and its
+- **E1**, epic 1, interfaces: `pkg/block/engine`'s exported surface, `Deps` and its
   interfaces, frozen at S1.
 - **E2**, epic 2, red e2e suite and test foundations: `engine-conformance` with its
   `known.yaml`, the fixture over the real journal, `kvstore` and the real open-state table,
@@ -139,15 +139,15 @@ a clone rebuilt at start; `Unbind`'s and `Close`'s join of clones; the fake jour
    passes to the journal or the store is asserted where they read it, over the real journal
    and `kvstore`, not where the engine builds it.
 6. **Known failures shrink.** An e2e test that turns green leaves the suite's `known.yaml`
-   (`test/enginev2/known.yaml`) in the same change: `dt` fails the run if a listed test
+   (`test/engine/known.yaml`) in the same change: `dt` fails the run if a listed test
    passes, so the change that turns it green removes it, a journal pull request included. A
    test over the real journal that starts red sits in that suite behind its build tag, never
    in `unit`, which keeps no known list.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1, enforced by
-   the engine's one import test, a walk over every package of `pkg/block/enginev2` with
-   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/engine`,
-   `pkg/block/journal`, `pkg/block/syncer`, `pkg/block/carver`, `pkg/block/remote` or the
-   v1 metadata service `pkg/metadata`. The walk checks every package on its own, so its
+   the engine's one import test, a walk over every package of `pkg/block/engine` with
+   one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/syncer`,
+   `pkg/block/carver`, `pkg/block/remote` or the v1 metadata service `pkg/metadata`; v1's
+   engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
    allowlist names each package an exception applies to, test packages included. v1 is not
    touched: it is deleted at the cutover.
 8. **Real dependencies for properties of those dependencies.** No fake stands in for a
@@ -170,7 +170,7 @@ a clone rebuilt at start; `Unbind`'s and `Close`'s join of clones; the fake jour
     stays a review rule.
 11. **A symbol is exported only if the RFC's interface uses it.** Everything exported is
     frozen at S1. Helpers the engine's own files need stay unexported or move to an
-    `internal/` package of `enginev2`.
+    `internal/` package of `engine`.
 12. **Each subtask creates only what it declares.** No empty package and no stub without a
     caller. A package, an option or a test helper lands with its first consumer.
 
@@ -417,7 +417,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 ## 5. Target tree
 
 ```text
-pkg/block/enginev2/
+pkg/block/engine/
   types.go          T8.1  Share.Namespace (D2)
   clone.go          T8.1  admission, the registrations and their checks (D2, D3, D4)
                     T8.2  sizing, Reserve, CloneTarget, the copies, the sync, phase 1 (D5, D6, D8, D13)
@@ -437,7 +437,7 @@ pkg/block/enginev2/
   engine.go         T8.4  Close's cancel and join of clones
   start.go          T8.6  a clone rebuilt from its marker or its Removal record (D10), its Served wait (D11)
   export_test.go    T8.1  hooks: the registrations, the admitted count; T8.2 the faked done signal; T8.4 the done memory
-  enginev2test/
+  enginetest/
     fake.go         T8.2  CloneTarget, Reserve, Reservation, Since's clone marker
 ```
 
@@ -754,6 +754,6 @@ A suggestion only: one pull request per subtask works as well.
    `ErrDelay` between two batches, the destination equal to the source at the clone's start,
    a same-file disjoint clone completing, the source released only after the clone) runs in
    this part. T8.1, T8.3 and T8.4 test each piece; E2's catalogue could carry it adapted.
-8. **No row over the real journal turns green in this epic.** `journalv2`'s `CloneTarget`,
+8. **No row over the real journal turns green in this epic.** `journal`'s `CloneTarget`,
    `Reserve` and `Reservation` answer `ErrNotImplemented`, and E2's fixture composes the
    engine through `Start`. R33 to R40 leave `known.yaml` once the journal builds them.
