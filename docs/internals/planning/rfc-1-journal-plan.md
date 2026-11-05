@@ -61,7 +61,7 @@ Epic 1 is **interfaces only**. Its output is code that compiles and does nothing
   `Init`, `Open`, `Restamp`, `Journal`, `Handle`, `Reservation`, and every method in
   §3.1–§3.11, §4.3 (`Draw`, `SetVersionLimit`), §4.4 (inspection) and §7.2 (`Repack`).
   It also means every value type (`FileID`, `Extent`, `Held`, `Version`, `ShareTag`,
-  `SyncPolicy`, `Offer`, `Change`, `CloneSpec`, `RepackScope`, `Stats`, …) and the error
+  `Offer`, `Change`, `CloneSpec`, `RepackScope`, `Stats`, …) and the error
   set (`ErrNoSpace` carrying which limit refused, the stale-fill error, closed, forgotten,
   …).
 - **The storage seam** (RFC 1 §1.3): `storage.FS`, `storage.File` and `WithStorage`. It
@@ -256,9 +256,9 @@ run is a failure ([RFC index, test tiers](../rfcs/rfc-index.md)).
 | 3 | **On-disk format and platform layer** ⛔ | RFC 28 codecs, golden vectors, CRC32C, `format` file replace, per-OS sync, allocation, direct I/O and CoW checks; declares `internal/format` and `internal/platform`; the conformance tests that need them | 12 | A | 5, 7 |
 | 4 | **Placement index and versions** ⛔ | Per-file B-tree, held, retained and marker sets, precedence, sequence and version counters, version limit, floor buckets, extent bound, drop ranges, per-segment bytes | 11 | B | 7, 8, 9 |
 | 5 | **Segments, streams and accounting** ⛔ | Segment lifecycle, spare pool, append streams, seal, catalog and free tail, recycle and unlink, descriptor cache, storage guard, footprint accounting | 11 | A | 6, 7, 8 |
-| 6 | **Durability and loss** | `Sync`, group commit, `bounded` and `standard` policies and timer, failed-sync windows (re-append or fail), loss records, the loss ring and generation | 10 | A | 7 (loss records), 8 (Sync), 11 |
-| 7 | **Recovery and identity** | `Init`, `Open`, `Restamp`, rebuild by catalog and by scan, torn vs corrupt, unproven-tail re-verify, offload-state rebuild, stale rule, spare re-adoption, inspection and verify | 12 | A | 8 (corruption), 9 (corruption), 10, 11 |
-| 8 | **Data path and capacity** ⛔ | `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 13 | B | 9, 11 |
+| 6 | **Durability and loss** | `Sync`, group commit, the sync-bound timer, failed-sync windows (re-append or fail), loss records, the loss ring and generation, the read-time corruption rule | 8 | A | 7 (loss records), 8 (Sync, corruption on read), 9 (corruption on offer and repack), 11 |
+| 7 | **Recovery and identity** | `Open` with recovery (E8 delivers a minimal `Init` and `Open` of a directory with no segment), `Restamp`, rebuild by catalog and by scan, torn vs corrupt, unproven-tail re-verify, offload-state rebuild, stale rule, spare re-adoption, inspection and verify | 12 | A | 10, 11 |
+| 8 | **Data path and capacity** ⛔ | a minimal `Init` and `Open` for S3, `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 15 | B | 9, 11 |
 | 9 | **Offload, reclamation, holds and tags** | `Offload`, `OffloadMany`, pins, `MarkOffloaded`, `Unmark`, `Release`, auto-retire, `Repack` and drop test, snapshot holds, `Forget`, `Strand` | 13 | B | 11 |
 | 10 | **Start and initialisation** | Start check and its two refusals, `journal.Init` in the initialisation step and the `J‖journal` writes, wipe of devices left by an interrupted step, device config keys | 5 | A | 11 |
 | 11 | **Engine on the RFC 16 store** 🔀 | Stage 3 of #3119, planned after S4a: engine wiring (`Fill`, `report`, `Release`), per-device registry, version floor and limit, store contracts, error mapping, salvage, exporters and alert rules, API and CLI, system e2e tests | planned after S4a | team | 12 |
@@ -284,13 +284,13 @@ everything before it.
    A: E3 format        B: E4 index
         │                   │
         ▼                   │
-   A: E5 segments ──────────┤        S3: walking skeleton (E5 minimal stream + E8 WriteAt/ReadAt)
+   A: E5 segments ──────────┤        S3: walking skeleton (E5 streams, pool, seal, roll + E6 T6.1–T6.4, T6.7 + E8 WriteAt/ReadAt, minimal Open)
         │   ╲               ▼
         │    ╲─────► B: E8 data path & capacity
         ▼                   │
-   A: E6 durability ───────►│ (Sync)
+   A: E6 durability ───────►│ (Sync; E6's corruption rule also ──► E8 ReadAt)
         │                   ▼
-   A: E7 recovery ────►B: E9 offload / reclaim / holds   (E7's corruption rule, also ──► E8 ReadAt)
+   A: E7 recovery ────►B: E9 offload / reclaim / holds   (E6's corruption rule)
         │                   │
         ▼                   │
    A: E10 start + init      │        S4: core complete (E3–E9)
@@ -311,12 +311,20 @@ everything before it.
 - **S2. Red suite in CI** (end of E2). The conformance suite compiles, runs, fails, and is
   all listed as known failures. The system scenario catalogue is written. The seam, clock,
   model and profiler are green. Implementation epics start here.
-- **S3. Walking skeleton** (mid E5 / mid E8). A minimal append stream from E5 (one stream,
-  no spare pool, no seal) plus E8's `WriteAt` and `ReadAt` on top of E4's index. The first
-  conformance tests turn green and leave the known-failure list, and the entries still red
-  move from failing in the fixture to failing on a stub (epic 2, D4). **E8's integration
-  tests are blocked on this point.** E5 therefore delivers the minimal stream as its first
-  subtasks.
+- **S3. Walking skeleton** (mid E5 / mid E6 / mid E8). E5's append streams with the spare
+  pool, the seal, the roll and the end event (its T5.1, T5.2, T5.4a, T5.4b, T5.5, T5.6, T5.7
+  and T5.10), E6's T6.1 to T6.4 and T6.7, and E8's `WriteAt`, `ReadAt` and a minimal `Init`
+  and `Open` of a directory with no segment, with `Share` for their handles (its T8.1, T8.2, T8.3
+  and T8.15), on top of E4's index.
+  The skeleton therefore includes durability tracking (`Sync`, group commit and the sync
+  bound), the retained-extent drop on sync, failed-window resolution, and the read-time
+  corruption rule, so `WriteAt` and `ReadAt` are built against the durability they ship with
+  rather than against stand-ins. E6's subtasks need E5's seal, headroom and end event, which is
+  why S3 waits for E5's pool, seal and roll; S3 is a checkpoint, not a deadline, and a simpler
+  dependency graph is worth the later date. The first conformance tests turn green through the
+  minimal `Open` and leave the known-failure list, and the entries still red move from failing
+  in the fixture to failing on a stub (epic 2, D4). **E8's integration tests are blocked on
+  this point.**
 - **S4. Core complete** (E3–E9 done). All component conformance tests are green. Only
   system e2e tests remain on the known-failure list. E11 cannot finish before this point.
 - **S4a. Engine interface agreed** (with rif, stage 2 of #3119). The filesystem service's
@@ -346,9 +354,14 @@ everything before it.
 - **E4** blocks E7 (rebuild fills the index), E8 and E9. It is pure in-memory code with no
   storage dependency, so it can start at S2.
 - **E5** blocks E6, E7 and E8's integration tests.
+- **E6's T6.1 to T6.4 and T6.7** block S3: E8's `WriteAt` needs `Sync`, the ledger epic 5's
+  `Append` fills, the retained-extent drop and the failed-window resolution, and its `ReadAt`
+  the corruption rule. They need E5's seal (T5.7), headroom (T5.6) and end event (T5.10), so
+  those block S3 too.
 - **E6** blocks E7: recovery appends E6's loss records.
-- **E7's corruption rule**, its first subtask, blocks E8's `ReadAt` failure path and
-  E9's offer and repack verification, which call it outside recovery.
+- **E6's read-time corruption rule** blocks E8's `ReadAt` failure path and E9's offer and
+  repack verification, which call it outside recovery. E7 calls the same handler from
+  recovery. It lives in E6, not E7, so that E8 needs nothing from a later milestone.
 - **E8** blocks E9: offload needs written content, and `report`, `Release` and `Repack`
   need the data path's locking and capacity.
 - **E10** blocks E11's start order.
@@ -379,8 +392,8 @@ owner (for example, epic 1's 1.4 is on track B).
 | --- | --- | --- | --- |
 | 0 | E1: skeleton and import test, observability, storage seam | E1: value types, errors, lifecycle, public API (`Journal`, `Handle`, ops) | review → **S1** |
 | 1 | E2: test clock and fault schedule, crash-simulating seam, profiler, `raw` | E2: reference model, fixture and `dt` registration, conformance test bodies, traceability matrix | → **S2** |
-| 2 | E3, then E5 (minimal stream first) | E4, then E8's storage-independent parts (share registry, capacity counters, version counter) | → **S3** |
-| 3 | E6, then E7 (corruption rule first) | E8 remainder, then E9 | → **S4**; S4a with rif |
+| 2 | E3, then E5's stream, pool, seal, roll and end event, then E6's T6.1 to T6.4 and T6.7 | E4, then E8's storage-independent parts (share registry, capacity counters, version counter), then `WriteAt`, `ReadAt` and the minimal `Init` and `Open` | → **S3** |
+| 3 | E6's remaining subtasks (re-append, read-only state and probe, counted checks), then E7 | E8 remainder, then E9 | → **S4**; S4a with rif |
 | 4 | E10: device config keys, start check, journal side of initialisation | E11 planning, once S4a exists | |
 | 5 | E11 | E11 | → **S5** |
 | 6 | E12 burn-down of recovery, format and durability failures | E12 burn-down of data-path and reclamation failures | release |
@@ -575,7 +588,7 @@ each tier's dependencies are in the epic's file, §7:
 - **Durability through the protocols**:
   - NFS COMMIT and SMB flush survive a host crash (simulated at the seam or in a VM);
   - an unflushed write survives process death;
-  - under `bounded`, unflushed data is lost by at most the bound on power loss;
+  - unflushed data is lost by at most the sync bound on power loss;
   - a failed sync changes the NFS write verifier, so the client resends.
 - **Cold reads**: evict, restart, read. Bytes come back from the remote tier and are never
   zeros. A read of a truly lost extent fails, never returning zeros (RFC 0 I1).
@@ -723,21 +736,23 @@ and supersedes this section where they differ.
   `segment_reopens`.
 - **Storage guard:** a shared/exclusive guard per segment that is not reader-preferring.
 
-**The first two subtasks deliver the S3 minimal stream:** one stream, append and read,
-with no pool and no seal.
+**S3 needs the stream, the pool, the seal, the roll and the end event:** epic 6's subtasks
+before S3 need the seal's sync, the headroom and the hand-off of a failed segment.
 
-### Epic 6 — Durability and loss (≈10 subtasks, A)
+### Epic 6 — Durability and loss (8 subtasks, A)
 
 Epic 6 implements RFC 1 §5 and §3.8.
 
 - **Sync:**
   - `Sync(ids…)` with group commit, one sync covering every waiter on the stream (the
     counted check is at most one sync per four writes);
-  - the `bounded` policy (1 s timer per stream, on the virtual clock) and `standard`;
-  - live `SetSyncPolicy`;
+  - one sync behaviour for every share (RFC 1 §5.2): a 1 s timer per stream, on the virtual
+    clock, and no sync policy to set, so epic 1's `SyncPolicy`, `SetSyncPolicy` and `Share`'s
+    policy argument are removed;
   - no `Sync` waits on a directory sync: every segment records go to is a spare whose
     entry is durable before it is taken (RFC 28 §2.2; epic 5's D6);
-  - the §5.1 ordering rules as assertions.
+  - the §5.1 ordering rules: this epic publishes which records are durable, and epics 5 and 9
+    assert the rules on it before an unlink or a drop;
 - **Failed-sync windows:**
   - while the journal runs, never append to, or seal, a failed segment (recovery at the
     next open treats it as RFC 28 §2.2 and §3.3 say, epic 7);
@@ -761,6 +776,14 @@ Epic 6 implements RFC 1 §5 and §3.8.
     next open to drop (epic 7);
   - every 30 s, a probe runs open's Appendix A checks and, only if they pass, makes one
     spare, kept for the reopen; `journal_read_only` names a failed check.
+- **Corruption on read** (RFC 28 §3.3), since epics 8 and 9 call it outside recovery, and epic 7 inside it: a record
+  that does not verify has its extents dropped, never served or replaced by zeros, and is
+  a loss event telling an offloaded extent from a dirty one, unless another copy with its
+  sequence number verifies; then the bad copy is damage reported with its segment, and no
+  loss record is appended. A segment holding unreadable records is reported in
+  `DamagedSegments` (RFC 1 §3.7). Pending: the loss named for a header that does not
+  verify (#3449), a read failing with `EIO` (#3440; #3511 keeps such a record held and
+  reports its segment apart).
 - **Loss handling:**
   - loss records, synced vs unsynced, with their precedence;
   - the loss event ring with sequence numbers;
@@ -773,12 +796,14 @@ Epic 6 implements RFC 1 §5 and §3.8.
 
 ### Epic 7 — Recovery and identity (≈12 subtasks, A)
 
-Epic 7 implements RFC 28 §3 and RFC 1's `Init`, `Open` and `Restamp`.
+Epic 7 implements RFC 28 §3 and RFC 1's `Init`, `Open` and `Restamp`. Epic 8 delivers a minimal
+`Init` and an `Open` of a directory with no segment before S3 (its T8.15); epic 7 extends `Open`
+with recovery and owns the rules below that need a segment on disk.
 
-- **Identity and attach rules:**
-  - `Init` refuses a non-empty directory, not counting a `format.tmp`; `Open` ignores one
-    (RFC 28 §2.1);
-  - `Init` and `Open` refuse what epic 3's Appendix A probes reject;
+- **Identity and attach rules** (the ones that need no segment on disk, `Init`'s refusal of a
+  non-empty directory, the platform refusals and `Open`'s `expect` checks among them, are epic
+  8's T8.15; epic 7 keeps them working once `Open` recovers):
+  - `Open` ignores a `format.tmp` (RFC 28 §2.1);
   - open fails on a `format` file that does not verify or whose version it does not
     recognise, a segment whose version it does not recognise or that is newer than its
     `format` file, and a verifying header of a kind its format version does not define, in
@@ -840,15 +865,10 @@ Epic 7 implements RFC 28 §3 and RFC 1's `Init`, `Open` and `Restamp`.
     row, or no spare to be had, fails the open and leaves the ended segment in place), a
     record whose copy already verifies skipped, then the segment unlinked and the
     directory synced.
-- **Corruption** (RFC 28 §3.3), the first subtask, since epics 8 and 9 call it: a record
-  that does not verify has its extents dropped, never served or replaced by zeros, and is
-  a loss event telling an offloaded extent from a dirty one, unless another copy with its
-  sequence number verifies; then the bad copy is damage reported with its segment, and no
-  loss record is appended. A segment holding unreadable records is reported in
-  `DamagedSegments` (RFC 1 §3.7). The refusal is confined by the catalog, or by
-  resynchronising in a scan. Pending: the loss named for a header that does not verify
-  (#3449), a read failing with `EIO` (#3440; #3511 keeps such a record held and reports
-  its segment apart).
+- **Corruption** (RFC 28 §3.3), the recovery half: torn vs corrupt, a refusal confined by
+  the catalog or by resynchronising in a scan, and corruption found while rebuilding. The
+  rule itself, a record that does not verify being dropped, never served or replaced by
+  zeros, and told as a loss event, is epic 6's, which this epic calls.
 - **Offload state:** rebuilt from offloaded and unmark records only. The stale rule drops
   content older than the reported range.
 - **Counters:** the next sequence and version exceed everything on disk and the floor.
@@ -872,13 +892,19 @@ scanner's `scan_resyncs` folded into `Stats`. Span: `open`, with child
 spans per phase. Also the J6, J7 and J9 benchmark harnesses (RFC 28 §4.3), recorded but
 not gated.
 
-### Epic 8 — Data path and capacity ⛔ (≈13 subtasks, B)
+### Epic 8 — Data path and capacity ⛔ (15 subtasks, B)
 
 Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.4, §3.6, §3.7,
 §3.10, §6, §8).
 
+- **A minimal `Init` and `Open`** for S3: `Init` of an empty directory (refusing a non-empty one,
+  a `format.tmp` aside, and what epic 3's Appendix A probes reject), and `Open` of one that holds
+  a `format` file and no segment (refusing `expect` zero, another identity, and a directory with
+  neither a `format` file nor a segment), so the conformance suite runs on the public API from
+  S3.
+
 - **Journal and handles:**
-  - `Share`, which raises the counter above the share's floor and takes its sync policy;
+  - `Share`, which raises the counter above the share's floor;
   - `Handle.Close`, which waits for in-flight calls;
   - **a file is its share's** (RFC 1 §3): a call that appends a record of an untagged
     file claims it for the handle's tag, and the check and the claim are one step under
@@ -892,7 +918,7 @@ Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.
   - `ReadAt`: an exact `missing` list, an untouched buffer, `held` versions, `asOf`; a
     payload that fails its check is never served (RFC 28 §2.3), and the record header a
     read finds is checked against the catalog entry that sent it there (RFC 28 §2.4); a
-    record that fails either is handled by epic 7's corruption rule (RFC 28 §3.3);
+    record that fails either is handled by epic 6's corruption rule (RFC 28 §3.3);
   - `Fill`: the absence check is atomic with the write, it refuses when older than the
     file or its bucket, and it sets the offloaded bit. It is **not** a write path, so it
     has a separate entry point;
@@ -1069,8 +1095,8 @@ broken down into subtasks and estimated only once that interface is agreed with 
   - adding a share maps to `Share`;
   - removing a share maps to `Close` then `Forget`, in the order RFC 16 §2.3.2 requires;
   - shutdown closes the journals.
-- **The remaining configuration:** share-to-device placement, per-share limit and
-  `sync.policy`, `ExtentLimit`, `DescriptorLimit`, `headroom_records`, `salvage.path`.
+- **The remaining configuration:** share-to-device placement, per-share limit,
+  `ExtentLimit`, `DescriptorLimit`, `headroom_records`, `salvage.path`.
 - **Metadata the journal relies on**, from RFC 16's store
   ([#3120](https://github.com/cubbit/dittofs/pull/3120)), with no control-plane fields
   of its own:

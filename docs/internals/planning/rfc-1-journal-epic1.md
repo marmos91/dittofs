@@ -252,14 +252,17 @@ RFC 0 §3 requires a type that cannot be reached by conversion.
 
 - Constants, private in `internal/core/limits.go`: segment cap 256 MiB, pins 64 per
   offer and 256 per journal, 4,096 floor buckets, idle-seal age 30 s. Only `SyncBound`
-  (1 s) is exported, because a caller's sync policy is stated in terms of it.
+  (1 s) is exported, because RFC 1 §5.2 states the journal's durability promise in terms of it.
 - Settings, declared once in `internal/core` and aliased publicly: `MaxBytes`, `Streams`,
   `ExtentLimit`, `HeadroomRecords`, `IdleSealBytes`, `SpareTarget`.
 - The segment cap is **not** a setting, and epic 1 declares no way to override it. The
   override lands with the first test that needs a journal of many segments in a
   temporary directory (§2, rule 12).
 
-**D11. `SyncPolicy`'s zero value is `Bounded`**, which RFC 1 §5.2 names as the default.
+**D11. There is no sync policy.** RFC 1 §5.2 syncs every record the same way on every share,
+and §3's `Share` takes no policy. An earlier text of the RFC had a per-share `SyncPolicy`
+(`Bounded`, `Standard`) with `Handle.SetSyncPolicy`; the code that declared them is removed by
+epic 6's T6.1, which also brings `Share` to `Share(tag, limit, floor)`.
 
 **D12. The descriptor budget is a value shared across journals:
 `NewDescriptorBudget(limit int) *DescriptorBudget`.**
@@ -358,7 +361,6 @@ rule, not where the rule came from.
   | `ShareTag` | `uint32` |
   | `ShareID` | `[16]byte` |
   | `SnapshotCut` | `uint64` |
-  | `SyncPolicy` | `uint8`, with `Bounded` (the zero value, D11) and `Standard` |
   | `JournalID`, `InstallationID` | `[16]byte` |
   | `SegmentID` | `uint64`. `Seq` stays internal (rule 11) |
 
@@ -463,14 +465,13 @@ rule, not where the rule came from.
 - **Deliverables:** with the signatures exactly as RFC 1 gives them:
 
   - **`(*Journal)` methods:**
-    - `Share(tag ShareTag, limit int64, floor Version, policy SyncPolicy) (*Handle, error)`
+    - `Share(tag ShareTag, limit int64, floor Version) (*Handle, error)` (D11)
     - `Forget(tag ShareTag) error`
     - `Strand(tag ShareTag) error`
     - `Draw() (Version, error)`
     - `SetVersionLimit(mark Version)`
   - **`(*Handle)` methods:**
     - `Close() error`
-    - `SetSyncPolicy(SyncPolicy) error`
     - `Reserve(n int64, writes int) (*Reservation, error)`
     - `WriteAt(id FileID, off int64, p []byte, mtime int64) (Version, error)`
     - `Sync(ids ...FileID) error`
@@ -658,7 +659,7 @@ freeze.
 | --- | --- | --- |
 | `Init`, `Open`, `Restamp` | RFC 1 §3; RFC 28 §3.4 | 1.4 |
 | `Journal.Share`, `Forget`, `Strand` | RFC 1 §3 | 1.5 |
-| `Handle.Close`, `SetSyncPolicy` | RFC 1 §3, §5.2 | 1.5 |
+| `Handle.Close` | RFC 1 §3 | 1.5 |
 | `Handle.Reserve`, `Reservation` | RFC 1 §6 | 1.5 |
 | `WriteAt`, `Sync` | RFC 1 §3.1 | 1.5 |
 | `ReadAt`, `Held` | RFC 1 §3.2 | 1.5 |
