@@ -47,6 +47,7 @@ func newUnit(t *testing.T, opts ...func(*engine.Deps)) *unit {
 		return db
 	})
 	d := engine.Deps{
+		Node:    entity.NodeID{1},
 		Devices: []string{"unit"},
 		Open: func(context.Context, string, journal.Version, journal.JournalID) (engine.Journal, error) {
 			return u.j, nil

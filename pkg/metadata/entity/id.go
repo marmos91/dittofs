@@ -20,6 +20,12 @@ type (
 // NodeID names a node; minted at random, never reused.
 type NodeID [16]byte
 
+// JournalDir is a journal device: the directory the node's bootstrap names
+// for it, as written there. The store keys a device by these bytes and never
+// normalises them, so the bootstrap, which builds the paths, names each
+// device one way.
+type JournalDir string
+
 // ErrSyntax is text that does not parse as the type asked for.
 var ErrSyntax = errors.New("entity: invalid syntax")
 

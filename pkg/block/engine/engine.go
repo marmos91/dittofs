@@ -41,6 +41,7 @@ func New(d Deps) (*Engine, error) {
 		name    string
 		missing bool
 	}{
+		{"Node", d.Node == (entity.NodeID{})},
 		{"Devices", len(d.Devices) == 0},
 		{"Open", d.Open == nil},
 		{"Existence", d.Existence == nil},

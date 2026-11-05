@@ -3,6 +3,7 @@ package kvstoretest
 import (
 	"context"
 	"errors"
+	"maps"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -22,20 +23,43 @@ func wantShard(t *testing.T, s *kvstore.Store, id entity.ShardID, inc, grace uin
 // RFC 14 §4.4: every start raises the incarnation of each shard it serves by
 // one, durably, and on a single node opens a new grace instance at it. A
 // shard named twice in one start is raised once; one outside the 24-bit
-// shard space is refused and raises nothing.
-func testRaiseIncarnations(t *testing.T, kvo Opener) {
+// shard space is refused and raises nothing. Each shard's incarnation comes
+// back as the record then holds it, for the binding to carry with no read
+// after the raise.
+func testRaiseAtStart(t *testing.T, kvo Opener) {
 	s, c := newStore(t, kvo)
+	l := s.Lifecycle()
 	wantShard(t, s, 1, 0, 0)
-	must(t, s.RaiseIncarnations(ctx, []entity.ShardID{1}))
+	raise := func(shards ...entity.ShardID) {
+		t.Helper()
+		got, err := l.RaiseAtStart(ctx, shards)
+		must(t, err)
+		want := map[entity.ShardID]uint64{}
+
+		for _, id := range shards {
+			sh, err := s.Shard(ctx, id)
+			must(t, err)
+			want[id] = sh.Incarnation
+		}
+
+		if !maps.Equal(got, want) {
+			t.Errorf("RaiseAtStart(%v) returned %v; the records hold %v", shards, got, want)
+		}
+	}
+
+	raise(1)
 	wantShard(t, s, 1, 1, 1)
-	must(t, s.RaiseIncarnations(ctx, []entity.ShardID{1, 2, 1}))
+	raise(1, 2, 1)
 	wantShard(t, s, 1, 2, 2)
 	wantShard(t, s, 2, 1, 1)
-	if err := s.RaiseIncarnations(ctx, []entity.ShardID{2, entity.ShardLimit}); !invalid(err) {
+
+	if _, err := l.RaiseAtStart(ctx, []entity.ShardID{2, entity.ShardLimit}); !invalid(err) {
 		t.Errorf("a shard past the shard space: %v", err)
 	}
-	must(t, s.RaiseIncarnations(ctx, nil))
-	must(t, s.RaiseIncarnations(ctx, []entity.ShardID{entity.ShardLimit - 1}))
+
+	raise()
+	raise(entity.ShardLimit - 1)
+
 	again, err := kvstore.Open(ctx, c)
 	must(t, err)
 	wantShard(t, again, 1, 2, 2)
@@ -46,13 +70,69 @@ func testRaiseIncarnations(t *testing.T, kvo Opener) {
 
 // RFC 14 §4.4: two raises of one shard that race each take their own
 // incarnation: the one committing second reads the first's and raises past it.
-func testRaiseIncarnationsRace(t *testing.T, kvo Opener) {
+func testRaiseAtStartRace(t *testing.T, kvo Opener) {
 	s, h := heldStore(t, kvo.backends()[0])
-	raise := func() error { return s.RaiseIncarnations(ctx, []entity.ShardID{1}) }
+	raise := func() error {
+		_, err := s.Lifecycle().RaiseAtStart(ctx, []entity.ShardID{1})
+
+		return err
+	}
+
 	outer, inner := race(h, raise, raise)
 	must(t, inner)
 	must(t, outer)
 	wantShard(t, s, 1, 2, 2)
+}
+
+// RFC 14 §4.4: an attach of a shard whose open state the node holds raises
+// its incarnation and keeps its grace instance, so no client reclaims for
+// nothing, and returns the incarnation the record then holds.
+func testRaiseAtAttachKeepsGrace(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	l := s.Lifecycle()
+	_, err := l.RaiseAtStart(ctx, []entity.ShardID{1})
+	must(t, err)
+
+	got, err := l.RaiseAtAttach(ctx, 1)
+	must(t, err)
+
+	if got != 2 {
+		t.Errorf("RaiseAtAttach returned incarnation %d, want 2", got)
+	}
+
+	wantShard(t, s, 1, 2, 1)
+}
+
+// RFC 14 §4.4: two attach raises of one shard that race each take their own
+// incarnation, so no verifier repeats: the one committing second reads the
+// first's and raises past it.
+func testRaiseAtAttachRace(t *testing.T, kvo Opener) {
+	s, h := heldStore(t, kvo.backends()[0])
+	l := s.Lifecycle()
+	_, err := l.RaiseAtStart(ctx, []entity.ShardID{1})
+	must(t, err)
+
+	var a, b uint64
+	outer, inner := race(h,
+		func() (err error) {
+			a, err = l.RaiseAtAttach(ctx, 1)
+
+			return err
+		},
+		func() (err error) {
+			b, err = l.RaiseAtAttach(ctx, 1)
+
+			return err
+		},
+	)
+	must(t, inner)
+	must(t, outer)
+
+	if a == b {
+		t.Errorf("two racing attach raises both returned incarnation %d", a)
+	}
+
+	wantShard(t, s, 1, 3, 1)
 }
 
 // failSets fails the nth Set from when n is set, counted across
@@ -84,16 +164,23 @@ func (t *failTxn) Set(k, v []byte) error {
 
 // RFC 14 §4.4: a start raises its shards in one transaction, so a failure
 // part way leaves every shard where it was.
-func testRaiseIncarnationsAllOrNone(t *testing.T, kvo Opener) {
+func testRaiseAtStartAllOrNone(t *testing.T, kvo Opener) {
 	f := &failSets{KV: kvo(t)}
 	must(t, kvstore.Init(ctx, f, uuid.New()))
 	s, err := kvstore.Open(ctx, f)
 	must(t, err)
-	must(t, s.RaiseIncarnations(ctx, []entity.ShardID{1}))
+	_, err = s.Lifecycle().RaiseAtStart(ctx, []entity.ShardID{1})
+	must(t, err)
 	f.n = 3
-	if err := s.RaiseIncarnations(ctx, []entity.ShardID{1, 2, 3}); !errors.Is(err, errInjected) {
+
+	_, err = s.Lifecycle().RaiseAtStart(
+		ctx,
+		[]entity.ShardID{1, 2, 3},
+	)
+	if !errors.Is(err, errInjected) {
 		t.Fatalf("raise failing at its third shard: %v", err)
 	}
+
 	wantShard(t, s, 1, 1, 1)
 	wantShard(t, s, 2, 0, 0)
 	wantShard(t, s, 3, 0, 0)

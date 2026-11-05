@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -25,6 +26,7 @@ func fullDeps() Deps {
 		clock     struct{ Clock }
 	)
 	return Deps{
+		Node:    entity.NodeID{1},
 		Devices: []string{"/dev0"},
 		Open: func(context.Context, string, journal.Version, journal.JournalID) (Journal, error) {
 			return nil, nil

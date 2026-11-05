@@ -135,7 +135,7 @@ var kindNames = map[byte]string{
 	KindU: "U", KindG: "G", KindM: "M", KindMR: "MR", KindGR: "GR", KindNX: "NX", KindNP: "NP", KindNG: "NG",
 	KindSL: "SL", KindIN: "IN", KindNSM: "NSM", KindPX: "PX", KindN: "N", KindSH: "SH", KindJ: "J", KindRS: "RS",
 	KindMV: "MV", KindSLOT: "SLOT", KindCFG: "CFG", KindCFGGEN: "CFGGEN", KindSEC: "SEC", KindCL: "CL",
-	KindCLO: "CLO", KindTG: "TG", KindMKP: "MKP", KindIDS: "IDS",
+	KindCLO: "CLO", KindTG: "TG", KindMKP: "MKP", KindIDS: "IDS", KindJD: "JD",
 }
 
 var fSubNames = map[byte]string{

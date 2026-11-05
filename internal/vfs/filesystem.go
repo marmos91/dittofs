@@ -310,7 +310,7 @@ func (fs *Filesystem) serve(ctx context.Context, shares []entity.Share) error {
 	for i, sh := range shares {
 		ids[i] = sh.Shard
 	}
-	if err := fs.meta.RaiseIncarnations(ctx, ids); err != nil {
+	if _, err := fs.meta.Lifecycle().RaiseAtStart(ctx, ids); err != nil {
 		return err
 	}
 	for _, sh := range shares {

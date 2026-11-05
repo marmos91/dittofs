@@ -108,6 +108,29 @@ func (s ShareState) String() string                { return enumString(shareStat
 func (s ShareState) MarshalText() ([]byte, error)  { return enumMarshal(shareStates, s) }
 func (s *ShareState) UnmarshalText(b []byte) error { return enumUnmarshal(shareStates, s, b) }
 
+// TagState is how far a share's removal has gone, as the engine's start reads
+// it from the removal's per-shard progress (RFC 16 §2.3.2).
+type TagState uint8
+
+const (
+	// TagServing is a share with no removal, or one some shard has not taken
+	// past its offload step.
+	TagServing TagState = iota + 1
+	// TagOffloaded is a removal every shard has taken to offloaded or later,
+	// and not every shard to forgotten.
+	TagOffloaded
+	// TagForgotten is a removal every shard has taken to forgotten, step 4 or
+	// done.
+	TagForgotten
+)
+
+// TagRecord is one share record's journal tag and how far the share's
+// removal has gone.
+type TagRecord struct {
+	Tag   uint32
+	State TagState
+}
+
 // SnapshotDisposition is what a share's removal does with its snapshots:
 // refuse to start while any exist, the default; delete them; or detach them,
 // keeping what they see after the share is gone.

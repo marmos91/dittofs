@@ -56,6 +56,7 @@ const (
 	KindTG     byte = 0x37
 	KindMKP    byte = 0x38
 	KindIDS    byte = 0x3A // server-wide ID allocators, IDS‖kind; 0x39 is retired
+	KindJD     byte = 0x48 // a node's journal device to its journal: JD‖node‖device
 )
 
 // Sub-kinds under F‖id. The File itself has none.
