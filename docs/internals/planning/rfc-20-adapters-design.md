@@ -81,13 +81,17 @@ Clean slate, decided by the owner:
    everything": `pkg/controlplane/runtime/adapters`, the adapter start path in `cmd/dfs`, the API
    endpoints that read adapter state (`grace.go`, `nfs_clients.go`) and their routes, the identity
    mapping config in `pkg/config` that imports `pkg/adapter/nfs/identity`, the API tests on
-   `testruntime`, and the adapter fixtures of `internal/vfs/arch_test.go`. The branch then builds
+   `testruntime`. `internal/vfs/arch_test.go` keeps its adapter clause: its fixtures are never
+   built, and it is RFC 17's check that the service imports no adapter. The branch then builds
    and serves no protocol, and loses that API and config surface until RFC 21/22 bring it back.
    develop keeps the whole implementation and stays the reference for parity.
-2. In the same epic, `test/suites.yaml` switches off every suite that needs a served protocol or
-   the deleted code: `e2e`, `pjdfstest` (POSIX), `pynfs`, `wpts`, `smbtorture`, the NFS and SMB
-   conformance entries, and the `kerberos` and `ad-dc` integration suites. Switched off in the registry, not deleted, so turning one back on is one line. `unit`,
-   `integration`, journal, engine and lint keep running.
+2. In the same epic, the suites that need a served protocol stay skipped on the branch by
+   `tests.yml`'s V2 filter, which already skips `e2e`, `pjdfstest`, `pynfs`, `wpts`,
+   `smbtorture`, the conformance and client suites and `integration/ad-dc`. The filter grows by
+   `integration/kerberos`, whose package is deleted, and the required job's fixed
+   `dt run integration/kerberos` step goes on the branch. `test/suites.yaml` stays as develop has
+   it, so each suite keeps one switch. `unit`, `integration`, journal, engine and lint keep
+   running.
 3. Nothing persisted needs migrating: an adapter holds no durable state (A2), and RFC 14's
    `Adapter` bytes are new with v2.
 
@@ -262,7 +266,8 @@ The skill derives the test set from RFC 20's obligations, and each is a `dt` sui
   and call-site test (§7.1), seeded with one violation it must report; the `TCP_NODELAY` and
   keepalive assertion (§6.7); the middleware-order pin; `vfstest.Record`'s one-mutating-call
   enforcement.
-- `nightly`/`unit --nonrace`: §6.10's codec 0-alloc gates and the pipeline allocation ceiling.
+- `unit/adapter-allocs`, per change and non-race: §6.10's codec 0-alloc gates and the pipeline
+  allocation ceiling. `unit/nonrace` is nightly, and the nightly never runs `feat/storage-v2`.
 - Registered but not yet run (they need handlers): error-table totality per protocol (§7.3), the
   handler layer (§7.2), cross-protocol (§7.4), end to end (§7.5), wire diff (§8), the end-to-end
   benchmark. The plan names which RFC 21/22 epic turns each on.
@@ -293,8 +298,8 @@ Settled by the builder from the architect and over-engineering reviews; the owne
   entry with nothing behind it.
 - **0-alloc codec gates cover the header codecs here**; the operation codecs §6.10 names
   (`READ`, `WRITE`, `GETATTR`, `QUERY_INFO`) and their gates come with RFC 21/22.
-- **One import test.** §7.1's test replaces the adapter half of `internal/vfs/arch_test.go`, whose
-  fixtures import the deleted packages, so the rule lives once.
+- **One import test for the adapters.** §7.1's test checks what the adapters import;
+  `internal/vfs/arch_test.go` keeps checking that the service imports no adapter.
 - **Deferred to RFC 21:** `Conn.StartTLS` (NFS-over-TLS starts at the `NULL` handler) and the
   datagram listener (open question 3).
 - **Concrete sidecars at cutover.** The runner and the contract are built here; `pkg/discovery/mdns`

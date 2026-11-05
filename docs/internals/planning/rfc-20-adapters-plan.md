@@ -10,7 +10,8 @@ develop serves that `feat/storage-v2` stops serving, is in the deferral ledger (
 RFCs, with how far each is in scope:
 
 - [RFC 17](../rfcs/rfc-17-vfs.md), the filesystem service: **constraints only**, except
-  `vfs.WithRequestID` (RFC 17 §4.7), which `pkg/vfs` lacks and epic 5 adds. `pkg/vfs`,
+  `vfs.WithRequestID` (RFC 17 §4.7) and `vfs.WithHold` (RFC 20 §4.6), which `pkg/vfs` lacks
+  and epic 5 adds. `pkg/vfs`,
   `vfstest.Record` and `vfstest.Null` exist on `feat/storage-v2`.
 - [RFC 24](../rfcs/rfc-24-resources.md), resources: **only the parts this RFC cannot work
   without**: `Budget`, `Reservation`, `Pools`, `Buf` and `BufPool` in `pkg/resources` (epic 3).
@@ -55,9 +56,11 @@ branch is `feat/storage-v2`, on which RFC 17's plan has merged; the plan documen
 | Tests | handlers on real stores; four fakes | `core` on a test-only protocol over `vfstest.Null`; the import test from the first commit |
 
 **Dependency limits.** An adapter imports, of the core, `pkg/vfs`, `pkg/metrics`,
-`pkg/resources`, `pkg/adapter` and `pkg/adapter/config`; beyond the standard library it may use
-`go.opentelemetry.io/otel/trace` and the Prometheus client through `pkg/metrics` (RFC 20 §2.3,
-§7.1). `internal/identity`, `internal/auth`, `pkg/identity` and every store are out of reach.
+`pkg/resources`, `pkg/adapter`, `pkg/adapter/config` and `internal/tlsconfig`; beyond the
+standard library it may use `go.opentelemetry.io/otel/trace` and the Prometheus client through
+`pkg/metrics` (RFC 20 §2.3, §7.1). `internal/identity`, `internal/auth`, `pkg/identity`,
+`pkg/health` and every store are out of reach: liveness reaches an adapter as `Deps.Watch`, which
+the node adapts to RFC 25's watchdog.
 `pkg/adapter`, `pkg/adapter/config` and `pkg/resources` import nothing under `internal/`; only the
 two constructor packages, `pkg/adapter/nfs` and `pkg/adapter/smb`, import `internal/adapter/`.
 
@@ -82,18 +85,30 @@ last epic checks the nightly tier and hands the deferral ledger over.
   service's `AdapterLoader`, the adapter health checks, the `/api/v1/adapters` routes and their
   handlers, the settings watcher, `dfsctl adapter`, the `grace.go` and `nfs_clients.go` handlers,
   the identity-mapping config in `pkg/config`, the start path in `cmd/dfs`, the API tests on
-  `testruntime`, the harness fixture's adapter calls, the e2e files that no longer compile, and
-  the adapter fixtures of `internal/vfs/arch_test.go`. `docs/guide/cli.md` is regenerated with
-  `go run ./cmd/gendocs`.
-- **Suites.** `test/suites.yaml` switches off `e2e`, `pjdfstest`, `pynfs`, `wpts`, `smbtorture`,
-  the NFS and SMB conformance entries, and the `kerberos` and `ad-dc` integration suites.
-  `test/required-tests.json`, whose every entry names a v1 test, is repinned to the surviving
+  `testruntime`, the harness fixture's adapter calls, and the e2e files that no longer compile.
+  `internal/vfs/arch_test.go` keeps its adapter clause, RFC 17's check that the service imports
+  no adapter: its fixtures live in `testdata/arch/`, which Go never builds, so deleting v1 breaks
+  nothing there. `docs/guide/cli.md` is regenerated with `go run ./cmd/gendocs`.
+- **Suites.** On `feat/storage-v2` what runs is decided by `tests.yml`'s V2 filter, which
+  already skips `e2e`, `pjdfstest`, `pynfs`, `wpts`, `smbtorture`, `cthon04`, `nfstest`,
+  `clients`, `fio-verify`, `bench-smoke`, `system` and `integration/ad-dc`; `test/suites.yaml`
+  stays as develop has it, so each suite keeps one switch. The filter grows by
+  `integration/kerberos`, whose package T1.1 deletes, and the required integration job's fixed
+  `dt run integration/kerberos` step is removed on the branch, since a fixed step ignores both
+  the filter and the registry. A per-change cell vets the adapter packages with `GOOS=windows`
+  and `GOOS=darwin`, which the filter's skip of `unit/windows` would otherwise leave unbuilt
+  once T4.8's socket options differ by platform. `test/required-tests.json`, whose every entry names a v1 test, is repinned to the surviving
   authorization gates in `internal/vfs/admit` (`TestNoAnonymousPrincipalFailsClosed`,
   `TestAnUnmappedClaimedRootIsPrivileged`), so `required-tests.sh` neither loses its subject nor
   fails on an empty manifest. A build tag on `lint-go`'s `go vet -tags=` line stays while any file
   behind it compiles; a tag whose files are all deleted leaves the line.
 - **`pkg/adapter`** (RFC 20 §3.4, §3.5): `Adapter`, `Health`, `ConnInfo`, `Sidecar`, `Serving`,
-  `Deps`.
+  `Deps` (with `Watch`, RFC 20 §3.7).
+- **A test with every new package.** `lint-repo` runs `test/new-package-tests.sh`, which fails a
+  directory new to the base branch that has no `_test.go`. Each package epic 1 creates lands with
+  a test that can fail (rule 8): the settings' live and restart-only marks, `ErrRestartRequired`
+  on a restart-only change, `New` refusing invalid settings, `Op.EndsState` and the hold types
+  compiling against a table the test builds.
 - **`pkg/adapter/config`** (RFC 20 §3.6, RFC 13): `Adapter`, `NFS`, `SMB`, with each field
   marked live or restart-only, and `ErrRestartRequired`.
 - **`pkg/adapter/nfs.New`, `pkg/adapter/smb.New`**: signatures and stubs returning an error.
@@ -103,19 +118,25 @@ last epic checks the nightly tier and hands the deferral ledger over.
 - **`pkg/metrics`**: whatever `core` needs to register its own series. `RegisterProvider` exists;
   epic 1 checks it fits a per-request counter resolved at table build, and adds a registration
   call if it does not.
-- **`internal/adapter/core`'s protocol-facing types** (RFC 20 §4.7), which `testproto`, `core`
-  itself and both scaffolds consume before any implementation: `Protocol`, `Framer`, `Stages`
-  and its stage interfaces, `Header`, `Request`, `Handler`, `OpTable`, `Op`, `Invocation`,
-  `Bind`, `Needs`, `Range`, `Version`, `ErrorTable`. Two additions the RFC leaves implicit:
-  - **the dispatch seam**: the function `Conn` hands each framed record to, so the connection
-    (epic 4) is tested with a stub and the pipeline (epic 5) with a fake sender;
-  - **`Op.EndsState`**, the column draining reads to serve a break acknowledgement, `CLOSE` or an
-    unlock and turn other requests away (RFC 20 §3.1).
+- **`internal/adapter/core`'s exported surface**, all of it named in RFC 20 §4.7 as amended with
+  this plan, which `testproto`, `core` itself and both scaffolds consume before any
+  implementation: `Protocol`, `Framer`, `Stages` and its stage interfaces (`HoldCodec` among
+  them), `Header` with `Next` and `Related`, `HeaderCodec.Chain`, `Request` with `Level`,
+  `Conn.Established` and `Conn.Keep`, `Request.Park` and `ErrParked`, `Handler`, `OpTable`,
+  `Op` with `EndsState`, `Invocation`, `Bind`, `Needs`, `Range`, `Version`, `ErrorTable`, and
+  `Dispatcher`, the seam a connection hands each framed record to, so the connection (epic 4) is
+  tested with a stub and the pipeline (epic 5) with a fake sender. These carry what SMB needs
+  from `core` (a connection's handshake and kept state, a session level per message, held
+  replies with an async ID, a cancel that gets no reply, a wait a callback completes, chained
+  messages each with its own header), so RFC 22's plan builds on the frozen surface rather than
+  reopening it.
 
 ### 1.4 What epic 2 must deliver
 
 RFC 20's suites paragraph puts every layer this plan builds in `unit`, and the allocation gates
-in `unit/nonrace` nightly. `unit` keeps no `known.yaml`, so it cannot hold a red test: **epic 2
+in a non-race cell. `unit/nonrace` is nightly, and the nightly runs on develop's schedule, never
+on `feat/storage-v2`, so the gates get a per-change cell of their own, `unit/adapter-allocs`, as
+the journal's run in `unit/journal-index`. `unit` keeps no `known.yaml`, so it cannot hold a red test: **epic 2
 registers no red suite**. Each test lands green with the epic that makes it pass. Epic 2 builds
 what those tests stand on:
 
@@ -123,10 +144,16 @@ what those tests stand on:
   wait a scripted time, panic, hold (answer `ErrDelay` of a holding class), end state (for the
   drain filter) and mutate through `vfstest.Null`; toy `Security` (a checksum), `Flow` (a
   counter) and `Replay` (a map) stages; a version range for the `Versions` column. Tests drive it
-  over a plain `net.Conn`.
+  over a plain `net.Conn`. Its stateful half exercises the rest of §4.7, so the surface frozen at
+  S1 is proven at S3 for what SMB needs and not only for what the simplest protocol needs: a
+  handshake (`Established`), session and tree levels (`Request.Level` against `Needs`), an
+  operation that keeps state (`Keep`, past the idle timeout), a `HoldCodec` with interim and
+  final headers and a cancel operation, a parked operation completed by a callback the test
+  fires, and chained frames with a related member and a member that goes pending.
 - **The import test** (RFC 20 §7.1), reusing the `go/parser` walk of
-  `internal/vfs/arch_test.go`, whose adapter half it replaces, and seeded with one violation in
-  its own `testdata`: the import list of §1.1, both directions of `pkg/` and `internal/`, `wire`
+  `internal/vfs/arch_test.go`, and seeded with one violation in its own `testdata`. It checks the
+  adapters' imports; `arch_test.go` keeps checking the other direction, that the service imports
+  no adapter. It covers the import list of §1.1, both directions of `pkg/` and `internal/`, `wire`
   purity, test-only packages imported by no non-test package, and the paths v1 used that v2 does
   not (`pkg/controlplane/runtime/adapters`, `internal/adapter/{common,pool,testruntime,auth}`,
   `internal/adapter/nfs/rpc`, `internal/adapter/smb/{session,handlers}`).
@@ -199,7 +226,7 @@ and 5.
    paths carry allocation assertions (`testing.AllocsPerRun`): the header codecs of both
    protocols and `testproto`'s at 0, `BufPool.Get` and `Release` at 0, and the pipeline's
    allocations per request at or under a checked-in number that may only fall. Each gate is
-   registered in `unit/nonrace` by the subtask that writes it.
+   registered in the per-change `unit/adapter-allocs` cell by the subtask that writes it.
 5. **v2 ignores v1.** v1 is deleted in epic 1; nothing is copied from it but what RFC 20
    Appendix B marks **keep**, lifted from `develop`'s history into its new place: the accept
    backoff and the sidecar group's reconcile here, the rest with RFC 21 and 22. The import test
@@ -221,33 +248,33 @@ and 5.
    violation; the budget leak check by failing a test that keeps a `Buf`.
 9. **A symbol is exported only if RFC 20's interface uses it.** `pkg/adapter`,
    `pkg/adapter/config`, `pkg/resources` and the two `New` are the public surface. `core`'s
-   exported types are those RFC 20 §4.7 names plus the dispatch seam and `Op.EndsState`, frozen
-   at S1; everything else in `core` is unexported.
+   exported symbols are those RFC 20 §4.7 names, frozen at S1; everything else in `core` is
+   unexported. A symbol §4.7 does not name is added to §4.7 first, by a pull request to the RFC.
 10. **Each subtask creates only what it declares.** No empty package and no stub without a
     caller: no empty `ops/`, `callbacks.go`, `gss/`, `translate/` or `dcerpc/`. A package, a stage
     or a test helper lands with its first consumer.
 
 Not adopted from the skill's standard rules: a separate profiling-harness rule (rule 4 covers
 leaks and allocations, and RFC 20 §6.9 already asks a change to the connection or pipeline for its
-mutex and block profiles); a known-failures rule (no suite here keeps a `known.yaml`; the switched
-off suites come back through the ledger); a real-dependencies rule beyond rule 1's real sockets
+mutex and block profiles); a known-failures rule (no suite here keeps a `known.yaml`; the skipped
+suites come back through the ledger); a real-dependencies rule beyond rule 1's real sockets
 (nothing here has a property of a store to test).
 
 ## 2. Epics at a glance
 
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
-| E1 ⛔ | Delete v1, fix the surface | v1 and the Runtime's adapter half deleted, suites off, required tests repinned; `pkg/adapter`, `pkg/adapter/config`, `pkg/resources`, `core`'s types and dispatch seam | 8 | 13.5 | team | all |
-| E2 ⛔ | Test foundations | `testproto`, the import test, the leak checks | 3 | 6 | team | E3–E6 |
+| E1 ⛔ | Delete v1, fix the surface | v1 and the Runtime's adapter half deleted, suites off, required tests repinned; `pkg/adapter`, `pkg/adapter/config`, `pkg/resources`, `core`'s §4.7 surface | 8 | 14.5 | team | all |
+| E2 ⛔ | Test foundations | `testproto` and its stateful half, the import test, the leak checks | 4 | 8 | team | E3–E6 |
 | E3 | Budgets and buffers | `pkg/resources`: `Budget`, `Reservation`, `Buf`, `BufPool` | 3 | 6 | A | E4, E5 (partly) |
 | E4 | Connections and lifecycle | `Server` states, accept, limits, `Conn` reader and writer, drain, `Reconfigure`, health, TCP; the sidecar runner | 9 | 20 | B | E5 (partly), E6 via 🔀 S3 |
-| E5 | Dispatch | pipeline, tables, compound runner, held requests, middleware, error tables, request context, §10, benchmark | 10 | 24 | A | E6 via 🔀 S3 |
+| E5 | Dispatch | pipeline, tables, compound runner and chains, held and parked requests, middleware, error tables, request context, §10, benchmark | 11 | 26.5 | A | E6 via 🔀 S3 |
 | E6 | Protocol scaffolds | `wire/`, `protocol/` and `New` for SMB and NFS; not supported end to end | 4 | 11.5 | C | E8 |
 | E7 🔀 | Integration with the node | `internal/node` builds, starts, reconciles and stops adapters and sidecars | — | planned after S4 | team | E8 (partly) |
 | E8 | E2E green | the nightly tier checked, the ledger handed over | 2 | 1.5 | team | — |
-| | **Total** | | **39** | **82.5** | | |
+| | **Total** | | **41** | **88** | | |
 
-**Plan estimate: 39 subtasks, 82.5 man-days, not counting epic 7.**
+**Plan estimate: 41 subtasks, 88 man-days, not counting epic 7.**
 
 The estimate `N = round(2785 / 400) = 7` against four middle epics: RFC 20's handler, codec,
 security and translation areas (§4.3–§4.4, §4.9–§4.10, most of §5) are ledger rows for RFC 21 and
@@ -291,13 +318,15 @@ flowchart TD
 
 - **S1 surface frozen** (after E1). v1 is gone, the branch builds, the protocol suites are off,
   `required-tests.sh` passes on its new pins. `pkg/adapter`, `pkg/adapter/config`,
-  `pkg/resources` and `core`'s types, dispatch seam and `Op.EndsState` compile with stub bodies.
+  `pkg/resources` and `core`'s §4.7 surface compile with stub bodies; what SMB needs from
+  `core` is in that surface, and `testproto`'s stateful half proves it by S3.
   Unblocks E2, and through it every middle epic.
 - **S2 testproto and the import test in CI** (after E2). `testproto` runs over a `net.Conn`; the
   import test runs in `unit` and reports its seeded violation. Unblocks E3, E4 and E6's `wire/`.
 - **🔀 S3 `core` serves `testproto` end to end** (after E4 and E5). A `testproto` request goes
   accept → frame → pipeline → `vfstest.Null` → reply; drain serves only `EndsState` operations and
-  abandons at the deadline; reconfigure and the leak checks pass. Unblocks the `protocol/` and
+  abandons at the deadline; reconfigure and the leak checks pass; the handshake deadline, kept
+  state, held and parked requests, cancel and chains run on `testproto`'s stateful half. Unblocks the `protocol/` and
   `New` half of E6.
 - **🔀 S4 `internal/node` exists** (outside this plan). RFC 23's `node.New` and reconcile loop,
   built by whoever owns the node for the cutover (§6.1). Unblocks E7.
@@ -345,8 +374,8 @@ pkg/
 internal/
   adapter/
     core/                     E1 types, E4 and E5 bodies
-      protocol.go             E1: Protocol, Framer, Stages, stage interfaces, the dispatch seam
-      dispatch.go             E1 types, E5: OpTable, Op (with EndsState), Invocation, Bind, Needs, Range
+      protocol.go             E1: Protocol, Framer, Stages, stage interfaces, Header, Dispatcher
+      dispatch.go             E1 types, E5: OpTable, Op (with EndsState), Invocation, Bind, Needs, Range, Request
       errors.go               E1 type, E5: ErrorTable, totality check
       server.go settings.go conn.go                               E4
       pipeline.go compound.go hold.go middleware.go metrics.go    E5
@@ -364,12 +393,14 @@ internal/
 
 ### Epic 1 — Delete v1, fix the surface ⛔
 
-**Epic 1 estimate: 8 subtasks, 13.5 man-days.**
+**Epic 1 estimate: 8 subtasks, 14.5 man-days.**
 
-Deletes v1 and everything that imports it, switches off the suites that need a served protocol,
+Deletes v1 and everything that imports it, keeps the suites that need a served protocol skipped,
 repins the required tests, and fixes the public surface and `core`'s protocol-facing types with
 stub bodies. At the end the branch builds, `unit` and `lint-go` pass, no adapter is served, and
 S1 holds. Every client-visible or operator-visible thing deleted here is a ledger row (§6.2).
+Every package T1.4 to T1.8 creates lands with a test that can fail, or `lint-repo`'s new-package
+check refuses it (§1.3).
 
 RFC sections: §2.5 (layout, `pkg/` and `internal/`), §3.4, §3.5's `Sidecar` and `Serving`, §3.6's
 settings, §4.7's types, §6.8's `Buf` surface; RFC 24 §2.5 and §3.1's surface; Appendix B (what is
@@ -377,26 +408,28 @@ deleted).
 
 - T1.1 Delete `internal/adapter`, `pkg/adapter` and their importers outside the control plane:
   the start path in `cmd/dfs`, the identity-mapping config in `pkg/config`, the e2e files that no
-  longer compile, the adapter fixtures of `internal/vfs/arch_test.go`.
+  longer compile. `internal/vfs/arch_test.go`'s adapter clause stays.
 - T1.2 Delete the Runtime's adapter half: `runtime/adapters`, the Runtime's adapter fields and
   methods, the lifecycle `AdapterLoader`, the adapter health checks, the `/api/v1/adapters`
   routes and handlers, the settings watcher, the `grace` and `nfs_clients` handlers, the
   `testruntime` API tests, the harness fixture's adapter calls; `dfsctl adapter`; regenerate
   `docs/guide/cli.md`.
-- T1.3 Suites off in `test/suites.yaml`, `docs/internals/testing.md` regenerated with `dt docs`;
-  `test/required-tests.json` repinned to `internal/vfs/admit`'s gate tests; `lint-go`'s vet tags
-  pruned to those with files left.
-- T1.4 `pkg/adapter`: the contract and `Deps`.
+- T1.3 `tests.yml`'s V2 filter extended by `integration/kerberos` and the fixed
+  `dt run integration/kerberos` step removed on the branch; the `GOOS=windows` and `GOOS=darwin`
+  vet cell for the adapter packages; `test/required-tests.json` repinned to
+  `internal/vfs/admit`'s gate tests; `lint-go`'s vet tags pruned to those with files left.
+- T1.4 `pkg/adapter`: the contract and `Deps`, `Watch` included.
 - T1.5 `pkg/adapter/config`: the three settings shapes with live and restart-only marks.
 - T1.6 `pkg/resources`: `Budget`, `Reservation`, `Pools`, `Buf`, `BufPool`, classes, as stubs;
   `pkg/metrics`'s registration path for `core`'s series checked, and added if missing.
-- T1.7 `internal/adapter/core`'s §4.7 types, `Bind`'s signature, the dispatch seam and
-  `Op.EndsState`.
+- T1.7 `internal/adapter/core`'s §4.7 surface with stub bodies: the stages, `HoldCodec`,
+  `Header`, `Request`, `Conn.Established`, `Conn.Keep`, `Park`, `ErrParked`, `Bind`'s signature,
+  `Dispatcher`, `Op.EndsState`.
 - T1.8 `pkg/adapter/nfs.New` and `pkg/adapter/smb.New` stubs.
 
 ### Epic 2 — Test foundations ⛔
 
-**Epic 2 estimate: 3 subtasks, 6 man-days.**
+**Epic 2 estimate: 4 subtasks, 8 man-days.**
 
 What every later test stands on (§1.4). No red suite is registered: RFC 20's suites paragraph
 puts these layers in `unit`, which holds no known failures.
@@ -405,9 +438,12 @@ RFC sections: §7 (the layers; the `core` layer on a test-only protocol), §7.1'
 
 - T2.1 `testproto`: frames, operations (echo, wait, panic, hold, end state, mutate), toy stages,
   versions; driven over a plain `net.Conn`.
-- T2.2 The import test, on `arch_test.go`'s walker, with its seeded violation; replaces
-  `arch_test`'s adapter half.
-- T2.3 The budget and goroutine leak checks.
+- T2.2 `testproto`'s stateful half: a handshake, session and tree levels, a kept-state operation,
+  a `HoldCodec` with interim and final headers and a cancel, a parked operation the test
+  completes, chained frames with a related member and a pending one.
+- T2.3 The import test, on `arch_test.go`'s walker, with its seeded violation; `arch_test.go`
+  keeps checking that the service imports no adapter.
+- T2.4 The budget and goroutine leak checks.
 
 ### Epic 3 — Budgets and buffers
 
@@ -458,8 +494,10 @@ rows, A10, A11, A14, A19, A20.
 - T4.6 `Reconfigure`: validate (the settings' own checks, also run by `New`), refuse restart-only
   with `ErrRestartRequired`, open added listeners before swapping the snapshot, close removed
   ones and their connections after.
-- T4.7 Health (readiness from the state, liveness from accept-loop turns, `adapter_refused`),
-  `Connections()` from a connection map in `Server`, idle timeout and handshake deadline.
+- T4.7 Health (readiness from the state, liveness from accept-loop turns through `Deps.Watch`,
+  `adapter_refused`), `Connections()` from a connection map in `Server`, the idle timeout that
+  passes over a connection while a `Keep` is held, the handshake deadline that `Established`
+  disarms; both on `testproto`'s stateful half.
 - T4.8 TCP: `TCP_NODELAY`, keepalive 15 s and 3 probes 5 s apart, `TCP_USER_TIMEOUT` on Linux,
   asserted on an accepted socket; buffers left to the kernel.
 - T4.9 The sidecar runner, lifted from v1's `pkg/adapter/sidecar.Group` on `develop`: `Sync` with
@@ -469,7 +507,7 @@ rows, A10, A11, A14, A19, A20.
 
 ### Epic 5 — Dispatch
 
-**Epic 5 estimate: 10 subtasks, 24 man-days.**
+**Epic 5 estimate: 11 subtasks, 26.5 man-days.**
 
 The request path in `core`: §4.1's stages in order with their defaults and refusals, the drain
 filter, operation tables and their precondition columns, the reply reservation, the compound
@@ -486,15 +524,20 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
 - T5.1 The pipeline: frame to send in order, nil stages take their defaults, each stage's refusal
   as RFC 20 §4.1's table says, replies out of order; while draining, only `EndsState` operations
   run and others get the protocol's move signal or are left unread.
-- T5.2 `OpTable`, `Bind`, `Invocation`; `Needs` and `Versions` checked before decoding; an absent
-  or switched-off operation answered not supported.
+- T5.2 `OpTable`, `Bind`, `Invocation`; `Needs` checked against `Request.Level` and `Versions`
+  before decoding; an absent or switched-off operation answered not supported.
 - T5.3 Admission: the per-connection cap of 64 where `Flow` is nil; the reply-bound reservation
   before the call, its refusal as `ErrDelay` with `DelayResources`.
-- T5.4 The compound runner: stop at the first failure, SMB's related-request rule, a cap refused
-  before any operation, the reply budget checked before each operation.
-- T5.5 Held requests: interim timer, re-drive from `Resolve` with a fresh attempt deadline inside
-  the hold bound, `WithHold`, the per-connection floor and the hold pool, `CANCEL` and close
-  ending a hold; the write data's `Buf` kept across re-drives.
+- T5.4 The compound runner: stop at the first failure, a cap refused before any operation, the
+  reply budget checked before each operation; chains from one record, each member's header
+  decoded, unwrapped, admitted and looked up on its own, the related-request rule, the replies
+  joined with `HeaderCodec.Chain`; on `testproto`'s chained frames, not on the runner's
+  internals alone.
+- T5.5 Held requests: interim timer and `HoldCodec.Interim`, the final reply under
+  `HoldCodec.Final`, re-drive from `Resolve` with a fresh attempt deadline inside the hold bound,
+  `vfs.WithHold` added to `pkg/vfs` (RFC 17 §4.7) and passed on every call, the per-connection
+  floor and the hold pool, a cancel (`HoldCodec.Cancels`) and close ending a hold with no reply
+  to the cancel; the write data's `Buf` kept across re-drives; a chain member that goes pending.
 - T5.6 The middleware chain: recovery (server fault, logged with the stack, the connection's
   other requests unharmed), trace span, metrics, deadline; order pinned by a test.
 - T5.7 `ErrorTable`: mapping by error, operation and version; `ErrDelay` by cause; an unmapped
@@ -504,7 +547,11 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
   and set from the protocol's retry identity; cancellation on close and drain.
 - T5.9 RFC 20 §10's metrics, spans and logs, all in `core`; series resolved at table build.
 - T5.10 The pipeline micro-benchmark on `testproto` over `vfstest.Null`, its allocation ceiling
-  checked in and registered in `unit/nonrace`.
+  checked in and registered in `unit/adapter-allocs`.
+- T5.11 Parked requests: `Park` and `ErrParked`, the interim at once, the request counted against
+  the hold floor, the reply encoded and sent under `HoldCodec.Final` when `done` is called; a
+  cancel or close calling the park's `cancel` and still sending the one final reply the cancel
+  left (RFC 20 §6.5); `testproto`'s parked operation completed from the test.
 
 ### Epic 6 — Protocol scaffolds
 
@@ -552,13 +599,14 @@ sentences; RFC 23 §2.2, §2.3; RFC 24 §2.7; RFC 25 §3.9, §7.
 **Epic 8 estimate: 2 subtasks, 1.5 man-days.**
 
 No suite of this plan holds known failures, so nothing is burned down, and each gate was
-registered by the subtask that wrote it. This epic checks the nightly `unit/nonrace` cell runs
-every gate of epics 3, 5 and 6 and `testproto`'s, and hands the ledger to the plans that own its
-rows.
+registered by the subtask that wrote it. This epic checks the per-change `unit/adapter-allocs`
+cell runs every gate of epics 3, 5 and 6 and `testproto`'s, and hands the ledger to the plans
+that own its rows.
 
 RFC sections: §6.10's codec and pipeline rows.
 
-- T8.1 The nightly `unit/nonrace` cell runs every allocation gate; any missing registration fixed.
+- T8.1 The `unit/adapter-allocs` cell runs every allocation gate on `feat/storage-v2`; any
+  missing registration fixed.
 - T8.2 The ledger's rows copied into the RFC 21, RFC 22, RFC 18 and RFC 24 plans, or into #3119
   for those with no plan yet, each linked back.
 
@@ -623,9 +671,11 @@ feature parity with develop. A row moves only to another owner, never off the le
 | `node.New` wiring; config loader for `pkg/adapter/config`; conditions in RFC 25 §3.9's registry; alert rules | need `internal/node` | epic 7 | S4 |
 | concrete sidecars: mDNS, WS-Discovery (`pkg/discovery`), port mapper, rpcbind registration | need serving protocols | cutover | stage 7 |
 | `/api/v1/adapters`, the settings watcher, `dfsctl adapter` (deleted in T1.2) | built on the Runtime | cutover, on `pkg/adapter` | stage 7 |
+| netgroup CRUD under `/api/v1/adapters/{type}/netgroups` (deleted in T1.2) | a control-plane record (RFC 23 §3.5) | RFC 23 | with RFC 23's records |
+| client eviction: `DELETE /api/v1/clients/{id}`, `dfsctl client evict` (`Runtime.DisconnectClient` → `ForceCloseClientConnection`, deleted in T1.2) | RFC 23 §4.2 makes v2's connection listing read-only, so nothing brings it back | RFC 23 edit, or dropped there by decision | when RFC 23 decides |
 | `grace` and `nfs_clients` API endpoints (deleted in T1.2) | read NFSv4 state | RFC 21 plan, with cutover | stage 7 |
 | identity-mapping config (deleted in T1.1) | squash and mapping are RFC 18 §6's, per share | RFC 18 plan | its resolution epic |
-| suites switched off in T1.3: `e2e`, `pjdfstest`, `pynfs`, `wpts`, `smbtorture`, NFS and SMB conformance, `kerberos`, `ad-dc`; the e2e build tags | nothing to mount | cutover | each green against v2 |
+| suites skipped on the branch by `tests.yml`'s V2 filter, `integration/kerberos` added to it and its fixed step removed in T1.3; the e2e build tags | nothing to mount | cutover | each green against v2; the V2 filter deleted once the adapters run on `vfs.Service`, as its own comment says |
 | `test/required-tests.json` pins for the adapters' authorization gates | the v1 tests are deleted | RFC 21/22 plans | each gate's test re-written |
 | docs: architecture's adapter section, the configuration guide's adapter keys, the user guides | describe v1 | cutover | stage 7 |
 
@@ -649,7 +699,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | §4.4 (identity, `gss`) | §6.2 |
 | §4.5 (error tables) | E5 (type, totality helper); rows: §6.2 |
 | §4.6 (held requests) | E5 |
-| §4.7 (wiring, stages, `Bind`, middleware) | E1 (types), E5 |
+| §4.7 (wiring, stages, `Bind`, middleware; connection state, holds, park, chains, `Dispatcher`) | E1 (types), E2 (`testproto`'s stateful half), E4 (`Established`, `Keep`), E5 |
 | §4.8 (versions) | E5 (selection), E6 (routers) |
 | §4.9, §4.10 | §6.2 |
 | §5.1, §5.2, §5.4 (codecs) | E6 (headers); operations: §6.2 |
@@ -674,7 +724,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 
 | Related RFC section | Epic(s) |
 | --- | --- |
-| RFC 17 §4.7 (`WithRequestID`) | E5 |
+| RFC 17 §4.7 (`WithRequestID`, `WithHold`) | E5 |
 | RFC 24 §2.5, §3.1, §2.7's zero check | E3, E7 |
 | RFC 13 adapter settings | E1, E7 |
 | RFC 23 §2.2, §2.3 | E7 |
