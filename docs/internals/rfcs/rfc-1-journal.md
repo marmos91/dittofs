@@ -2688,15 +2688,26 @@ bound; `descriptor_overruns` counts each, and the bound holds again once
 descriptors close. [RFC 24 §6.3](rfc-24-resources.md#6.3%20File%20descriptors) carries overruns in the process's remaining quarter.
 
 **An open the system refuses writes nothing.** It fails the call that needed
-it with the system's error, counted in `descriptor_open_failures`, ends no
-segment ([§5.1](#5.1%20Ordering%20rules)) and counts toward no read-only transition ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)): an append
+it with the system's error, counted in `descriptor_open_failures`, and ends no
+segment ([§5.1](#5.1%20Ordering%20rules)). A refusal with `EROFS` turns the journal read-only, as any
+call's does ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)); no other refusal counts toward that transition. An append
 opens its writer before it reserves a slot, so it leaves no slot behind. At a
 roll it fails the write as a roll with no spare ready does, the earlier pieces
 of a split write staying written ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). A seal, a repack copy or a
 spare's fill or zeroing fails that step as any of its writes would. A
-re-append fails no record: it is retried until the open succeeds, and the
-`Sync` calls waiting on it meanwhile fail with the error, recording no loss
-([§5.3](#5.3%20A%20failed%20sync)).
+re-append fails no record while its open is refused for want of descriptors
+(`EMFILE`, `ENFILE`), which clears as descriptors close: it is retried with backoff
+for up to 30 s, and the `Sync` calls waiting on it meanwhile fail with the error,
+recording no loss. Past 30 s, or refused with any other error, which does not
+clear by itself, its window is failed ([§5.3](#5.3%20A%20failed%20sync)). Close stops the retry and leaves
+the window to recovery ([§5.3](#5.3%20A%20failed%20sync)).
+
+> decision: a re-append's refused open is retried for 30 s, not until it
+> succeeds, because a window left pending fails every flush, commit and offload
+> of its files until a restart ([§5.3](#5.3%20A%20failed%20sync)), while a failed one raises the loss
+> generation and the client resends its writes. Overturned if descriptor
+> shortages that clear after more than 30 s show up as failed windows in
+> `descriptor_open_failures` under real load.
 
 > ponytail: a read overrun is bounded only by the reads in flight, so many
 > concurrent reads of cold segments with the bound full can take the
