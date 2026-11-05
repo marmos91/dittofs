@@ -567,14 +567,19 @@ func (r *Retirer) worker() {
 }
 
 // pass runs one drain: every queued id once. A read-only journal changes
-// nothing and leaves the queue as it is (R89), so a queue lives a read-only
-// interval and drains once the journal is writable again. A Stop that lands
-// mid-pass leaves the in-flight retirement to finish and drops the rest —
-// the queue as a whole is dropped at Stop, and the part the pass still owed
-// is no different.
+// nothing and leaves the queue as it is, so a queue lives a read-only
+// interval and drains once the journal is writable again — R89's gate is the
+// one at the start of Retire; the pass's own read-only check is only the
+// shortcut that spares such a journal the queue's lock round trips. A Stop
+// that lands mid-pass leaves the in-flight retirement to finish and drops
+// the rest — the queue as a whole is dropped at Stop, and the part the pass
+// still owed is no different.
 func (r *Retirer) pass() {
-	// R89: a read-only journal unlinks nothing, so the pass retires nothing
-	// either — the queue waits.
+	// This check is a shortcut, not the gate: R89's gate itself is the one at
+	// the start of Retire, which every queued id below passes through, and
+	// whose refusal leaves the id right where the pass put it back. Skipping
+	// the queue's lock round trips under a read-only journal is all this
+	// early return buys.
 	if r.cfg.ReadOnly != nil {
 		if err := r.cfg.ReadOnly(); err != nil {
 			return
