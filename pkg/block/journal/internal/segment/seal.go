@@ -82,7 +82,11 @@ func (r recordsDurable) Unwrap() error { return r.err }
 // spare. The exemption holds while scanning such a tail is cheap; a time to
 // first read dominated by those scans overturns it.
 func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
-	marker int64, entries []format.CatalogEntry, early bool) (SealResult, error) {
+	marker int64, entries []format.CatalogEntry, early bool, synced func(core.SegmentID, int64)) (SealResult, error) {
+
+	if synced == nil {
+		panic("segment: WriteSeal needs the function that reports its syncs")
+	}
 
 	// The validation, no I/O: a refusal makes no seam call and no ledger
 	// change, so nothing about the segment moved.
@@ -97,6 +101,7 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 		}
 		return SealResult{}, fmt.Errorf("%w: making the records durable: %w", ErrSegmentEnded, err)
 	}
+	synced(id, marker)
 
 	// Step 2: the marker, the footer and the trailer, written then durable.
 	// markerAndFooter holds the marker followed by the entries, the bytes
@@ -121,6 +126,13 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 		}
 		return SealResult{}, fmt.Errorf("%w: making the marker, the footer and the trailer durable: %w", ErrSegmentEnded, recordsDurable{err})
 	}
+	// The trailer ends the file at the cap of a full seal and right after the
+	// footer of an early one.
+	trailerEnd := set.cap
+	if early {
+		trailerEnd = footerOff + int64(len(footer)) + format.TrailerSize
+	}
+	synced(id, trailerEnd)
 
 	// The seal is complete: the segment is sealed in the ledger from here,
 	// and the steps below are already refusals a second seal would answer.
@@ -164,6 +176,7 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 		if err := ref.Sync(); err != nil {
 			return err
 		}
+		synced(id, size)
 		if err := set.Shrink(id, size); err != nil {
 			return fmt.Errorf("%w: %w", ErrLedgerDisagrees, err)
 		}

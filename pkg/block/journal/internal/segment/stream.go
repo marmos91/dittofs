@@ -219,13 +219,18 @@ func (t *tracker) syncStart() int64 {
 // name bytes durable that no fsync made so. The window's records are the
 // durability layer's to reissue; the segment they sit in belongs to the
 // failure handling that ends it.
-func (t *tracker) syncDone(through int64) {
+//
+// It reports whether the sync counts: false when an earlier sync failed, for
+// then the sync covers nothing the tracker may claim and nothing is reported
+// to the durability sink.
+func (t *tracker) syncDone(through int64) bool {
 	if t.syncFailed {
-		return
+		return false
 	}
 	if through > t.synced {
 		t.synced = through
 	}
+	return true
 }
 
 // syncFail freezes the value a failed sync left behind: no later sync of the
@@ -1305,7 +1310,7 @@ func (s *Stream) Sync() error {
 	// which the roll over an ended segment waits out — waits for it too, so
 	// the tracker and the second-refusal word below are still the segment's
 	// own when the fsync returns (R10).
-	ref := s.ref
+	ref, id := s.ref, s.id
 	s.appendMu.Unlock()
 
 	if err := ref.Sync(); err != nil {
@@ -1320,7 +1325,19 @@ func (s *Stream) Sync() error {
 		return err
 	}
 	s.appendMu.Lock()
-	s.tracker.syncDone(through)
+	// decision: a sync that completes after an earlier sync of the segment
+	// failed is not reported, because it covers nothing the tracker may claim
+	// (RFC 1 §5.3's failed window: "a second sync can succeed without having
+	// written them"); reporting it would let the ledger drop the failed
+	// window's entries. Overturned if the durability layer ever needs to see
+	// such syncs, which would then need a flag of their own in the event.
+	//
+	// The report is made under the append domain, after the Track of every
+	// record the through offset covers: a slot is complete, and so covered,
+	// only after its Track ran under this same lock.
+	if s.tracker.syncDone(through) {
+		s.sink.Synced(id, through)
+	}
 	// A sync of the active segment has succeeded: the second-refusal rule
 	// reads this beside leftFailed, for a stream that proved this segment
 	// durable once is past the window where a failure in it counts as the
@@ -1473,7 +1490,7 @@ func (s *Stream) sealLocked(early bool) (SealResult, error) {
 	id, ref := sealedID, sealedRef
 	s.appendMu.Unlock()
 
-	res, err := WriteSeal(s.set, ref, s.identity, id, marker, entries, early)
+	res, err := WriteSeal(s.set, ref, s.identity, id, marker, entries, early, s.sink.Synced)
 
 	s.appendMu.Lock()
 	if err != nil {
