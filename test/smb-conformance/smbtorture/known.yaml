@@ -71,7 +71,8 @@
   status: fail
   fix: wontfix
   category: permanent
-  reason: 'NTFS 8.3 short-name mangling: DOS/Win9x legacy, not in SMB2/3 protocol surface'
+  reason: 'NTFS 8.3 short-name mangling: DOS/Win9x legacy, not in SMB2/3 protocol surface. The test unlinks 10 random names by their 8.3 names, so it passes only when all 10 are already 8.3 names: 1 pass in 71 develop runs of shard-1, 29 Oct to 5 Nov'
+  intermittent: true
 - test: smb2.name-mangling.mangled-mask
   status: fail
   fix: wontfix
