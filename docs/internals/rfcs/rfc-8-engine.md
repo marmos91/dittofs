@@ -1346,9 +1346,11 @@ after a loss, each client resends its recent unstable writes once.
   recoverable (**proposal**: 1 s, the `existence_age` setting), and always before
   an offer captures the file, before a removal's first transaction, before a size
   or time set ([RFC 7 §9.5](rfc-7-namespace-metadata.md#9.5%20An%20explicit%20time%20outlives%20the%20writes%20staged%20before%20it)), before an owner or group change ([RFC 17 §5.5](rfc-17-vfs.md#5.5%20Size%20changes)), and behind a snapshot cut's closed gate.
-- **A commit carries supersession within itself.** Each write a group commit
-  commits goes to `Existence.Commit` with the runs where it overlaps an earlier
-  write of the same file in the file's pending existence — what `Since` yields
+- **A commit carries supersession within itself.** Every existence commit —
+  the group commit, a removal's or clone's first transaction ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches),
+  [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), and step 3's re-apply ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) — passes each write it commits
+  with the runs where it overlaps an earlier write of the same file in the
+  file's pending existence — what `Since` yields
   as `Change.Over` after a crash ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)) — so the commit writes an overwrite
   record for them ([RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents)). The engine computes them from the pending
   writes it holds, never by asking the journal: by the commit the superseded
