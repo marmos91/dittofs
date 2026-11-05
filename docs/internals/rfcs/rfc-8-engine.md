@@ -2522,7 +2522,8 @@ which calls the journal's `Delete`, never its `Release`, which evicts
   `DelayConflict` for a conflict, `DelayCommit` otherwise; the client asks
   again. Only a terminal failure ends it: the file found gone, or the removal
   refused by the store as invalid. Then the removal's own pending operation
-  leaves the file's state, the guard is released, and the journal's marker is
+  leaves the file's state, a file still there has its other pending existence committed in
+  a transaction of its own, the guard is released, and the journal's marker is
   settled without the removal, as start settles a release a holder aborted ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 3): for a file still there, bytes not offloaded read **Lost**, reported as data loss naming the file.
 
 **Steps.**
