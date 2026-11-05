@@ -539,7 +539,9 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   `kvstore.ErrConflict`, since its import rule forbids `kv`; `existence_commit_failing`
   cleared too when a capture finds the file's entry gone, on `lostWhole` and on
   `dropShare`; `engine_group_commit_splits_total`; RFC 8 §15's `ponytail:` at the split
-  table. In the engine's test package, `newUnitOver`, which composes the unit over a given
+  table; every store call the group commit retries made under epic 7's retrying-owner
+  context mark (epic 7 D7), so a whole-call failure counts as failing for the self-fence and
+  a file's own failure does not. In the engine's test package, `newUnitOver`, which composes the unit over a given
   `kv.KV`, for a wrapper that fails or conflicts on chosen keys; E2's fault-injecting
   `kv.KV` does not exist.
 - **Acceptance criteria:**
@@ -719,5 +721,4 @@ A suggestion only: one pull request per subtask works as well.
      `Done` for what it committed twice.
 7. **RFC 8 §5.1 step 4 names no `Settle`.** T4.3 settles each committed file at the highest
    version it committed, as RFC 1 §3.6 and §3.10 need for a truncate up's marker and a
-   synced loss's `OpLost`; RFC 8 §5.1 step 4 should say so, in the RFC pull request after
-   this one.
+   synced loss's `OpLost`. Settled: RFC 8 §5.1 says so since #3716.

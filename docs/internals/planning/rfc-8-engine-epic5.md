@@ -326,15 +326,17 @@ numbered so that subtasks and tests can cite them.
   call cannot fail: the removal is handed to the loop, which keeps the guard and retries
   phase 1, and the call answers `ErrDelay` (`DelayConflict` for a conflict, `DelayCommit`
   otherwise). This holds for truncate and deallocate as for a release; RFC 8 §8.1 defines
-  pending for a release only and is owed the line. A client's retry is idempotent.
+  this for truncate and deallocate too since #3716. A client's retry is idempotent.
 - **D10, terminal failures.** The file gone (`ErrStale`), or the removal refused as invalid
   (`kvstore.Refused`), ends phase 1 at once, in the call or in the loop: the removal's
-  operation leaves the entry, the guard is released, and the marker is left for recovery. The
+  operation leaves the entry, the guard is released, and the journal's marker is settled
+  without the removal, a loss logged at `Error` naming the file when it still exists (RFC 8
+  §8.1 since #3716; a marker a crash left unsettled is settled at start step 3, epic 6). The
   loop ending or the share dropped ends a retried phase 1 the same way. Without the class, a
   deterministic refusal would hold the guard forever.
 - **D11, truncate above the size in `kvstore`.** A truncate removal whose new size is above
   the File record's, as a failed window's dropped write can make it, sets the size with the
-  gap a hole and records no removal, rather than refusing. RFC 6 §6.2 is owed the rule.
+  gap a hole and records no removal, rather than refusing, as RFC 6 §6.2 says since #3716.
 
 ## 5. Target tree
 
@@ -445,7 +447,9 @@ test/engine/known.yaml  T5.2, T5.3, T5.5  their entries
   retry-uncounted); `enqueue` for epic 6's start step 4 and epic 8's clone items; the loop's
   part of epic 4's `dropShare(s)`, ending the share's items with their pending releases'
   channels yielding `ErrUnavailable`, built here and tested in epic 6's T6.9; the series of
-  §2.1 and each batch's root span.
+  §2.1 and each batch's root span; every store call the loop retries made under epic 7's
+  retrying-owner context mark (epic 7 D7), so the self-fence counts a phase 1 or batch that
+  fails at the store as a whole.
 - **Acceptance criteria:**
   - a truncate's masked refs are gone once the loop has run, and its removal record pruned;
   - a removal whose batches fail five times running raises `removal_stalled` naming the file
