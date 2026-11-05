@@ -1,7 +1,17 @@
 # Sums a plan's epic estimate lines and reports every malformed, missing or misplaced one,
-# and a plan line that disagrees; only a TOTAL line means the estimate is sound.
+# and a plan line or §2 total row that disagrees; only a TOTAL line means the estimate is sound.
 # Usage: awk -f plan-check.awk <plan>
-/^## /                                   { in5 = ($0 ~ /^## 5\./); cur = "" }
+/^## /                                   { in2 = ($0 ~ /^## 2\./); in5 = ($0 ~ /^## 5\./); cur = "" }
+in2 && /^\|/ {
+  nc2 = split($0, cell, "|")
+  if (!sc) {
+    for (i = 1; i <= nc2; i++) { t = cell[i]; gsub(/^ +| +$/, "", t)
+      if (t == "Subtasks") sc = i; if (t == "Man-days") mc = i }
+  } else if ($0 ~ /\*\*Total\*\*/) {
+    if (trow++) print "a second total row in §2, line " NR
+    else { tn = cell[sc]; td = cell[mc]; gsub(/[ *]/, "", tn); gsub(/[ *]/, "", td); tline = NR }
+  }
+}
 in5 && /^### /                           { cur = "" }
 in5 && /^### Epic [0-9]+ /               { cur = $3; head[$3]++; order[++k] = $3
                                            if (head[$3] > 1) print "duplicate heading for epic " $3 }
@@ -25,6 +35,10 @@ END {
   printf "TOTAL %d subtasks, %g man-days", n, d
   sep = ", not counting epic"; for (i = 1; i <= k; i++) if (order[i] in later) { printf "%s %s", sep, order[i]; sep = "," }
   print ""
+  if (!sc || !mc) print "no Subtasks and Man-days columns in the §2 table"
+  else if (!trow) print "no **Total** row in the §2 table"
+  else if (tn !~ /^[0-9]+$/ || td !~ /^[0-9]+(\.(25|5|75))?$/) print "§2 total row, line " tline ", is not plain numbers: " tn " subtasks, " td " man-days"
+  else if (tn + 0 != n || td + 0 != d) printf "§2 total row says %d subtasks, %g man-days\n", tn, td
   if (!seen) { print "no plan estimate line in §2"; exit }
   if (pn != n || pd != d) printf "plan line says %d subtasks, %g man-days\n", pn, pd
   for (id in later) if (!(id in listed)) print "plan line does not name epic " id " as not counted"

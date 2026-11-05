@@ -83,7 +83,7 @@ one integration epic, E2E green is E(N+4); with two, E(N+5).
 | Role | Content |
 | --- | --- |
 | **E1 Interfaces** | The public surface only: the exported symbols with their exact signatures, the error set, and the injection points: options and the `Deps` fields RFC 25 §8 names (logger, metrics registry, tracer), or the RFC's own observability surface where rule 3's exception applies. Stub bodies. No behaviour, except where a type's encoding *is* the contract. An internal interface belongs here only if it has two consumers before any implementation exists (for example a storage seam that both an option and E2's crash-simulating fake consume). Every other internal package — codecs, index, state machines — is created by the middle epic that implements it, as concrete types, with its first caller (rule 12). |
-| **E2 Red e2e suite and test foundations** | E2E tests for every use case and scenario that can be named: from the RFC, from the in-scope related RFCs, and from other sources (protocol specs, past issues, v1's own bug history). Every test starts red and is listed as a known failure. **E2 registers the suite with the harness**, not E2E green, so CI runs it from the first pull request and a test pinned green stays green; registered at the end, a test an epic turned green could go red again unseen. Concretely, E2 registers the red tests where the RFC's suites paragraph (RFC 29 R11) puts them: a suite of its own only when the paragraph calls for one, as an entry in `test/suites.yaml` with `tier: pr` (the default, `merge`, keeps it off pull requests), `format: go-json` and `known:` naming its `known.yaml`, behind its own build tag so `unit` does not turn red on it, in a component group named for the component (RFC 29 §4.9); the tag joins `lint-go`'s `go vet -tags=` line, which is the only check that compiles tagged tests on a pull request; otherwise the existing suites the paragraph names. **An RFC with no suites paragraph** gets the suite of its own, in that same form, and the missing paragraph is an open point in §6 for the RFC's author, so the paragraph and the registered suite are reconciled when it is written. Each red test is one entry in its suite's `known.yaml`, which `dt` grades, so a listed test that passes fails the run and the epic that turns it green removes its entry. The entry is `status: fail`, `fix: planned`, `category: feature`, a `reason`, and `issue:` the programme's umbrella issue (Step 0 #8), or the RFC's roadmap epic when the programme is not an issue: a planned entry with no issue is refused, and one bad entry stops every `dt` command from loading the registry (`fix: wontfix` would load, and say the opposite of the truth). A suite that keeps no `known.yaml` (`unit`, `e2e`) cannot hold a red test: a test the paragraph puts there lands green, with the epic that makes it pass. A new suite and group join the paragraph in the pull request that registers them, and that pull request runs `test/harness/bin/dt docs` so `docs/internals/testing.md` matches the registry; `lint-repo`'s `dt docs --check` compares that file with the registry, not with the RFC's paragraph. The small test components that everything else needs (fakes for clocks and faults, a reference model, a profiling harness) also go here. **A test lands with the epic that creates the packages it imports:** at S2 only E1's packages exist, so a test that needs a middle epic's package (an encoder, a platform layer) belongs to that epic and is listed there. Format checks in E2 write their bytes by hand from the RFC, which also makes them an oracle independent of the encoder. **The catalogue holds only what can run:** a scenario that needs a host nobody provisions is parked in §6, and a system-level scenario that a component-level fake already covers is dropped. |
+| **E2 Red e2e suite and test foundations** | E2E tests for every use case and scenario that can be named: from the RFC, from the in-scope related RFCs, and from other sources (protocol specs, past issues, v1's own bug history). Every test starts red and is listed as a known failure. **E2 registers the suite with the harness**, not E2E green, so CI runs it from the first pull request and a test pinned green stays green; registered at the end, a test an epic turned green could go red again unseen. Concretely, E2 registers the red tests where the RFC's suites paragraph (RFC 29 R11) puts them: a suite of its own only when the paragraph calls for one, as an entry in `test/suites.yaml` with `tier: pr` (the default, `merge`, keeps it off pull requests), `format: go-json` and `known:` naming its `known.yaml`, behind its own build tag so `unit` does not turn red on it, in a component group named for the component (RFC 29 §4.9); the tag joins `lint-go`'s `go vet -tags=` line, which is the only check that compiles tagged tests on a pull request; otherwise the existing suites the paragraph names. **An RFC with no suites paragraph** already fails `lint-repo`, since `dt docs --check` wants exactly one in every RFC: E2 gets a suite of its own, in that same form, and the pull request that registers it adds a minimal paragraph naming that suite, which §6 lists as an open point for the RFC's author to review. Each red test is one entry in its suite's `known.yaml`, which `dt` grades, so a listed test that passes fails the run and the epic that turns it green removes its entry. The entry is `status: fail`, `fix: planned`, `category: feature`, a `reason`, and `issue:` the programme's umbrella issue (Step 0 #8), or the RFC's roadmap epic when the programme is not an issue, written quoted as `issue: "#1234"` (unquoted, the `#` starts a YAML comment and the entry has no issue): a planned entry with no issue is refused, and one bad entry stops every `dt` command from loading the registry (`fix: wontfix` would load, and say the opposite of the truth). Where the red tests fail in a shared fixture until a later epic lands, each entry also sets `message:` to the text that fixture's failures start with (`message: 'fixture:'` in the journal's suite), so a test that fails for another reason is graded new rather than excused. A suite that keeps no `known.yaml` (`unit`, `e2e`) cannot hold a red test: a test the paragraph puts there lands green, with the epic that makes it pass. A new suite and group join the paragraph in the pull request that registers them, and that pull request runs `test/harness/bin/dt docs` so `docs/internals/testing.md` matches the registry; `lint-repo`'s `dt docs --check` compares that file with the registry and checks every RFC's paragraph: exactly one per RFC, and every code span in it naming a suite, group or option of the registry. The small test components that everything else needs (fakes for clocks and faults, a reference model, a profiling harness) also go here. **A test lands with the epic that creates the packages it imports:** at S2 only E1's packages exist, so a test that needs a middle epic's package (an encoder, a platform layer) belongs to that epic and is listed there. Format checks in E2 write their bytes by hand from the RFC, which also makes them an oracle independent of the encoder. **The catalogue holds only what can run:** a scenario that needs a host nobody provisions is parked in §6, and a system-level scenario that a component-level fake already covers is dropped. |
 | **Integration** | Wire v2 into the system as the programme (Step 0 #8) stages it, not into code a later stage replaces. Typical shape changes: one instance per share becomes one per disk; a value read once at start becomes reloadable; an owner-local decision becomes cluster-wide. Also: the transition policy from Step 0 #3, config keys, observability wiring (the component's `Deps` from the root's logger, registry and tracer; its `health.Source` added to the evaluator; its conditions in RFC 25 §3.9's registry and its alert rules per RFC 25 §7 — or, under rule 3's exception, the bridge to them), error mapping, API and CLI. **If it depends on an interface not yet agreed** (owned by another team or stage), add a synchronisation point for that agreement, keep in this epic only what is already decided, and put the rest in a following epic that is **planned after** that point and not estimated (Step 3). |
 | **E2E green** | Burn down the suite's `known.yaml` to empty. Also soak tests, the benchmarks the RFC names, and the suite's tiers past `pr`; the suite itself was registered in E2. |
 | **Dashboards** (optional) | Only if Step 0 #9 said yes: a small number of dashboards, each with an automated test and a consumer before release. |
@@ -247,7 +247,14 @@ Each epic in §5 opens with exactly one line, on a line of its own, in one of th
 **Epic 11 estimate: planned after S4a.**
 ```
 
-§2 carries the total, right under the table:
+§2's table ends with a total row: `**Total**` in the `Epic` column, and the sums, in bold, in
+the `Subtasks` and `Man-days` columns; an epic "planned after" counts in neither.
+
+```markdown
+| | **Total** | | **120** | **190** | | |
+```
+
+§2 carries the total line right under the table:
 
 ```markdown
 **Plan estimate: 120 subtasks, 190 man-days.**
@@ -268,8 +275,8 @@ epic heading in §5 without exactly one estimate line, or an estimate line witho
 heading or under another epic's heading, is reported, so a deleted or misplaced line cannot
 go unnoticed; a `**Plan estimate:**` line that differs from the sum, a second one, and a
 "not counting epic …" clause that does not name exactly the "planned after" epics are
-reported. Make the §2 table's total row agree with the
-`TOTAL` line.
+reported; and so are a §2 table with no total row or with two, a total cell that is not a
+plain number, and a total row whose figures differ from the sum.
 
 `grep -E '^\*\*(Epic [0-9]+|Plan) estimate:' <plan>` then lists the whole estimate.
 
@@ -372,8 +379,11 @@ use `epic-breakdown` in the document they are reading:
 >   of the document never leaves an issue saying something else. The epic is one issue labelled `epic`. Each subtask is its own
 >   issue, created as a sub-issue of the epic issue rather than as a checklist in its body.
 >   All of them join the "DittoFS" project, each subtask with its man-days in the
->   `Estimate` field. The release an epic ships in is set on its epic issue, never in a
->   document, and its subtask issues take the same release, also when created later.
+>   `Estimate` field. The release an epic ships in is set by the RFC's roadmap epic that
+>   its epic issue sits under, never in a document and never on the epic issue on its own:
+>   the epic issue and its subtask issues copy that roadmap epic's milestone, also when
+>   created later, and an epic changes release only by moving under the roadmap epic of
+>   the other release.
 
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation, the implementation of an epic it depends on once
@@ -442,7 +452,8 @@ use `epic-breakdown` in the document they are reading:
   of its own (`test/suites.yaml` entry with `tier: pr`, `format: go-json` and `known:`, a
   build tag on `lint-go`'s vet line, a component group, `docs/internals/testing.md`
   regenerated with `dt docs`) only when the paragraph calls for one, or when the RFC has no
-  suites paragraph, which §6 then lists as an open point. E2E green adds only the tiers
+  suites paragraph, in which case the registering pull request adds a minimal one and §6
+  lists it for the RFC's author. Each `issue:` is quoted (`"#1234"`). E2E green adds only the tiers
   past `pr`, soak and benchmarks.
 - The integration epic follows the programme's stages, and an epic waiting on someone
   else's interface says "planned after Sx" and names the point.
@@ -465,8 +476,8 @@ use `epic-breakdown` in the document they are reading:
   rules are copied into each epic, the epic
   stands alone and records decisions rather than progress, subtasks are not pull requests,
   and issues, only when asked for, point at the epic document, with an `epic` label,
-  sub-issues, the project's `Estimate` field and a release set on the epic issue that its
-  subtask issues share.
+  sub-issues, the project's `Estimate` field and a release that the RFC's roadmap epic
+  sets and the epic issue and its subtask issues copy.
 
 ## Roadmap epics: an RFC's release, before its epics have issues
 
@@ -480,6 +491,11 @@ under that release's roadmap epic. Roadmap epics come first: they exist before a
 of the RFC is opened, made by hand or by this section when the user asks. Epic issues never
 choose a milestone; they sit under a roadmap epic and copy its.
 
+- **Look before creating.** List the RFC's roadmap epics first:
+  `gh issue list --state all --label roadmap --label rfc-<n>-<slug> --json number,title,state,milestone`.
+  If one already exists for that milestone, use it and create nothing; if it is closed, ask
+  the user before reopening it. A second roadmap epic for one RFC and milestone would make
+  the RFC read as split across releases.
 - Title `roadmap <milestone>: RFC <n> — <RFC title>`, the RFC's title as its `#` heading
   writes it (`roadmap v1.0: RFC 17 — the filesystem service (VFS)`). One RFC per roadmap
   epic, so the RFC label alone tells the burnup which RFC it covers.
@@ -516,7 +532,8 @@ milestone is the only place that says when an epic ships; no document names a re
 - Body: one sentence of goal, the "at the end of the epic" bullets condensed from §5,
   **Depends on:** and **Blocks:** from §3.3, and **Spec:** a link to the plan's
   `### Epic <k> — <title>` section on `develop`, adding "No epic document yet." When the
-  epic document lands, `epic-breakdown` Step 6 adds its link and the subtask issues.
+  epic document lands, `epic-breakdown` Step 6 rewrites this body to point at it and adds
+  the subtask issues.
 - **Roadmap epic:** find the RFC's
   (`gh issue list --state open --label roadmap --label rfc-<n>-<slug> --json number,title,milestone`).
   One → use it, without asking; several (the RFC is split across releases) → ask the user

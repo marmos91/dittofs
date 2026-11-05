@@ -137,6 +137,11 @@ Note each candidate with its RFC line number in a scratch file, not in the docum
   places, and cite both sections. Split a sentence that carries two independent ones.
 - Restate each one as a checkable sentence in the RFC's terms, and keep the polarity: a MUST
   NOT stays a prohibition ("never…", "is refused…").
+- **Name only what the sources name.** Every identifier a row gives (a type, an error, a
+  function, a config key, a metric) must appear in a section its `Source` cites. A name
+  taken from somewhere else (another RFC, an earlier epic's document, the plan) adds that
+  place to `Source`; a name found in none of them is replaced by the RFC's own words, since
+  a requirement must not invent the API it holds the code to.
 - A prose `never` / `always` becomes a requirement only if it constrains this epic's code. A
   sentence describing another component, or giving background, does not.
 - A SHOULD becomes a requirement only if the epic adopts it. Otherwise record why not in §4
@@ -344,9 +349,10 @@ it delivers.
 
 ## Step 6 — GitHub issues: only when asked, as pointers to the document
 
-**Do not create issues, and do not offer to.** The user creates them, by asking for this
-step, once the plan and the epic document are confirmed and the team chooses to start
-assigning the epic's subtasks.
+**Do not create issues unasked.** The user creates them, by asking for this step, once the
+plan and the epic document are confirmed and the team chooses to start assigning the epic's
+subtasks. The breakdown's report only reminds the user of this step (see the end of
+Verification).
 
 Issues let the team assign and follow subtasks. They never copy the specification: an
 issue's body is a pointer to its section of the epic document, with a few lines of context,
@@ -355,13 +361,19 @@ one place that says what to build.
 
 The links point at the document on `develop`, so issues are created only **once the epic
 document's pull request has merged**, never during the breakdown. If the epic issue already
-exists (Step 0 #4), never create a second one, and match its sub-issues before creating any:
+exists (Step 0 #4), never create a second one. If its body is still the one
+`rfc-to-epic-plan` gave it (a link to the plan's section and "No epic document yet.") or
+holds no more than a line or two of context, rewrite it to the item 3 form, which points at
+the epic document; a body someone has written into is left as it is, and reported. Then
+match its sub-issues before creating any (`--paginate`, since the endpoint returns 30 per
+page):
 ```bash
-gh api repos/{owner}/{repo}/issues/<epic-number>/sub_issues --jq '.[] | "\(.number) \(.state) \(.title)"'
+gh api --paginate repos/{owner}/{repo}/issues/<epic-number>/sub_issues --jq '.[] | "\(.number) \(.state) \(.title)"'
 ```
-A sub-issue matches a subtask by its id, in either title form: `subtask T4.1: …` (this skill's)
-or `epic 4.1: …` (issues created before subtask ids carried the `T`, such as
-`journal v2, epic 4.1: …`). Create issues only for the subtasks with no match. An older issue
+A sub-issue matches a subtask by its id followed by the colon, in either title form:
+`subtask T4.1:` (this skill's) or `epic 4.1:` (issues created before subtask ids carried
+the `T`, such as `journal v2, epic 4.1: …`). The colon matters: a bare `epic 4.1` also
+matches 4.10 to 4.19. Create issues only for the subtasks with no match. An older issue
 keeps its title form, so both stay in use; if its body copies the specification (`Covers:`,
 `Done when`, a checklist), the first sync rewrites it to the pointer form of item 4.
 
@@ -454,7 +466,7 @@ keeps its title form, so both stay in use; if its body copies the specification 
    copy on the epic issue and its open sub-issues; closed ones keep the release they shipped
    in.
 9. **Report** the epic issue's link, its roadmap epic and the subtask numbers. Check the result with
-   `gh api repos/{owner}/{repo}/issues/<epic-number>/sub_issues --jq '.[].title'`.
+   `gh api --paginate repos/{owner}/{repo}/issues/<epic-number>/sub_issues --jq '.[].title'`.
 
 ## Common rationalizations
 
@@ -475,6 +487,12 @@ Before handing over, check:
 - Every candidate of 2.1 (key words, bold lead sentences, invariants, bounds) is mapped,
   and the R-tables carry `Kind`, `Source` and `Subtasks` on every row.
 - Every R-number has a subtask and a test; every subtask covers an R-number or says why not.
+- Every identifier in an R row is read back in the sections its `Source` cites: list the
+  row's backticked names, and `rg -n -w '<name>'` each one in the cited documents, keeping
+  only the hits inside the cited sections' line ranges. A name with no hit there is a
+  defect to fix before handing over, not to report: add the place it really comes from to
+  `Source`, or rewrite the row in the RFC's words. This holds for rows this run did not
+  write, too, when revising an existing document.
 - No subtask is over 5 man-days without a reason, and none was cut to reach a count.
 - `epic-check.awk` prints only its `TOTAL` line, and the header's `**Epic <k> estimate: …**`
   line says the same; the plan is touched only if the user asked for it.
@@ -500,8 +518,9 @@ Before handing over, check:
                  rg -N -o -w 'E[0-9]+|S[0-9]+[a-z]?' | sort -u)
   ```
 - No GitHub issue was created or synced unless the user asked, and never before the
-  document merged. An existing epic's sub-issues were matched by id, in either title form,
-  before any was created. Issues that were created carry
+  document merged. An existing epic issue whose body was still the plan's pointer now
+  points at the epic document, and its sub-issues were matched by id and colon, in either
+  title form, before any was created. Issues that were created carry
   the labels, a pointer body with no copied specification, the sub-issue links (subtask under
   epic, epic under its RFC's roadmap epic), the project, the roadmap epic's milestone and, on
   subtasks only, the `Estimate` field.
@@ -510,7 +529,8 @@ Then report the output path, the requirement count, the subtask count and the ma
 (and the plan's figure for comparison, or "no plan figure"), any Step 1 fallback used,
 the suggested pull requests, the subtasks whose
 estimate is least certain, and the open points, in a few lines. End with one line
-suggesting that the GitHub issues be created, with Step 6, once the plan is confirmed and
-the document's pull request has merged; for a revision of an epic that already has issues,
-the line says instead that they need syncing once the revision merges. The report never
-offers to create or sync them.
+reminding the user to create the GitHub issues with Step 6 once the epic document is
+approved and its pull request has merged; for a revision of an epic that already has
+issues, the line reminds them instead that the issues need syncing once the revision
+merges. The line names Step 6 as the next step for the user to ask for; it does not offer
+to run it now.
