@@ -1656,10 +1656,12 @@ func TestAGraceSpendsNoUnlinkRetry(t *testing.T) {
 	}
 }
 
-// A close open state makes itself, a durable open timing out after its
-// session ended, releases the unlinked file it held, found in its own share
-// though another share is listed first. The shard's grace has ended first,
-// so pending release recovery does not run it instead.
+// A persistent open whose session ended is parked, not closed, and holds the
+// unlinked file until its timeout passes; when it times out, the close it
+// makes releases that file, found in its own share though another share is
+// listed first. The open is persistent because a durable open without handle
+// caching is closed at disconnect rather than parked. The shard's grace has
+// ended first, so pending release recovery does not run it instead.
 func TestATimedOutDurableOpenReleasesItsUnlinkedFile(t *testing.T) {
 	n := newNames(t)
 	ctx := t.Context()
@@ -1670,7 +1672,7 @@ func TestATimedOutDurableOpenReleasesItsUnlinkedFile(t *testing.T) {
 	pc := n.smbClient(t, "alice-pc", alice.Principal)
 	pc.Session = vfs.SessionRef{ID: 1}
 	req := vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData}
-	req.Durability, req.Timeout = entity.DurabilityDurable, time.Minute
+	req.Durability, req.Timeout, req.CreateID = entity.DurabilityPersistent, time.Minute, [16]byte{1}
 	_, err := n.Open(ctx, pc, req)
 	n.must(t, err)
 	_, x := n.fs.Create(t, n.fs.Admin, n.fs.Root, "x", kvstore.Regular(0o644))
@@ -1686,8 +1688,13 @@ func TestATimedOutDurableOpenReleasesItsUnlinkedFile(t *testing.T) {
 	if _, err := n.Disconnect(ctx, pc, pc.Client, pc.Session, vfs.SessionEnd{}); err != nil {
 		t.Fatal(err)
 	}
-	if !n.held(f.ID) {
-		t.Fatal("released while its durable open waits for a reconnect")
+	// The clock stands still here, so nothing may release a parked open; the
+	// poll gives a release made on a background goroutine time to show.
+	for range 20 {
+		if !n.held(f.ID) {
+			t.Fatal("released while its durable open waits for a reconnect")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if !n.released(f.ID, 11*time.Second) {
 		t.Error("an unlinked file whose durable open timed out is still held")
