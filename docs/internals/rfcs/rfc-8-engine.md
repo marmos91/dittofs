@@ -1281,7 +1281,10 @@ after a loss, each client resends its recent unstable writes once.
   ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)) at the newest version that transaction committed for the
   file, never above it: a write staged after the batch claimed the file's
   operations is not settled by it, and stays for the next commit or for
-  recovery ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
+  recovery ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). Nor does it settle above a pending removal: a
+  group commit does not capture a file whose guard a removal holds
+  ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow), [§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), so the file's next settle comes after the
+  removal's phase 1, and RFC 1 §3.10's precondition holds.
 - **`Done` is called exactly once for every write `Write` accepted.** The
   existence commit that commits a write also records the usage it adds
   ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)) and then calls the write's `Done`, so the filesystem
