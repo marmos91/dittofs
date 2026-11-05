@@ -503,13 +503,17 @@ choose a milestone; they sit under a roadmap epic and copy its.
   (`rfc-17-vfs` for `rfc-17-vfs.md`); create a missing one with color `5319E7` and
   description `RFC <n> <title>`. **Not** `epic`, and never an `rfc-<n>-epic-<k>` label.
 - The milestone: ask the user, never guess. This is the one place a release is chosen.
-- Body, and nothing more:
+- Body, and nothing more. Every link must resolve: `<branch>` is one that holds the file,
+  not always `develop`, and each is checked first with
+  `gh api "repos/{owner}/{repo}/contents/<path>?ref=<branch>" --silent`; a 404 means
+  linking another branch, never writing a dead link. The same holds for the epic issues
+  below.
   ```markdown
   Roadmap epic: what of RFC <n> — <title> ships in <milestone>.
 
   **In this release:** the whole RFC. | the whole RFC except epics <k>, …, which ship in <later milestone> (#<roadmap>). | epics <k> (<title>), …; the rest of the RFC ships in <milestone> (#<roadmap>).
-  **RFC:** [`rfc-<n>-<slug>.md`](https://github.com/{owner}/{repo}/blob/develop/docs/internals/rfcs/rfc-<n>-<slug>.md)
-  **Plan:** [`<plan>.md`](<link on develop>) | none yet.
+  **RFC:** [`rfc-<n>-<slug>.md`](https://github.com/{owner}/{repo}/blob/<branch>/docs/internals/rfcs/rfc-<n>-<slug>.md)
+  **Plan:** [`<plan>.md`](<link to the plan on the branch it merged into>) | none yet.
 
   The RFC's epic issues for this release are sub-issues of this one, and each carries this milestone. A unit of the RFC with no epic issue of its own ships with this roadmap epic. The plan and the epic documents say what to build; the milestone is the only place that says when.
   ```
@@ -531,7 +535,8 @@ milestone is the only place that says when an epic ships; no document names a re
   `rfc-<n>-epic-<k>` (create a missing one as `epic-breakdown` Step 6 does).
 - Body: one sentence of goal, the "at the end of the epic" bullets condensed from §5,
   **Depends on:** and **Blocks:** from §3.3, and **Spec:** a link to the plan's
-  `### Epic <k> — <title>` section on `develop`, adding "No epic document yet." When the
+  `### Epic <k> — <title>` section on the branch the plan merged into, adding "No epic
+  document yet." When the
   epic document lands, `epic-breakdown` Step 6 rewrites this body to point at it and adds
   the subtask issues.
 - **Roadmap epic:** find the RFC's

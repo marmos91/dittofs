@@ -359,8 +359,14 @@ issue's body is a pointer to its section of the epic document, with a few lines 
 so revising the document never leaves an issue saying something else. The document stays the
 one place that says what to build.
 
-The links point at the document on `develop`, so issues are created only **once the epic
-document's pull request has merged**, never during the breakdown. If the epic issue already
+The links point at the merged document, so issues are created only **once the epic
+document's pull request has merged**, never during the breakdown. **Every link must
+resolve.** Use the branch the document merged into, which is not always `develop` (a
+programme branch such as `feat/storage-v2` holds documents `develop` does not have yet), and
+check each file before writing its link:
+`gh api "repos/{owner}/{repo}/contents/<path>?ref=<branch>" --silent`. A file that answers
+404 there gets no link to that branch; link a branch that has it, and never write a link
+that does not resolve. If the epic issue already
 exists (Step 0 #4), never create a second one. If its body is still the one
 `rfc-to-epic-plan` gave it (a link to the plan's section and "No epic document yet.") or
 holds no more than a line or two of context, rewrite it to the item 3 form, which points at
@@ -406,7 +412,7 @@ keeps its title form, so both stay in use; if its body copies the specification 
    ```markdown
    Epic <k> of <component> v2 (RFC <n>): <§1's goal, in one sentence>.
 
-   **Specification:** [Epic <k>: <title>](https://github.com/{owner}/{repo}/blob/develop/docs/internals/planning/<file>.md)
+   **Specification:** [Epic <k>: <title>](https://github.com/{owner}/{repo}/blob/<branch>/docs/internals/planning/<file>.md)
    **Sources:** RFC <n> §…; **Track:** <A|B|C>.
    **Depends on:** epics <j> and <k> (or a sync point, as `S2`, or "every earlier epic").
 
@@ -476,7 +482,7 @@ keeps its title form, so both stay in use; if its body copies the specification 
 | "I'll pick out the important MUSTs" | The unimportant-looking ones are the ones nobody tests. Read every owned section in full, note every candidate, and map each one. |
 | "This MUST is obvious, it needs no test" | Then the test is cheap. A requirement without a test is a claim. |
 | "The estimate is close enough to the plan's" | Then the script will say so. Compute it; don't copy the plan's figure. |
-| "Let's create the issues now, it saves a step" | They are created by hand when the team is ready to assign the subtasks, and only on request; their links point at the document on `develop`, which does not exist until its pull request merges. |
+| "Let's create the issues now, it saves a step" | They are created by hand when the team is ready to assign the subtasks, and only on request; their links point at the merged document, which does not exist until its pull request merges. |
 | "The issue body could carry the acceptance criteria, it saves a click" | A copy goes stale at the first revision. The body points at the section; the document is the specification. |
 | "The old epic document is out of date, I'll replace it" | Someone may be working from it. Stop and ask. |
 
