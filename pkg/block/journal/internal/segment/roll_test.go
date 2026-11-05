@@ -1011,7 +1011,10 @@ func TestRollTwoFilesOnTwoStreamsNeverBlockEachOther(t *testing.T) {
 
 	// Two files whose streams differ.
 	var fa, fb core.FileID
-	for i := 0; ; i++ {
+	// The search is bounded, so a degenerate For — one that hands every
+	// file the same stream — fails here on the assertion rather than
+	// spinning to the package's timeout.
+	for i := 0; i < 64; i++ {
 		f := streamFileID(i)
 		if fa == (core.FileID{}) {
 			fa = f
@@ -1021,6 +1024,9 @@ func TestRollTwoFilesOnTwoStreamsNeverBlockEachOther(t *testing.T) {
 			fb = f
 			break
 		}
+	}
+	if fb == (core.FileID{}) {
+		t.Fatal("64 distinct files all map to one stream")
 	}
 	sa, sb := ss.For(fa), ss.For(fb)
 	if sa == sb {
