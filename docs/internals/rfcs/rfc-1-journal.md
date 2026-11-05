@@ -1285,7 +1285,8 @@ dropped by the same per-extent test as a removal record ([§7.2](#7.2%20Repack))
 still on disk holds a record of its file over its extent at or below the pair of
 the record it names, neither that record nor a copy of it can come back. Recovery that drops a record as
 corrupt appends the loss record once, so the next open applies it and does not
-report the same loss again.
+report the same loss again, unless it drops more than the open reserve has
+room for and leaves the record owed ([§6](#6.%20Capacity)).
 
 **A loss of content not yet offloaded raises the loss generation.** The journal
 keeps a **loss generation**, a counter it **MUST** raise by one on every loss
@@ -2266,7 +2267,9 @@ differently, so that what remains serves the records that return space:
 A record of the last class that finds the headroom exhausted fails with
 `ErrNoSpace` naming the headroom rather than overrunning, and the engine
 answers it as the journal's capacity: retry-later while repack can return
-space.
+space. The open reserve, below, is not part of what it finds: to every record
+but an open's own, the headroom is exhausted once only that reserve is left,
+and the half above is half of the headroom without it.
 
 > decision: below half, only records of the last class draw, and among them only removals
 > of content the journal does not hold free nothing; an unmark is one per
@@ -2281,6 +2284,38 @@ space.
 > `journal.headroom_records` are unmeasured: overturned by a journal held at its
 > limit ([§10](#10.%20Open%20questions), question 4) whose removals reach the refusal, or whose
 > headroom sits mostly undrawn.
+
+**An open keeps part of the headroom for its own records.** The last 4,096
+records of the headroom (proposal; 896 KiB at 224 bytes each) are the **open
+reserve**: only the header-only records an open appends before it serves draw on
+it — today the loss record of each record it drops as corrupt that no loss
+record on disk names yet ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). No record appended while the journal
+serves draws on it, so a journal that ran its headroom out before a crash still
+finds the open reserve whole at the next open, unless an earlier open drew it
+and nothing has returned the headroom since. Headroom the journal regains goes
+to the open reserve first.
+
+**Past the open reserve, the open still serves.** An open that drops more
+records as corrupt than the open reserve has room for — a segment's worth of
+damage, or a reserve an earlier open drew — appends loss records while the
+reserve lasts and leaves the rest **owed**. An owed loss still stands in memory:
+the extent is not held, a synced one outranks what it superseded ([§3.8](#3.8%20Loss%20events)), and
+its event is published as found at open. Its loss record is appended as a record
+of the last class above once the headroom outside the open reserve has room.
+Until it is, the segment holding the dropped record is retired neither by repack
+nor by the open's emptying ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)): an ended segment holding one is
+left in place and ended again at the next open. So a crash before the append
+finds the same damage, drops the same record and reports it again, rather than
+bringing back older content the lost synced record had superseded. Failing the
+open instead would keep a share down until an operator frees space, for a loss
+the open has already contained.
+
+> decision: the open reserve bounds the loss records one open appends, not the
+> losses it can find; past it a loss is held in memory and its segment kept, so
+> a large one costs a segment kept on disk and a loss reported again at every
+> open until the headroom returns. An ended segment kept for an owed loss loses
+> what the emptying protects: later damage to its records reads as torn.
+> Overturned by an open in the field that leaves a loss record owed.
 
 **Repack has a reserve of its own.** Repack copies live records before it can
 unlink their segment ([§7.2](#7.2%20Repack)). Its copies draw on a **repack reserve** at journal
@@ -3043,7 +3078,8 @@ The open questions of the on-disk format and of recovery are
    fewer than writers' natural grouping suggests, is unmeasured against the
    contention more streams remove.
 4. **Headroom, reserves and thresholds** ([§6](#6.%20Capacity), [§3.3](#3.3%20Offload)). The headroom's
-   size (`journal.headroom_records`), the repack reserve of one segment, the bound
+   size (`journal.headroom_records`), the open reserve of 4,096 of its records,
+   the repack reserve of one segment, the bound
    of 64 pinned segments per offer and of 256 across offers are proposals; none
    has been measured against a journal held at its limit. The idle-seal
    threshold is [RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions)'s.
