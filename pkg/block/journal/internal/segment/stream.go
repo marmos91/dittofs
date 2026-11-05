@@ -23,7 +23,7 @@ var ErrSegmentFull = errors.New("segment: no room for the record before the seal
 
 // ErrStreamClosed is returned by Append after Close: the stream publishes no
 // further location, so every caller stops writing.
-var ErrStreamClosed = errors.New("segment: stream closed")
+var ErrStreamClosed = fmt.Errorf("segment: stream closed: %w", core.ErrClosed)
 
 // ErrBadRecord is returned by Append for a record the format could not have
 // encoded: an unknown kind, or a write or fill whose payload length differs
@@ -273,6 +273,12 @@ type Stream struct {
 	rolling  chan struct{} // armed while one caller runs a roll for all
 	closed   bool
 	inflight sync.WaitGroup // the appends, syncs and seals Close waits for, added to under the lock
+
+	// readClosed is set by Close and read by ReadAt without a lock, so a read
+	// never takes appendMu: the flag lives outside the append domain on
+	// purpose, and a read that loaded it clear just before Close set it
+	// finishes on the reference it holds.
+	readClosed atomic.Bool
 
 	// idleClock is the clock the idle sealer installed, boxed so the
 	// pointer's loads and stores are lock-free reads before a sealer exists.
@@ -1328,7 +1334,15 @@ func (s *Stream) sealIdle(now time.Duration, threshold int64) (sealed bool, res 
 // knows whether the record is already unread, in which case each access
 // makes one attempt, never three. Withdraw this if a second caller ever
 // needs the same retry loop the consumer runs.
+//
+// decision: an in-flight read is not counted in inflight, because it holds a
+// cache reference and Descriptors.Shutdown waits for every reference, so the
+// storage a reader holds is never freed under it. A read that passed the flag
+// check but acquires after Shutdown began fails cleanly with ErrCacheClosed.
 func (s *Stream) ReadAt(seg core.SegmentID, p []byte, off int64) (int, error) {
+	if s.readClosed.Load() {
+		return 0, ErrStreamClosed
+	}
 	ref, err := s.cache.Acquire(seg)
 	if err != nil {
 		return 0, err
@@ -1353,6 +1367,7 @@ func (s *Stream) Close() error {
 		return nil
 	}
 	s.closed = true
+	s.readClosed.Store(true)
 	ref := s.ref
 	s.ref = Ref{}
 	s.appendMu.Unlock()
