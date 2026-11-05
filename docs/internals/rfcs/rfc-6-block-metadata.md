@@ -900,7 +900,7 @@ error. Existence therefore also records the **overwrite set**
   still be able to tell its older held content from current content
   ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)): a run where the write superseded another write of
   the file above `applied`, which the engine passes in the write's `Over`
-  (§10.1's `PendingWrite`) from its pending writes, and after a crash from
+  ([§10.1](#10.1%20Interface)'s `PendingWrite`) from its pending writes, and after a crash from
   `Since`'s `Change.Over` ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since), [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)) — by the commit the superseded write has left the index, so
   only the journal can say so. For example, an append W1 at v1 and an
   overwrite W2 at v2 of the same offset, committed together, leave a record
