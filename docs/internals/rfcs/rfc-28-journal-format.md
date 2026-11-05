@@ -1309,9 +1309,9 @@ and the range. The acknowledgement is `Acknowledge` on an open journal and
 the two do the same:
 
 1. **Each unread record in the range becomes a loss.** Its extents are
-   dropped and a loss record is appended for it, exactly as for a record that
-   does not verify (above), except that it always carries the synced flag, in
-   the unproven tail at open too: an I/O error is never a torn write (above),
+   dropped and a loss record of reason *acknowledged* ([§2.3](#2.3%20Records)) is appended
+   for it, as for a record that does not verify (above), except that it always
+   carries the synced flag, in the unproven tail at open too: an I/O error is never a torn write (above),
    and the record may have been answered as stable, so it reads **Lost**, never
    as the write it replaced. The files report the loss by [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)'s
    **Local content corrupt** path, and the loss generation rises. An unread
@@ -1340,7 +1340,13 @@ the two do the same:
    resolves from metadata and reads again. Writes with a higher version stay
    held. A file whose dropped extent lies at or below a live hold mark is
    listed in `AckResult.HoldFiles` too, so the engine fails that snapshot as
-   for an unread `hold`.
+   for an unread `hold`. In `AcknowledgeUnreadable` these loss records are
+   appended before the journal serves, so they draw on the open reserve after
+   the records of [RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write), alongside the open's corrupt drops, and past it
+   are deferred as those are ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)): the unread record stays on disk until
+   step 3 retires its segment, whose copy carries the deferred loss record, and
+   a crash before then finds the operation running and turns it into a loss
+   again.
 2. **An unnamed part of the range is refused, and metadata finds what it
    superseded.** The scan refuses the range and resynchronises past it, as past
    a bad record, and the open proceeds; the segment's readable records stay

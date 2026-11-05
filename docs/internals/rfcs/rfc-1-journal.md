@@ -2353,7 +2353,9 @@ only the header-only records an open appends to the headroom before it serves
 draw on it. Today those are, first, the unsynced loss record of each record a
 read-only journal failed that the next open in the process drops ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)),
 and then the loss record of each record it drops as corrupt that no loss record
-on disk names yet ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). The first take the reserve before any of
+on disk names yet ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), and of each unread record an
+`AcknowledgeUnreadable` turns into a loss before the journal serves
+([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads), step 1). The first take the reserve before any of
 the second, and are never deferred (below): a corrupt record is found again at
 every open, but a record a read-only journal failed is named only by the
 process's list of them, which a restart loses. Where they are more than the
@@ -2372,7 +2374,8 @@ and nothing has returned the headroom since. Headroom the journal regains goes
 to the open reserve first.
 
 **Past the open reserve, the open still serves, and appends no more.** An open
-that drops more records as corrupt than the open reserve has room for — a
+that drops more records as corrupt, or turns more acknowledged unread records
+into losses, than the open reserve has room for — a
 segment's worth of damage, or a reserve an earlier open drew — appends loss
 records while the reserve lasts and **defers** the rest. A deferred loss has no
 record on disk yet, and everything else a loss record gives is in place before
@@ -2392,7 +2395,9 @@ else live in it. The deferral ends only once the target is synced, and the
 source is unlinked only after that sync, so a power loss in between finds the
 dropped record still on disk. Until then the record that does not verify is
 still in its segment, so a crash finds the same damage, drops the same record
-and defers it again. Nothing waits on the headroom, so deferred losses cannot
+and defers it again; an acknowledged unread record is still in its segment too,
+and the acknowledgement, running until that segment is unlinked, turns it into
+a loss again ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)). Nothing waits on the headroom, so deferred losses cannot
 hold up the reclamation that would return it: a segment holding one is a repack
 candidate like any other. Failing the open instead would keep a share down
 until an operator frees space, for a loss the open has already contained.
