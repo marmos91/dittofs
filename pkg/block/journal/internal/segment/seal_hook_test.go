@@ -60,8 +60,8 @@ func TestAppendParkedAtTheLoopTopRefusesTheSeal(t *testing.T) {
 	go func() {
 		payload := make([]byte, 64)
 		h, body := writeHeaderOf(probeFileID, payload)
-		_, err := s.Append(h, body)
-		first <- err
+		_, perr := s.Append(h, body)
+		first <- perr
 	}()
 	select {
 	case <-parked:
@@ -83,7 +83,8 @@ func TestAppendParkedAtTheLoopTopRefusesTheSeal(t *testing.T) {
 	// check must refuse it, for the seal holds the segment and its
 	// marker covers the whole free span the append would reserve in.
 	close(release)
-	if err := <-first; !errors.Is(err, ErrSegmentFull) {
+	resumed := waitFor(t, first, "the resumed append's return")
+	if !errors.Is(resumed, ErrSegmentFull) {
 		t.Fatalf("the append resumed at the loop top against a sealing stream = %v, want the ErrSegmentFull roll signal", err)
 	}
 
@@ -94,6 +95,26 @@ func TestAppendParkedAtTheLoopTopRefusesTheSeal(t *testing.T) {
 	s.appendMu.Unlock()
 	if id != 0 {
 		t.Fatalf("the refused append took the segment (id %d) it must have left untaken", id)
+	}
+}
+
+// hookDeadline is the bound this package's waits carry: long enough that a
+// slow machine's real work always lands inside it, short enough that a hang
+// the package's own timeout would swallow fails the test on its own
+// assertion instead.
+const hookDeadline = 10 * time.Second
+
+// waitFor receives one value before hookDeadline, or fails t naming what
+// did not happen — a parked operation that never returns shows as the named
+// assertion, never a silent package timeout.
+func waitFor[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(hookDeadline):
+		t.Fatalf("%s within %v", what, hookDeadline)
+		return *new(T)
 	}
 }
 

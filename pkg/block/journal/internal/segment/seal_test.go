@@ -89,6 +89,111 @@ func sealRecordFault(t *testing.T, e streamEnv, seg string) *sealRecorderFault {
 	return f
 }
 
+// sealDeadline is the bound every wait for a parked operation carries: long
+// enough that a slow machine's real work always lands inside it, and short
+// enough that a hang the package's own timeout would have swallowed fails
+// the test on its own assertion instead.
+const sealDeadline = 10 * time.Second
+
+// sealWaitFor receives one value from ch before sealDeadline, or fails t
+// naming what did not happen — a parked operation that never returns shows
+// as the named assertion, never a silent package timeout.
+func sealWaitFor[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(sealDeadline):
+		t.Fatalf("%s within %v", what, sealDeadline)
+		return *new(T)
+	}
+}
+
+// sealNotYet looks at ch for the duration given — a bounded window where the
+// parked operation must still be pending — and fails t with what if a value
+// is there: a parked operation that returns before the test lifted its hold
+// did not park at all.
+func sealNotYet[T any](t *testing.T, ch <-chan T, window time.Duration, what string) {
+	t.Helper()
+
+	select {
+	case v := <-ch:
+		t.Fatalf("%s: got %v", what, v)
+	case <-time.After(window):
+	}
+}
+
+// sealReached waits for a hold's first call to arrive, or fails t naming the
+// call that never came. A hold armed before the operation it parks can never
+// lose it; a hold armed after another was released can (see the Close test's
+// comment), so every arm-before-use wait goes through here.
+func sealReached(t *testing.T, h *journaltest.Hold, call string) {
+	t.Helper()
+
+	select {
+	case <-h.Reached():
+	case <-time.After(sealDeadline):
+		t.Fatalf("no %s ever reached the hold within %v", call, sealDeadline)
+	}
+}
+
+// sealGateFault holds the n-th call (counting from 1) of op on the segment's
+// file at a gate the test owns, and passes every other call through. It is
+// the race-free replacement for two HoldFirst calls in a row — the second
+// armed after the first is released can lose to an operation that runs
+// between them, which a device that needs no time for the first call can do
+// — because it is installed before the operation starts and counts for
+// itself: it holds the n-th matching call the file sees, whenever it comes.
+//
+// Gate releases the held call and takes the fault off the seam, so later
+// operations run uncaptured.
+type sealGateFault struct {
+	env    streamEnv
+	seg    string
+	op     string
+	n      int
+	gate   chan struct{}
+	reach  chan struct{}
+	fired  bool
+	closed bool
+}
+
+// newSealGateFault installs the gate on the seam and returns it, set to hold
+// the n-th matching call.
+func newSealGateFault(e streamEnv, seg, op string, n int) *sealGateFault {
+	f := &sealGateFault{env: e, seg: seg, op: op, n: n, gate: make(chan struct{}), reach: make(chan struct{})}
+	e.seam.SetFault(f)
+	return f
+}
+
+func (f *sealGateFault) At(op string, key []byte) (time.Duration, int, error) {
+	if op != f.op || string(key) != f.seg || f.fired {
+		return 0, 0, nil
+	}
+	f.n--
+	if f.n == 0 {
+		f.fired = true
+		close(f.reach)
+		<-f.gate
+	}
+	return 0, 0, nil
+}
+
+// Reached returns a channel closed when the held call arrives.
+func (f *sealGateFault) Reached() <-chan struct{} { return f.reach }
+
+// Gate releases the held call, once, and clears the fault from the seam: it
+// waits for the n-th call to arrive first, so its return means the held
+// call happened and is parked, whatever the scheduler did with the callers.
+func (f *sealGateFault) Gate() {
+	if !f.closed {
+		f.closed = true
+		f.env.seam.SetFault(nil)
+		close(f.gate)
+	}
+}
+
 // entries returns the calls the recorder logged, in their order.
 func (f *sealRecorderFault) entries() []string { return *f.log }
 
@@ -515,53 +620,61 @@ func TestSealACrashAtEveryDurableStateLeavesThePromisedBytes(t *testing.T) {
 				placed := sealAppended(t, e)
 
 				if !tc.torn {
-					// The full seal splits step 2 in two writes. Park the
-					// seal at its first sync, let it pass, then park it at
-					// its second: at that point both step-2 writes are
-					// issued and unsynced, so the crash keeps one and
-					// loses the other by the mask.
-					h := e.seam.HoldFirst(t, journaltest.OpSync, seg)
+					// The full seal splits step 2 in two writes, then syncs
+					// them as its second sync. A gate on that second sync
+					// is armed before the seal starts — a hold armed after
+					// the first sync's was released can lose to a seal
+					// that runs between them — and holds the seal at the
+					// point both step-2 writes are issued and unsynced,
+					// so the crash keeps one and loses the other by the
+					// mask.
+					gate := newSealGateFault(e, seg, journaltest.OpSync, 2)
 					synced := make(chan error, 1)
 					go func() {
 						_, err := e.s.Seal(false)
 						synced <- err
 					}()
-					<-h.Reached()
-					h.Release()
-					h2 := e.seam.HoldFirst(t, journaltest.OpSync, seg)
-					<-h2.Reached()
+					select {
+					case <-gate.Reached():
+					case <-time.After(sealDeadline):
+						t.Fatalf("the seal never reached its step-2 sync within %v", sealDeadline)
+					}
 					if n := e.seam.Unsynced(); n != 2 {
 						t.Fatalf("the seal left %d unsynced writes, want the two of step 2", n)
 					}
 					if err := e.seam.Crash(journaltest.Keeping(tc.mask)); err != nil {
 						t.Fatalf("the crash keeping %#x: %v", tc.mask, err)
 					}
-					h2.Release()
-					<-synced // the crashed sync returns the fs.ErrClosed of its park
+					gate.Gate()
+					_ = sealWaitFor(t, synced, "the crashed seal's return")
 				} else {
 					// The early seal writes its marker, footer and
-					// trailer as one call. Park the seal at its first
-					// sync, let it pass, then park it at its second:
-					// the single step-2 write is issued and unsynced
-					// there, so the crash tears it inside itself.
-					h := e.seam.HoldFirst(t, journaltest.OpSync, seg)
+					// trailer as one call, then syncs it as its second
+					// sync. A gate on that second sync — armed before
+					// the seal starts, for a hold armed past a released
+					// one can lose the race to a seal that runs between
+					// the two — holds the seal where the single step-2
+					// write is issued and unsynced, so the crash tears
+					// it inside itself.
+					gate := newSealGateFault(e, seg, journaltest.OpSync, 2)
 					synced := make(chan error, 1)
 					go func() {
 						_, err := e.s.Seal(true)
 						synced <- err
 					}()
-					<-h.Reached()
-					h.Release()
-					h2 := e.seam.HoldFirst(t, journaltest.OpSync, seg)
-					<-h2.Reached()
+					select {
+					case <-gate.Reached():
+					case <-time.After(sealDeadline):
+						t.Fatalf("the seal never reached its step-2 sync within %v", sealDeadline)
+					}
 					if n := e.seam.Unsynced(); n != 1 {
 						t.Fatalf("the seal left %d unsynced writes, want the one write of step 2", n)
 					}
 					if err := e.seam.Crash(journaltest.TornIn(seg, 40)); err != nil {
 						t.Fatalf("the torn crash: %v", err)
 					}
-					h2.Release()
-					<-synced // the crashed sync returns the fs.ErrClosed of its park
+					gate.Gate()
+					_ = sealWaitFor(t, synced, "the crashed seal's return")
 				}
 
 				img := sealImage(t, e, 1)
@@ -633,7 +746,7 @@ func TestSealACrashAtEveryDurableStateLeavesThePromisedBytes(t *testing.T) {
 			res <- r
 			serr <- err
 		}()
-		<-h.Reached()
+		sealReached(t, h, "truncation")
 		if err := e.seam.Crash(); err != nil {
 			t.Fatalf("the crash: %v", err)
 		}
@@ -641,10 +754,10 @@ func TestSealACrashAtEveryDurableStateLeavesThePromisedBytes(t *testing.T) {
 		// crashed handle's fs.ErrClosed, and only then does the seal
 		// answer — with a nil error and TailErr carrying it (R34).
 		h.Release()
-		if err := <-serr; err != nil {
+		if err := sealWaitFor(t, serr, "the seal's return across the crashed truncation"); err != nil {
 			t.Fatalf("the seal across a crash inside its truncation returned %v, want nil: the truncation's failure is the tail's (R34)", err)
 		}
-		r := <-res
+		r := sealWaitFor(t, res, "the seal's result across the crashed truncation")
 		if r.TailErr == nil {
 			t.Fatal("the seal across the crash reports no TailErr, want the truncation's crashed-handle failure")
 		}
@@ -923,7 +1036,8 @@ func TestSealASecondSealWritesNothing(t *testing.T) {
 				results <- sealRace{r: r, err: err}
 			}()
 		}
-		first, second := <-results, <-results
+		first := sealWaitFor(t, results, "the first racing seal's return")
+		second := sealWaitFor(t, results, "the second racing seal's return")
 		sealed, refused := first, second
 		if first.err != nil {
 			sealed, refused = second, first
@@ -996,7 +1110,7 @@ func TestSealWaitsForTheInFlightAppends(t *testing.T) {
 		}
 		heldDone <- p
 	}()
-	<-h.Reached()
+	sealReached(t, h, "held record write")
 
 	// While the write is parked, the seal must not run: no sync of the
 	// segment may reach the seam before the append lands.
@@ -1014,8 +1128,8 @@ func TestSealWaitsForTheInFlightAppends(t *testing.T) {
 	// The write lands; the seal passes the drain and places the marker at
 	// the held record's end, whose entry the footer carries.
 	h.Release()
-	held := <-heldDone
-	race := <-sealed
+	held := sealWaitFor(t, heldDone, "the held append's return")
+	race := sealWaitFor(t, sealed, "the waited seal's return")
 	if race.err != nil {
 		t.Fatalf("the Seal after the held append: %v", race.err)
 	}
@@ -1095,7 +1209,7 @@ func TestSealAppendsRacingItLandBeforeItsMarkerOrAreRefused(t *testing.T) {
 	wg.Wait()
 	close(outcomes)
 
-	race := <-sealed
+	race := sealWaitFor(t, sealed, "the raced seal's return")
 	if race.err != nil {
 		t.Fatalf("the raced Seal: %v", race.err)
 	}
@@ -1749,10 +1863,17 @@ func TestSealNoSeamCallUnderTheAppendLock(t *testing.T) {
 }
 
 // TestSealCloseWaitsForAnInFlightSeal checks the in-flight operation Close
-// must wait out: the seal's step-2 sync parked at a seam hold keeps Close
-// from returning — releasing the active segment's ref first would hand the
-// descriptor the cache or a reclaim could close under the seal's write — and
+// must wait out: the seal, parked in its own step 2 — past its first sync,
+// writing the marker, the footer and the trailer — keeps Close from
+// returning, for releasing the active segment's ref first would hand the
+// descriptor the cache or a reclaim could close under the seal's write; and
 // once released the seal completes and the cache's Shutdown runs clean.
+//
+// The hold is armed on the step-2 write before the seal starts, not on its
+// sync after the first is let go: a hold armed after another is released
+// loses to a seal that runs between the two (a fast device's fsync needs no
+// time), while the first write the armed hold can catch is unambiguous —
+// the appends are done, so nothing else writes the segment.
 func TestSealCloseWaitsForAnInFlightSeal(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -1763,39 +1884,30 @@ func TestSealCloseWaitsForAnInFlightSeal(t *testing.T) {
 
 	sealAppended(t, e)
 
-	// The take gave the segment a header write, the appends five records,
-	// and the seal's first sync runs before its step-2 writes, so the
-	// second hold catches the seal's step-2 sync: arm the first sync's
-	// hold, let it pass, then hold the next.
-	h := e.seam.HoldFirst(t, journaltest.OpSync, seg)
+	// Hold the seal's first write of step 2: the header and the records
+	// are already on the file, so the marker, footer and trailer are the
+	// next write the segment sees — and the seal must be past its record
+	// sync to make it.
+	h := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
 	sealed := make(chan sealRace, 1)
 	go func() {
 		r, err := e.s.Seal(true)
 		sealed <- sealRace{r: r, err: err}
 	}()
-	<-h.Reached()
-	h.Release()
-	h2 := e.seam.HoldFirst(t, journaltest.OpSync, seg)
-	<-h2.Reached()
+	sealReached(t, h, "seal's step-2 write")
 
 	closed := make(chan error, 1)
 	go func() { closed <- e.s.Close() }()
-	select {
-	case err := <-closed:
-		t.Fatalf("Close returned %v while a seal was still in flight, want it to wait the seal out", err)
-	case <-time.After(100 * time.Millisecond):
-	}
+	// A bounded window: Close must still be pending while the seal is
+	// parked in its own writes.
+	sealNotYet(t, closed, 100*time.Millisecond, "Close returned while a seal was still in flight, want it to wait the seal out")
 
 	// The seal completes, and only then does Close return and the cache's
 	// Shutdown run clean behind it.
-	h2.Release()
-	select {
-	case race := <-sealed:
-		if race.err != nil {
-			t.Fatalf("the parked Seal failed: %v", race.err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the parked Seal did not return after the hold was released")
+	h.Release()
+	race := sealWaitFor(t, sealed, "the parked seal's return after the hold was released")
+	if race.err != nil {
+		t.Fatalf("the parked Seal failed: %v", race.err)
 	}
 	select {
 	case err := <-closed:
@@ -1839,7 +1951,7 @@ func TestSealRefusesAnAppendWhileItRuns(t *testing.T) {
 			r, err := e.s.Seal(false)
 			sealed <- sealRace{r: r, err: err}
 		}()
-		<-h.Reached()
+		sealReached(t, h, "seal's first sync")
 
 		payload := streamTestBody(64, 0x77)
 		hh, body := streamWriteHeader(streamFileID(9), 512, payload, 7, core.Version{Counter: 99})
@@ -1852,7 +1964,7 @@ func TestSealRefusesAnAppendWhileItRuns(t *testing.T) {
 		}
 
 		h.Release()
-		race := <-sealed
+		race := sealWaitFor(t, sealed, "the seal's return after its own sync was let go")
 		if race.err != nil {
 			t.Fatalf("the Seal: %v", race.err)
 		}
@@ -1898,7 +2010,7 @@ func TestSealRefusesAnAppendWhileItRuns(t *testing.T) {
 			}
 			heldDone <- p
 		}()
-		<-h.Reached()
+		sealReached(t, h, "held record write")
 		sealed := make(chan sealRace, 1)
 		go func() {
 			r, err := e.s.Seal(false)
@@ -1916,8 +2028,8 @@ func TestSealRefusesAnAppendWhileItRuns(t *testing.T) {
 		// lists it — the one that was already reserved, never the one
 		// refused above.
 		h.Release()
-		held := <-heldDone
-		race := <-sealed
+		held := sealWaitFor(t, heldDone, "the held append's return")
+		race := sealWaitFor(t, sealed, "the seal's return after the drain")
 		if race.err != nil {
 			t.Fatalf("the Seal: %v", race.err)
 		}
@@ -1960,7 +2072,7 @@ func TestSealADrainedSyncFailureEndsTheSegment(t *testing.T) {
 	h := e.seam.HoldFirst(t, journaltest.OpSync, seg)
 	syncErr := make(chan error, 1)
 	go func() { syncErr <- e.s.Sync() }()
-	<-h.Reached()
+	sealReached(t, h, "stream sync")
 
 	sealed := make(chan sealRace, 1)
 	go func() {
@@ -1972,11 +2084,11 @@ func TestSealADrainedSyncFailureEndsTheSegment(t *testing.T) {
 
 	e.seam.SetFault(&sealNthFault{seg: seg, op: journaltest.OpSync, n: 1, err: syscall.EIO})
 	h.Release()
-	if err := <-syncErr; !errors.Is(err, syscall.EIO) {
+	if err := sealWaitFor(t, syncErr, "the parked sync's return"); !errors.Is(err, syscall.EIO) {
 		t.Fatalf("the parked Sync = %v, want the fault's EIO", err)
 	}
 
-	race := <-sealed
+	race := sealWaitFor(t, sealed, "the seal's return over the failed sync window")
 	if race.err == nil || !errors.Is(race.err, segment.ErrSegmentEnded) {
 		t.Fatalf("the Seal over a failed sync window = %+v, %v, want ErrSegmentEnded: the segment is ended, never sealed", race.r, race.err)
 	}
@@ -2022,11 +2134,7 @@ func TestSealASyncOnItParksUntilItCompletes(t *testing.T) {
 		r, err := e.s.Seal(true)
 		sealed <- sealRace{r: r, err: err}
 	}()
-	select {
-	case <-h.Reached():
-	case <-time.After(10 * time.Second):
-		t.Fatal("the seal never reached the hold inside its own first sync")
-	}
+	sealReached(t, h, "seal's first sync")
 	syncsAtPark := e.seam.CallsFor(journaltest.OpSync, seg)
 
 	syncErr := make(chan error, 1)
@@ -2034,11 +2142,7 @@ func TestSealASyncOnItParksUntilItCompletes(t *testing.T) {
 	// A short bounded window, not a sleep alone: the Sync must still be
 	// pending while the seal is parked, and the counts it would have
 	// moved are the assertion that it never ran.
-	select {
-	case err := <-syncErr:
-		t.Fatalf("the Sync returned %v while the seal was still in its own steps, want it parked on the drain until the seal settles", err)
-	case <-time.After(50 * time.Millisecond):
-	}
+	sealNotYet(t, syncErr, 50*time.Millisecond, "the Sync returned while the seal was still in its own steps, want it parked on the drain until the seal settles")
 	if got := e.seam.CallsFor(journaltest.OpSync, seg); got != syncsAtPark {
 		t.Fatalf("a Sync racing the seal issued %d syncs of its own, want none: its fsync must not run beside the seal's", got-syncsAtPark)
 	}
@@ -2047,13 +2151,9 @@ func TestSealASyncOnItParksUntilItCompletes(t *testing.T) {
 	// whole early seal shows its three, no more — and the parked Sync
 	// answers nil, for the records are durable by the seal's first step.
 	h.Release()
-	select {
-	case race := <-sealed:
-		if race.err != nil {
-			t.Fatalf("the early Seal under the parked Sync: %v", race.err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the early Seal did not return after the hold was released")
+	race := sealWaitFor(t, sealed, "the early seal's return after the hold was released")
+	if race.err != nil {
+		t.Fatalf("the early Seal under the parked Sync: %v", race.err)
 	}
 	select {
 	case err := <-syncErr:
@@ -2235,8 +2335,8 @@ func TestSealRefusesAnAppendResumedFromTheTakeGate(t *testing.T) {
 			}()
 			wg.Wait()
 			close(outcomes)
-			res := <-sealRes
-			if err := <-sealErr; err != nil {
+			res := sealWaitFor(t, sealRes, "the round's seal result")
+			if err := sealWaitFor(t, sealErr, "the round's seal return"); err != nil {
 				return err
 			}
 
