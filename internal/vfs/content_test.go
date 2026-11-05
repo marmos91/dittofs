@@ -50,6 +50,8 @@ type fakeContent struct {
 	committing func(entity.FileID)
 	// readErr, when set, is answered by every Read after the bytes it read.
 	readErr error
+	// reading, when set, runs as Read is called, before it reads anything.
+	reading func(entity.FileID)
 }
 
 var _ Content = (*fakeContent)(nil)
@@ -138,6 +140,9 @@ func (c *fakeContent) LossSeq(share entity.ShareID, f entity.FileID) uint64 {
 }
 
 func (c *fakeContent) Read(ctx context.Context, share entity.ShareID, f entity.FileID, off int64, dst []byte) (int, error) {
+	if c.reading != nil {
+		c.reading(f)
+	}
 	if off < 0 {
 		return 0, errNegative
 	}

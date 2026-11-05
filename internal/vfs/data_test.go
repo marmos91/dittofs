@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -121,6 +122,36 @@ func TestALockIsOrderedWhollyBeforeOrAfterAWrite(t *testing.T) {
 	s.engine.writing = func(entity.FileID) { t.Error("a write under a mandatory lock was staged") }
 	if _, err := s.Write(ctx, bob, vfs.Anonymous(h), 0, []byte("y"), vfs.Unstable); !errors.Is(err, vfs.ErrLocked) {
 		t.Errorf("a write under another's exclusive lock: %v, want ErrLocked", err)
+	}
+}
+
+// A read and a deallocate hold the file's admission lock from open state's
+// check to the engine's call, as a write does, so no lock, open or grant
+// that conflicts lands between them: a take that may not wait finds it held.
+func TestAReadAndADeallocateHoldTheAdmissionLock(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	h := s.file(t, "f", s.alice.Principal, 0o666)
+	id := fileOf(h)
+	alice := proven(s.alice.Principal, inLab)
+	_, err := s.Write(ctx, alice, vfs.Anonymous(h), 0, []byte("hello"), vfs.Unstable)
+	s.must(t, err)
+	gone, cancel := context.WithCancel(ctx)
+	cancel()
+	probe := func(what string) func(entity.FileID) {
+		return func(entity.FileID) {
+			if unlock, err := s.locks.Take(gone, lockorder.Set{Admit: []lockorder.Key{lockorder.Key(id)}}); err == nil {
+				unlock()
+				t.Errorf("the admission lock was free between the %s's check and the engine's call", what)
+			}
+		}
+	}
+	s.engine.reading, s.engine.dealloc = probe("read"), probe("deallocate")
+	if _, _, err := s.Read(ctx, alice, vfs.Anonymous(h), 0, make([]byte, 5)); err != nil {
+		t.Errorf("Read: %v", err)
+	}
+	if _, err := s.Deallocate(ctx, alice, vfs.Anonymous(h), 0, 2); err != nil {
+		t.Errorf("Deallocate: %v", err)
 	}
 }
 
@@ -261,11 +292,12 @@ func TestTheVerifierAndAFlushAcrossALoss(t *testing.T) {
 		"pc":     {pc, s.opener(t, pc, "f", entity.ReadData|entity.WriteData)},
 		"laptop": {laptop, s.opener(t, laptop, "f", entity.ReadData|entity.WriteData)},
 	}
-	s.engine.mu.Lock()
-	s.engine.loss = 1
-	s.engine.mu.Unlock()
-	if _, err := s.Commit(ctx, alice, vfs.Anonymous(h), 0, 0); err != nil {
-		t.Errorf("a commit through no open across the loss: %v", err)
+	// The loss happens during the first flush's own sync, so a flush that
+	// read the loss sequence before syncing would miss it.
+	s.engine.committing = func(entity.FileID) {
+		s.engine.mu.Lock()
+		s.engine.loss = 1
+		s.engine.mu.Unlock()
 	}
 	for name, o := range refs {
 		if _, err := s.Commit(ctx, o.c, o.ref, 0, 0); !errors.Is(err, vfs.ErrLost) {
@@ -274,6 +306,9 @@ func TestTheVerifierAndAFlushAcrossALoss(t *testing.T) {
 		if _, err := s.Commit(ctx, o.c, o.ref, 0, 0); err != nil {
 			t.Errorf("%s: the second flush: %v", name, err)
 		}
+	}
+	if _, err := s.Commit(ctx, alice, vfs.Anonymous(h), 0, 0); err != nil {
+		t.Errorf("a commit through no open across the loss: %v", err)
 	}
 }
 
@@ -394,12 +429,14 @@ func TestAWriteClearsSetIDBeforeItIsStaged(t *testing.T) {
 
 // V31: Write's and Deallocate's WCC are read in the one hold of the file's
 // accept lock that stages the change: a write staged while the call waits
-// for the lock is in its Before, and one staged after it answers is in
-// neither side.
+// for the lock is in its Before, the After is read with the lock still
+// held, and one staged after it answers is in neither side.
 func TestADataChangesWCCIsReadInOneHold(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
 	admin := proven(s.fs.Admin.Principal, inLab)
+	gone, cancel := context.WithCancel(ctx)
+	cancel()
 	for name, change := range map[string]func(vfs.Handle) (vfs.WCC, error){
 		"Write": func(h vfs.Handle) (vfs.WCC, error) {
 			w, err := s.Write(ctx, admin, vfs.Anonymous(h), 17, []byte("x"), vfs.Unstable)
@@ -411,6 +448,20 @@ func TestADataChangesWCCIsReadInOneHold(t *testing.T) {
 	} {
 		h := s.file(t, name, s.alice.Principal, 0o644)
 		id := fileOf(h)
+		// Once anything is staged, every overlay read, the After's
+		// included, finds the accept lock held.
+		var staged atomic.Bool
+		s.engine.writing = func(entity.FileID) { staged.Store(true) }
+		s.engine.dealloc = s.engine.writing
+		s.engine.overlaying = func(entity.FileID) {
+			if !staged.Load() {
+				return
+			}
+			if unlock, err := s.locks.Take(gone, lockorder.Set{Accept: []lockorder.Key{lockorder.Key(id)}}); err == nil {
+				unlock()
+				t.Errorf("%s: the accept lock was free as the WCC was read", name)
+			}
+		}
 		unlock, err := s.locks.Take(ctx, lockorder.Set{Accept: []lockorder.Key{lockorder.Key(id)}})
 		s.must(t, err)
 		var w vfs.WCC
@@ -423,6 +474,7 @@ func TestADataChangesWCCIsReadInOneHold(t *testing.T) {
 		_, _ = s.engine.Write(ctx, h.Share(), id, 0, []byte("staged while held"), WriteOpts{})
 		unlock()
 		<-answered
+		s.engine.writing, s.engine.dealloc, s.engine.overlaying = nil, nil, nil
 		s.must(t, err)
 		if w.Before == nil || w.Before.Size != 17 || w.After.Size < 17 {
 			t.Errorf("%s: WCC %+v, want a Before and an After both after the held write", name, w)
