@@ -3,7 +3,6 @@ package segment_test
 import (
 	"errors"
 	"fmt"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -1712,16 +1711,16 @@ func TestDescriptorsCloseOfANeverAcquiredSegmentTombstonesIt(t *testing.T) {
 // TestDescriptorsShutdownSurvivesAReclaimAcrossItsWait pins the pairing of
 // Shutdown's wait with the reclaimer's reference. The reference a reclaim
 // takes and drops around its close can cross the signal the wait was
-// answered by — the last release closed the wait's channel, and a reclaim
-// has not yet let Shutdown take the mutex again — so closing the channel
-// again on the crossing drop would panic on a closed channel. GOMAXPROCS(1)
-// keeps the reclaim on one goroutine with the signal: no yield sits between
-// the two, so the crossing is staged, not raced for.
+// answered by — the last release closed the wait's channel, and the reclaim
+// takes and drops another reference before Shutdown retakes the mutex — so
+// the wait must take itself back and keep waiting, and the reclaims must
+// each find their idle descriptor still there. The crossing is staged with
+// the wake hook — Shutdown parks between its wait's wake and the mutex —
+// never by scheduler timing: a runnable woken goroutine can run at any
+// syscall yield or preemption tick, so a test that relied on holding the
+// single processor was a flake, not a stage.
 func TestDescriptorsShutdownSurvivesAReclaimAcrossItsWait(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-
-	runtime.GOMAXPROCS(1)
-	defer func(n int) { runtime.GOMAXPROCS(n) }(runtime.GOMAXPROCS(1))
 
 	for round := 0; round < 20; round++ {
 		e := newCache(t, 8)
@@ -1731,9 +1730,26 @@ func TestDescriptorsShutdownSurvivesAReclaimAcrossItsWait(t *testing.T) {
 
 		r3, err := e.c.Acquire(3)
 		if err != nil {
-			t.Fatalf("acquiring segment 3 failed: %v", err)
+			t.Fatalf("round %d: acquiring segment 3 failed: %v", round, err)
 		}
 		dropR3 := relRegister(t, r3)
+
+		// The hook parks Shutdown in its wake-to-lock window: the wait's
+		// signal has fired, the channel was taken back, and the mutex is
+		// free for the reclaims below — the exact crossing.
+		woke := make(chan struct{})
+		proceed := make(chan struct{})
+		var once sync.Once
+		restore := segment.ShutWakeHook(func() {
+			once.Do(func() {
+				close(woke)
+				<-proceed
+			})
+		})
+		defer restore()
+		var proceedOnce sync.Once
+		goOn := func() { proceedOnce.Do(func() { close(proceed) }) }
+		t.Cleanup(goOn)
 
 		shutdown := make(chan error, 1)
 		go func() { shutdown <- e.c.Shutdown() }()
@@ -1743,7 +1759,7 @@ func TestDescriptorsShutdownSurvivesAReclaimAcrossItsWait(t *testing.T) {
 				break
 			}
 			if time.Now().After(deadline) {
-				t.Fatal("Shutdown never started")
+				t.Fatalf("round %d: Shutdown never started", round)
 			}
 			time.Sleep(time.Millisecond)
 		}
@@ -1753,30 +1769,41 @@ func TestDescriptorsShutdownSurvivesAReclaimAcrossItsWait(t *testing.T) {
 		// rather than guessing the scheduler reached the park in time.
 		for deadline := time.Now().Add(10 * time.Second); !segment.WaitArmed(e.c); {
 			if time.Now().After(deadline) {
-				t.Fatal("Shutdown never armed its wait for the held reference")
+				t.Fatalf("round %d: Shutdown never armed its wait for the held reference", round)
 			}
 			time.Sleep(time.Millisecond)
 		}
 
-		// The last reference drops, which is the signal the wait answers
-		// on. The shutdown goroutine is runnable but this one holds the
-		// single processor, so nothing runs between the signal and the
-		// reclaims below: each closes an idle file on this goroutine and
-		// drops its reference — a crossing the closed channel must survive.
+		// The last reference drops and the wait answers; Shutdown parks in
+		// the hook, the mutex free and the wait's channel taken back. The
+		// two reclaims run on the free mutex: neither the wait's channel
+		// nor the walk may take the idle descriptors away from them.
 		dropR3()
+		select {
+		case <-woke:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("round %d: Shutdown never woke from its wait", round)
+		}
 		for i := 0; i < 2; i++ {
 			if !e.budget.Reclaim() {
-				t.Fatalf("Reclaim %d found no idle descriptor, want the cache's two idle segments", i)
+				t.Fatalf("round %d: Reclaim %d found no idle descriptor, want the cache's two idle segments: the parked Shutdown's wait must not sideline them", round, i)
 			}
 		}
 
+		// The reclaims' crossed references moved the total: Shutdown must
+		// retake the wait rather than walking off over a reclaiming close,
+		// and once they settle it returns with every slot given back.
+		goOn()
 		select {
 		case err := <-shutdown:
 			if err != nil {
-				t.Fatalf("Shutdown = %v, want nil", err)
+				t.Fatalf("round %d: Shutdown = %v, want nil", round, err)
 			}
 		case <-time.After(10 * time.Second):
-			t.Fatal("Shutdown did not return once the reclaims ran")
+			t.Fatalf("round %d: Shutdown did not return once the reclaims ran", round)
+		}
+		if got := e.budget.Open(); got != 0 {
+			t.Fatalf("round %d: the budget holds %d descriptors after the shutdown and both reclaims, want 0: a slot was kept or given twice", round, got)
 		}
 	}
 }
