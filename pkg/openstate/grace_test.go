@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -688,7 +689,10 @@ func TestReclaimLandingAfterGrace(t *testing.T) {
 	g.renew(t, c)
 	target := in(5) // c never held it
 	hold, release := make(chan struct{}), make(chan struct{})
-	go func() { _ = g.step(target.ID, func(*entry) error { close(hold); <-release; return nil }) }()
+	// The cleanup's invariants check sees a step still leaving its entry as
+	// an entry holding no state, so the step ends before the case does.
+	var wg sync.WaitGroup
+	wg.Go(func() { _ = g.step(target.ID, func(*entry) error { close(hold); <-release; return nil }) })
 	<-hold
 	done := make(chan error, 1)
 	go func() {
@@ -709,6 +713,7 @@ func TestReclaimLandingAfterGrace(t *testing.T) {
 	if err := <-done; !errors.Is(err, ErrNoReclaim) {
 		t.Errorf("a reclaim admitted in grace landing after it: %v, want ErrNoReclaim", err)
 	}
+	wg.Wait()
 }
 
 // A host reclaiming the range a callback grant has just given it, while that
@@ -759,6 +764,10 @@ func TestStackingHeldReclaimLeavesAnOfferedGrantWhole(t *testing.T) {
 func TestServedAgainWhileAFileIsStepped(t *testing.T) {
 	f := newFixture(t)
 	p, c := f.caller(t, smb("p-pc")), f.caller(t, nfsAs("c", entity.RecoverStatus))
+	// The cleanup's invariants check sees a step still leaving its entry as
+	// an entry holding no state, so every step ends before the case does.
+	var wg sync.WaitGroup
+	defer wg.Wait()
 	for i := range 20 {
 		s := ShardID(100 + i)
 		if err := f.Recovery().ServeShard(ctx, entity.ShareID{}, s, instances.Add(1)); err != nil {
@@ -778,7 +787,7 @@ func TestServedAgainWhileAFileIsStepped(t *testing.T) {
 			}
 		}
 		hold, release := make(chan struct{}), make(chan struct{})
-		go func() { _ = f.step(file.ID, func(*entry) error { close(hold); <-release; return nil }) }()
+		wg.Go(func() { _ = f.step(file.ID, func(*entry) error { close(hold); <-release; return nil }) })
 		<-hold
 		served := make(chan error, 1)
 		go func() { served <- f.Recovery().ServeShard(ctx, entity.ShareID{}, s, instances.Add(1)) }()
@@ -791,9 +800,9 @@ func TestServedAgainWhileAFileIsStepped(t *testing.T) {
 			pending bool
 		}
 		after := make(chan seen, 1)
-		go func() {
+		wg.Go(func() {
 			_ = f.step(file.ID, func(e *entry) error { after <- seen{len(e.opens), e.pending != nil}; return nil })
-		}()
+		})
 		waitUsers(3)
 		close(release)
 		if err := <-served; err != nil {
