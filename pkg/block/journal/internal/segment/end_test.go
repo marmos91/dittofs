@@ -1519,6 +1519,14 @@ func TestEndEveryEndedSegmentHandsOneEventUnderRace(t *testing.T) {
 	}
 	wg.Wait()
 
+	// The streams close before any event is read, so every notifier the run
+	// started is joined and its event handed over: reading them earlier
+	// races the last ends' own hand-overs against the checks below, and the
+	// join is what the closed do — the streams never serve again.
+	if err := ss.Close(); err != nil {
+		t.Fatalf("the streams' Close after the run: %v", err)
+	}
+
 	// The fault must have fired for the run to say anything: the count the
 	// appenders kept bounds the check below, and a schedule that failed on
 	// nothing is the run's own bug, not a pass.
