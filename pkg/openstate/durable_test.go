@@ -361,6 +361,12 @@ func TestPersistentOpenSurvivesARestart(t *testing.T) {
 	if err := anon(5); err != nil {
 		t.Errorf("an anonymous read across the unlocked range: %v", err)
 	}
+	// The machine's new session lists the node at this start's epoch, as
+	// its SESSION_SETUP does before it reconnects: listed, it stays known
+	// after its open times out.
+	if again, _, err := g.Connect(ctx, smbMachine("pc-a"), nil); err != nil || again != a.Client {
+		t.Fatalf("pc-a's session after the restart: client %d, %v; want %d", again, err, a.Client)
+	}
 	back, err := g.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s2)
 	if err != nil {
 		t.Fatalf("reconnect after the restart: %v", err)
@@ -930,5 +936,30 @@ func TestParkServesTheWaitersItFrees(t *testing.T) {
 	}
 	if want := fmt.Sprintf("%s false", smbOwner(a, o).Name); len(got) != 2 || got[0] != want || got[1] != "h true" {
 		t.Errorf("the disconnect raised %q, want a's waiter not granted, then h's granted", got)
+	}
+}
+
+// An SMB client whose last session ended with a durable open parked keeps its
+// record until that open's Timeout closes it, and then is released, as a
+// last Disconnect releases a client holding nothing (RFC 14 §2.1).
+func TestATimeoutClosingAClientsLastOpenReleasesIt(t *testing.T) {
+	f := newFixture(t)
+	c := smb("pc-a")
+	id, gen, err := f.Connect(ctx, c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	who := Caller{Client: id, Principal: c.Owner, Protocol: c.Protocol}
+	this := entity.SessionRef{ID: 1}
+	f.mustOpen(t, who, anyFile(), keep(OpenRequest{Access: rd | wr, Want: rwh}, entity.DurabilityDurable, this, time.Minute, 1))
+	if _, err := f.Disconnect(ctx, id, this, SessionEnd{Last: true, Gen: gen}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Record(ctx, id); err != nil {
+		t.Fatalf("with a durable open parked: %v, want the record kept", err)
+	}
+	f.idle(2 * time.Minute)
+	if _, err := f.Record(ctx, id); !errors.Is(err, ErrStaleClient) {
+		t.Errorf("after the Timeout closed its last open: %v, want the record released, ErrStaleClient", err)
 	}
 }

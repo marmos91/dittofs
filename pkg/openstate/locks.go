@@ -677,6 +677,9 @@ func (t *Table) serveFiles(ctx context.Context, sink Sink, files []entity.FileID
 		})
 		unlock()
 		out.raise(t, sink)
+		for _, c := range out.idle {
+			t.releaseIfIdle(ctx, c)
+		}
 	}
 }
 

@@ -259,6 +259,11 @@ var leaveReachHook func()
 // another Gen was listed again since, and stays, and its Gen is returned.
 // An SMB record left with no live node and no state is released: nothing
 // else ends it.
+//
+// ponytail: an entry under an earlier epoch is dropped whatever its node,
+// as liveReach counts it absent: on a single node every entry is this
+// node's. With the cluster, drop only this node's older entries and let
+// each node's own Start or departure clear its own.
 func (t *Table) leaveReach(ctx context.Context, c entity.ClientID, node entity.NodeID, gen uint64) (uint64, error) {
 	t.cstep.Lock()
 	defer t.cstep.Unlock()
@@ -303,6 +308,16 @@ func (t *Table) leaveReach(ctx context.Context, c entity.ClientID, node entity.N
 	t.unreclaim(c)
 	t.dropRevoked(c)
 	return 0, nil
+}
+
+// releaseIfIdle releases SMB client c's record if it now holds no state and
+// no live node lists it, as a last Disconnect's release does: after a
+// durable open's Timeout closed its last state, no Disconnect comes to end
+// it (RFC 14 §2.1). Gen zero names no entry, so a listed node keeps it.
+func (t *Table) releaseIfIdle(ctx context.Context, c entity.ClientID) {
+	if _, err := t.leaveReach(ctx, c, entity.NodeID{}, 0); err != nil && !errors.Is(err, ErrStaleClient) {
+		t.d.Logger.Warn("openstate: releasing an idle client failed", "client", c, "err", err)
+	}
 }
 
 // park keeps o, of e, disconnected until its Timeout passes. Its waiters
@@ -421,7 +436,11 @@ func (t *Table) timeouts(ctx context.Context, e *entry, out *outbox) {
 		switch {
 		case o.parked == 0:
 		case now >= o.parked:
-			kept = !t.closeByTable(ctx, e, o, out) || kept
+			if t.closeByTable(ctx, e, o, out) {
+				out.idle = append(out.idle, o.Client)
+			} else {
+				kept = true
+			}
 		default:
 			kept = true
 		}
