@@ -29,10 +29,18 @@ func TestStreamOnRealStorageAllocatesNoMoreThanAccounted(t *testing.T) {
 	dir := t.TempDir()
 	o := platform.NewOS(dir)
 	set := segment.NewSet(osStreamCap, nil)
-	maker := segment.NewMaker(o, set, 4*osStreamCap, 0, nil)
+	// The maker's maximum is pinned at two caps — exactly the pool's two content
+	// spares — so the refill the take kicks is refused by the maximum and
+	// the footprint assertions below stand on the appends alone.
+	maker := segment.NewMaker(o, set, 2*osStreamCap, 0, nil)
+	pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil)
+	t.Cleanup(func() { pool.Stop() })
+	pool.Start()
+	awaitCounters(t, "a content spare ready", pool,
+		func(c segment.PoolCounters) bool { return c.Spares >= 1 })
 	budget := core.NewDescriptorBudget(64)
 	cache := segment.NewDescriptors(o, format.SegmentName, budget)
-	s := segment.NewStream(1, streamIdentity, set, maker, cache)
+	s := segment.NewStream(1, streamIdentity, set, pool, cache)
 	t.Cleanup(func() {
 		if err := cache.Shutdown(); err != nil {
 			t.Errorf("the cache's Shutdown = %v, want nil", err)
@@ -73,8 +81,10 @@ func TestStreamOnRealStorageAllocatesNoMoreThanAccounted(t *testing.T) {
 	if c := set.Counters(); ab > c.UsedBytes {
 		t.Fatalf("the segment file holds %d allocated bytes, more than the %d the ledger accounts", ab, c.UsedBytes)
 	}
-	if c := set.Counters(); c.UsedBytes != osStreamCap {
-		t.Fatalf("the footprint is %d, want the take's cap %d: the appends must not move it", c.UsedBytes, osStreamCap)
+	// The take accounted the segment at its cap, and no append moved the
+	// segments' own footprint: the pool's ready spares sit beside it.
+	if c := set.Counters(); c.UsedBytes-c.Spares*osStreamCap != osStreamCap {
+		t.Fatalf("the segments account for %d, want the take's cap %d: the appends must not move it", c.UsedBytes-c.Spares*osStreamCap, osStreamCap)
 	}
 	if got := set.ShareBytes(7); got != sum {
 		t.Fatalf("the share holds %d record bytes, want the %d the appends wrote", got, sum)

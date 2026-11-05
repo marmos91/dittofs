@@ -9,6 +9,15 @@ import "time"
 // measured yet; changing one changes the implementation, not a deployment.
 const (
 	// SegmentCap is the size of a segment, in bytes.
+	//
+	// ponytail: the size is constant, so a stream writing at an NVMe
+	// drive's 5 GB/s rolls about twenty times a second — each roll a seal's
+	// two syncs of 256 MiB, a flush a transfer that flushes only at its end
+	// never asked for. Upgrade to a larger constant, chosen by the
+	// sequential-write row and the repack amplification row of the journal's
+	// own benchmarks measured at two or three sizes, when the spare-refusal
+	// counter or the sequential row shows rolls arriving at the device's
+	// speed.
 	SegmentCap = 256 << 20
 
 	// SyncBound is the longest a record written under the Bounded policy waits
