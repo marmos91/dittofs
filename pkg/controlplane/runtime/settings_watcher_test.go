@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
 // createTestStoreWithAdapter creates an in-memory SQLite store with an NFS adapter

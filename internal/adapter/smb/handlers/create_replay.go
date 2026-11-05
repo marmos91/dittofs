@@ -3,8 +3,8 @@ package handlers
 import (
 	"encoding/binary"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // CREATE replay: durable-handle and lease replay caches, response caching,

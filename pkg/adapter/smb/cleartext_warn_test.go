@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // logCaptureMu serializes the process-global logger redirect used below.

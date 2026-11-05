@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/health"
 )
 
 func TestRemoteMemoryStore_Healthcheck_HealthyOnFreshStore(t *testing.T) {

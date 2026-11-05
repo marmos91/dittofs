@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 )
 
 // DefaultDrainStallTimeout is the fallback inactivity bound for DrainUploads,

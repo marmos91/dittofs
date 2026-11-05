@@ -4,8 +4,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
-	"github.com/marmos91/dittofs/internal/logger"
+	v4state "github.com/cubbit/dittofs/internal/adapter/nfs/v4/state"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // nfsGraceCoordinator couples the per-share lock-manager grace machine (NLM /

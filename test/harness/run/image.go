@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/fixture"
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/fixture"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // notStarted are the exit statuses docker run gives when its container didn't

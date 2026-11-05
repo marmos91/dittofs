@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/raw"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
 // TestSegmentHeaderGolden pins the encoder's bytes against a hand-written

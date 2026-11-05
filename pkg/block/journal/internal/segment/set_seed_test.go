@@ -3,7 +3,7 @@ package segment
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/prof"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // TestSeedReplay replays the fuzz target's seed corpus, the same table

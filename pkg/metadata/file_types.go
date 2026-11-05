@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/metadata/acl"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
 // File represents a file's complete identity and attributes.

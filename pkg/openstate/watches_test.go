@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 const names = ChangeAddEntry | ChangeRemove | ChangeRename

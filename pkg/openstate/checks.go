@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/openstate/conflict"
-	"github.com/marmos91/dittofs/pkg/openstate/ranges"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/openstate/conflict"
+	"github.com/cubbit/dittofs/pkg/openstate/ranges"
 )
 
 // ByteRange is Length bytes from Offset, ending at Offset+Length-1, a zero

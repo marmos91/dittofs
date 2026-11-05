@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	metaerrors "github.com/marmos91/dittofs/pkg/metadata/errors"
+	metaerrors "github.com/cubbit/dittofs/pkg/metadata/errors"
 )
 
 // ============================================================================

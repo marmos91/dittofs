@@ -6,7 +6,7 @@ import (
 
 	badgerdb "github.com/dgraph-io/badger/v4"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // A share with more rows than one transaction may delete is removed whole: no

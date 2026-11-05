@@ -13,7 +13,7 @@ import (
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 
-	"github.com/marmos91/dittofs/pkg/metadata/kv/fdbkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/fdbkv"
 )
 
 var run atomic.Int64

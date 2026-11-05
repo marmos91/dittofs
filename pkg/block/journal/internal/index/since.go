@@ -5,7 +5,7 @@ import (
 	"math"
 	"slices"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // Change is one item of the index's side of Since: a held extent, with the

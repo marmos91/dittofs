@@ -5,7 +5,7 @@ import (
 	"errors"
 	"slices"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // enter checks the part every appending call shares: the model is not between

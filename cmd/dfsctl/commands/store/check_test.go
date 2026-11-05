@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/marmos91/dittofs/pkg/apiclient"
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/cubbit/dittofs/pkg/apiclient"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
 )
 
 // checkServer is a recording stub for the manifest-check endpoint. It also

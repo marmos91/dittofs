@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 // ShardID names the shard a file's state is held under: the store's, whose

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/vfs/vfserr"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // Every declared kind reads by its own name, never as an undeclared one, so

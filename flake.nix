@@ -586,7 +586,7 @@
 
               meta = with pkgs.lib; {
                 description = "Modular virtual filesystem with pluggable storage backends";
-                homepage = "https://github.com/marmos91/dittofs";
+                homepage = "https://github.com/cubbit/dittofs";
                 license = licenses.mit;
                 platforms = platforms.unix;
               };
@@ -644,7 +644,7 @@
             inherit pjdfstest cthon04 nfstest;
           };
 
-        # `nix run .#dfs` / `nix run github:marmos91/dittofs#dfsctl`, so the
+        # `nix run .#dfs` / `nix run github:cubbit/dittofs#dfsctl`, so the
         # binaries are reachable without cloning and building first.
         apps =
           let

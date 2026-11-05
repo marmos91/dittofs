@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/adapter"
 
-	v4handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/handlers"
-	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
-	v4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	v4handlers "github.com/cubbit/dittofs/internal/adapter/nfs/v4/handlers"
+	v4state "github.com/cubbit/dittofs/internal/adapter/nfs/v4/state"
+	v4types "github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
 )
 
 // newPipeConnection wires an NFSConnection to one end of a net.Pipe. net.Pipe

@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
 )
 
 // TestStartBlockStoreGC_RoundTrip verifies the kick-off call posts to the

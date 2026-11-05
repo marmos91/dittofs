@@ -1,6 +1,6 @@
 package journal
 
-import "github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+import "github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 
 // The journal's errors, declared in internal/core so the internal packages can
 // return them. Each one's contract is documented at its declaration.

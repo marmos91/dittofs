@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"github.com/marmos91/dittofs/test/harness/run"
+	"github.com/cubbit/dittofs/test/harness/run"
 )
 
 // exitStatus is an error that carries a run's exit status to main.

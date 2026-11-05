@@ -3,7 +3,7 @@ package basestore
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // TestDeltaApplyAndGet exercises the accumulate → apply → read round-trip that

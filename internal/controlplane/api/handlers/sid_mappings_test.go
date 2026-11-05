@@ -9,8 +9,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
 	"github.com/go-chi/chi/v5"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
 func setupSIDMappingTest(t *testing.T) (*store.GORMStore, *SIDMappingHandler) {

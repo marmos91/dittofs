@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/dfsbench/exec"
+	"github.com/cubbit/dittofs/internal/dfsbench/exec"
 )
 
 // benchDataMount is the isolated data volume `dfsbench setup --data-volume-gb`

@@ -29,7 +29,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // magic is the 4-byte preamble for DittoFS block objects.

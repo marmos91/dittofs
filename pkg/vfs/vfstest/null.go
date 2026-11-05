@@ -3,7 +3,7 @@ package vfstest
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // Null is a Service that answers every call at once with zero values and no

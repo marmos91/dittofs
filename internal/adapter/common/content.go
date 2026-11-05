@@ -1,8 +1,8 @@
 package common
 
 import (
-	"github.com/marmos91/dittofs/pkg/block"
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/block"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 )
 
 // ErrNoContentStore is what a data operation (read, write, commit, flush,

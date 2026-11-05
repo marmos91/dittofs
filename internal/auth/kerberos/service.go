@@ -24,8 +24,8 @@ import (
 	"github.com/jcmturner/gokrb5/v8/service"
 	"github.com/jcmturner/gokrb5/v8/types"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	pkgkerberos "github.com/marmos91/dittofs/pkg/auth/kerberos"
+	"github.com/cubbit/dittofs/internal/logger"
+	pkgkerberos "github.com/cubbit/dittofs/pkg/auth/kerberos"
 )
 
 // Kerberos protocol constants for AP-REP construction (RFC 4120).

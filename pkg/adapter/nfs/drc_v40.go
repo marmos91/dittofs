@@ -3,8 +3,8 @@ package nfs
 import (
 	"bytes"
 
-	v4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	v4types "github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
+	xdr "github.com/cubbit/dittofs/internal/adapter/nfs/xdr/core"
 )
 
 // maxDupReqBytes bounds both the request a v4.0 COMPOUND may present and the

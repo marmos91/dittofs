@@ -1,6 +1,6 @@
 [Unit]
 Description=DittoFS - Modular Virtual Filesystem
-Documentation=https://github.com/marmos91/dittofs
+Documentation=https://github.com/cubbit/dittofs
 After=network-online.target
 Wants=network-online.target
 

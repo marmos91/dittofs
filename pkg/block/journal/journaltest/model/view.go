@@ -5,7 +5,7 @@ import (
 	"iter"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // View is what Compare reads from the journal for one share: the calls a

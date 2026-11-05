@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/known"
-	"github.com/marmos91/dittofs/test/harness/needs"
+	"github.com/cubbit/dittofs/test/harness/known"
+	"github.com/cubbit/dittofs/test/harness/needs"
 )
 
 // Tiers in order: each contains the ones before it. manual never runs on its own.

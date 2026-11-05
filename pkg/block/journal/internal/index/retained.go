@@ -5,7 +5,7 @@ import (
 	"math"
 	"slices"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // Retained is one retained extent: content a newer record superseded that the

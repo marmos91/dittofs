@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-const module = "github.com/marmos91/dittofs/"
+const module = "github.com/cubbit/dittofs/"
 
 // network is the network code the filesystem never imports: routing and
 // transport are implemented outside it. net/netip, addresses as values that

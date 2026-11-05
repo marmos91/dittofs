@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 // RFC 7 §12.1's cookie row: deleting the entry a cookie came from, and the

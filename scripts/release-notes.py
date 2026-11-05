@@ -45,7 +45,7 @@ notes = "\n".join(lines).strip()
 notes = re.sub(r"(?m)^### ", "#### ", notes)
 # Repo-relative links do not resolve on the release page.
 notes = re.sub(r"\]\(((?:docs|cmd|pkg|internal)/[^)]+)\)",
-               rf"](https://github.com/marmos91/dittofs/blob/{tag}/\1)", notes)
+               rf"](https://github.com/cubbit/dittofs/blob/{tag}/\1)", notes)
 
 notes = f"## What's new\n\n{notes}\n\n"
 marker = "### Installation"

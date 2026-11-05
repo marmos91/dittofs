@@ -12,7 +12,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // dtcTools is where the dtc image keeps its copies of the test tools: a

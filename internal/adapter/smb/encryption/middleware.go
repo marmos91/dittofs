@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/header"
+	"github.com/cubbit/dittofs/internal/adapter/smb/header"
 )
 
 // ErrDecryptFailed is a sentinel error indicating SMB3 decryption failure.

@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // Prune removes the entries the results show stale and leaves the rest of

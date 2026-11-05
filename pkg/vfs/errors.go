@@ -1,6 +1,6 @@
 package vfs
 
-import "github.com/marmos91/dittofs/pkg/vfs/vfserr"
+import "github.com/cubbit/dittofs/pkg/vfs/vfserr"
 
 // The service's errors, in no protocol's terms, declared in vfserr so the
 // engine returns them without importing this package: each adapter maps

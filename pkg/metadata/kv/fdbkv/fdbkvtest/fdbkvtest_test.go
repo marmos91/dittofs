@@ -10,8 +10,8 @@ import (
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/fdbkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/fdbkv"
 )
 
 // Two stores Open makes see none of each other's keys, and a store's keys are

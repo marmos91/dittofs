@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/cubbit/dittofs/pkg/config"
 	"github.com/invopop/jsonschema"
-	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/spf13/cobra"
 )
 

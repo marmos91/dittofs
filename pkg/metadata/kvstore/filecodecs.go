@@ -4,8 +4,8 @@ import (
 	"math"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/codec"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
 )
 
 // A time is its Unix seconds and nanoseconds, so a client may set any time

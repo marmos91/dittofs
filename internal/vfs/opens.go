@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/vfs/admit"
-	"github.com/marmos91/dittofs/internal/vfs/authz"
-	"github.com/marmos91/dittofs/internal/vfs/lockorder"
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/openstate"
-	"github.com/marmos91/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/internal/vfs/admit"
+	"github.com/cubbit/dittofs/internal/vfs/authz"
+	"github.com/cubbit/dittofs/internal/vfs/lockorder"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // Opens and closes, and the release of a file nothing holds. An open

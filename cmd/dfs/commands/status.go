@@ -10,9 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/cli/health"
-	"github.com/marmos91/dittofs/internal/cli/output"
-	"github.com/marmos91/dittofs/internal/cli/timeutil"
+	"github.com/cubbit/dittofs/internal/cli/health"
+	"github.com/cubbit/dittofs/internal/cli/output"
+	"github.com/cubbit/dittofs/internal/cli/timeutil"
 	"github.com/spf13/cobra"
 )
 

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 )
 
 // expectedSMB is the full per-protocol general-context expectation table:

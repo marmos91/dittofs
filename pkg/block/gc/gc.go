@@ -39,13 +39,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 
 	// justification: GC is the cross-share metadata-mark
 	// entrypoint — it MUST bind metadata.Store /
 	// MetadataReconciler to enumerate live FileChunks.
 	// Lifting these to blockstore would create a circular import.
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // gcRootLocks serializes CollectGarbage invocations that share a

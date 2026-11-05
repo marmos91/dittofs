@@ -11,8 +11,8 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/storage"
-	"github.com/marmos91/dittofs/pkg/sim"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // The seam's operation names, as Calls and CallsFor count them.

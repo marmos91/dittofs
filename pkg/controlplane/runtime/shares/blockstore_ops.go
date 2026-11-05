@@ -3,7 +3,7 @@ package shares
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/block/remote"
+	"github.com/cubbit/dittofs/pkg/block/remote"
 )
 
 // RemoteStoreEntry describes a distinct remote block store that is referenced

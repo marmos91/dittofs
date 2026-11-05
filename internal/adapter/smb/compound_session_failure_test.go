@@ -3,7 +3,7 @@ package smb
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // TestRelatedSessionFailureStatus pins the compound related-command failure

@@ -3,7 +3,7 @@ package fixture
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // The NFS version mounted at a directory is the vers= among the file

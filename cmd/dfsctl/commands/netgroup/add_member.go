@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 	"github.com/spf13/cobra"
 )
 

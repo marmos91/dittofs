@@ -3,7 +3,7 @@ package model
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // A later write supersedes the part of an earlier one it overlaps, and the

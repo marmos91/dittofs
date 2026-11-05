@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // ManifestToChunkRefs projects FileChunk manifest rows into the canonical

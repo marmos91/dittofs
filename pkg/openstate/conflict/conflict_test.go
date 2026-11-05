@@ -3,8 +3,8 @@ package conflict
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/openstate/grantfsm"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/openstate/grantfsm"
 )
 
 // The access and deny table, cell by cell: a new open asking one access or

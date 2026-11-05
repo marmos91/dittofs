@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/sim"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 func TestAStaleViewTouchesNothing(t *testing.T) {

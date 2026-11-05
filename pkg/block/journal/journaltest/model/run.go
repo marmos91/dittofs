@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // Handle is what a step calls on one share of the journal: the calls of

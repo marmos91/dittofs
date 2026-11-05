@@ -8,4 +8,4 @@ cthon04 is graded per program (`basic/test6`, `special/telldir`), not per assert
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| basic/test6 | semantics | NFSv3 READDIR returns no "." and ".." entries; knfsd returns both and the Linux client passes the server's list through as-is | [#2978](https://github.com/marmos91/dittofs/issues/2978) |
+| basic/test6 | semantics | NFSv3 READDIR returns no "." and ".." entries; knfsd returns both and the Linux client passes the server's list through as-is | [#2978](https://github.com/cubbit/dittofs/issues/2978) |

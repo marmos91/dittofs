@@ -18,7 +18,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // Result is the outcome of a successful authentication.

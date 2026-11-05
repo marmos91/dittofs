@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 // newTestServer starts a fake API server that returns an empty KerberosProviderConfig

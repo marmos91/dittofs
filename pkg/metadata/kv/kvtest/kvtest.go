@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 )
 
 // Run runs the suite. open returns a new, empty store, closed by the caller's

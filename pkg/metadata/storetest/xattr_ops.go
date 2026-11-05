@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // runXattrOpsTests asserts cross-backend parity for the unified xattr resolver

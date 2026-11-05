@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 )
 
 func TestKeyBudget(t *testing.T) {

@@ -6,8 +6,8 @@
 package nsm
 
 import (
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nsm/handlers"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nsm/types"
 )
 
 // ============================================================================

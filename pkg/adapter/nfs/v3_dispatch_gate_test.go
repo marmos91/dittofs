@@ -34,7 +34,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	nfs_types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	nfs_types "github.com/cubbit/dittofs/internal/adapter/nfs/types"
 )
 
 // TestV3DispatchGate_DisabledShareRefusesAnExistingHandle drives the same

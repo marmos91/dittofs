@@ -3,8 +3,8 @@ package nfs
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/mount/handlers"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/types"
 )
 
 // NFSStatusToString converts an NFS v3 status code to a human-readable string

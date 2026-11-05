@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	v4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	v4types "github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
 
-	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	xdr "github.com/cubbit/dittofs/internal/adapter/nfs/xdr/core"
 )
 
 // compoundPrefix encodes the leading fields of COMPOUND4args: the echoed tag

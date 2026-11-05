@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	"github.com/cubbit/dittofs/pkg/metadata/acl"
 )
 
 // SIDMapper provides Unix-to-Windows identity mapping using a stable machine SID.

@@ -36,8 +36,8 @@ FROM alpine:3.21
 # OCI Image Labels
 LABEL org.opencontainers.image.title="DittoFS" \
       org.opencontainers.image.description="Modular virtual filesystem with pluggable storage backends" \
-      org.opencontainers.image.url="https://github.com/marmos91/dittofs" \
-      org.opencontainers.image.source="https://github.com/marmos91/dittofs" \
+      org.opencontainers.image.url="https://github.com/cubbit/dittofs" \
+      org.opencontainers.image.source="https://github.com/cubbit/dittofs" \
       org.opencontainers.image.vendor="Marco Moschettini" \
       org.opencontainers.image.licenses="MIT"
 

@@ -8,10 +8,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/xdr"
-	xdrcore "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nsm/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nsm/xdr"
+	xdrcore "github.com/cubbit/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // recordedCall captures one SM_NOTIFY callback fired by the relay.

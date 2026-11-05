@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/prof"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // hostLines are lines of /proc/self/mountinfo copied from a Linux 6.12.10

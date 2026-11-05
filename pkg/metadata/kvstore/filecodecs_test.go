@@ -3,14 +3,14 @@ package kvstore
 import (
 	"encoding/hex"
 	"errors"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/codec"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
 )
 
 var fid = entity.FileID{0: 0xF1, 15: 0x01}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/model"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/model"
 )
 
 // TestFuzzFindsPlantedSplit runs the model-based fuzz over every seed and

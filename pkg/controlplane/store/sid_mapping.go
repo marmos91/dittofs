@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 	"gorm.io/gorm/clause"
 )
 

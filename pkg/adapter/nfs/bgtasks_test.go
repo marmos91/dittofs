@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/adapter"
 )
 
 // TestGoTracked_ShutdownWaitsForRunningTask pins the ownership contract the

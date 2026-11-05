@@ -14,8 +14,8 @@ import (
 
 	"github.com/spf13/pflag"
 
-	"github.com/marmos91/dittofs/cmd/dfsctl/commands"
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/cmd/dfsctl/commands"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // smbConformance is the directory of the SMB suites' scripts and shares file.

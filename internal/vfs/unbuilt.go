@@ -3,7 +3,7 @@ package vfs
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // The calls below are not built yet: each is refused while the filesystem is

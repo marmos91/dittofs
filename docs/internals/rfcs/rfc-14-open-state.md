@@ -548,7 +548,10 @@ NFS open is named by its stateid's token and takes none.
 **An owner holds one open of a file.** Where the protocol names an owner of
 opens, as NFSv4 does, an open by an owner that already holds an open of the
 file is that open, upgraded: its modes widen, its `Seq` rises, and no second
-open is made. `OpenResult.Confirm` is set only when the owner's `Sequence` is
+open is made. An open whose answer fails once the table recorded it is undone
+with `Abandon`: an open the owner held goes back to its modes, delete mark and
+`Seq`, and a new one closes as if it never asked delete on close.
+`OpenResult.Confirm` is set only when the owner's `Sequence` is
 new and unconfirmed (§2.8), and **MUST NOT** be set on a reclaim or on an open
 offered a grant (RFC 7530 §9.1.11); an owner of a protocol whose session orders
 its requests, NFSv4.1's, is confirmed from its first open.
@@ -2974,6 +2977,7 @@ type Opens interface {
 	ConfirmOpen(ctx, who Caller, o OpenRef, q Seqs) (seq uint32, err error)                   // §2.8; the open's new Seq
 	Update(ctx, who Caller, o OpenID, u OpenUpdate) error                   // delete on close and suspended times, through the open (§2.2, §9.4)
 	Close(ctx, who Caller, o OpenRef, q Seqs) (CloseResult, error)          // CloseResult{Orphan bool; Unlink *PendingUnlink}: open state never unlinks; the service runs it
+	Abandon(ctx, who Caller, o OpenRef, prior *OpenPrior) (CloseResult, error) // §2.2: undoes an open whose answer failed, unsequenced: one the owner held goes back to prior, Seq included; a new one closes with its delete on close dropped
 	Flushed(ctx, who Caller, o OpenID, loss uint64) error                   // ErrLost once per loss (§8.1)
 	Durable(ctx, f FileKey) (recs []entity.OpenRecord, commit func(committed bool), err error) // §9.1: the unlink writes recs in its transaction
 	Releasing(ctx, f FileKey) (done func(released bool), err error)          // §9.1: under the file's admission lock, marks f releasing; ErrFileOpen if an open exists, ErrReleasing if already marked; done(false) clears the mark
@@ -3054,6 +3058,14 @@ type OpenResult struct {
 	Grant    *CachingGrant // nil: none offered
 	Replayed bool          // a replayed create answered with the open it made
 	Confirm  bool          // the owner must confirm before using it (§2.8)
+	Prior    *OpenPrior    // the owner's open before this one upgraded or reclaimed it; nil: an open this request made or replayed
+}
+
+// OpenPrior is an owner's open as it stood before an open upgraded or reclaimed it.
+type OpenPrior struct {
+	Access, Deny entity.AccessMask
+	Seq          uint32
+	Delete       DeleteMark
 }
 
 // OpenRef is what a call through an open presents; pkg/vfs aliases it.

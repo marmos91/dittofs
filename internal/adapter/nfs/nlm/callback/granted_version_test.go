@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/blocking"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/types"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // TestProcessGrantedCallback_ResolvesWithNegotiatedVersion guards against

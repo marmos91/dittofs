@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/types"
 )
 
 // fakePortmapper accepts one TCP connection, reads the record-marked GETPORT

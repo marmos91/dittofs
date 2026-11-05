@@ -3,9 +3,9 @@ package runtime
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
-	"github.com/marmos91/dittofs/pkg/block/remote"
+	"github.com/cubbit/dittofs/internal/logger"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
+	"github.com/cubbit/dittofs/pkg/block/remote"
 )
 
 // ReconcileReport scans every remote-backed share for orphaned block storage

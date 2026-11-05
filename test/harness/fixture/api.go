@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/apiclient"
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // configure sets the server up through its API: its stores on the fixture's

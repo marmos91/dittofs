@@ -1,3 +1,3 @@
 package lockorder
 
-import _ "github.com/marmos91/dittofs/pkg/metadata/kvstore"
+import _ "github.com/cubbit/dittofs/pkg/metadata/kvstore"

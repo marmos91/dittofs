@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 )
 
 // TestRecoverInterruptedRestores_KeepsALiveSharesMarker: with no content

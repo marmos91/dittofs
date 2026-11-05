@@ -27,7 +27,7 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 const (

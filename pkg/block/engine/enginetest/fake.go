@@ -10,8 +10,8 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // FakeJournal is an in-memory journal answering the engine's data path:

@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/fdbkv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/fdbkv/fdbkvtest"
-	"github.com/marmos91/dittofs/pkg/metadata/kvstore/kvstoretest"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/fdbkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/fdbkv/fdbkvtest"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 )
 
 func fdbStore(opts fdbkv.Options) kvstoretest.Opener {

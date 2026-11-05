@@ -219,8 +219,8 @@ jobs:
           labels: |
             org.opencontainers.image.title=DittoFS Operator
             org.opencontainers.image.description=Kubernetes operator for DittoFS
-            org.opencontainers.image.url=https://github.com/marmos91/dittofs
-            org.opencontainers.image.source=https://github.com/marmos91/dittofs
+            org.opencontainers.image.url=https://github.com/cubbit/dittofs
+            org.opencontainers.image.source=https://github.com/cubbit/dittofs
             org.opencontainers.image.version=${{ steps.version.outputs.VERSION }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=Apache-2.0
@@ -239,4 +239,4 @@ jobs:
             echo "Pre-release ${VERSION}; skipping docs sync."
             exit 0
           fi
-          gh workflow run refresh-docs.yml --repo marmos91/dittofs-web -f ref="${VERSION}"
+          gh workflow run refresh-docs.yml --repo cubbit/dittofs-web -f ref="${VERSION}"

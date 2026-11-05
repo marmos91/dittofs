@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 )
 
 // BenchmarkDurableCommits measures single-key synced commits from 1, 16 and 64

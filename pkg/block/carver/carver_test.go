@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/chunker"
+	"github.com/cubbit/dittofs/pkg/block/chunker"
 )
 
 // Sizing small enough to run the sweeps cheaply, large enough that a chunk can

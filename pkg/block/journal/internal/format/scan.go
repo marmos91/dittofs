@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // scanWindow is the bytes one refill of the scan's sliding window reads, so

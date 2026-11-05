@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // The kernel's NFS server takes its settings in nfsdDir, and a knfsd fixture

@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // UmountAllRequest represents an UMNTALL request from an NFS client.

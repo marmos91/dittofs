@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
-	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
 )
 
 func wantShard(t *testing.T, s *kvstore.Store, id entity.ShardID, inc, grace uint64) {

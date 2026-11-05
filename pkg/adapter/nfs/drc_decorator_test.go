@@ -6,8 +6,8 @@ import (
 	"net"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	nfs_types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	nfs_types "github.com/cubbit/dittofs/internal/adapter/nfs/types"
 )
 
 func drcTestConn(t *testing.T) (*NFSAdapter, *NFSConnection) {

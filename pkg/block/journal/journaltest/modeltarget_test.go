@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/model"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/model"
 )
 
 // parent is the test an attemptTB reports to, keeping what it reports.

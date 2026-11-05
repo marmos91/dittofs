@@ -4,8 +4,8 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/xdr"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/portmap/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/portmap/xdr"
 )
 
 // fakeRegistry is a minimal PortmapRegistry for handler tests. It avoids

@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // validationError represents a request validation error with an NFS status code.

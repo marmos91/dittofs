@@ -16,9 +16,9 @@ import (
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/internal/backend"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/internal/backend"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
 
 // apiVersion is the client API this package is written against, 7.3's.

@@ -6,8 +6,8 @@ import (
 	"io/fs"
 	"sync"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/storage"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
 // The cache's sentinel errors. A failed acquire names why the segment cannot

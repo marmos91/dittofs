@@ -7,10 +7,10 @@ import (
 	"io"
 	"sync"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/pseudofs"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/state"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
+	v41handlers "github.com/cubbit/dittofs/internal/adapter/nfs/v4/v41/handlers"
 )
 
 // V40OpHandler is the type signature for individual NFSv4 operation handlers.

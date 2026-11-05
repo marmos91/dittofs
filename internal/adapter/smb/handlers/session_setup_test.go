@@ -8,8 +8,8 @@ import (
 	"github.com/jcmturner/gofork/encoding/asn1"
 	gokrbspnego "github.com/jcmturner/gokrb5/v8/spnego"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/auth"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // =============================================================================

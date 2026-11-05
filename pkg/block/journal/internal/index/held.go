@@ -3,7 +3,7 @@ package index
 import (
 	"errors"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // ErrNotOffloaded refuses a release over held content whose offloaded bit is

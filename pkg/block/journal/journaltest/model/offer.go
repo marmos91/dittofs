@@ -8,7 +8,7 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // offer is what the model remembers of the offer a callback is running on.

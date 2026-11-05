@@ -6,7 +6,7 @@ import (
 	"iter"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 // stubError is a journal call answered with ErrNotImplemented: a call not

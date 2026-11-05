@@ -1,8 +1,8 @@
 package engine
 
 import (
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
 // The components the root will pass satisfy the interfaces Deps declares, so

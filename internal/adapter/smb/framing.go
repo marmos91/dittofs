@@ -9,12 +9,12 @@ import (
 	"net"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/pool"
-	"github.com/marmos91/dittofs/internal/adapter/smb/encryption"
-	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/smb/header"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/pool"
+	"github.com/cubbit/dittofs/internal/adapter/smb/encryption"
+	"github.com/cubbit/dittofs/internal/adapter/smb/handlers"
+	"github.com/cubbit/dittofs/internal/adapter/smb/header"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // ErrUnknownEncryptedSession is returned by ReadRequest when an encrypted

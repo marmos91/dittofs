@@ -6,7 +6,7 @@ import (
 	"iter"
 	"slices"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // decision: the model-based fuzz runs in the external test package, index_test,

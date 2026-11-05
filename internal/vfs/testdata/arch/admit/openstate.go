@@ -1,3 +1,3 @@
 package admit
 
-import _ "github.com/marmos91/dittofs/pkg/openstate"
+import _ "github.com/cubbit/dittofs/pkg/openstate"

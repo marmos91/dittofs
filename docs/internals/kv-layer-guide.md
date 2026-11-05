@@ -2,7 +2,7 @@
 
 A guided tour of the three packages built on `feat/kv-layer`: what each layer owns, how a request travels through them, how a file's content is recorded, removed and cloned, how concurrent writers are kept correct, and how the tests prove it. Read the steps in order; each one builds on the previous.
 
-As of `5a6ee28c`, 15 Oct 2026 · tracked in [#3119](https://github.com/marmos91/dittofs/issues/3119) · branch on PR [#3120](https://github.com/marmos91/dittofs/pull/3120) · design in the storage RFCs, [#2894](https://github.com/marmos91/dittofs/pull/2894)
+As of `5a6ee28c`, 15 Oct 2026 · tracked in [#3119](https://github.com/cubbit/dittofs/issues/3119) · branch on PR [#3120](https://github.com/cubbit/dittofs/pull/3120) · design in the storage RFCs, [#2894](https://github.com/cubbit/dittofs/pull/2894)
 
 ## 1. The layers
 

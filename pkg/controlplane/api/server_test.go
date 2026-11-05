@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
 )
 
 // waitForServerReady waits for the API server to either accept TCP connections

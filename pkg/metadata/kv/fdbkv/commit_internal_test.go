@@ -12,8 +12,8 @@ import (
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
 
 // A commit that landed but answered "outcome unknown" is not applied again:

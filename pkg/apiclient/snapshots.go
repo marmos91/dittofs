@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/api/dto"
+	"github.com/cubbit/dittofs/pkg/controlplane/api/dto"
 )
 
 // Snapshot is the wire DTO for a share snapshot, re-exported from the

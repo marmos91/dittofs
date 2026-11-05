@@ -3,7 +3,7 @@
 // of open state.
 package sequence
 
-import "github.com/marmos91/dittofs/pkg/metadata/entity"
+import "github.com/cubbit/dittofs/pkg/metadata/entity"
 
 // Kind is what an owner numbers its requests for.
 type Kind uint8

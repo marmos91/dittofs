@@ -3,7 +3,7 @@ package handlers
 import (
 	"bytes"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // NullRequest represents a NULL request from an NFS client.

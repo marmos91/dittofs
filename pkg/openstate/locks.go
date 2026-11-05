@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/openstate/ranges"
-	"github.com/marmos91/dittofs/pkg/openstate/sequence"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/openstate/ranges"
+	"github.com/cubbit/dittofs/pkg/openstate/sequence"
 )
 
 // maxRanges is the most ranges one lock or unlock request names.

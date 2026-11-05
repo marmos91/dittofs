@@ -5,7 +5,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/marmos91/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // Callback is one callback as RecordingCallbacks saw it: the method's name

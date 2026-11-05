@@ -5,7 +5,7 @@ import (
 	"iter"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // Handle is one share's view of the journal. Every call through it that names

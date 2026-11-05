@@ -1,7 +1,7 @@
 package segment
 
 import (
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // MutexHeld reports whether c's mutex is held, for the leaf-lock check: a

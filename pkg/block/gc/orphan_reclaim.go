@@ -26,8 +26,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/remote"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/remote"
 )
 
 // ReclaimMetaView is the per-share metadata surface the zero-ref reclaimer needs:

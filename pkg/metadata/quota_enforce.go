@@ -3,7 +3,7 @@ package metadata
 import (
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // quotaDimension is one enforceable axis of a quota check (bytes or inodes).

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // fakeDeps is an in-memory Deps for deterministic scheduler tests.

@@ -3,8 +3,8 @@ package storage_test
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/platform"
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/storage"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/platform"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
 // The operating system's storage is implemented on Linux, so the contract

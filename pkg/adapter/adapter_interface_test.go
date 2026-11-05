@@ -1,9 +1,9 @@
 package adapter_test
 
 import (
-	"github.com/marmos91/dittofs/pkg/adapter"
-	"github.com/marmos91/dittofs/pkg/adapter/nfs"
-	"github.com/marmos91/dittofs/pkg/adapter/smb"
+	"github.com/cubbit/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/adapter/nfs"
+	"github.com/cubbit/dittofs/pkg/adapter/smb"
 )
 
 // Compile-time assertions that both concrete adapters satisfy adapter.Adapter.

@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/storage"
-	"github.com/marmos91/dittofs/pkg/sim"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 func newSeam(t *testing.T) *Seam {

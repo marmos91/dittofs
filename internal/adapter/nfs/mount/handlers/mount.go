@@ -7,10 +7,10 @@ import (
 	"net"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	internalxdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/auth"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	internalxdr "github.com/cubbit/dittofs/internal/adapter/nfs/xdr"
+	"github.com/cubbit/dittofs/internal/logger"
 	xdr "github.com/rasky/go-xdr/xdr2"
 )
 

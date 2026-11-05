@@ -7,7 +7,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // The tests in this file hold the scanner's read paths to their contracts:

@@ -3,8 +3,8 @@
 package kvstore
 
 import (
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
 
 // Keys of the control-plane records. A key names principals by ID only; the

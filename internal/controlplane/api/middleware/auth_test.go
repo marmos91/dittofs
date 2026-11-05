@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/controlplane/api/auth"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/internal/controlplane/api/auth"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 func createTestJWTService(t *testing.T) *auth.JWTService {

@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/vfs/lockorder"
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/openstate"
-	"github.com/marmos91/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/internal/vfs/lockorder"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // The Attributes area: a file's attributes, ACL, xattrs and streams, read
