@@ -112,23 +112,38 @@ jobs:
         env:
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
           SUITE: ${{ inputs.suite }}
-          # On feat/storage-v2 the data path answers unavailable until the
-          # adapters run on vfs.Service, so a suite that moves file bytes cannot
-          # pass there. Only the cells that move none run: the operator's and
-          # the AD DC's, besides the cells with a job of their own. The others,
-          # unit/windows included, run once the branch merges into develop.
-          V2: ${{ github.ref == 'refs/heads/feat/storage-v2' || github.base_ref == 'feat/storage-v2' }}
+          # decision: on feat/storage-v2 the data path answers unavailable until
+          # the adapters run on vfs.Service, so the data-path suites are skipped
+          # there. unit/windows moves no file bytes but is skipped for its cost;
+          # journal-platforms.yml covers the journal on Windows. Delete V2 once
+          # the adapters run on vfs.Service. A merge queue run's ref is its
+          # queue branch and it has no base_ref, so its target is read from
+          # the merge_group event.
+          V2: ${{ github.ref == 'refs/heads/feat/storage-v2' || github.base_ref == 'feat/storage-v2' || github.event.merge_group.base_ref == 'refs/heads/feat/storage-v2' }}
         run: |
           set -o pipefail
-          "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
-            jq -c --arg suite "$SUITE" --arg v2 "$V2" '[(.cells // [])[] | select($suite == "" or .suite == $suite)
-              | select($v2 != "true" or .job or .suite == "operator" or .name == "integration/ad-dc") | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
+          "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json > "$RUNNER_TEMP/plan.json"
+          # The skip names the suites it drops, so a new suite runs there by
+          # default.
+          jq -c --arg suite "$SUITE" --arg v2 "$V2" '[(.cells // [])[] | select($suite == "" or .suite == $suite)
+              | select($v2 != "true" or ((IN(.suite; "e2e", "pjdfstest", "pynfs", "wpts", "smbtorture", "cthon04",
+                  "nfstest", "clients", "fio-verify", "bench-smoke", "system") or .name == "unit/windows") | not))
+              | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
                 or .suite == "smbtorture" or (.suite == "system" and .place != "dedicated")
                 or .suite == "clients" or .suite == "cthon04" or .suite == "nfstest" or .suite == "fio-verify"
+                or .suite == "journal-conformance" or .suite == "engine-conformance"
                 or IN(.name; "unit/windows", "unit/nonrace", "integration/ad-dc", "bench-smoke"))
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))
-              | .job_timeout_minutes = .timeout_minutes + 15]' > "$RUNNER_TEMP/cells.json"
+              | .job_timeout_minutes = .timeout_minutes + 15]' "$RUNNER_TEMP/plan.json" > "$RUNNER_TEMP/cells.json"
           jq . "$RUNNER_TEMP/cells.json"
+          # The required checks run unit and integration, so on storage-v2 a
+          # plan that names either must keep it.
+          if [ "$V2" = true ] && ! jq -e --slurpfile kept "$RUNNER_TEMP/cells.json" \
+            '[(.cells // [])[] | select(.name == "unit" or .name == "integration") | .name] - [$kept[0][].name] == []' \
+            "$RUNNER_TEMP/plan.json" > /dev/null; then
+            echo "::error::the storage-v2 plan lost unit or integration"
+            exit 1
+          fi
           {
             echo "blocking=$(jq -c 'map(select(.blocking and .job == null))' "$RUNNER_TEMP/cells.json")"
             echo "non-blocking=$(jq -c 'map(select(.blocking | not))' "$RUNNER_TEMP/cells.json")"
@@ -452,6 +467,26 @@ jobs:
       - *fdb
       - *build
       - *suite
+
+      # decision: the journal index's allocation checks, which skip under
+      # -race, and its planted split run as steps of the job the ruleset
+      # requires, as integration's options do, rather than as run cells, which
+      # only gate waits for. They go back to being plan cells when the ruleset
+      # requires gate. Each runs even when a step before it failed.
+      - name: Run unit/journal-index
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: '"$RUNNER_TEMP/dt" run unit/journal-index --tier "$TIER" --ci --retry "$RETRY"'
+
+      - name: Run unit/journal-plant
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: '"$RUNNER_TEMP/dt" run unit/journal-plant --tier "$TIER" --ci --retry "$RETRY"'
+
+      # On feat/storage-v2 nothing else links the commands: the data-path
+      # suites that build them are skipped there.
+      - name: Build the commands
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: go build ./cmd/...
+
       - *report
       - *upload
 
