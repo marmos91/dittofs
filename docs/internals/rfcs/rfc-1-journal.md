@@ -2098,9 +2098,15 @@ written again until it is closed and reopened, and that open's recovery
 - every call that would append a record — `WriteAt`, `Fill`, a removal,
   `Release`, `Hold` and the rest — fails at once with `ErrJournalReadOnly`,
   reserves nothing and takes no spare;
-- the window that was open is failed ([§5.3](#5.3%20A%20failed%20sync)), raising the loss generation as
-  there, with no loss record appended;
-- its header-only records are failed too: nothing of them was appended, so
+- every record not yet synced is failed, on every stream: the window that was
+  open, and each other stream's records past its last successful sync, each
+  failed as a window is ([§5.3](#5.3%20A%20failed%20sync)) and reported once to each file with a write in
+  it, raising the loss generation once for all of them, with no loss record
+  appended. A sync in flight at the transition that succeeds later satisfies
+  none of their `Sync`s. Another stream's records are failed too because no
+  later sync will cover them, and the reopen's recovery could otherwise find one
+  torn and drop it unreported, a write whose client was told nothing changed;
+- their header-only records are failed too: nothing of them was appended, so
   each is undone in memory and every `Sync` that waits on one fails with
   `ErrJournalReadOnly`; only a loss record's drop stands, since a loss only
   ever errs toward fetching again ([§3.8](#3.8%20Loss%20events));
@@ -2117,7 +2123,7 @@ written again until it is closed and reopened, and that open's recovery
   window does ([§5.3](#5.3%20A%20failed%20sync)); the loss record reaches nothing else, so a dropped write's
   superseded content is held, as when the window failed. It publishes no new
   event and raises neither the loss generation nor a file's loss sequence: the
-  window's failure was already reported, and a removal's failure reached its
+  records' failure was already reported, and a removal's failure reached its
   `Sync`. A segment whose sync failed can still hold
   them whole, and without this the reopen's recovery would hold again, and the
   engine apply, a write or a removal whose `Sync` was told it failed.
@@ -3087,6 +3093,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§5.3](#5.3%20A%20failed%20sync) re-append trusts no page cache | Write A, fail the next sync, and make reads of the failed segment return the bytes the device held before; resolve by re-appending; assert A is re-appended only from a copy that verifies against the checksum kept at write time, or its window is failed and A dropped as a loss — never re-appended with the stale bytes. Assert no record is appended to the failed segment afterwards. |
 | [§3.8](#3.8%20Loss%20events) loss by exact record | Write v5 and `Sync` it; overwrite the same 64 KiB at v10 with no `Sync`; fail the timer's sync and resolve by failing the window. Assert a read serves v5, before and after a crash and reopen, and the loss record names v10's sequence number. A loss keyed on version inside the extent drops v5 too, and a design that let v5's record go once v10 was appended has nothing to restore. |
 | [§3.8](#3.8%20Loss%20events) a synced loss masks what it superseded | Write v5, `Sync`; write v10, `Sync`; corrupt v10's payload; reopen with v5's record still on disk. Assert the extent reads `missing`, never v5. A loss record that names only its record brings the superseded v5 back. |
+| [§5.4](#5.4%20A%20journal%20that%20cannot%20write) read-only fails every stream's unsynced records | On a second stream, write file G and leave it unsynced; on the first, fail a sync and then the first sync in the spare it takes, so the journal turns read-only; then fail the writeback of G's segment at the seam, so G is torn on the device. Assert G's write is failed at the transition, the next `Sync(G)` fails, and the loss generation rose once for both streams. Clear the faults and reopen in place: assert G is not held, its drop appends an unsynced loss record and leaves the loss generation where the transition put it, so the write verifier the engine folds from it differs from the one G's write was answered with. A journal that fails only the failed segment's window lets the reopen drop G as a torn tail with the generation unchanged, and a client's commit succeeds over the lost write. |
 | [§5.3](#5.3%20A%20failed%20sync) a failed window is reported once | Write to file F with no `Sync` waiting; fail the timer's sync and fail the window. Assert the next `Sync(F)` fails, the one after succeeds, and a `Sync(G)` of a file with no write in the window succeeds throughout. A design that fails only the `Sync` calls waiting at the time lets F's next flush succeed with its data gone. |
 | [§4.3](#4.3%20Versions) a re-append keeps its numbers | Write A, fail its sync and resolve by re-appending; truncate over A; crash so the original, its copy and the truncate are all on disk; reopen. Assert the extent reads `missing`. A re-append given a new sequence number outranks the truncate and brings A back. |
 | [§3.3](#3.3%20Offload) no pin on a segment under repack | Select a segment for repack and hold the pass after its first copy; offload a file with dirty extents in that segment. Assert the offer pins no segment under repack, takes the copied extent from its new location, leaves the rest to a later call, and the repack completes and unlinks the segment. |
