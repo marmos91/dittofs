@@ -2837,3 +2837,84 @@ func TestEndRegistrationPastARollAndAnEndPanics(t *testing.T) {
 		t.Fatal("OnEnd past an end returned, want a panic")
 	}
 }
+
+// TestEndACloseDuringTheSealWaitAnswersClosed checks the re-check End makes
+// after its wait on a running seal: a Close that lands while the request is
+// parked on the drain names the call's whole answer, so End answers
+// ErrStreamClosed rather than the nil of a stream that no longer owns the
+// segment. A's write is held at the seam, so the seal parks on the drain and
+// End parks behind it; Close then runs, and A's release wakes both.
+func TestEndACloseDuringTheSealWaitAnswersClosed(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seg := streamSegName(1)
+	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
+	t.Cleanup(func() { _ = e.s.Close() })
+
+	// One record lands first, so the stream holds its segment; A is the
+	// second append, whose write parks at the seam with its slot reserved.
+	h0, b0 := streamWriteHeader(streamFileID(9), 0, streamTestBody(64, 0x40), 7, core.Version{Counter: 1})
+	streamAppendWrite(t, e, h0, b0)
+	holdA := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
+	aDone := endAppend(e, 1, 64, 0x41)
+	<-holdA.Reached()
+
+	// The seal parks on the drain for A's reservation.
+	sealDone := make(chan error, 1)
+	go func() {
+		_, err := e.s.Seal(false)
+		sealDone <- err
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	// parked reports whether a goroutine is blocked in the drain cond's wait
+	// inside the named stream method.
+	parked := func(method string) bool {
+		buf := make([]byte, 1<<20)
+		buf = buf[:runtime.Stack(buf, true)]
+		for _, g := range bytes.Split(buf, []byte("\n\n")) {
+			if bytes.Contains(g, []byte("(*Stream)."+method+"(")) && bytes.Contains(g, []byte("sync.runtime_notifyListWait")) {
+				return true
+			}
+		}
+		return false
+	}
+	for !parked("Seal") {
+		if time.Now().After(deadline) {
+			t.Fatal("the Seal never parked on the drain while A's write was held")
+		}
+		runtime.Gosched()
+	}
+
+	// End parks on the drain cond behind the seal: seen as a goroutine
+	// blocked in the cond's wait inside Stream.End.
+	endDone := make(chan error, 1)
+	go func() { endDone <- e.s.End(1, fmt.Errorf("the failed sync: %w", syscall.EIO)) }()
+	for !parked("End") {
+		if time.Now().After(deadline) {
+			t.Fatal("End never parked on the drain behind the seal")
+		}
+		runtime.Gosched()
+	}
+
+	// Close runs while both are parked; a Seal answering closed is the
+	// observable that it has marked the stream closed.
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- e.s.Close() }()
+	for {
+		if _, err := e.s.Seal(false); errors.Is(err, segment.ErrStreamClosed) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Close never marked the stream closed")
+		}
+		runtime.Gosched()
+	}
+
+	holdA.Release()
+	if err := <-endDone; !errors.Is(err, segment.ErrStreamClosed) {
+		t.Fatalf("End across a Close that landed during the seal wait = %v, want ErrStreamClosed", err)
+	}
+	<-sealDone
+	<-aDone
+	<-closeDone
+}
