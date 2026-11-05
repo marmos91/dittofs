@@ -637,11 +637,13 @@ func (p *Pool) refill() bool {
 		// decision: a read-only journal makes no spare, because RFC 1 §5.4
 		// says it "takes no spare" and a read-only journal writes nothing it
 		// need not. The check runs per make rather than once per pass, so a
-		// journal that turns read-only mid-pass stops at the next make. It is
-		// asked holding no lock: it is epic 6's function, and no lock of the
-		// capacity domain may be held across a foreign call. Withdrawn if
-		// epic 6 ever needs spares made while read-only (to leave read-only
-		// state, say).
+		// journal that turns read-only mid-pass stops at the next make, and
+		// it is asked only once a class is short — the class has been chosen
+		// above — so a pool already at its target never asks. It is asked
+		// holding no lock: it is the journal's own policy, not a function of
+		// the capacity domain, and no lock of the domain may be held across
+		// it. Withdrawn if the journal ever needs spares made while
+		// read-only (to leave read-only state, say).
 		if p.readOnly != nil {
 			if err := p.readOnly(); err != nil {
 				p.log.Debug("segment: the pool made no spare: the journal is read-only",

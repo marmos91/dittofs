@@ -66,10 +66,11 @@ func retirerSeeded(t *testing.T, targets segment.Targets, readOnly func() error,
 // retirerBuilt is retirer with every knob a test needs: the read-only check,
 // the retired-segment hook, the Maker's seed and a logger for the retirer and
 // its ledger. The read-only check the pool's refill and the retirer both ask
-// is the one epic 8 passes to both. The durable signal's calls are handed out
-// guarded through the returned collector — the worker goroutine is the one
-// that appends to them — while the hook's collector belongs to the caller
-// that built the hook handed in here (retirerHooked's, say).
+// is the one the journal's owner passes to both constructors. The durable
+// signal's calls are handed out guarded through the returned collector — the
+// worker goroutine is the one that appends to them — while the hook's
+// collector belongs to the caller that built the hook handed in here
+// (retirerHooked's, say).
 func retirerBuilt(t *testing.T, targets segment.Targets, readOnly func() error, retired func(core.SegmentID), last core.SegmentID, log *slog.Logger) (*retireEnv, *durableCollector) {
 	t.Helper()
 
@@ -131,13 +132,15 @@ func (d *durableCollector) at(i int) segment.Retirement {
 	return d.recs[i]
 }
 
-// retiredCall is one retired-segment hook call: the id it was handed, and the
+// retiredCall is one retired-segment hook call: the id it was handed, the
 // error the set refused a ClaimRetirement of that id with — nil when the
 // segment was still in the set, which is the very bug the hook's ordering
-// exists to keep out.
+// exists to keep out — and the freed count the executor reported when the
+// call was made, zero when the collector does not probe the executor.
 type retiredCall struct {
-	id  core.SegmentID
-	err error
+	id    core.SegmentID
+	err   error
+	freed uint64
 }
 
 // retiredCollector keeps the retired-segment hook's calls under a mutex: the
@@ -150,6 +153,12 @@ type retiredCollector struct {
 	mu   sync.Mutex
 	set  *segment.Set
 	recs []retiredCall
+	// The retirer the hook reads the freed count through, once the collector
+	// has been handed one: Counters takes the executor's own lock, so a hook
+	// the executor calls with that lock held never returns, and the
+	// retirement that called it hangs.
+	r     *segment.Retirer
+	probe bool
 }
 
 // bind hands the collector the set its retirer retires from; its hook reads
@@ -157,6 +166,17 @@ type retiredCollector struct {
 func (rc *retiredCollector) bind(set *segment.Set) {
 	rc.mu.Lock()
 	rc.set = set
+	rc.mu.Unlock()
+}
+
+// probeRetirer makes every call of the collector's hook after it read the
+// freed count through the retirer's own counters: Counters takes the
+// executor's lock, so only a hook called holding no lock of the executor's
+// comes back.
+func (rc *retiredCollector) probeRetirer(r *segment.Retirer) {
+	rc.mu.Lock()
+	rc.r = r
+	rc.probe = true
 	rc.mu.Unlock()
 }
 
@@ -169,7 +189,11 @@ func (rc *retiredCollector) hook() func(core.SegmentID) {
 		if err == nil {
 			set.Release(id)
 		}
-		rc.recs = append(rc.recs, retiredCall{id: id, err: err})
+		var freed uint64
+		if rc.probe {
+			freed = rc.r.Counters().FreedBytes
+		}
+		rc.recs = append(rc.recs, retiredCall{id: id, err: err, freed: freed})
 		rc.mu.Unlock()
 	}
 }
@@ -1675,9 +1699,9 @@ func TestRetireReadOnly(t *testing.T) {
 
 // readOnlyFlag is a test's read-only check: a flag under its own mutex, and
 // the count of every call made of it. Both the pool's refill and the retirer
-// ask the same check — epic 8's constructor is the one that passes it to both
-// — so a test that needs to prove a worker ran, rather than pass vacuously,
-// waits for the count to rise.
+// ask the same check — the journal's owner hands one function to both
+// constructors — so a test that needs to prove a worker ran, rather than pass
+// vacuously, waits for the count to rise.
 type readOnlyFlag struct {
 	mu    sync.Mutex
 	off   bool
@@ -1712,7 +1736,10 @@ func (f *readOnlyFlag) count() int {
 // own probe of the set the retirer retires from: each call records the id it
 // was handed and what the ledger answered of it. The hook is handed to the
 // build before the set exists — the closure reads the set under the
-// collector's mutex — and nothing retires before the bind that follows.
+// collector's mutex — and nothing retires before the bind that follows. A test
+// that also wants each call to read the freed count through the retirer's own
+// counters — the probe that pins the hook to hold no executor lock — calls
+// the collector's probeRetirer with e.r.
 func retirerHooked(t *testing.T, targets segment.Targets, readOnly func() error) (*retireEnv, *retiredCollector) {
 	t.Helper()
 	rc := &retiredCollector{}
@@ -1729,7 +1756,7 @@ func retirerHooked(t *testing.T, targets segment.Targets, readOnly func() error)
 // ClaimRetirement of the id it was handed, is refused ErrNotInSet: before the
 // segment left the set that same probe would find the claim the retirement
 // holds already and answer ErrClaimed, which is what makes the assertion
-// discriminate. Epic 6 is the hook's consumer — it drops the copy-table
+// discriminate. The hook's consumer drops the copy-table
 // entries of a retired segment, so a copy never names one — so it must never
 // run for a segment the set still holds.
 func TestRetireRetiredHookAfterLeavingTheSet(t *testing.T) {
@@ -1878,6 +1905,56 @@ func TestRetireRetiredHookAfterLeavingTheSet(t *testing.T) {
 		id := e.segment(true)
 		if _, err := e.r.Retire(id, segment.NotHeld); err != nil {
 			t.Fatalf("the retire with a nil hook: %v", err)
+		}
+	})
+
+	// The hook's contract is that it runs holding no lock of the executor's,
+	// which is what lets its consumer read the freed count through the
+	// executor's own counters, called back from the hook — Counters takes the
+	// executor's mutex, so a hook the executor calls with that mutex held
+	// never returns. Each retire runs on its own goroutine and the wait is
+	// bounded, so that failure is the test's own timeout, not a hang. Both
+	// call sites are probed: an unlink's and a recycle's.
+	t.Run("the hook reads the freed count the executor holds", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			targets segment.Targets
+		}{
+			{"unlink", noPool},
+			{"recycle", segment.Targets{Content: 1}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				e, rc := retirerHooked(t, tc.targets, nil)
+				rc.probeRetirer(e.r)
+				id := e.segment(true)
+
+				type out struct {
+					res segment.Retirement
+					err error
+				}
+				done := make(chan out, 1)
+				go func() {
+					res, err := e.r.Retire(id, segment.NotHeld)
+					done <- out{res, err}
+				}()
+				select {
+				case o := <-done:
+					if o.err != nil {
+						t.Fatalf("the retire whose hook reads the counters: %v", o.err)
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatal("the retire never returned: the hook's probe of the executor's own counters blocked it, so the hook was called holding a lock of the executor's")
+				}
+				if rc.len() != 1 {
+					t.Fatalf("the retire called the hook %d times, want once", rc.len())
+				}
+				// The freed count is the one the executor itself reported at
+				// the moment of the call — the cap, the very figure the
+				// hook's consumer would report beside the segment it drops.
+				if got := rc.at(0).freed; got != uint64(segCap) {
+					t.Fatalf("the hook read a freed count of %d from the executor, want the segment's cap %d", got, segCap)
+				}
+			})
 		}
 	})
 

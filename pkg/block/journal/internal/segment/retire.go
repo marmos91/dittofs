@@ -192,15 +192,17 @@ func NewRetirer(c RetirerConfig) *Retirer {
 // serialises two retirements of one segment; Close(id), which drains the
 // readers and closes the descriptors before any storage moves; the one
 // filesystem call — the unlink or the rename — then the rest; the ledger's
-// retire or recycle, the freed count, and the directory sync that makes the
-// whole thing durable, which the returned Retirement reports.
+// retire or recycle, the freed count, the retired-segment hook with the
+// segment's id, and the directory sync that makes the whole thing durable,
+// which the returned Retirement reports.
 func (r *Retirer) Retire(id core.SegmentID, reason Reason) (Retirement, error) {
 	// decision: retirement unlinks and recycles nothing while read-only,
-	// because a read-only journal writes nothing it need not (RFC 1 §5.4's
-	// own rule is "takes no spare"; not unlinking is this breakdown's
-	// choice, R89). The check runs before anything is touched, so a
-	// read-only journal makes no ledger call and no seam call. Withdrawn if
-	// epic 6 needs a retirement to free space while read-only.
+	// because a read-only journal writes nothing it need not. RFC 1 §5.4's
+	// own rule is "takes no spare"; not unlinking goes beyond it, a choice
+	// of this design: a journal that cannot write need not remove files
+	// either. The check runs before anything is touched, so a read-only
+	// journal makes no ledger call and no seam call. Withdrawn if the
+	// journal ever needs a retirement to free space while read-only.
 	if r.cfg.ReadOnly != nil {
 		if err := r.cfg.ReadOnly(); err != nil {
 			return Retirement{}, fmt.Errorf("segment: retirement refused: %w", err)
@@ -343,9 +345,9 @@ func (r *Retirer) recycle(id core.SegmentID, class Class) (Retirement, error) {
 
 	ret := Retirement{ID: id, Recycled: true, Fresh: fresh, Freed: r.cfg.Set.cap, Durable: true}
 	// The retired-segment hook runs before the durable signal: a recycle's
-	// retirement is complete once the segment has left the set, and the hook
-	// is the one epic 6 drops a copy table's entries with, which owes
-	// nothing to the retire's durability.
+	// retirement is complete once the segment has left the set, and the
+	// hook's consumer — the one that drops the copy table's entries a retired
+	// segment names — owes nothing to the retire's durability.
 	r.retired(id)
 	r.signal(ret)
 	return ret, nil

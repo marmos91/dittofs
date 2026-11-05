@@ -1861,6 +1861,7 @@ func TestPoolReadOnlyMakesNoSpare(t *testing.T) {
 	seam.SetFault(nil)
 	ro.set(false)
 	p.Kick()
+
 	awaitCounters(t, "the pool filled once the journal was writable", p,
 		func(c segment.PoolCounters) bool {
 			return c.Spares == 2 && c.HeadroomBytes == segCap && c.RepackReserveBytes == segCap
@@ -1868,6 +1869,26 @@ func TestPoolReadOnlyMakesNoSpare(t *testing.T) {
 	if err := set.Check(); err != nil {
 		t.Fatalf("after the fill: %v", err)
 	}
+
+	// The full pool turned read-only is the same: a class is chosen before
+	// the check, so a pass over a pool no class of which is short ends
+	// without asking. The count is read once the fill's last pass has ended,
+	// then a kick runs a pass over the read-only full pool. A check asked
+	// before the class choice would be asked once per kick whatever the
+	// pool's fill.
+	for range poolAttempts {
+		runtime.Gosched()
+	}
+	before := ro.count()
+	ro.set(true)
+	p.Kick()
+	for range poolAttempts {
+		runtime.Gosched()
+	}
+	if got := ro.count(); got != before {
+		t.Fatalf("a kick at a full read-only pool moved the check's count from %d to %d, want it unmoved: the check runs only once a class is short", before, got)
+	}
+
 	// Stopped here rather than left to the cleanup, so a Stop that wedges
 	// fails this test on its own line rather than at the cleanup's.
 	p.Stop()
