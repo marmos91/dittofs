@@ -699,3 +699,121 @@ func TestEndCloseDuringTheRollsInstallWait(t *testing.T) {
 	rec.awaitOne(t, "the ended segment's event past the close")
 	endEventsStable(t, rec, "the close's take of segment 2")
 }
+
+// endStopHeldPair stages the interleaving the stop must survive: B and C are
+// both reserved in segment 1 and parked at the seam, C's write then fails
+// with EIO and ends the segment while B still writes, and B's write fails
+// with second afterwards, onto a segment already ended. It returns the
+// environment and recorder with both appends answered, B's answer first.
+func endStopHeldPair(t *testing.T, second error) (e rollEnv, rec *endRecorder, b, c endAppendResult) {
+	t.Helper()
+
+	e, rec = endStopBuilder(t)
+	se := endStopStreamEnv(e)
+	seg1 := streamSegName(1)
+
+	// A lands first so the segment exists and B and C sit above it.
+	ah, abody := streamWriteHeader(streamFileID(1), 0, streamTestBody(64, 0x42), 7, core.Version{Counter: 1})
+	streamAppendWrite(t, se, ah, abody)
+
+	// Both writes are reserved before either fails: B parks at the first
+	// hold and C at the second, so the slot order B < C is fixed and each
+	// consults the fault only at its own release.
+	holdB := e.seam.HoldFirst(t, journaltest.OpWrite, seg1)
+	bDone := endAppend(se, 2, 64, 0x55)
+	<-holdB.Reached()
+	holdC := e.seam.HoldFirst(t, journaltest.OpWrite, seg1)
+	cDone := endAppend(se, 3, 128, 0x7d)
+	<-holdC.Reached()
+
+	// Two rules over the same writes: the first consult — C's, released
+	// first — meets the EIO, the second — B's — meets second.
+	if err := e.seam.Schedule(
+		journaltest.Failing(journaltest.OpWrite, seg1, 1, syscall.EIO),
+		journaltest.FailingFrom(journaltest.OpWrite, seg1, 2, 1, second),
+	); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	holdC.Release()
+	c = <-cDone
+	if !errors.Is(c.err, syscall.EIO) {
+		t.Fatalf("C's Append = %v, want the first fault's EIO", c.err)
+	}
+	holdB.Release()
+	b = <-bDone
+	if !errors.Is(b.err, second) {
+		t.Fatalf("B's Append = %v, want the second fault %v", b.err, second)
+	}
+	return e, rec, b, c
+}
+
+// TestEndAnEROFSOnAStragglerOfAnEndedSegmentStopsTheStream checks RFC 1
+// §5.4's read-only rule for a write that fails after its segment was already
+// ended: C's EIO ends segment 1 with B still writing, then B's write fails
+// with EROFS. The device is read-only whichever write met it first, so the
+// one event the segment hands over names the stop and the next Append
+// answers ErrStreamStopped, with no spare taken.
+func TestEndAnEROFSOnAStragglerOfAnEndedSegmentStopsTheStream(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, rec, _, _ := endStopHeldPair(t, syscall.EROFS)
+
+	ev := rec.awaitOne(t, "the end of the segment both failures met")
+	if ev.Segment != 1 {
+		t.Fatalf("the event names segment %d, want 1", ev.Segment)
+	}
+	if !errors.Is(ev.Err, syscall.EIO) {
+		t.Fatalf("the event's error is %v, want the first failure's EIO: the end is the first failure's", ev.Err)
+	}
+	if !ev.Stopped {
+		t.Fatal("the event does not name the stop, want Stopped: a straggler's EROFS says the device is read-only")
+	}
+
+	sparesBefore := e.pool.Counters().Spares
+	createsBefore := e.seam.Calls(journaltest.OpCreate)
+	dh, dbody := streamWriteHeader(streamFileID(4), 0, streamTestBody(64, 0x66), 7, core.Version{Counter: 4})
+	_, err := e.s.Append(dh, dbody)
+	if !errors.Is(err, segment.ErrStreamStopped) {
+		t.Fatalf("the Append after the straggler's EROFS = %v, want ErrStreamStopped", err)
+	}
+	if !errors.Is(err, syscall.EROFS) {
+		t.Fatalf("the Append after the straggler's EROFS = %v, want the EROFS wrapped in the stop", err)
+	}
+	if got := e.pool.Counters().Spares; got < sparesBefore {
+		t.Fatalf("the pool holds %d ready spares after the stop, want at least the %d it held: a stopped stream takes none", got, sparesBefore)
+	}
+	if got := e.seam.Calls(journaltest.OpCreate); got < createsBefore {
+		t.Fatalf("the seam saw %d creates after the stop, want at least the %d before it: a stopped stream makes no spare", got, createsBefore)
+	}
+	// Segment 2 would be the first spare a roll takes: the stop took none.
+	if state, serr := e.set.State(2); !errors.Is(serr, segment.ErrNotInSet) {
+		t.Fatalf("segment 2 stands %v, %v, want it not in the set: a stopped stream takes no spare", state, serr)
+	}
+	endEventsStable(t, rec, "the Append after the straggler's stop")
+}
+
+// TestEndANonEROFSStragglerFailureDoesNotStopTheStream is the mirror: a
+// second write failing with EIO on a segment already ended is the same end,
+// not a second refusal — the rule counts segments the stream took, and a
+// straggler's write is in the segment the first failure ended. The event is
+// not Stopped and the next Append rolls onto a spare.
+func TestEndANonEROFSStragglerFailureDoesNotStopTheStream(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, rec, _, _ := endStopHeldPair(t, syscall.EIO)
+
+	ev := rec.awaitOne(t, "the end of the segment both failures met")
+	if ev.Stopped {
+		t.Fatal("the event names the stop, want it not Stopped: a second EIO in the same segment is no second refusal")
+	}
+
+	dh, dbody := streamWriteHeader(streamFileID(4), 0, streamTestBody(64, 0x66), 7, core.Version{Counter: 4})
+	p, err := e.s.Append(dh, dbody)
+	if err != nil {
+		t.Fatalf("the Append after both failures = %v, want it rolled onto the next spare", err)
+	}
+	if p.Loc.Segment == 1 {
+		t.Fatalf("the Append landed in segment 1, want the successor of the ended one")
+	}
+	endEventsStable(t, rec, "the Append past the ended segment")
+}
