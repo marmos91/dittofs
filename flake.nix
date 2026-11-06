@@ -385,38 +385,6 @@
           fi
         '';
 
-        # Helper script for running pjdfstest
-        dfs-posix = pkgs.writeShellScriptBin "dfs-posix" ''
-          mount_point="''${DITTOFS_MOUNT:-/tmp/dittofs-test}"
-
-          # Check if mounted using /proc/mounts (more reliable than mountpoint for NFS)
-          if ! grep -q " $mount_point " /proc/mounts 2>/dev/null; then
-            echo "Error: $mount_point not mounted. Run: dfs-mount"
-            exit 1
-          fi
-
-          cd "$mount_point"
-
-          # Set up pjdfstest binary path for the tests
-          export PATH="${pjdfstest}/bin:$PATH"
-
-          tests_dir="${pjdfstest}/share/pjdfstest/tests"
-
-          echo "Running pjdfstest POSIX compliance suite..."
-          echo "Mount point: $mount_point"
-          echo "Tests directory: $tests_dir"
-          echo ""
-
-          if [[ $# -gt 0 ]]; then
-            # Run specific test pattern - use eval to expand globs
-            # shellcheck disable=SC2086
-            sudo env PATH="$PATH" ${pkgs.perl}/bin/prove -rv --timer --merge -o $tests_dir/$1
-          else
-            # Run all tests
-            sudo env PATH="$PATH" ${pkgs.perl}/bin/prove -rv --timer --merge -o "$tests_dir"
-          fi
-        '';
-
         # Common build inputs for both development and CI
         commonBuildInputs = with pkgs; [
           # Shell
@@ -471,7 +439,6 @@
             # pjdfstest. The docker-only helpers live in commonBuildInputs.
             dfs-mount
             dfs-umount
-            dfs-posix
             dfs-e2e
           ];
 
@@ -518,10 +485,8 @@
               echo "  dfs-mount [path]            Mount NFS (default: /tmp/dittofs-test)"
               echo "  dfs-umount [path]           Unmount NFS"
               echo ""
-              echo "POSIX compliance testing (pjdfstest - 8,789 tests):"
-              echo "  dfs-posix                   Run all tests"
-              echo "  dfs-posix chmod             Run chmod tests only"
-              echo "  dfs-posix chown             Run chown tests only"
+              echo "POSIX compliance testing (pjdfstest, through the harness):"
+              echo "  test/harness/bin/dt run pjdfstest"
               echo ""
               echo "E2E testing (requires sudo for NFS mounts):"
               echo "  dfs-e2e                     Run all E2E tests"

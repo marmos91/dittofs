@@ -274,7 +274,7 @@ stack_ports_free() {
         err "ports in use on the Docker host: ${busy[*]} (compose stack, SMB stack, or a dfs on the host)."
         docker ps --format '{{.Names}}  {{.Ports}}' | grep -E ':(8080|12049|12445)->' >&2 || true
     fi
-    die "stop it first: 'dt stack down', or 'sudo $REPO/test/posix/teardown-posix.sh'."
+    die "stop it first: 'dt stack down', or stop the dfs that holds them."
 }
 
 cmd_stack() {
@@ -369,7 +369,7 @@ stack_dev_user() {
 }
 
 # --- cleanup -------------------------------------------------------------------------
-# A host dfs that test/posix/setup-posix.sh started and a killed run left behind:
+# A host dfs that a manual run started and a killed run left behind:
 # keep the server's log, stop the server by the PID file it wrote, never by name,
 # and clear the /tmp state it leaves. /tmp is everyone's and a PID can be reused,
 # so it signals only a PID from a file of the caller's that names a process
@@ -388,7 +388,7 @@ host_teardown() {
                 info "stopped host dfs (pid $pid)"
             else
                 keep="$pidf"
-                warn "pid $pid in $pidf is running, but not as 'dfs ... start': left running and kept the file. If it is the server: sudo $REPO/test/posix/teardown-posix.sh"
+                warn "pid $pid in $pidf is running, but not as 'dfs ... start': left running and kept the file. If it is the server, stop it and remove $pidf"
             fi
         fi
     fi
@@ -396,7 +396,7 @@ host_teardown() {
     for p in /tmp/dittofs-posix-* /tmp/dittofs-admin-password "$pidf"; do
         [[ -e "$p" && "$p" != "$keep" ]] || continue
         if [[ -O "$p" ]]; then rm -rf "$p"
-        else warn "$p is owned by $(owner_of "$p"); clear it with: sudo $REPO/test/posix/teardown-posix.sh"; fi
+        else warn "$p is owned by $(owner_of "$p"); clear it with: sudo rm -rf -- $(printf %q "$p")"; fi
     done
 }
 

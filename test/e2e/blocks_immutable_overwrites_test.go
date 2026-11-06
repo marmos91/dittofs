@@ -30,7 +30,7 @@
 //
 // Run command (requires sudo + Docker for Localstack):
 //
-//	cd test/e2e && sudo ./run-e2e.sh --s3 --test TestBlockStoreImmutableOverwrites
+//	test/harness/bin/dt run e2e TestBlockStoreImmutableOverwrites
 package e2e
 
 import (
@@ -63,7 +63,7 @@ func TestBlockStoreImmutableOverwrites(t *testing.T) {
 	}
 
 	if !framework.CheckLocalstackAvailable(t) {
-		t.Skip("Skipping: Localstack (S3) not available — run via run-e2e.sh --s3")
+		t.Skip("Skipping: Localstack (S3) not available: start it with dt services up localstack")
 	}
 
 	lsHelper := framework.NewLocalstackHelper(t)

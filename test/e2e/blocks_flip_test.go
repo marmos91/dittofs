@@ -24,7 +24,7 @@
 //
 // Run command (requires sudo + Docker for Localstack):
 //
-//	cd test/e2e && sudo ./run-e2e.sh --s3 --test TestBlocksFlip
+//	test/harness/bin/dt run e2e TestBlocksFlip
 package e2e
 
 import (
@@ -79,7 +79,7 @@ func TestBlocksFlipLifecycle_NFS(t *testing.T) {
 		t.Skip("Skipping blocks-flip NFS E2E in short mode")
 	}
 	if !framework.CheckLocalstackAvailable(t) {
-		t.Skip("Skipping: Localstack (S3) not available — run via run-e2e.sh --s3")
+		t.Skip("Skipping: Localstack (S3) not available: start it with dt services up localstack")
 	}
 
 	shareName := "/export-blocks-nfs"
@@ -114,7 +114,7 @@ func TestBlocksFlipLifecycle_SMB(t *testing.T) {
 		t.Skip("Skipping blocks-flip SMB E2E in short mode")
 	}
 	if !framework.CheckLocalstackAvailable(t) {
-		t.Skip("Skipping: Localstack (S3) not available — run via run-e2e.sh --s3")
+		t.Skip("Skipping: Localstack (S3) not available: start it with dt services up localstack")
 	}
 
 	shareName := "/export-blocks-smb"

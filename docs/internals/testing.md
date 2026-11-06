@@ -379,8 +379,7 @@ than fail. In CI the e2e cells of `tests.yml` install `rpcbind`, and `dt` runs t
 privileged enough to create namespaces; locally:
 
 ```bash
-cd test/e2e
-sudo ./run-e2e.sh --test TestNLMAxisInterop
+test/harness/bin/dt run e2e TestNLMAxisInterop
 ```
 
 Framework code lives in `test/e2e/framework/netns.go`; the tests in
