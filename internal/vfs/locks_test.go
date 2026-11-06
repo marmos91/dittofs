@@ -64,8 +64,8 @@ func TestABlockedLockHoldsNoWorker(t *testing.T) {
 	smbRef := s.opener(t, smbWaiter, "f", entity.ReadData|entity.WriteData)
 	nlmWaiter, nlmCB := s.connected(t, proven(s.bob.Principal, inLab), nlmHost("build01", 1))
 	ro := s.file(t, "ro", s.alice.Principal, 0o644)
-	if _, err := s.Lock(ctx, nlmWaiter, vfs.Anonymous(ro), vfs.LockReq{Owner: owner(nlmWaiter, "ro", false), Ranges: span(0, 1, true)}); !errors.Is(err, vfs.ErrAccess) {
-		t.Errorf("bob's exclusive NLM lock of a file he may only read: %v, want ErrAccess", err)
+	if _, err := s.Lock(ctx, nlmWaiter, vfs.Anonymous(ro), vfs.LockReq{Owner: owner(nlmWaiter, "ro", false), Ranges: span(0, 1, true)}); err != nil {
+		t.Errorf("bob's exclusive NLM lock of a file he may only read: %v", err)
 	}
 	if _, err := s.Lock(ctx, nlmWaiter, vfs.Anonymous(ro), vfs.LockReq{Owner: owner(nlmWaiter, "ro", false), Ranges: span(0, 1, false)}); err != nil {
 		t.Errorf("bob's shared NLM lock of a file he may read: %v", err)
@@ -461,6 +461,38 @@ func TestARevokedCallerStillReleasesItsLocks(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if got := waitOvers(hostCB); got["waits"] {
 		t.Errorf("the cancelled waiter was granted: %v", hostCB.Calls())
+	}
+}
+
+// RFC 19 §3.8: a lock under no open needs read data or ownership of the
+// file, an exclusive lock no more than a shared one, and a test is decided
+// as a shared lock; ownership admits only within the owner's share grant.
+func TestALockUnderNoOpenIsDecidedAsReadOrOwnership(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	private := s.file(t, "private", s.alice.Principal, 0o600)
+	writeOnly := s.file(t, "write-only", s.alice.Principal, 0o200)
+	bob, _ := s.connected(t, proven(s.bob.Principal, inLab), nlmHost("bob-host", 1))
+	alice, _ := s.connected(t, proven(s.alice.Principal, inLab), nlmHost("alice-host", 1))
+	o := func(c vfs.Call) vfs.LockOwner { return vfs.LockOwner{Client: c.Client, Name: []byte("pid 1")} }
+
+	for _, exclusive := range []bool{false, true} {
+		if _, err := s.Lock(ctx, bob, vfs.Anonymous(private), vfs.LockReq{Owner: o(bob), Ranges: span(0, 1, exclusive)}); !errors.Is(err, vfs.ErrAccess) {
+			t.Errorf("bob's NLM lock, exclusive %v, of alice's 0600 file: %v, want ErrAccess", exclusive, err)
+		}
+	}
+	if _, err := s.TestLock(ctx, bob, vfs.Anonymous(private), o(bob), vfs.ByteRange{Length: 1}, true); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("bob's NLM test of alice's 0600 file: %v, want ErrAccess", err)
+	}
+	for _, exclusive := range []bool{true, false} {
+		if _, err := s.Lock(ctx, alice, vfs.Anonymous(writeOnly), vfs.LockReq{Owner: o(alice), Ranges: span(0, 1, exclusive)}); err != nil {
+			t.Errorf("alice's NLM lock, exclusive %v, of her own 0200 file: %v", exclusive, err)
+		}
+	}
+
+	s.must(t, s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: s.alice.Principal, Access: entity.AccessNone}))
+	if _, err := s.Lock(ctx, alice, vfs.Anonymous(writeOnly), vfs.LockReq{Owner: o(alice), Ranges: span(10, 1, true)}); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("the owner's NLM lock with no share grant: %v, want ErrAccess", err)
 	}
 }
 
