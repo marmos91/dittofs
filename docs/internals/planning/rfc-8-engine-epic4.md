@@ -172,7 +172,7 @@ requirement; read it there.
 | RFC 8 §5.1 first rule (`Commit` syncs and waits for overwrites; `Existence.Overwrites`, RFC 6 §10.1), the marks wait, and steps 1–4 | T4.2 |
 | RFC 8 §5.1 "A stability point joins the group commit" | T4.2 (the wait), T4.3 (the join) |
 | RFC 8 §5.1 "Existence is otherwise committed lazily" | T4.3; before a removal's first transaction, epic 5's T5.1 through T4.7's claim |
-| RFC 8 §5.1 "A committed file's journal is settled" | T4.3 |
+| RFC 8 §5.1 "A committed file's journal is settled", the stop at a removal whose phase 1 has not committed among it | T4.3; the stop's test, epic 5's T5.3, where a retried phase 1 first exists |
 | RFC 8 §5.1 "`Done` is called exactly once" | T4.3 (the commit), T4.5 (loss record, device lost whole), T4.6 (failed window), T4.7 (exclusivity, the claim's release) |
 | RFC 8 §5.1 "After a restart nothing is reserved" | none here: epic 6's T6.5 tests it |
 | RFC 8 §5.1 "Every existence commit … MUST `Sync` the file first", E19 | T4.3, through T4.5's sync function |
@@ -241,9 +241,9 @@ Only what the RFC leaves to the code. Ids are stable; a missing number became a 
   conflict, or the store closed. Undecodable removal, hole or overwrite records reach the
   engine as a whole-call error, so the split isolates them. On return the committed
   operations leave their entries, the mark is cleared and waiters are woken on every file
-  the batch took from the due set, captured or not. A file whose entry starts with an
-  operation the capture cannot take (a removal's, under a guard) goes back on the due set
-  one `existence_age` later. `waitBatch(fe)` waits the mark out, for epic 5's phase 1 and
+  the batch took from the due set, captured or not. The capture stops where RFC 8 §5.2's first
+  rule stops it; a file whose entry starts with that removal goes back on the due set one
+  `existence_age` later. `waitBatch(fe)` waits the mark out, for epic 5's phase 1 and
   epic 8's clone. A `ponytail:` marker: one batch per journal caps existence throughput at
   one transaction chain per journal; pipeline batches when B5 shows stability points
   queueing behind one.
@@ -278,7 +278,8 @@ Only what the RFC leaves to the code. Ids are stable; a missing number became a 
   version: one whose capture took every operation at or below it, so a batch in flight that
   captured `f` lower does not count. `commitThrough(ctx, b, f, target)` does the same for a
   version the caller names (`Commit`'s D3 version). `commitAll(ctx, j)` does it for every file
-  of a journal, for epic 6's `Close`. Epic 6's recovery and epic 8's clone call `commitNow`.
+  of a journal, for epic 6's `Close`, less a file RFC 8 §2.5's stop step 2 leaves for recovery
+  (epic 5's T5.3). Epic 6's recovery and epic 8's clone call `commitNow`.
 - **D11, a device lost whole** (RFC 8 §5.1). `lostWhole(j)` raises the journal's floor and
   marks it halted first, so the sync function answers `ErrUnavailable` on it and `Write`
   refuses under the entry's lock (D12); then, under each entry's lock, it removes every
@@ -377,8 +378,8 @@ regression it names (after "catches").
   E15, E19, E40.
 - **Deliverables:** in `groupcommit.go`, per journal: the due set and its timer (D4); the
   batch goroutine (D5) and `closeGroupCommits`; the capture, whose claim is a count here and
-  made exclusive by T4.7; one sync per share through each share's handle, which T4.5 replaces
-  with the sync function; `PendingExistence` with D6's times and `Existence.Commit` inside an
+  made exclusive by T4.7, stopping as RFC 8 §5.1 and §5.2's first rule give; one sync per
+  share through each share's handle, which T4.5 replaces with the sync function; `PendingExistence` with D6's times and `Existence.Commit` inside an
   `engine.existence_commit` span, the sync marks on one transaction per group
   commit or alone, and what a committed one recorded handed to `MarksRecorded` (RFC 8 §5.2's
   second rule); on return, `Settle(id, v)` per committed file at the
@@ -598,14 +599,10 @@ RFC gaps go to the RFC, not here; each is listed until its RFC change merges.
 5. **RFC gap: a synced loss of committed, unoffloaded content reaches no metadata,** [#3734](https://github.com/cubbit/dittofs/issues/3734).
    A loss reported once its write is committed as written (D13, or one a ring gap hides)
    lands at or below `applied`, where `kvstore` skips an `OpLost`; the extent still reads
-   **Lost**, but the File records no loss and the charge is never released. The planned fix
-   is epic 4's: a store-side loss path, driven from T4.5's discard of a kept event below a
+   **Lost**, but the File marks no loss and the charge is never released, while RFC 1 §3.10
+   counts the loss recorded, its write's existence committed, so `Settle` drops its record.
+   The planned fix is epic 4's: a store-side loss path, driven from T4.5's discard of a kept event below a
    write's version (never from `markLost`, whose kept event may still name a write between
    `WriteAt` and its insert) and, for a gap, from the journal's `Since(id, 0)` loss records.
    It needs a `kvstore` call and an RFC 6 line; #3734 decides whether a **Lost** extent counts
    in `Charged`.
-6. **RFC change in review: the group commit stops at an uncommitted removal,**
-   [#3731](https://github.com/cubbit/dittofs/pull/3731). It changes RFC 8 §5.1, §5.2 and
-   §2.5's stop step 2: a group commit stops at a removal whose phase 1 has not committed,
-   and `Close`'s last group commit skips a file whose phase-1 retry was cancelled. T4.3's
-   capture (D5) and `commitAll` (D10) follow it once it merges.
