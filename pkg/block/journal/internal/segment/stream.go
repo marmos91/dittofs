@@ -23,7 +23,7 @@ var ErrSegmentFull = errors.New("segment: no room for the record before the seal
 
 // ErrStreamClosed is returned by Append after Close: the stream publishes no
 // further location, so every caller stops writing.
-var ErrStreamClosed = errors.New("segment: stream closed")
+var ErrStreamClosed = fmt.Errorf("segment: stream closed: %w", core.ErrClosed)
 
 // ErrBadRecord is returned by Append for a record the format could not have
 // encoded: an unknown kind, or a write or fill whose payload length differs
@@ -274,6 +274,12 @@ type Stream struct {
 	closed   bool
 	inflight sync.WaitGroup // the appends, syncs and seals Close waits for, added to under the lock
 
+	// readClosed is set by Close and read by ReadAt without a lock, so a read
+	// never takes appendMu: the flag lives outside the append domain on
+	// purpose, and a read that loaded it clear just before Close set it
+	// finishes on the reference it holds.
+	readClosed atomic.Bool
+
 	// idleClock is the clock the idle sealer installed, boxed so the
 	// pointer's loads and stores are lock-free reads before a sealer exists.
 	// It is read before appendMu is taken — the decision comment there says
@@ -372,15 +378,17 @@ var ErrBadRoll = errors.New("segment: the roll options do not fit the record")
 // classifies the refusal the roll answers with — the one place the roll
 // knows its answer is final.
 //
-// When the pool reports making a spare failed with ENOSPC, a refusal naming
-// `spare` is answered with the platform's own ENOSPC, wrapped so errors.Is
-// holds for syscall.ENOSPC and not for core.ErrNoSpace: the journal's limits
-// are the caller's to drain and a full device is the operator's, and the two
-// must not be answered alike (R21). It is not counted. Otherwise the refusal
-// naming `spare` is counted once and returned unchanged (R20, R22). Every
-// other answer passes through unchanged and uncounted: a stopped pool's
-// core.ErrClosed, when it carries no NoSpaceError, and a header-only roll's
-// headroom-named refusal.
+// When the pool reports making a spare failed with ENOSPC and no full-size
+// retired segment is queued to be recycled, a refusal naming `spare` is
+// answered with the platform's own ENOSPC, wrapped so errors.Is holds for
+// syscall.ENOSPC and not for core.ErrNoSpace: the journal's limits are the
+// caller's to drain and a full device is the operator's, and the two must not
+// be answered alike (R21). It is not counted. When such a segment is queued
+// the recycle is what clears the shortage, so the refusal is the counted
+// `spare` one below. Otherwise the refusal naming `spare` is counted once and
+// returned unchanged (R20, R22). Every other answer passes through unchanged
+// and uncounted: a stopped pool's core.ErrClosed, when it carries no
+// NoSpaceError, and a header-only roll's headroom-named refusal.
 //
 // It runs with no lock held and makes no I/O: the takes go to the pool and
 // the hold, which reach the ledger alone, so a roll costs only the take
@@ -391,14 +399,10 @@ func (s *Stream) takeSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
 		return id, nil
 	}
 
-	// The full device, answered as itself rather than as a limit.
-	//
-	// ponytail: no full-size retired segment is consulted, because nothing
-	// hands one over yet. Ceiling: a roll answers ENOSPC while a retirement
-	// could have supplied a spare. Upgrade to asking the retirement queue
-	// once one exists — the fact it hands over is what clears this answer.
+	// The full device, answered as itself rather than as a limit, unless a
+	// full-size retired segment is to hand: that recycle is the spare.
 	var spare *core.NoSpaceError
-	if errors.As(err, &spare) && spare.Limit == core.LimitSpare && s.pool.DeviceFull() {
+	if errors.As(err, &spare) && spare.Limit == core.LimitSpare && s.pool.DeviceFull() && !s.pool.retiredToHand() {
 		return 0, fmt.Errorf("segment: no spare is ready and making one failed for lack of device space: %w", syscall.ENOSPC)
 	}
 
@@ -1329,7 +1333,15 @@ func (s *Stream) sealIdle(now time.Duration, threshold int64) (sealed bool, res 
 // knows whether the record is already unread, in which case each access
 // makes one attempt, never three. Withdraw this if a second caller ever
 // needs the same retry loop the consumer runs.
+//
+// decision: an in-flight read is not counted in inflight, because it holds a
+// cache reference and Descriptors.Shutdown waits for every reference, so the
+// storage a reader holds is never freed under it. A read that passed the flag
+// check but acquires after Shutdown began fails cleanly with ErrCacheClosed.
 func (s *Stream) ReadAt(seg core.SegmentID, p []byte, off int64) (int, error) {
+	if s.readClosed.Load() {
+		return 0, ErrStreamClosed
+	}
 	ref, err := s.cache.Acquire(seg)
 	if err != nil {
 		return 0, err
@@ -1348,22 +1360,36 @@ func (s *Stream) ReadAt(seg core.SegmentID, p []byte, off int64) (int, error) {
 // so the cache's Shutdown is never blocked by a ref the stream forgot. A
 // second Close is a no-op.
 func (s *Stream) Close() error {
-	s.appendMu.Lock()
-	if s.closed {
-		s.appendMu.Unlock()
+	ref, began := s.beginClose()
+	if !began {
 		return nil
 	}
+	s.finishClose(ref)
+	return nil
+}
+
+// beginClose marks the stream closed and takes its active ref, so no new
+// append or read is admitted from here on; began is false when it was
+// already closed. The caller owes one finishClose with the ref.
+func (s *Stream) beginClose() (ref Ref, began bool) {
+	s.appendMu.Lock()
+	defer s.appendMu.Unlock()
+	if s.closed {
+		return Ref{}, false
+	}
 	s.closed = true
-	ref := s.ref
+	s.readClosed.Store(true)
+	ref = s.ref
 	s.ref = Ref{}
-	s.appendMu.Unlock()
+	return ref, true
+}
 
-	// The wait runs outside the lock: an append completing right now takes
-	// it, and the take's runner settles its gate under it.
+// finishClose waits for the appends in flight and releases the ref beginClose
+// took. The wait runs outside the lock: an append completing right now takes
+// it, and the take's runner settles its gate under it.
+func (s *Stream) finishClose(ref Ref) {
 	s.inflight.Wait()
-
 	if ref != (Ref{}) {
 		ref.Release()
 	}
-	return nil
 }

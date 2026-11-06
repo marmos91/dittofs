@@ -70,9 +70,9 @@ func TestStreamOnRealStorageAllocatesNoMoreThanAccounted(t *testing.T) {
 		sum += p.Loc.Len
 		locations = append(locations, p.Loc)
 	}
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	// The stream stays open until the read-back below: a closed stream
+	// refuses reads.
+	t.Cleanup(func() { _ = s.Close() })
 
 	// The file's allocated bytes sit at or below the accounted size, which
 	// the take raised to the cap before any storage was touched.

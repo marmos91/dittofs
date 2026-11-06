@@ -3,6 +3,7 @@ package segment
 import (
 	"container/list"
 	"errors"
+	"fmt"
 	"io/fs"
 	"sync"
 	"sync/atomic"
@@ -32,7 +33,7 @@ var (
 	// ErrCacheClosed is returned by Acquire after Shutdown. Nothing is
 	// opened; the journal's operations are refused by its own close before
 	// they reach here.
-	ErrCacheClosed = errors.New("segment: descriptor cache is shut down")
+	ErrCacheClosed = fmt.Errorf("segment: descriptor cache is shut down: %w", core.ErrClosed)
 )
 
 // Descriptors is one journal's cache of open segment descriptors, bounded by

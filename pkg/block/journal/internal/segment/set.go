@@ -327,6 +327,17 @@ func (s *Set) Seal(id core.SegmentID, full bool) error {
 	return nil
 }
 
+// SealedFull reports whether segment id is in the set, Sealed, and sealed full
+// (at its cap): the one shape a retirement recycles. It is a read under s.mu,
+// no walk.
+func (s *Set) SealedFull(id core.SegmentID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.segs[id]
+	return ok && e.state == Sealed && e.full
+}
+
 // End closes a segment a failed append or sync left, keeping the cap it is
 // accounted at until it is unlinked: an ended segment is never sealed, and
 // its records leave with the segment when it is retired.

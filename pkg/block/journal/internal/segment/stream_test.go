@@ -972,7 +972,10 @@ func TestStreamReadAtARefusedSegmentMakesOneAttempt(t *testing.T) {
 	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpRead, streamSegName(1), 0, syscall.EIO)); err != nil {
 		t.Fatalf("disarming the read fault: %v", err)
 	}
-	if _, err := e.s.ReadAt(1, buf, p.Loc.Off); !errors.Is(err, segment.ErrSegmentGone) {
+	// A closed stream refuses reads, so a second stream over the same cache
+	// reads the retired segment.
+	reader := segment.NewStream(2, streamIdentity, e.set, e.pool, e.cache)
+	if _, err := reader.ReadAt(1, buf, p.Loc.Off); !errors.Is(err, segment.ErrSegmentGone) {
 		t.Fatalf("the ReadAt of a closed segment = %v, want ErrSegmentGone", err)
 	}
 }
