@@ -544,7 +544,7 @@ func TestLossMarkerIsYieldedBySinceUntilSettled(t *testing.T) {
 		f.write(write(0, 16, a, 2))
 		return nil
 	})
-	if err := fs.lose(id, ext(4, 4), ver(2)); err != nil {
+	if _, err := fs.lose(id, ext(4, 4), ver(2)); err != nil {
 		t.Fatalf("lose = %v, want no error", err)
 	}
 
@@ -584,7 +584,7 @@ func TestLossIsNeverRefusedAtTheIndexBound(t *testing.T) {
 		f.write(write(0, 16, a, 2))
 		return nil
 	})
-	if err := fs.lose(id, ext(4, 4), ver(3)); err != nil {
+	if _, err := fs.lose(id, ext(4, 4), ver(3)); err != nil {
 		t.Fatalf("lose at the ceiling = %v, want no error", err)
 	}
 	var found bool
@@ -617,7 +617,7 @@ func TestLossOutranksContentBelowItsVersion(t *testing.T) {
 		f.write(write(0, 12, a, 2))
 		return nil
 	})
-	if err := fs.lose(id, ext(4, 4), ver(3)); err != nil {
+	if _, err := fs.lose(id, ext(4, 4), ver(3)); err != nil {
 		t.Fatalf("lose = %v, want no error", err)
 	}
 	want := []Piece{
@@ -630,7 +630,7 @@ func TestLossOutranksContentBelowItsVersion(t *testing.T) {
 
 	// A fill resolved below the loss's version is masked inside its extent.
 	b := rec(2, 0)
-	if err := fs.fill(id, write(0, 12, b, 2), ver(3)); err != nil {
+	if _, err := fs.fill(7, id, write(0, 12, b, 2), ver(3)); err != nil {
 		t.Fatalf("fill = %v, want no error", err)
 	}
 	for _, p := range heldPieces(&fs, id) {
@@ -646,7 +646,7 @@ func TestLossOutranksContentBelowItsVersion(t *testing.T) {
 func TestLossRefusesAZeroLengthExtent(t *testing.T) {
 	var fs files
 	id := fid(1)
-	if err := fs.lose(id, ext(4, 0), ver(2)); !errors.Is(err, core.ErrZeroLength) {
+	if _, err := fs.lose(id, ext(4, 0), ver(2)); !errors.Is(err, core.ErrZeroLength) {
 		t.Fatalf("lose of a zero-length extent = %v, want ErrZeroLength", err)
 	}
 	if n := markerCount(&fs, id); n != 0 {
