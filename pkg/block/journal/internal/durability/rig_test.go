@@ -48,6 +48,9 @@ type rig struct {
 	domains *testDomains
 	pool    *segment.Pool
 	spares  int64
+	// sinks are the sinks the streams were built over, so a test can call
+	// Track and Synced on one directly.
+	sinks map[uint32]segment.Sink
 }
 
 // newRig builds n streams whose sinks are the layer's, and starts the layer.
@@ -92,10 +95,15 @@ func newRigTracing(t *testing.T, n int, tracer core.Tracer) *rig {
 	clock := journaltest.NewStopwatchClock()
 	domains := &testDomains{}
 	d := New(Config{Clock: clock, Domains: domains, Tracer: tracer})
-	streams := segment.NewStreams(n, rigIdentity, set, pool, cache, d.Sink)
+	sinks := map[uint32]segment.Sink{}
+	streams := segment.NewStreams(n, rigIdentity, set, pool, cache, func(no uint32) segment.Sink {
+		s := d.Sink(no)
+		sinks[no] = s
+		return s
+	})
 	t.Cleanup(func() { _ = streams.Close() })
 	t.Cleanup(d.Stop)
-	return &rig{d: d, streams: streams, seam: seam, clock: clock, domains: domains, pool: pool, spares: int64(2 * n)}
+	return &rig{d: d, streams: streams, seam: seam, clock: clock, domains: domains, pool: pool, spares: int64(2 * n), sinks: sinks}
 }
 
 // file returns a file id distinguished by b.
