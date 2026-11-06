@@ -147,7 +147,7 @@ func (m *ModelIndex) Fill(tag core.ShareTag, id core.FileID, off int64, data []b
 	r, n := m.place(v)
 	e := core.Extent{Off: off, Len: int64(len(data))}
 	m.recs[r] = ModelRecord{Data: slices.Clone(data)}
-	d, err := m.fs.fill(1, id, Placed{Extent: e, Record: r, Version: v}, asOf)
+	d, err := m.fs.fill(tag, id, Placed{Extent: e, Record: r, Version: v}, asOf)
 	m.note(d)
 	if err != nil {
 		return err
