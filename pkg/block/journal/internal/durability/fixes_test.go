@@ -126,3 +126,53 @@ func TestClosedStreamIsNotAFailedSync(t *testing.T) {
 		t.Errorf("SyncFailures = %d, want 0", got)
 	}
 }
+
+// TestRollToAnUntrackedSegmentDoesNotSpin pins that a stream which rolled to a
+// segment holding no tracked record does not make the timer or a Sync waiter
+// sync that segment over and over: a record of the older segment whose seal
+// failed is not covered by any sync of the new one, so what the worker counts
+// as the active segment must not move back to it. The count of syncs and of
+// failures must stay bounded while the clock runs past the sync bound.
+func TestRollToAnUntrackedSegmentDoesNotSpin(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := newRigUnstarted(t, 1)
+	f := file(1)
+	a := r.appendWrite(t, f, 0, "r1")
+	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, errors.New("seal boom"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.streams.For(f).Seal(false); err == nil {
+		t.Fatal("the seal was expected to fail")
+	}
+	r.settlePool(t)
+	// The roll's header write is the first write after this point and passes;
+	// the record's is the second and fails: the roll lands and nothing is
+	// tracked in the new segment.
+	if err := r.seam.Schedule(journaltest.FailingFrom(journaltest.OpWrite, "*", 2, 1, errors.New("record boom"))); err != nil {
+		t.Fatal(err)
+	}
+	h := format.RecordHeader{Kind: format.KindWrite, File: f, Extent: core.Extent{Off: 8, Len: 2}, Version: core.Version{Counter: 9}, Tag: 1}
+	if _, err := r.streams.For(f).Append(h, format.RecordBody{Payload: []byte("r2"), MTime: 1}); err == nil {
+		t.Fatal("the append into the new segment was expected to fail")
+	}
+	if n := r.ledgerLen(0); n != 1 {
+		t.Fatalf("the ledger holds %d entries, want only r1", n)
+	}
+	r.d.Start(r.streams)
+
+	r.clock.Advance(core.SyncBound)
+	// A Sync waiter on r1 leads the same way the timer does; it ends at the
+	// deadline, r1 never being durable.
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	_ = r.d.Sync(ctx, f)
+	r.clock.Advance(core.SyncBound)
+	time.Sleep(50 * time.Millisecond)
+	first := r.d.Stats()
+	time.Sleep(100 * time.Millisecond)
+	second := r.d.Stats()
+	if second.Syncs != first.Syncs || second.SyncFailures != first.SyncFailures || second.Syncs > 5 || second.SyncFailures > 5 {
+		t.Fatalf("syncs went %d then %d and failures %d then %d with the clock frozen",
+			first.Syncs, second.Syncs, first.SyncFailures, second.SyncFailures)
+	}
+}

@@ -145,7 +145,8 @@ type stream struct {
 	synced map[core.SegmentID]int64
 	// failed holds the segments whose sync failed.
 	failed map[core.SegmentID]error
-	// lastSeg is the segment of the last record tracked.
+	// lastSeg is the newest segment the stream is known to have reached: the
+	// segment of a tracked record or of a sync, whichever is later.
 	lastSeg  core.SegmentID
 	haveLast bool
 	closed   bool

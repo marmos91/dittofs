@@ -94,6 +94,15 @@ func (d *Durability) syncStep(st *stream, fired bool) {
 		st.failed[seg] = err
 		d.log.Error("journal sync failed", "stream", st.no, "err", err)
 	}
+	// The stream is active on the segment synced, so a record of an older
+	// segment is no longer the active one's to lead a sync for. The mark only
+	// moves forward: it is the newest segment the stream is known to have
+	// reached, whether through a Track or a sync, and a segment that holds no
+	// tracked record must not hand the lead back to an older segment whose
+	// record no sync of the newer one can cover.
+	if seg != 0 && (!st.haveLast || seg > st.lastSeg) {
+		st.lastSeg, st.haveLast = seg, true
+	}
 	st.syncing = false
 	st.notifyLocked()
 	st.mu.Unlock()
