@@ -462,3 +462,85 @@ func TestModelIndexNamesAContradictingTransition(t *testing.T) {
 		})
 	}
 }
+
+// TestLoseDeltaIsExact checks that the delta files.lose returns equals the
+// change of the file's held and dirty byte counters across the call, for a
+// loss that cuts held content and for one over an extent holding nothing.
+func TestLoseDeltaIsExact(t *testing.T) {
+	const owner core.ShareTag = 7
+	counters := func(fs *files, id core.FileID) (held, dirty int64) {
+		fs.view(id, func(f *file) { held, dirty = f.held.bytes, f.held.dirty })
+		return held, dirty
+	}
+	hold := func(t *testing.T) (*files, core.FileID) {
+		t.Helper()
+		var fs files
+		id := fid(1)
+		if _, err := fs.update(id, func(f *file) error {
+			if err := f.recorded(core.SegmentID(1), ext(0, 1), Numbers{Version: ver(1), Seq: 1}, owner, id); err != nil {
+				return err
+			}
+			f.write(write(0, 4096, rec(1, 0), 1))
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return &fs, id
+	}
+
+	t.Run("over held content", func(t *testing.T) {
+		fs, id := hold(t)
+		held0, dirty0 := counters(fs, id)
+		d, err := fs.lose(id, ext(1024, 1024), ver(5))
+		if err != nil {
+			t.Fatal(err)
+		}
+		held1, dirty1 := counters(fs, id)
+		if held1 == held0 || dirty1 == dirty0 {
+			t.Fatalf("the loss cut nothing: held %d->%d dirty %d->%d", held0, held1, dirty0, dirty1)
+		}
+		want := HeldDelta{Tag: owner, File: id, HeldBytes: held1 - held0, DirtyBytes: dirty1 - dirty0}
+		if d != want {
+			t.Fatalf("delta = %+v, want %+v", d, want)
+		}
+		if d.HeldBytes != -1024 || d.DirtyBytes != -1024 || d.Dirty != Unchanged {
+			t.Fatalf("delta = %+v, want 1024 held and dirty bytes gone, file still dirty", d)
+		}
+	})
+
+	t.Run("over the whole of the held content", func(t *testing.T) {
+		fs, id := hold(t)
+		d, err := fs.lose(id, ext(0, 4096), ver(5))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := HeldDelta{Tag: owner, File: id, HeldBytes: -4096, DirtyBytes: -4096, Dirty: BecameClean}
+		if d != want {
+			t.Fatalf("delta = %+v, want %+v", d, want)
+		}
+	})
+
+	t.Run("over an extent holding nothing", func(t *testing.T) {
+		fs, id := hold(t)
+		held0, dirty0 := counters(fs, id)
+		d, err := fs.lose(id, ext(8192, 4096), ver(5))
+		if err != nil {
+			t.Fatal(err)
+		}
+		held1, dirty1 := counters(fs, id)
+		if held1 != held0 || dirty1 != dirty0 {
+			t.Fatalf("counters moved: held %d->%d dirty %d->%d", held0, held1, dirty0, dirty1)
+		}
+		if d != (HeldDelta{}) {
+			t.Fatalf("delta = %+v, want the zero delta", d)
+		}
+	})
+
+	t.Run("zero length", func(t *testing.T) {
+		fs, id := hold(t)
+		d, err := fs.lose(id, ext(0, 0), ver(5))
+		if !errors.Is(err, core.ErrZeroLength) || d != (HeldDelta{}) {
+			t.Fatalf("lose = %+v, %v, want the zero delta and ErrZeroLength", d, err)
+		}
+	})
+}
