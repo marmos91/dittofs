@@ -238,7 +238,12 @@ func (o *oracle) apply(op op) (err error) {
 		if !ok {
 			return ErrNotInSet
 		}
-		if seg.state != Active {
+		// An ended segment is served as an active one: an append failure
+		// ends its segment with appends still in flight, and the record
+		// that completes after the end belongs to the share (R55). A
+		// sealed segment is refused still, for a seal drains every appender
+		// before it seals, so no charge can arrive past one.
+		if seg.state != Active && seg.state != Ended {
 			return ErrWrongState
 		}
 		if op.n <= 0 {
@@ -492,10 +497,12 @@ var corpus = []seed{
 		op6(opTake, 1, 0, 0, 4, 0),
 		op6(opDropSpare, 1, 0, 0, 4, 0), // refused: a segment goes out by Retire, not here
 	), 0, 0, 1, 0, 0},
-	{"a record into a closed segment is refused", slices.Concat(
+	{"a record into an ended segment is charged, and the ended segment never seals", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
 		op6(opEnd, 1, 0, 0, 4, 0),
-		op6(opAddRecord, 1, 0, 3, 4, 30), // refused: the segment no longer appends
+		op6(opAddRecord, 1, 0, 3, 4, 30), // charged: the record completed past the end
+		op6(opSeal, 1, 0, 0, 4, 0),       // refused: an ended segment never seals again
+		op6(opAddRecord, 1, 0, 3, 4, 30), // charged: the segment stays Ended
 		op6(opRetire, 1, 0, 0, 4, 0),
 	), 1, 0, 1, 0, 0},
 	{"seal and end of an ended segment", slices.Concat(

@@ -190,10 +190,19 @@ func TestStreamReservationAllocatesNothing(t *testing.T) {
 	}
 }
 
-// streamProbeStream builds a stream whose tracker alone is exercised: the
-// dependencies are real — a set, a pool over a maker and a cache over a real
-// directory — but nothing appends, because the checks below drive the
-// tracker directly.
+// StreamSetAppendParkHook parks every append that enters Append's loop at the
+// loop top until fn returns — the one place an append already past the head
+// checks can be held while another goroutine takes the lock, staged without
+// handing the scheduler the race. The concurrency checks of the external test
+// package reach the hook through this setter, for the hook lives in the
+// stream's own file. A nil fn unparks every appender.
+func StreamSetAppendParkHook(fn func()) { appendParkHook = fn }
+
+// StreamSetNotifyParkHook parks the notifier at the top of its hand-over,
+// before it waits, the same reach the append park holds: the install-wait
+// check needs the notifier held between the ended segment's last completion
+// and its event's snapshot. A nil fn unparks it.
+func StreamSetNotifyParkHook(fn func()) { notifyParkHook = fn }
 func streamProbeStream(t *testing.T) *Stream {
 	t.Helper()
 

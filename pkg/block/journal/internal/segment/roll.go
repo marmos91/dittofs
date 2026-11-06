@@ -74,6 +74,16 @@ func (ss *Streams) Len() int {
 	return len(ss.s)
 }
 
+// OnEnd registers fn as the consumer of every stream's end events: each stream
+// hands its own over, so fn can see events of any of them. It must be called
+// before the first append of any stream, and panics past one, as Stream.OnEnd
+// does.
+func (ss *Streams) OnEnd(fn func(EndEvent)) {
+	for _, s := range ss.s {
+		s.OnEnd(fn)
+	}
+}
+
 // Close closes every stream. It answers nil today, for a stream's close has no
 // failure of its own; the error stays in the signature for the group's close
 // to join.

@@ -28,9 +28,9 @@ var (
 	// Nothing was written and no counter moved.
 	ErrBadCatalog = errors.New("segment: the catalog does not describe the segment up to the marker")
 
-	// ErrNoSegment is the refusal of a seal on a stream that has not taken
-	// a segment: there is nothing to close.
-	ErrNoSegment = errors.New("segment: the stream has no segment to seal")
+	// ErrNoSegment is the refusal of a seal or an End on a stream that has
+	// not taken a segment: there is nothing to close or to end.
+	ErrNoSegment = errors.New("segment: the stream has no segment")
 
 	// ErrLedgerDisagrees is the refusal of a ledger call that runs past
 	// the seal's second step, with the marker, footer and trailer already
@@ -53,6 +53,14 @@ type SealResult struct {
 	// free tail stayed. Nil on every full seal and every clean early one.
 	TailErr error
 }
+
+// recordsDurable marks a WriteSeal failure that came after step 1: the
+// segment's records had been made durable by a successful sync, so the stream
+// counts that sync as a sync of the segment. It reads as the error it wraps.
+type recordsDurable struct{ err error }
+
+func (r recordsDurable) Error() string { return r.err.Error() }
+func (r recordsDurable) Unwrap() error { return r.err }
 
 // WriteSeal seals segment id, which no stream appends to anymore, at marker,
 // with entries as its catalog, and truncates the free tail when early. It is
@@ -105,13 +113,13 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 		if unerr := set.End(id); unerr != nil {
 			err = errors.Join(err, unerr)
 		}
-		return SealResult{}, fmt.Errorf("%w: writing the marker, the footer and the trailer: %w", ErrSegmentEnded, err)
+		return SealResult{}, fmt.Errorf("%w: writing the marker, the footer and the trailer: %w", ErrSegmentEnded, recordsDurable{err})
 	}
 	if err := ref.Sync(); err != nil {
 		if unerr := set.End(id); unerr != nil {
 			err = errors.Join(err, unerr)
 		}
-		return SealResult{}, fmt.Errorf("%w: making the marker, the footer and the trailer durable: %w", ErrSegmentEnded, err)
+		return SealResult{}, fmt.Errorf("%w: making the marker, the footer and the trailer durable: %w", ErrSegmentEnded, recordsDurable{err})
 	}
 
 	// The seal is complete: the segment is sealed in the ledger from here,
