@@ -3,7 +3,9 @@ package durability
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -174,5 +176,54 @@ func TestRollToAnUntrackedSegmentDoesNotSpin(t *testing.T) {
 	if second.Syncs != first.Syncs || second.SyncFailures != first.SyncFailures || second.Syncs > 5 || second.SyncFailures > 5 {
 		t.Fatalf("syncs went %d then %d and failures %d then %d with the clock frozen",
 			first.Syncs, second.Syncs, first.SyncFailures, second.SyncFailures)
+	}
+}
+
+// errorCounter is a slog handler that counts the records logged at Error.
+type errorCounter struct{ n atomic.Int64 }
+
+func (c *errorCounter) Enabled(context.Context, slog.Level) bool { return true }
+func (c *errorCounter) Handle(_ context.Context, r slog.Record) error {
+	if r.Level >= slog.LevelError {
+		c.n.Add(1)
+	}
+	return nil
+}
+func (c *errorCounter) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *errorCounter) WithGroup(string) slog.Handler      { return c }
+
+// TestSyncOnAnEndedSegmentIssuesNoFsync pins that a Sync which reaches a
+// segment that has ended is refused without an fsync: the waiter still fails
+// with a SyncError, but no sync is counted as issued or as failed and nothing
+// is logged at Error.
+func TestSyncOnAnEndedSegmentIssuesNoFsync(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	logs := &errorCounter{}
+	r := newRigLogging(t, 1, nil, slog.New(logs))
+	r.d.Start(r.streams)
+	f := file(1)
+	a := r.appendWrite(t, f, 0, "a")
+	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, errors.New("seal boom"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.streams.For(f).Seal(false); err == nil {
+		t.Fatal("the seal was expected to fail")
+	}
+	before := r.syncsOf(a.Segment)
+
+	err := mustReturn(t, "Sync on the ended segment", r.syncAsync(context.Background(), f))
+	var se *core.SyncError
+	if !errors.As(err, &se) || se.Segment != a.Segment {
+		t.Fatalf("Sync = %v, want a SyncError of segment %d", err, a.Segment)
+	}
+	if got := r.syncsOf(a.Segment); got != before {
+		t.Errorf("the ended segment saw %d fsyncs after the Sync, want %d", got, before)
+	}
+	st := r.d.Stats()
+	if st.Syncs != 0 || st.SyncFailures != 0 {
+		t.Errorf("Stats = %d syncs, %d failures for a call that issued no fsync, want 0 and 0", st.Syncs, st.SyncFailures)
+	}
+	if n := logs.n.Load(); n != 0 {
+		t.Errorf("%d Error logs for a refused sync", n)
 	}
 }

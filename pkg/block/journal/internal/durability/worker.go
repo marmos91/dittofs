@@ -69,7 +69,7 @@ func (d *Durability) syncStep(st *stream, fired bool) {
 		_, end = d.tracer(context.Background(), core.SpanSync, slog.Uint64("stream", uint64(st.no)))
 	}
 	start := d.clock.Elapsed()
-	seg, err := st.s.SyncSegment()
+	seg, issued, err := st.s.SyncSegment()
 	took := d.clock.Elapsed() - start
 	if d.afterSync != nil {
 		d.afterSync()
@@ -77,22 +77,31 @@ func (d *Durability) syncStep(st *stream, fired bool) {
 
 	st.mu.Lock()
 	closing := errors.Is(err, segment.ErrStreamClosed)
-	if closing {
+	switch {
+	case closing:
 		// The stream closed under the worker: nothing failed, so waiters get
 		// core.ErrClosed from check and no failure is counted or recorded.
 		st.closed = true
 		d.log.Debug("journal sync skipped, stream closed", "stream", st.no)
-	} else {
+	case !issued:
+		// The stream answered without an fsync, as for a sealed or an ended
+		// segment: no sync was issued, so none is counted as issued or as
+		// failed. A refusal still fails the waiters of that segment.
+		if err != nil {
+			st.failed[seg] = err
+			d.log.Debug("journal sync refused, no fsync issued", "stream", st.no, "err", err)
+		}
+	default:
 		st.syncs.Add(1)
 		st.sum.Add(int64(took))
 		st.buckets[bucketOf(took)].Add(1)
-	}
-	if err != nil && !closing {
-		st.failures.Add(1)
-		// The failure belongs to the segment Stream.Sync reported, which a
-		// roll after the sync cannot move.
-		st.failed[seg] = err
-		d.log.Error("journal sync failed", "stream", st.no, "err", err)
+		if err != nil {
+			st.failures.Add(1)
+			// The failure belongs to the segment SyncSegment reported, which
+			// a roll after the sync cannot move.
+			st.failed[seg] = err
+			d.log.Error("journal sync failed", "stream", st.no, "err", err)
+		}
 	}
 	// The stream is active on the segment synced, so a record of an older
 	// segment is no longer the active one's to lead a sync for. The mark only

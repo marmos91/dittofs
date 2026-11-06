@@ -1,6 +1,7 @@
 package durability
 
 import (
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -71,6 +72,12 @@ func newRigUnstarted(t *testing.T, n int) *rig { return newRigTracing(t, n, nil)
 // newRigTracing is newRigUnstarted with a tracer on the layer.
 func newRigTracing(t *testing.T, n int, tracer core.Tracer) *rig {
 	t.Helper()
+	return newRigLogging(t, n, tracer, nil)
+}
+
+// newRigLogging is newRigTracing with a logger on the layer.
+func newRigLogging(t *testing.T, n int, tracer core.Tracer, log *slog.Logger) *rig {
+	t.Helper()
 
 	seam, err := journaltest.NewSeam(t.TempDir())
 	if err != nil {
@@ -94,7 +101,7 @@ func newRigTracing(t *testing.T, n int, tracer core.Tracer) *rig {
 	})
 	clock := journaltest.NewStopwatchClock()
 	domains := &testDomains{}
-	d := New(Config{Clock: clock, Domains: domains, Tracer: tracer})
+	d := New(Config{Clock: clock, Domains: domains, Tracer: tracer, Log: log})
 	sinks := map[uint32]segment.Sink{}
 	streams := segment.NewStreams(n, rigIdentity, set, pool, cache, func(no uint32) segment.Sink {
 		s := d.Sink(no)
