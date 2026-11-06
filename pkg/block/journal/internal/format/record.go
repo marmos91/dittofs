@@ -205,7 +205,7 @@ func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body Reco
 	// The checksum slots redone, so the whole record is covered. Both are
 	// over slices of dst from start, never over a caller's prefix, and
 	// derived from the seed, never a slice of the identity.
-	binary.LittleEndian.PutUint32(dst[start+84:start+88], crc32cSeeded(seed, dst[bodyStart:]))
+	binary.LittleEndian.PutUint32(dst[start+payloadCRCOff:start+payloadCRCOff+4], crc32cSeeded(seed, dst[bodyStart:]))
 	binary.LittleEndian.PutUint32(dst[start+92:start+96], crc32cSeeded(seed, dst[start:start+92]))
 
 	// The padding lines the record up within its segment, not within dst:
