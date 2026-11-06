@@ -786,8 +786,9 @@ offloaded bit is offered again:
   primary.
 
 **A new primary settles before serving.** When a shard changes primary — takeover or
-handover ([RFC 11](rfc-11-ownership.md)) — the new primary settles each file to the sealed or drained
-point ([RFC 10](rfc-10-journal-replication.md)) and runs steps 3, 4 and 6 for it before serving it.
+handover ([RFC 11](rfc-11-ownership.md)) — the new primary settles each file to the lower of the
+sealed or drained point and the file's `applied` ([RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)), since the point
+counts no loss ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)), and runs steps 3, 4 and 6 for it before serving it.
 
 **A read-only journal is reopened in place.** On a shard with no replica, as
 every shard on a single node is, once a journal turned read-only reports a spare
@@ -2526,7 +2527,9 @@ which calls the journal's `Delete`, never its `Release`, which evicts
   again. Only a terminal failure ends it: the file found gone, or the removal
   refused by the store as invalid. Then the removal's own pending operation
   leaves the file's state, a file still there has its other pending existence committed in
-  a transaction of its own, the guard is released, and the journal's marker is
+  a transaction of its own, a lost write's existence from its loss record
+  included, so the settle drops no unrecorded loss ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)), the guard
+  is released, and the journal's marker is
   settled without the removal, as start settles a release a holder aborted ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 3): for a file still there, bytes not offloaded read **Lost**, reported as data loss naming the file. A failure of that existence commit is
   retried from the scheduler with the guard held, as a phase 1 is, and the
   marker stays unsettled until it commits.

@@ -1396,28 +1396,26 @@ at or below `applied` and is not yielded. `Since` reads a consistent view of the
 and **MUST NOT** block writes to it for longer than a read does.
 
 `Settle(id, v)` is the caller's statement that metadata has recorded every
-removal of `id` at or below `v`. The journal drops every unsettled marker and
-every synced loss record of `id` at or below `v`, however many, and **MUST NOT**
-drop a held extent, whatever its version. `Settle` is not persisted and appends
-nothing: recovery rebuilds the markers from the removal records
-([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)), and the caller settles again ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)).
+removal **and every loss** of `id` at or below `v`; a loss is recorded once the
+lost write's existence is committed, from the write or from its loss record.
+The journal drops every unsettled marker and every synced loss record of `id`
+at or below `v`, however many, and **MUST NOT** drop a held extent, whatever
+its version. `Settle` is not persisted and appends nothing: recovery rebuilds
+the markers from the removal records and starts every synced loss record
+unsettled again ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)), and the caller settles again ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)).
 
-A caller **MUST NOT** settle at `v` while a removal of `id` at or below `v` is
-unrecorded: a crash could leave metadata never learning of it.
+A caller **MUST NOT** settle at `v` while a removal or a loss of `id` at or
+below `v` is unrecorded: a crash could leave metadata never learning of the
+removal, and a dropped loss record leaves the lost range reading as the file was
+before the write, with no error.
 [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) says how the engine keeps to this; the journal does not check it.
-A caller may still settle a marker it has decided never to apply, as the engine
-does for a removal a terminal failure ends ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)). The caller owns that
-cost: the removal's extent reads **Lost** wherever nothing offloaded holds it,
-both before and after repack drops the removal record ([§7.2](#7.2%20Repack)), and until
-then recovery may yield the marker again after a crash, for the caller to
-discard again.
-
-> decision: `Settle` drops a synced loss record on the caller's word about
-> removals only. It is safe while every settle is at or below `applied`, which
-> holds for group commit and recovery ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal), [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). A loss reported
-> after its write committed lies at or below `applied`, so `Since` never yields
-> it and no existence is committed from it. Overturned once the store-side loss
-> path has an owner.
+A caller may still settle a removal or a loss it has decided never to record, as
+the engine does for a removal a terminal failure ends ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)). The caller
+owns that cost: a discarded removal's extent reads **Lost** wherever nothing
+offloaded holds it, both before and after repack drops the removal record
+([§7.2](#7.2%20Repack)), a discarded loss's range reads as the file was before the
+lost write, and until repack drops the record recovery may yield it again after
+a crash, for the caller to discard again.
 
 ### 3.11 Snapshot holds
 
