@@ -141,6 +141,10 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error {
 		e.journals = []Journal{o.journal}
 	}
 
+	for _, id := range o.raised {
+		e.raised[id] = struct{}{}
+	}
+
 	e.health = o.stats
 	e.started = true
 
@@ -165,6 +169,10 @@ func (e *Engine) start(ctx context.Context, shares []Share) (opened, error) {
 
 	o, err := e.openJournal(ctx, shares, &u)
 	if err != nil {
+		return opened{}, u.unwind(err)
+	}
+
+	if err := e.raiseAtStart(ctx, &o); err != nil {
 		return opened{}, u.unwind(err)
 	}
 

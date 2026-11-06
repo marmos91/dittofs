@@ -18,6 +18,7 @@ var (
 	ErrJournalLost  = errJournalLost
 	ErrNotRecorded  = errNotRecorded
 	ErrUnidentified = errUnidentified
+	ErrNotRaised    = errNotRaised
 )
 
 // SetJournalsForTest sets the journals the engine has open, as Start will.
@@ -27,11 +28,34 @@ func (e *Engine) SetJournalsForTest(js ...Journal) {
 	e.mu.Unlock()
 }
 
-// MarkRaisedForTest records shard as raised by this process, as Start will.
+// MarkRaisedForTest records shard as raised by this process, as Start does.
 func (e *Engine) MarkRaisedForTest(shard entity.ShardID) {
 	e.mu.Lock()
 	e.raised[shard] = struct{}{}
 	e.mu.Unlock()
+}
+
+// RaisedForTest reports whether shard is recorded as raised by this process.
+func (e *Engine) RaisedForTest(shard entity.ShardID) bool {
+	e.mu.Lock()
+
+	defer e.mu.Unlock()
+
+	_, ok := e.raised[shard]
+
+	return ok
+}
+
+// IncarnationForTest is the incarnation on share s's binding, zero when it
+// has no binding.
+func (e *Engine) IncarnationForTest(s entity.ShareID) uint64 {
+	b := e.table()[s]
+
+	if b == nil {
+		return 0
+	}
+
+	return b.incarnation
 }
 
 // TableForTest is the share table's pointer, compared for identity.

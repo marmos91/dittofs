@@ -20,16 +20,16 @@ var errNotStarted = fmt.Errorf("engine: no journal open: %w", vfserr.ErrUnavaila
 var errRemoved = fmt.Errorf("engine: the share is being removed: %w", vfserr.ErrStale)
 
 // binding is one bound share's storage: the share as it was attached, its
-// journal and its handle there, its state, and the incarnation its attach
-// raise wrote. A removed binding is a share being removed that start found
-// past its offload step: it holds the share's ID and tag and no journal or
-// handle.
+// journal and its handle there, its state, and the incarnation the raise at
+// its attach or at start wrote. A removed binding is a share being removed
+// that start found past its offload step: it holds the share's ID and tag and
+// no journal or handle.
 type binding struct {
 	share       Share // as attached: Limit is the limit the handle uses
 	j           Journal
 	h           Handle
 	state       atomic.Uint32 // a ShareState: a state change stores it and swaps nothing
-	incarnation uint64        // the shard's incarnation the attach raise wrote, for the write verifier
+	incarnation uint64        // the incarnation the start or attach raise wrote, for the verifier
 	removed     bool
 }
 
