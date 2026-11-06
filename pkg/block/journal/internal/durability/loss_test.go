@@ -275,7 +275,7 @@ func TestLoseOfASeqAlreadyNamedDoesNothing(t *testing.T) {
 
 	t.Run("after Place", func(t *testing.T) {
 		e := newEnv(t)
-		e.d.Place(core.LossEvent{Reason: core.LossCorrupt}, 9)
+		e.d.Place(core.LossEvent{Reason: core.LossCorrupt, Extent: loss(9).Extent}, 9)
 		l := loss(9)
 		l.Synced = true
 		ev, err := e.d.Lose(context.Background(), l)
@@ -718,8 +718,8 @@ func TestLoseReturnsTheAppendErrorBeforeTheMarkers(t *testing.T) {
 func TestPlaceOfASeqAlreadyNamedPublishesNothing(t *testing.T) {
 	t.Run("a second Place", func(t *testing.T) {
 		e := newEnv(t)
-		e.d.Place(core.LossEvent{Reason: core.LossCorrupt}, 9)
-		e.d.Place(core.LossEvent{Reason: core.LossCorrupt}, 9)
+		e.d.Place(core.LossEvent{Reason: core.LossCorrupt, Extent: loss(9).Extent}, 9)
+		e.d.Place(core.LossEvent{Reason: core.LossCorrupt, Extent: loss(9).Extent}, 9)
 		if got := len(e.d.Stats().Losses); got != 1 {
 			t.Errorf("%d events for one dropped seq, want 1", got)
 		}
@@ -729,7 +729,7 @@ func TestPlaceOfASeqAlreadyNamedPublishesNothing(t *testing.T) {
 		if _, err := e.d.Lose(context.Background(), loss(9)); err != nil {
 			t.Fatalf("Lose: %v", err)
 		}
-		e.d.Place(core.LossEvent{Reason: core.LossCorrupt}, 9)
+		e.d.Place(core.LossEvent{Reason: core.LossCorrupt, Extent: loss(9).Extent}, 9)
 		if got := len(e.d.Stats().Losses); got != 1 {
 			t.Errorf("%d events for one dropped seq, want 1", got)
 		}
@@ -849,4 +849,133 @@ func TestLoseLogsAnExpectedRefusalAtDebugAndAnUnexpectedFailureAtError(t *testin
 			}
 		})
 	}
+}
+
+// piece returns loss(seq) over the extent [off, off+len) of the file.
+func piece(seq core.Seq, off, n int64) durability.Loss {
+	l := loss(seq)
+	l.Extent = core.Extent{Off: off, Len: n}
+	return l
+}
+
+// TestLoseOfTwoPiecesOfOneRecordReportsEachAndAppendsOneRecord catches a
+// dedup keyed on the dropped seq alone, which loses the second piece's
+// event, marker and raise.
+func TestLoseOfTwoPiecesOfOneRecordReportsEachAndAppendsOneRecord(t *testing.T) {
+	e := newEnv(t)
+	for _, x := range [][2]int64{{0, 3}, {5, 3}} {
+		l := piece(9, x[0], x[1])
+		l.Synced = true
+		ev, err := e.d.Lose(context.Background(), l)
+		if err != nil || ev == (core.LossEvent{}) {
+			t.Fatalf("Lose of [%d,+%d) = %+v, %v, want a published event", x[0], x[1], ev, err)
+		}
+	}
+	if got := len(e.d.Stats().Losses); got != 2 {
+		t.Errorf("%d events, want 2, one per piece", got)
+	}
+	if got := len(e.marked()); got != 2 {
+		t.Errorf("MarkLoss called %d times, want 2", got)
+	}
+	if got := e.d.Generation(); got != 2 {
+		t.Errorf("generation = %d, want 2", got)
+	}
+	if lh, _ := e.lossRecords(); len(lh) != 1 {
+		t.Errorf("%d loss records, want 1: the first names the whole dropped record", len(lh))
+	}
+}
+
+// TestLoseOfTwoSupersededPiecesAppendsARecordForEach catches a second piece
+// of a record skipped as named: a superseded loss record excludes its record
+// only over its own extent.
+func TestLoseOfTwoSupersededPiecesAppendsARecordForEach(t *testing.T) {
+	e := newEnv(t)
+	for _, x := range [][2]int64{{0, 3}, {5, 3}} {
+		l := piece(9, x[0], x[1])
+		l.Reason = core.LossSuperseded
+		if _, err := e.d.Lose(context.Background(), l); err != nil {
+			t.Fatalf("Lose: %v", err)
+		}
+	}
+	lh, _ := e.lossRecords()
+	if len(lh) != 2 {
+		t.Fatalf("%d loss records, want 2", len(lh))
+	}
+	if lh[0].Extent == lh[1].Extent {
+		t.Errorf("both loss records name %+v", lh[0].Extent)
+	}
+}
+
+// TestLoseOfASupersededPieceDoesNotNameTheWholeRecord catches a superseded
+// loss that makes a later corrupt piece of the same record skip its record.
+func TestLoseOfASupersededPieceDoesNotNameTheWholeRecord(t *testing.T) {
+	e := newEnv(t)
+	sup := piece(9, 0, 3)
+	sup.Reason = core.LossSuperseded
+	if _, err := e.d.Lose(context.Background(), sup); err != nil {
+		t.Fatalf("Lose: %v", err)
+	}
+	if _, err := e.d.Lose(context.Background(), piece(9, 5, 3)); err != nil {
+		t.Fatalf("Lose: %v", err)
+	}
+	if lh, _ := e.lossRecords(); len(lh) != 2 {
+		t.Errorf("%d loss records, want 2", len(lh))
+	}
+}
+
+// TestPlaceKeysOnTheDroppedSeqAndTheExtent catches a Place that reports only
+// the first piece of a record dropped in two.
+func TestPlaceKeysOnTheDroppedSeqAndTheExtent(t *testing.T) {
+	e := newEnv(t)
+	e.d.Place(core.LossEvent{Reason: core.LossCorrupt, Extent: core.Extent{Off: 0, Len: 3}}, 9)
+	e.d.Place(core.LossEvent{Reason: core.LossCorrupt, Extent: core.Extent{Off: 5, Len: 3}}, 9)
+	e.d.Place(core.LossEvent{Reason: core.LossCorrupt, Extent: core.Extent{Off: 5, Len: 3}}, 9)
+	if got := len(e.d.Stats().Losses); got != 2 {
+		t.Errorf("%d events, want 2", got)
+	}
+}
+
+// TestLoseOfAPieceAfterAPlacedRecordAppendsNothing pins that a record on disk
+// already names the seq, while the piece still publishes.
+func TestLoseOfAPieceAfterAPlacedRecordAppendsNothing(t *testing.T) {
+	e := newEnv(t)
+	e.d.Place(core.LossEvent{Reason: core.LossCorrupt, Extent: core.Extent{Off: 0, Len: 3}}, 9)
+	if _, err := e.d.Lose(context.Background(), piece(9, 5, 3)); err != nil {
+		t.Fatalf("Lose: %v", err)
+	}
+	if got := len(e.d.Stats().Losses); got != 2 {
+		t.Errorf("%d events, want 2", got)
+	}
+	if lh, _ := e.lossRecords(); len(lh) != 0 {
+		t.Errorf("%d loss records appended, want 0", len(lh))
+	}
+}
+
+// TestLoseWithRaisedLeavesTheGenerationAlone catches a read-path loss that
+// raises the generation a second time.
+func TestLoseWithRaisedLeavesTheGenerationAlone(t *testing.T) {
+	t.Run("raised", func(t *testing.T) {
+		e := newEnv(t)
+		l := loss(3)
+		l.Raised = true
+		if _, err := e.d.Lose(context.Background(), l); err != nil {
+			t.Fatalf("Lose: %v", err)
+		}
+		p := e.d.Stats()
+		if p.LossGeneration != 0 {
+			t.Errorf("generation = %d, want 0: the caller raised it", p.LossGeneration)
+		}
+		if len(p.Losses) != 1 || p.CorruptDataLoss != 1 {
+			t.Errorf("events %d, data loss %d, want 1, 1", len(p.Losses), p.CorruptDataLoss)
+		}
+	})
+	t.Run("not raised", func(t *testing.T) {
+		e := newEnv(t)
+		if _, err := e.d.Lose(context.Background(), loss(3)); err != nil {
+			t.Fatalf("Lose: %v", err)
+		}
+		if got := e.d.Generation(); got != 1 {
+			t.Errorf("generation = %d, want 1", got)
+		}
+	})
 }

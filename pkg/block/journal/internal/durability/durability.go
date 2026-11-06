@@ -59,15 +59,30 @@ type Durability struct {
 	corruptRepairable uint64
 	stale             uint64
 
-	// named holds every dropped seq a Lose or a Place has taken, so a loss
-	// is reported once.
+	// pieces holds every (dropped seq, extent) a Lose or a Place has taken,
+	// so one piece of a dropped record is reported once, while another piece
+	// of the same record, which a reconcile can drop alone, is reported on
+	// its own.
 	//
-	// ponytail: it grows by one seq per loss for the life of the
+	// ponytail: it grows by one entry per piece lost for the life of the
 	// Durability and is never pruned, so it follows the number of loss
-	// records the journal holds, not the ring. Upgrade to dropping a seq
+	// records the journal holds, not the ring. Upgrade to dropping an entry
 	// once no copy of its dropped record remains to be reported again, when
 	// a journal with a long loss history shows up in a heap profile.
+	pieces map[piece]struct{}
+
+	// named holds the dropped seqs a loss record already names, written by
+	// a Lose, owed by a deferred Lose or found by a Place. A record names
+	// the whole dropped record, so a later piece of that seq appends none; a
+	// superseded one excludes its record only over its own extent and is
+	// never held here. It is as unbounded as pieces, and shares its upgrade.
 	named map[core.Seq]struct{}
+}
+
+// piece is one extent of one dropped record.
+type piece struct {
+	seq core.Seq
+	ext core.Extent
 }
 
 // New returns a Durability over cfg. It panics on a nil Streams, Counters or
@@ -91,6 +106,7 @@ func New(cfg Config) (*Durability, error) {
 		markLoss: cfg.MarkLoss,
 		log:      log,
 		readOnly: func() error { return nil },
+		pieces:   map[piece]struct{}{},
 		named:    map[core.Seq]struct{}{},
 	}, nil
 }
@@ -159,16 +175,21 @@ func (d *Durability) pushLocked(ev core.LossEvent) core.LossEvent {
 
 // Place publishes ev, a loss record found at open, for the dropped record
 // seq. It appends nothing, raises nothing and counts nothing: the counters
-// are of drops this run made, and the record is already on disk. A dropped
-// seq already named by a Lose or a Place publishes nothing, so one dropped
-// record is never reported twice.
+// are of drops this run made, and the record is already on disk. A piece
+// (seq and ev.Extent) already taken by a Lose or a Place publishes nothing,
+// so one piece is never reported twice, while another piece of the same
+// record is.
 func (d *Durability) Place(ev core.LossEvent, dropped core.Seq) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if _, ok := d.named[dropped]; ok {
+	k := piece{dropped, ev.Extent}
+	if _, ok := d.pieces[k]; ok {
 		return
 	}
-	d.named[dropped] = struct{}{}
+	d.pieces[k] = struct{}{}
+	if ev.Reason != core.LossSuperseded {
+		d.named[dropped] = struct{}{}
+	}
 	ev.AtOpen = true
 	d.pushLocked(ev)
 }
