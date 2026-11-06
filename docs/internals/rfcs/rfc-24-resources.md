@@ -653,8 +653,11 @@ deadline closes the connection
 the slowest way a reply is freed, and it needs no other reservation. A parked
 request — a waiting lock, a change notification — keeps a reply reservation
 of the small class while it waits, and no more, so its reply is never encoded
-outside the budget and a connection's parks hold at most its pending ceiling
-times 4 KiB; the adapter caps how many a connection has pending
+outside the budget. `Park` takes it from the reply pool as it releases the
+receive reservation, which a small reply was charged to until then. A
+connection's parks therefore hold at most its pending ceiling of small-class
+reply reservations, each with its overhead: for SMB, 511 of them. The adapter
+caps how many a connection has pending
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
 `Park`).
 

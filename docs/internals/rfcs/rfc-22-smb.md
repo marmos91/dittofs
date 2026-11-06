@@ -480,7 +480,9 @@ flight.
   ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
   `Park`), and keep at most a small-class reply: a notification whose changes
   do not fit is answered `STATUS_NOTIFY_ENUM_DIR`, and a pipe `READ` returns
-  what fits with `STATUS_BUFFER_OVERFLOW`, the client reading the rest.
+  what fits as a short read with `STATUS_SUCCESS`, leaving the rest in the
+  pipe for the next `READ`, as a `READ` that does not park does. A parked
+  pipe `READ` of more than 4 KiB is a test row against `rpcclient` (§16.6).
 - **A connection has at most 511 requests pending**, held and parked together,
   one fewer than the credit target, as `MaxAsyncCredits` minus one bounds them
   today; past it a new one is answered `STATUS_INSUFFICIENT_RESOURCES` at once.
@@ -527,7 +529,9 @@ one gateway node's memory; a client that loses the node signs in again.
   `STATUS_ACCESS_DENIED`. A request whose signature fails verification is
   answered `STATUS_ACCESS_DENIED` on its message ID too, and the connection
   stays open (MS-SMB2 3.3.5.2.4): it is never dropped unanswered, which would
-  leave the client waiting out its timeout. There is no per-share signing setting: SMB2 cannot
+  leave the client waiting out its timeout. A message that fails decryption,
+  and a second `NEGOTIATE` on a connection, are not answered: the connection
+  is closed (MS-SMB2 3.3.5.2.1.1, 3.3.5.4; RFC 20 §4.7's `Conn.Close`). There is no per-share signing setting: SMB2 cannot
   tell a client that one share needs signing and another does not, so a
   per-share requirement could only refuse an unsigned client's every request on
   that share.
@@ -2526,19 +2530,24 @@ step 2 refuses it. A write a user's own `read` grant refuses is `ErrAccess`,
 > answering `STATUS_ACCESS_DENIED`, if a Windows application is found that
 > mishandles the write-protected status.
 
-**Chains and `core`'s own refusals.** In a related chain, only a `CREATE` held
-on a lease or oplock break goes pending before the last member (`HoldCodec.Pends`
-true, MS-SMB2 3.3.5.2.7); every other `ErrDelay` there is answered at once with
-its row's status. `core`'s refusals
+**Chains and `core`'s own refusals.** Of the `ErrDelay`s the service returns
+before the last member of a chain, only a `CREATE` held on a lease or oplock
+break pends (`HoldCodec.Pends` true, MS-SMB2 3.3.5.2.7); any other is answered
+`STATUS_INTERNAL_ERROR`, as Windows answers it, never with a hold row's cap
+status. A member still in the service when the interim timer fires always
+pends ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).
+`core`'s refusals
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
 `Errors()`) map as: `ErrNotSupported` and `ErrVersion` to `STATUS_NOT_SUPPORTED`;
 `ErrNoSession` to `STATUS_USER_SESSION_DELETED`; `ErrNoTree` to
 `STATUS_NETWORK_NAME_DELETED`; `ErrExpired` to `STATUS_NETWORK_SESSION_EXPIRED`;
 `ErrNotLast` to `STATUS_INTERNAL_ERROR`; `ErrTooManyPending` to
-`STATUS_INSUFFICIENT_RESOURCES`; `ErrDraining` to no reply (§14's Witness move
-comes first). A parked request ended by a drain is answered as one ended by the
-server: `STATUS_NOTIFY_CLEANUP` for a notification, `STATUS_CANCELLED` for a
-waiting lock that `CancelLock` reports not granted. `ErrNotNegotiated`,
+`STATUS_INSUFFICIENT_RESOURCES`; `ErrDraining` and `ErrMoved` to no reply
+(§14's Witness move comes first). A parked request ended by a drain gets no
+reply either: a waiting lock has `CancelLock` called first, and one it reports
+granted is answered success. On a continuously available share the client
+replays the lock or the notification once it reconnects, so the application
+sees no `ERROR_OPERATION_ABORTED`. `ErrNotNegotiated`,
 `ErrNoFH` and `ErrTooLong` are settled against MS-SMB2 when the table is
 built; the totality test fails until they have rows.
 

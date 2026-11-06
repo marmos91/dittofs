@@ -110,7 +110,7 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
   `pkg/resources`' class sizes ascending as RFC 24 §2.5 lists them, the settings' live and
   restart-only marks, `ErrRestartRequired`
   on a restart-only change, `New` refusing invalid settings, and for `core` `Bind`, whose body
-  lands in T1.7: the `Invocation` its `Decode` returns hands `Bound`, `Resolve`, `EndsState`,
+  lands in T1.7: the `Invocation` its `Decode` returns hands `Bound`, `Resolve`, `Role`,
   `Call` and `Encode` the request it decoded.
 - **`pkg/adapter/config`** (RFC 20 §3.6, RFC 13): `Adapter`, `NFS`, `SMB`, with each field
   marked live or restart-only, and `ErrRestartRequired`.
@@ -153,9 +153,12 @@ what those tests stand on:
   parked operation before the last refused with its waiter withdrawn, and past the pending
   ceiling; a chain's replies wrapped once; a slow member before the last under the interim
   timer, always pending; a cancel that arrives before its target holds, and one after its
-  target's reply, gone after 5 s; a drain that cancels a parked operation, and serves a
-  context operation before an end-state one; an expired credential refusing a lock and passing
-  an unlock; a connection closed on a scripted violation.
+  target's reply, gone after 5 s; a drain that cancels a parked operation and leaves it
+  unanswered, serves a context operation before an end-state one and a location read, and stops
+  a chain at a member it leaves unanswered; an expired credential refusing a lock and a write
+  under a break and passing an unlock; a parked operation already past its interim sending no
+  second one; a cacheable reply under a wrapping `Security`, replayed twice, decoding both times;
+  a connection closed on a scripted violation.
 - **The import test** (RFC 20 §7.1), reusing the `go/parser` walk of
   `internal/vfs/arch_test.go`, and seeded with one violation in its own `testdata`. It checks the
   adapters' imports; `arch_test.go` keeps checking the other direction, that the service imports
@@ -247,7 +250,9 @@ and 5.
    ceiling and the upgrade path. A `decision:` marker records deliberate behaviour, naming the
    rule, why it holds and the evidence that would overturn it. RFC 20's notes go at their code
    sites: no attribute cache, parked requests off the hold floor, `Addrs` live, `Pends` asked
-   only for a returned `ErrDelay`, `unwrap` on the reader, the cap of 64, one goroutine per request,
+   only for a returned `ErrDelay`, a call in the service pending past the ceiling, context and
+   location reads served while draining, a drain's refusal left unanswered, the expired
+   credential running only releases, a `ponytail:` for the cancel record's 5 s, `unwrap` on the reader, the cap of 64, one goroutine per request,
    `sync.Pool` per class, no self-probe. `pkg/resources`'s missing turns, `Reclaim`, `ShareCap`
    and `Split` each carry a `ponytail:` naming RFC 24.
 8. **A test must be able to fail.** Keep a test only if a plausible change would make it fail and
@@ -364,9 +369,10 @@ flowchart TD
 - **Track C: E6, with part of E5.** Both `wire/` packages first (about 6 man-days), which need only
   E1's types. Track C would then idle until S3, so it takes three E5 subtasks that need only E1's
   types and `testproto`: the middleware chain (T5.6), the error table (T5.7) and observability
-  (T5.9). Then each `protocol/` from S2: its `Security`, `Router` and `HoldCodec`
-  are built and unit-tested against the frozen surface, `testproto`'s stateful half and a fake
-  service, leaving only `New`'s wiring to the real runner for S3.
+  (T5.9). Then each `protocol/` from S2: what epic 6 builds, the `Router` over its tables, is
+  unit-tested against the frozen surface, `testproto`'s stateful half and a fake service, leaving
+  only `New`'s wiring to the real runner for S3. SMB's `Security` and `HoldCodec` are the RFC 22
+  plan's (ledger), which can start them at S2 the same way.
 - **The team.** E1 and E2 before the tracks start; E8 after them. E7 when S4 is reached.
 
 ## 4. Directory layout proposed for epic 1
@@ -385,7 +391,7 @@ internal/
   adapter/
     core/                     E1 types, E4 and E5 bodies
       protocol.go             E1: Protocol, Framer, Stages, stage interfaces, Header, Dispatcher
-      dispatch.go             E1 types, E5: OpTable, Op (with EndsState), Invocation, Bind, Needs, Range, Request
+      dispatch.go             E1 types, E5: OpTable, Op (with Role), Invocation, Bind, Needs, Range, Request
       errors.go               E1 type, E5: ErrorTable, totality check
       server.go settings.go conn.go                               E4
       pipeline.go compound.go hold.go middleware.go metrics.go    E5
@@ -533,19 +539,21 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
 §6.10's pipeline row, §10, A4, A6, A7, A15, A16, A17.
 
 - T5.1 The pipeline: frame to send in order, nil stages take their defaults, each stage's refusal
-  as RFC 20 §4.1's table says, replies out of order; while draining, only requests that end state
-  run and others get the protocol's move signal or are left unread.
+  as RFC 20 §4.1's table says, replies out of order; while draining, every request is still read
+  and decoded, and its `Role` decides: context, location reads, flushes and releases run, the
+  rest get `ErrMoved` or `ErrDraining`, left unanswered by a `NoReply` row.
 - T5.2 `OpTable`, `Bind`, `Invocation`; `Needs` checked against `Request.Level` and `Versions`
   before decoding; an absent or switched-off operation answered not supported; the expired
-  credential refused after `Resolve`, unless the request ends state or its operation is
-  `Op.Expired`.
+  credential refused after `Resolve`, unless the request releases state (`RoleRelease`) or its
+  operation is `Op.Expired`; a `Resolve` error kept, never overwritten by either gate.
 - T5.3 Admission: the per-connection cap of 64 where `Flow` is nil; the reply-bound reservation
   before the call, its refusal as `ErrDelay` with `DelayResources`.
 - T5.4 The compound runner: stop at the first failure, a cap refused before any operation, the
   reply budget checked before each operation; chains from one record, each member's header
   decoded, unwrapped, admitted and looked up on its own, the related-request rule, the replies
   joined with `HeaderCodec.Chain`, a related member routed from the one before it; the drain
-  decision per request through `Invocation.EndsState`; on `testproto`'s chained frames, not on the runner's
+  decision per request through `Invocation.Role`, and a member left unanswered stopping the
+  chain; on `testproto`'s chained frames, not on the runner's
   internals alone.
 - T5.5 Held requests: interim timer and `HoldCodec.Interim`, the final reply under
   `HoldCodec.Final`, re-drive from `Resolve` with a fresh attempt deadline inside the hold bound,
@@ -555,7 +563,8 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
   re-drives; chain members held: RFC 20 §4.7.
 - T5.6 The middleware chain: recovery (server fault, logged with the stack, the connection's
   other requests unharmed), trace span, metrics, deadline; order pinned by a test.
-- T5.7 `ErrorTable`: mapping by error, operations and version, and `NoReply`; `core.Errors()`; `ErrDelay` by cause; an unmapped
+- T5.7 `ErrorTable`: mapping by error, operations and version, and `NoReply` (`Map`'s reply flag,
+  the reservation and credit released with no reply); `core.Errors()`; `ReplayCache`'s own copy; `ErrDelay` by cause; an unmapped
   error answered server fault and counted; the totality check against `vfs.Errors()` as a
   helper each protocol's table will call.
 - T5.8 Request context: the 30 s deadline; `vfs.WithRequestID` added to `pkg/vfs` (RFC 17 §4.7)
@@ -563,8 +572,9 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
 - T5.9 RFC 20 §10's metrics, spans and logs, all in `core`; series resolved at table build.
 - T5.10 The pipeline micro-benchmark on `testproto` over `vfstest.Null`, its allocation ceiling
   checked in and registered in `unit/adapter-allocs`.
-- T5.11 Parked requests: RFC 20 §4.7's `Park` (`ErrNotLast`, `MaxPending`, `ErrDraining`, the
-  reply reservation trimmed to the small class), `Conn.Close`, the cancel record's 5 s, §3.1's cancel at drain and §6.5, on `testproto`'s parked operation.
+- T5.11 Parked requests: RFC 20 §4.7's `Park` (`ErrNotLast`, `MaxPending` also checked when a
+  hold starts, the drain's error, a closed connection, no second interim, the reply charged to a
+  small-class reservation), `Conn.Close`, the cancel record's 5 s, §3.1's cancel at drain and §6.5, on `testproto`'s parked operation.
 
 ### Epic 6 — Protocol scaffolds
 

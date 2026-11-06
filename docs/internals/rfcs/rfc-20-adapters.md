@@ -590,28 +590,45 @@ Every adapter runs through the same four states, driven by the node
   ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)), so no
   request arrives before the service can answer it.
 - **draining** — no new connection is accepted. Open connections are still
-  read: a request that ends state the service is waiting on — a break or lease
-  acknowledgement, `DELEGRETURN`, a callback reply, `CLOSE`, an unlock, and the
-  writes that flush a recalled cache — is served; any other new request gets
-  the protocol's move signal (`NFS4ERR_MOVED` with `fs_locations`,
+  read, and what a request does to state (§4.7's `Role`) decides whether it
+  runs. A request that releases state the service is waiting on — a break or
+  lease acknowledgement, `DELEGRETURN`, a callback reply, `CLOSE`, an unlock —
+  or flushes it — the writes that flush a recalled cache — is served. So is one
+  that only sets a compound's context (`SEQUENCE`, `PUTFH`) or reads where the
+  share went (a `GETATTR` of `fs_locations` and `fsid` alone), so a `CLOSE`
+  behind it runs and a client told the share moved can find it. Any other new
+  request gets `ErrMoved` when the drain names a takeover target, which its
+  table maps to the protocol's move signal (`NFS4ERR_MOVED` with `fs_locations`,
   [RFC 21 §7.4](rfc-21-nfs.md#7.4%20Pseudo-filesystem%2C%20SECINFO%20and%20locations);
-  Witness `CLIENT_MOVE` first, [RFC 22 §14](rfc-22-smb.md#14.%20Witness)) or,
-  where it has none (NFSv3, SMB), is left unanswered: its table's row for
-  `ErrDraining` sends no reply, so the client replays it once it reconnects
-  elsewhere, and on a continuously available share the application sees no
-  failed handle. In a compound or chain, an operation that only sets the
-  compound's context (`SEQUENCE`, `PUTFH`: `Op.Context`) is served, so a
-  `CLOSE` or `DELEGRETURN` behind it runs. Requests already handed to the service run
-  to their answer, and their replies are sent; a parked request — a waiting
-  lock, a change notification — is cancelled as draining begins, as a client
-  cancel would, so its reply goes out and none waits for the deadline (§4.7's
-  `Park`). Draining ends when none is left
+  Witness `CLIENT_MOVE` first, [RFC 22 §14](rfc-22-smb.md#14.%20Witness)).
+  With no target (the only node stopping), or where the protocol has no move
+  signal (NFSv3, SMB), it gets `ErrDraining`, whose row sends no reply: the
+  client replays it once it reconnects, elsewhere or to the node restarted, and
+  on a continuously available share the application sees no failed handle.
+  Requests already handed to the service run to their answer, and their
+  replies are sent. A parked request — a waiting lock, a change notification —
+  is cancelled as draining begins and answered as its table answers the drain's
+  error, so none waits for the deadline (§4.7's `Park`). Draining ends when none is left
   or at the drain deadline, whichever is first; the drain deadline is at least
   the break deadline (35 s) plus the request deadline, so a request held on a
   break can finish.
 - **stopped** — every connection closed, every connection's state dropped,
   `Disconnect` called for each SMB session that ended
   ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)).
+
+> decision: while draining, a request that sets a compound's context or reads
+> where the share went is served though it ends no state. Refusing `SEQUENCE`
+> or `PUTFH` would stop the `CLOSE` behind it, and refusing the `GETATTR` of
+> `fs_locations` would leave a moved client unable to find the share. Withdraw
+> it if a client is found that sends such a compound to do new work.
+
+> decision: a drain's refusal with no move signal, or no target, is no reply,
+> not an error. An error is final to the application; an unanswered request is
+> replayed after the reconnect, which a continuously available handle
+> survives. A parked request ended by the drain is answered the same way, so
+> one parked just before the drain and one that reaches `Park` after it end
+> alike. Withdraw it if a client is found that gives up on an unanswered
+> request rather than reconnecting.
 
 A request still running at the drain deadline is abandoned: its context is
 cancelled, its reply is not sent, and the client retries as after a lost reply.
@@ -846,7 +863,10 @@ type Adapter interface {
 	Reconfigure(ctx context.Context, s config.Adapter) error
 
 	// Stop moves serving to draining to stopped. ctx's deadline is the drain
-	// deadline; requests still running at it are abandoned (§3.1).
+	// deadline; requests still running at it are abandoned (§3.1). It drains
+	// towards a target (ErrMoved) when the topology names another gateway
+	// node for the shares (RFC 15 §5.3), as RFC 21 §7.4's fs_locations does,
+	// and with none (ErrDraining) otherwise.
 	Stop(ctx context.Context) error
 
 	// Health is ready when serving with every listener bound; draining reports
@@ -1188,7 +1208,10 @@ type Handler[Req, Rep any] func(ctx context.Context, r *core.Request, req *Req) 
   An SMB `LOCK` of several elements is the case in point: it is one `Lock`
   call whose `LockReq` carries every element's range and mode, or one `Unlock`, and the
   service — not the handler — releases the ranges it took when a later one fails
-  ([RFC 22 §7](rfc-22-smb.md#7.%20Byte-range%20locks)).
+  ([RFC 22 §7](rfc-22-smb.md#7.%20Byte-range%20locks)). A handler whose
+  `Park` is refused withdraws the waiter its call registered (`CancelLock`,
+  `Unwatch`, §4.7): that undoes its own call and changes no file, so it is not
+  a second call.
 - It **MAY** make further read-only calls only to fill fields the reply
   carries, and only where the service's mutating call does not already return
   them. Every mutating call returns the `WCC` of each object it changed —
@@ -1371,16 +1394,23 @@ every request is:
    the session's or GSS context's `gss.Context` — one function for both;
 2. the pipeline's check (§4.7) refuses with `ErrExpired` a request whose
    `Evidence` has expired, except the calls RFC 18 §3.8 lets through. It runs
-   after `Resolve`, so it can let through a request that ends state
-   (`Op.EndsState`, or `Invocation.EndsState` per request: an SMB `LOCK` that
-   unlocks passes, one that locks does not), and an operation marked
-   `Op.Expired` (re-authentication, logoff). With its
+   after `Resolve`, so it can let through a request that releases state
+   (`RoleRelease`: a `CLOSE`, a break acknowledgement, and per request an SMB
+   `LOCK` that unlocks, never one that locks), and an operation marked
+   `Op.Expired` (re-authentication, logoff). A write that flushes state under
+   a break is refused, though a drain serves it. With its
    not-authenticated answer, a request with no context to an operation whose
    `needs` column asks for one (§4.2);
 3. the `Security` stage verifies and wraps through the context's
    per-message operations (§5.5).
 
 None is in a handler: a handler reads `r.Call` and nothing else.
+
+> decision: an expired credential runs only what releases state,
+> re-authenticates or logs off (RFC 18 §3.8), not the wider set a drain
+> serves. A `WRITE` under a break changes data, and a second client opening in
+> conflict could keep a break, and so the expired session's writes, going at
+> will. Withdraw it only if RFC 18 §3.8 widens.
 
 **The `Call` is built beside the `Identity`, never inside it.** Every service
 method takes a `vfs.Call`
@@ -1505,8 +1535,16 @@ it holds — the service counts nothing about holds:
 - a client `CANCEL` or a closed connection ends the hold, and for a waiting lock
   calls `CancelLock` before answering ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks));
 - every request pending on a connection, held past its interim or parked,
-  counts toward one ceiling, `Stages.MaxPending` (SMB: 511, RFC 22 §3.3); past
-  it a new one is answered at once with `ErrTooManyPending`.
+  counts toward one ceiling, `Stages.MaxPending` (SMB: 511, RFC 22 §3.3). It is
+  checked when a hold starts on an `ErrDelay` the service returned, and in
+  `Park`; past it the request is answered at once with `ErrTooManyPending`. A
+  call the interim timer finds still in the service goes pending past it.
+
+> decision: a call the interim timer finds in the service goes pending past the
+> ceiling, because answering it at once could report a failure for a call that
+> applies a moment later (§4.7's `Pends` decision). The overshoot is at most the
+> requests in the service at once, which `Flow.Admit` bounds. Withdraw it if
+> the service gains a way to withdraw a call it has not applied.
 
 > decision: a parked request is off the hold floor, which counts held requests
 > and their write data, because it holds neither: a waiting lock or a change
@@ -1580,8 +1618,12 @@ type FlowControl interface {
 	Admit(ctx context.Context, h Header) (release func(), err error) // slot, credit or cap; the reader waits here
 }
 type ReplayCache interface {
-	Lookup(h Header) (*Buf, error) // a cached reply, a sequence error, or nil, nil to run
-	Store(h Header, reply *Buf)    // the encoded reply, before Wrap, for a cacheable row; a cached reply is wrapped again when sent
+	// Lookup returns a fresh copy of a cached reply, which the pipeline wraps
+	// in place and sends, or a sequence error, or nil, nil to run.
+	Lookup(h Header) (*Buf, error)
+	// Store keeps its own clear copy of a cacheable row's encoded reply, taken
+	// before Wrap; the caller's reply is then wrapped in place.
+	Store(h Header, reply *Buf)
 }
 ```
 
@@ -1628,8 +1670,7 @@ type Op struct {
 	Versions  Range // first and last version or dialect served
 	Needs     Needs // nothing < negotiated < session < tree; plus a current filehandle
 	Cacheable bool
-	EndsState bool  // always ends state (a break acknowledgement, CLOSE): served while draining (§3.1); per request: Invocation.EndsState
-	Context   bool  // only sets a compound's context (SEQUENCE, PUTFH): served while draining (§3.1)
+	Role      Role  // what the operation always does to state (§3.1, §4.4); per request: Invocation.Role
 	Expired   bool  // runs on an expired credential: re-authentication, logoff (§4.4; RFC 18 §3.8)
 	Decode    func(body []byte, v Version) (Invocation, error)
 }
@@ -1642,11 +1683,23 @@ type Invocation struct {
 	Resolve func(r *Request) error                     // wire IDs to service values
 	Call    func(ctx context.Context, r *Request) error // the handler
 	Encode  func(out *Buf, v Version) error
-	// EndsState, after Resolve, says whether this request ends state the
-	// service waits on: an SMB LOCK whose elements unlock, a WRITE to an open
-	// under a break. nil: Op.EndsState decides alone.
-	EndsState func(r *Request) bool
+	// Role, after Resolve, says what this request does to state: an SMB LOCK
+	// whose elements unlock releases it, a WRITE to an open under a break
+	// flushes it, a GETATTR of fs_locations and fsid alone is context. nil:
+	// Op.Role decides alone.
+	Role func(r *Request) Role
 }
+
+// Role is what a request does to state the service waits on. It decides what
+// still runs while draining (§3.1) and on an expired credential (§4.4).
+type Role uint8
+
+const (
+	RoleNone    Role = iota // refused while draining and on an expired credential
+	RoleContext             // sets a compound's context or reads where the share went (SEQUENCE, PUTFH): served while draining
+	RoleFlush               // flushes state the service waits on: served while draining
+	RoleRelease             // releases it (CLOSE, an unlock, a break acknowledgement, DELEGRETURN): served while draining and on an expired credential
+)
 
 // Bind joins a row's codec pair and handler, type-checked against each other,
 // and returns the row's Decode.
@@ -1654,7 +1707,7 @@ func Bind[Req, Rep any](
 	dec func(b []byte, v Version, req *Req) error,
 	bound func(req *Req) int,
 	resolve func(r *Request, req *Req) error, // nil: the operation names no wire ID
-	ends func(r *Request, req *Req) bool,     // nil: Op.EndsState decides alone
+	role func(r *Request, req *Req) Role,     // nil: Op.Role decides alone
 	h Handler[Req, Rep],
 	enc func(rep *Rep, v Version, out *Buf) error,
 ) func([]byte, Version) (Invocation, error)
@@ -1690,11 +1743,11 @@ type ErrorRow struct {
 	Cause    vfs.DelayCause // for ErrDelay rows; the zero cause matches any
 	Ops      []uint32       // nil: every operation
 	Versions *Range         // nil: every version
-	NoReply  bool           // the request is left unanswered (SMB's ErrDraining, §3.1); Status unused
+	NoReply  bool           // the request is left unanswered (ErrDraining, §3.1); Status unused
 	Status   Status
 }
 func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable
-func (t *ErrorTable) Map(err error, op *Op, v Version) Status
+func (t *ErrorTable) Map(err error, op *Op, v Version) (s Status, reply bool) // reply false: a NoReply row
 ```
 
 A table is built beside its handlers, one line per operation:
@@ -1717,18 +1770,21 @@ h, err := stages.Header.Decode(rec, off)  // off: 0, then each chain member's h.
 h, err = stages.Security.Unwrap(h, rec, prevH) // prevH: the member before a related one
 if key, ok := stages.Hold.Cancels(h); ok { endHold(key); return } // only once verified; no reply
 release, err := stages.Flow.Admit(ctx, h); defer release()
-if cached, err := stages.Replay.Lookup(h); cached != nil { conn.write(wrap(h, cached)); return }
+if cached, err := stages.Replay.Lookup(h); cached != nil { conn.write(wrap(h, cached)); return } // a fresh copy
 tbl, r, err := stages.Router.Route(h, prev) // prev: the member before a related one
 op := tbl.Ops[h.Op()]               // absent: not supported
 err = check(op, h, r)               // Versions, Needs (§4.2)
 inv, err := op.Decode(body(rec), h.Version())
 err = reserveReply(ctx, inv.Bound()) // RFC 24 §3.3
 err = inv.Resolve(r)
-if expired(r) && !op.Expired && !endsState(op, inv, r) { err = ErrExpired } // §4.4
-if draining && !op.Context && !endsState(op, inv, r) { err = ErrDraining } // §3.1; the table maps it
+role := roleOf(op, inv, r) // inv.Role(r), or op.Role where nil
+if err == nil && expired(r) && !op.Expired && role != RoleRelease { err = ErrExpired } // §4.4
+if err == nil && draining && role == RoleNone { err = drainErr } // §3.1: ErrMoved or ErrDraining
 if err == nil { err = chain(inv.Call)(ctx, r) } // middleware; held and re-driven from Resolve when tbl.Holds
-reply := encode(stages.Header, h, tbl.Errors.Map(err, op, h.Version()), inv)
-if op.Cacheable { stages.Replay.Store(h, reply) } // before Wrap
+st, send := tbl.Errors.Map(err, op, h.Version())
+if !send { freeReply(); return } // a NoReply row: the reservation and credit are released
+reply := encode(stages.Header, h, st, inv)
+if op.Cacheable { stages.Replay.Store(h, reply) } // a clear copy, before Wrap
 err = stages.Security.Wrap(h, reply) // a chain's replies: once, joined (below)
 conn.write(reply) // the writer's queue (§6.2)
 ```
@@ -1758,7 +1814,11 @@ RFC 22's (before the last, Windows goes pending only for a `CREATE` that
 triggers an oplock break, MS-SMB2 3.3.5.2.7). A member before the last that
 the interim timer finds still waiting in the service always goes pending. A
 member before the last never parks: `Park` refuses it with `ErrNotLast` before
-anything is sent, and its table maps that error.
+anything is sent, and its table maps that error. A member whose row sends no
+reply (a drain's refusal) stops the chain: the members after it do not run and
+nothing of the chain is sent, so the client replays it whole; the members
+before it stay applied, as a request abandoned at the drain deadline does
+(§3.1).
 
 > decision: `Pends` is asked only for an `ErrDelay` the service returned. A
 > call still in the service can apply after any answer, so answering it at
@@ -1838,6 +1898,11 @@ func (c *Conn) Close(err error)
 // 5 s, and at most MaxPending per connection, the oldest dropped first; a
 // request with that key that holds or parks meanwhile ends as cancelled. A
 // cancel whose target was already answered leaves nothing after 5 s.
+//
+// ponytail: a cancel that arrives more than 5 s before its target holds or
+// parks is lost, and the target runs to its answer. Keep the record until the
+// connection's message-ID window passes the key if a client is found that
+// cancels that early.
 type HoldCodec interface {
 	Key(h Header) uint64
 	Interim(h Header, out *Buf) error       // STATUS_PENDING; grants the request's credits
@@ -1859,20 +1924,25 @@ var ErrParked = errors.New("core: parked")
 // reports a wait (a waiting lock's ErrBlocked, a watch set): the service has
 // registered the waiter by then. Park refuses a member before the last of a
 // chain with ErrNotLast, a connection at Stages.MaxPending with
-// ErrTooManyPending, and a draining connection with ErrDraining; nothing is
-// sent, and the handler withdraws its waiter (CancelLock, Unwatch) and
-// returns the error for its table to map, or success if CancelLock reports
-// the lock granted (§6.5). A callback that fires before Park returns is kept
-// by the handler and passed to done once it has it.
+// ErrTooManyPending, and a draining connection with the drain's error
+// (ErrDraining or ErrMoved); nothing is sent, and the handler withdraws its
+// waiter (CancelLock, Unwatch; §4.3) and returns the error for its table to
+// map, or success if CancelLock reports the lock granted (§6.5). A callback
+// that fires before Park returns is kept by the handler and passed to done
+// once it has it. On a connection already closed, Park calls cancel at once
+// and done's reply is dropped, as a close would.
 //
 // Otherwise core sends the interim reply at once, releases the receive
-// reservation and trims the reply reservation to the small class (RFC 24
-// §3.3); a reply that would not fit is answered as its protocol answers an
-// overflow (RFC 22 §3.3). A parked request holds no worker and no write data
-// and is not counted against the hold floor (§4.6): MaxPending bounds it. On
-// done core encodes the reply, wraps it and sends it under Final's header. A
-// cancel or the start of a drain calls cancel first, and done's reply goes out
-// with the status the protocol gives that end (§3.1, §6.5); a closed
+// reservation and charges the reply to a small-class reply reservation (RFC
+// 24 §3.3); a reply that would not fit is answered as its protocol answers an
+// overflow (RFC 22 §3.3). A request already pending past its interim (a LOCK
+// re-driven after a hold, then blocked) gets no second interim: its slot moves
+// from held to parked. A parked request holds no worker and no write data and
+// is not counted against the hold floor (§4.6): MaxPending bounds it. On done
+// core encodes the reply, wraps it and sends it under Final's header. A client
+// cancel calls cancel first, and done's reply goes out with the protocol's
+// cancel status (§6.5). The start of a drain calls cancel, and done's error is
+// replaced by the drain's, answered as its table maps it (§3.1). A closed
 // connection calls cancel, and done's reply is dropped.
 func (r *Request) Park(cancel func()) (done func(err error), err error)
 
@@ -1889,8 +1959,11 @@ var (
 	ErrExpired        = errors.New("core: credential expired")            // §4.4
 	ErrNotLast        = errors.New("core: not the last member of a chain") // Park
 	ErrTooManyPending = errors.New("core: too many pending requests")     // Stages.MaxPending
-	// ErrDraining is what a request that ends no state gets while the
-	// adapter drains (§3.1): the move signal, or no reply (ErrorRow.NoReply).
+	// ErrMoved and ErrDraining are what a request §3.1 does not serve gets
+	// while the adapter drains: ErrMoved where the drain names a takeover
+	// target (the move signal), ErrDraining where it names none (no reply,
+	// ErrorRow.NoReply).
+	ErrMoved    = errors.New("core: moved")
 	ErrDraining = errors.New("core: draining")
 )
 
@@ -1900,7 +1973,7 @@ func Errors() []error
 // is the one implementation; a connection's own tests supply a stub.
 type Dispatcher interface {
 	Dispatch(ctx context.Context, c *Conn, rec *Buf)
-	Drain() // from now on only requests that end state run (§3.1)
+	Drain(moved bool) // from now on only requests §3.1 serves run; the rest get ErrMoved if moved, else ErrDraining
 }
 
 // NewServer returns the adapter New hands back: each listener bound on each

@@ -1540,9 +1540,15 @@ and adds no export of its own:
 reached — is returned only for a drain
 ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)):
 
-- a draining gateway node answers operations on a share with
-  `NFS4ERR_MOVED`, and `fs_locations` names another gateway node of the same
-  installation and the same path;
+- a gateway node draining towards another answers operations on a share with
+  `NFS4ERR_MOVED`, and `fs_locations` names that node, in the same
+  installation and at the same path. A `GETATTR` that asks only
+  `fs_locations` and `fsid` is still served during the drain, so the client
+  can read where the share went
+  ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states));
+- a node draining with no other gateway to name (the only node stopping)
+  answers no `NFS4ERR_MOVED`: it leaves the request unanswered, and the client
+  retries until the node is back;
 - every other time the attribute lists no location;
 - a referral to another installation is never returned
   ([RFC 17 §1.1](rfc-17-vfs.md#1.1%20Non-goals)), and `fs_locations_info` is not
@@ -2455,10 +2461,15 @@ it meets an XFS project quota. A user or group quota is `DQUOT`, what
 
 **`core`'s own refusals** ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
 `Errors()`) map as: `ErrNotSupported` to `NFS4ERR_NOTSUPP` (v4) or
-`PROC_UNAVAIL` (v3); `ErrVersion` to `NFS4ERR_MINOR_VERS_MISMATCH` or
-`PROG_MISMATCH`; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrTooLong` to
-`NFS4ERR_TOO_MANY_OPS`; `ErrDraining` to `NFS4ERR_MOVED` for NFSv4 and to no
-reply for NFSv3, MOUNT and NLM, which have no move signal. `ErrNotLast` and
+`PROC_UNAVAIL` (v3), an operation code NFSv4 does not define being routed to
+the `ILLEGAL` row, which answers `NFS4ERR_OP_ILLEGAL`; `ErrVersion` to
+`PROG_MISMATCH` for an RPC version, and for an NFSv4 minor version not served
+to `NFS4ERR_MINOR_VERS_MISMATCH`, answered once for the compound before any
+operation runs; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrTooLong` to
+`NFS4ERR_TOO_MANY_OPS` for NFSv4.1 and to `NFS4ERR_RESOURCE` for NFSv4.0,
+which has no such status (two rows, split by `Versions`); `ErrMoved` to
+`NFS4ERR_MOVED` for NFSv4 (§7.4); `ErrDraining`, and `ErrMoved` for NFSv3,
+MOUNT and NLM, which have no move signal, to no reply. `ErrNotLast` and
 `ErrTooManyPending` never reach NFS, which parks nothing, and map to its fault.
 `ErrNotNegotiated`, `ErrNoSession`, `ErrNoTree` and `ErrExpired` are settled
 with the session and GSS tables; the totality test fails until they have rows.
