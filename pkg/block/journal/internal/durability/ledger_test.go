@@ -1,6 +1,7 @@
 package durability
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -38,8 +39,11 @@ func TestCompletionWaitsForTheFileDomain(t *testing.T) {
 	r := newRig(t, 1)
 	f := file(1)
 
-	r.appendWrite(t, f, 0, "gap")
-	unlock := r.domains.Lock(f)
+	loc := r.appendWrite(t, f, 0, "gap")
+	// Released by the end of the test even on a failed assertion, or the
+	// worker would stay blocked on the domain and Stop would never join it.
+	unlock := sync.OnceFunc(r.domains.Lock(f))
+	defer unlock()
 	r.syncStream(t, f)
 
 	// The worker has been kicked by the Synced report and is blocked on the
@@ -51,6 +55,16 @@ func TestCompletionWaitsForTheFileDomain(t *testing.T) {
 	})
 	if n := r.ledgerLen(0); n != 1 {
 		t.Fatalf("the ledger holds %d entries while the file domain is held, want 1: a completion ran in the gap", n)
+	}
+	st := r.d.made[0]
+	st.mu.Lock()
+	done := st.ledger[0].done
+	st.mu.Unlock()
+	if done {
+		t.Fatal("the entry is marked done while the file domain is held: the completion ran outside the domain")
+	}
+	if !r.d.Durable(loc) {
+		t.Error("a record a sync covered reads as not durable while its completion waits for the domain")
 	}
 	unlock()
 	eventually(t, "the entry to be dropped once the domain is free", func() bool { return r.ledgerLen(0) == 0 })
