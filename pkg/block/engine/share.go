@@ -142,7 +142,7 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 }
 
 // validShare refuses a share Bind cannot attach: a zero ID or tag, a
-// negative limit, a sync policy or a state the engine does not know.
+// negative limit or a state the engine does not know.
 func validShare(s Share) error {
 	var why string
 
@@ -153,8 +153,6 @@ func validShare(s Share) error {
 		why = "the tag is zero"
 	case s.Limit < 0:
 		why = "the journal limit is negative"
-	case s.SyncPolicy != journal.Bounded && s.SyncPolicy != journal.Standard:
-		why = "the sync policy is unknown"
 	case s.State != Serving && s.State != Quiesced:
 		why = "the state is unknown"
 	default:
@@ -175,12 +173,6 @@ func (b *binding) change(s Share) error {
 		why = "a served share's tag never changes"
 	case s.Shard != b.share.Shard:
 		why = "a served share's shard never changes"
-	case s.SyncPolicy != b.share.SyncPolicy:
-		// decision: a served share's sync policy is not changed, because
-		// no RFC makes it a setting and the journal does not build
-		// Handle.SetSyncPolicy. Revisit if an RFC creates the setting or the
-		// journal implements that call.
-		why = "a served share's sync policy is not changed"
 	default:
 		b.state.Store(uint32(s.State))
 
@@ -241,7 +233,7 @@ func (e *Engine) attach(ctx context.Context, s Share, j Journal, raised bool) (*
 
 	floor = entity.MaxVersion(floor, limits[s.ID])
 
-	h, err := j.Share(s.Tag, s.Limit, journal.VersionFromBytes(floor), s.SyncPolicy)
+	h, err := j.Share(s.Tag, s.Limit, journal.VersionFromBytes(floor))
 	if err != nil {
 		return nil, e.journalErr(err)
 	}

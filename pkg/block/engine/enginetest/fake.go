@@ -75,7 +75,7 @@ type FakeHandle struct {
 var _ engine.Handle = (*FakeHandle)(nil)
 
 // Share attaches tag with limit, raising the version counter above floor.
-func (j *FakeJournal) Share(tag journal.ShareTag, limit int64, floor journal.Version, _ journal.SyncPolicy) (engine.Handle, error) {
+func (j *FakeJournal) Share(tag journal.ShareTag, limit int64, floor journal.Version) (engine.Handle, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	switch {

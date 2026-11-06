@@ -26,7 +26,7 @@ func fake(t *testing.T, limit int64) (*FakeJournal, engine.Handle) {
 	if err := j.SetVersionLimit(ver(1 << 32)); err != nil {
 		t.Fatal(err)
 	}
-	h, err := j.Share(1, limit, journal.Version{}, journal.Bounded)
+	h, err := j.Share(1, limit, journal.Version{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestFakeRefusals(t *testing.T) {
 	if _, err := h.WriteAt(ctx, fileA, 3, []byte("de"), 0); !errors.As(err, &ns) || ns.Limit != journal.LimitShare {
 		t.Errorf("write past the share's limit: %v", err)
 	}
-	other, err := j.Share(2, 0, journal.Version{}, journal.Bounded)
+	other, err := j.Share(2, 0, journal.Version{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestFakeVersionsAboveFloorAndLimit(t *testing.T) {
 	if err := j.SetVersionLimit(ver(100)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := j.Share(1, 0, ver(50), journal.Bounded); err != nil {
+	if _, err := j.Share(1, 0, ver(50)); err != nil {
 		t.Fatal(err)
 	}
 	if v, err := j.Draw(); err != nil || v != ver(51) {

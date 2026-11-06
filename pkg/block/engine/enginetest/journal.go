@@ -28,8 +28,8 @@ type wrappedJournal struct {
 	opened func(journal.ShareTag, engine.Handle)
 }
 
-func (j wrappedJournal) Share(tag journal.ShareTag, limit int64, floor journal.Version, policy journal.SyncPolicy) (engine.Handle, error) {
-	h, err := j.Journal.Share(tag, limit, floor, policy)
+func (j wrappedJournal) Share(tag journal.ShareTag, limit int64, floor journal.Version) (engine.Handle, error) {
+	h, err := j.Journal.Share(tag, limit, floor)
 	if err != nil {
 		return nil, err
 	}

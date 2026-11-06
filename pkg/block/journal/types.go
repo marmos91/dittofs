@@ -15,18 +15,11 @@ type (
 	ShareTag       = core.ShareTag
 	ShareID        = core.ShareID
 	SnapshotCut    = core.SnapshotCut
-	SyncPolicy     = core.SyncPolicy
 	JournalID      = core.JournalID
 	InstallationID = core.InstallationID
 	SegmentID      = core.SegmentID
 	CloneSpec      = core.CloneSpec
 	ChangeKind     = core.ChangeKind
-)
-
-// The sync policies; see SyncPolicy.
-const (
-	Bounded  = core.Bounded
-	Standard = core.Standard
 )
 
 // NewFileID returns the FileID of the file whose identifier is id. It is the

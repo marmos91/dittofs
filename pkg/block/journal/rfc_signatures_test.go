@@ -17,14 +17,13 @@ var (
 	_ = func() error { return Restamp(context.Context(nil), "", JournalID{}, InstallationID{}) }
 	_ = func(j *Journal) error { return j.Close() }
 
-	_ = func(j *Journal) (*Handle, error) { return j.Share(ShareTag(0), int64(0), Version{}, Bounded) }
+	_ = func(j *Journal) (*Handle, error) { return j.Share(ShareTag(0), int64(0), Version{}) }
 	_ = func(j *Journal) error { return j.Forget(context.Context(nil), ShareTag(0)) }
 	_ = func(j *Journal) error { return j.Strand(ShareTag(0)) }
 	_ = func(j *Journal) (Version, error) { return j.Draw() }
 	_ = func(j *Journal) error { return j.SetVersionLimit(Version{}) }
 
 	_ = func(h *Handle) error { return h.Close() }
-	_ = func(h *Handle) error { return h.SetSyncPolicy(Standard) }
 	_ = func(h *Handle) (*Reservation, error) { return h.Reserve(int64(0), 0) }
 	_ = func(h *Handle) (Version, error) {
 		return h.WriteAt(context.Context(nil), FileID{}, int64(0), []byte(nil), int64(0))

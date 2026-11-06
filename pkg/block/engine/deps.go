@@ -32,7 +32,7 @@ type Deps struct {
 
 // Journal is one device's journal, as the engine calls it.
 type Journal interface {
-	Share(tag journal.ShareTag, limit int64, floor journal.Version, policy journal.SyncPolicy) (Handle, error)
+	Share(tag journal.ShareTag, limit int64, floor journal.Version) (Handle, error)
 	Forget(ctx context.Context, tag journal.ShareTag) error
 	Strand(tag journal.ShareTag) error
 	Stats() journal.Stats

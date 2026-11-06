@@ -399,11 +399,10 @@ func TestBindRefusesInvalidSettingsBeforeAnyIO(t *testing.T) {
 		name string
 		s    engine.Share
 	}{
-		{"a negative limit", invalid(b, -1, b.State, b.SyncPolicy, b.ID, b.Tag)},
-		{"an unknown state", invalid(b, b.Limit, 9, b.SyncPolicy, b.ID, b.Tag)},
-		{"an unknown sync policy", invalid(b, b.Limit, b.State, journal.Standard+1, b.ID, b.Tag)},
-		{"a zero ID", invalid(b, b.Limit, b.State, b.SyncPolicy, entity.ShareID{}, b.Tag)},
-		{"a zero tag", invalid(b, b.Limit, b.State, b.SyncPolicy, b.ID, 0)},
+		{"a negative limit", invalid(b, -1, b.State, b.ID, b.Tag)},
+		{"an unknown state", invalid(b, b.Limit, 9, b.ID, b.Tag)},
+		{"a zero ID", invalid(b, b.Limit, b.State, entity.ShareID{}, b.Tag)},
+		{"a zero tag", invalid(b, b.Limit, b.State, b.ID, 0)},
 	} {
 		t.Run("not served, "+c.name, func(t *testing.T) {
 			s := c.s
@@ -435,8 +434,8 @@ func TestBindRefusesInvalidSettingsBeforeAnyIO(t *testing.T) {
 		name string
 		s    engine.Share
 	}{
-		{"a negative limit", invalid(a, -1, engine.Quiesced, a.SyncPolicy, a.ID, a.Tag)},
-		{"an unknown state", invalid(a, a.Limit, 9, a.SyncPolicy, a.ID, a.Tag)},
+		{"a negative limit", invalid(a, -1, engine.Quiesced, a.ID, a.Tag)},
+		{"an unknown state", invalid(a, a.Limit, 9, a.ID, a.Tag)},
 	} {
 		t.Run("served, "+c.name, func(t *testing.T) {
 			s := c.s
@@ -461,20 +460,18 @@ func invalid(
 	s engine.Share,
 	limit int64,
 	state engine.ShareState,
-	policy journal.SyncPolicy,
 	id entity.ShareID,
 	tag journal.ShareTag,
 ) engine.Share {
 	s.Limit = limit
 	s.State = state
-	s.SyncPolicy = policy
 	s.ID = id
 	s.Tag = tag
 
 	return s
 }
 
-// A Bind of a served share that changes its tag, shard or sync policy is
+// A Bind of a served share that changes its tag or shard is
 // refused, and the binding is kept as it was.
 func TestBindOfAServedShareRefusesAnIdentityChange(t *testing.T) {
 	u := newUnit(t)
@@ -483,8 +480,6 @@ func TestBindOfAServedShareRefusesAnIdentityChange(t *testing.T) {
 	tag.Tag++
 	shard := a
 	shard.Shard++
-	policy := a
-	policy.SyncPolicy = journal.Standard
 
 	for _, c := range []struct {
 		name string
@@ -492,7 +487,6 @@ func TestBindOfAServedShareRefusesAnIdentityChange(t *testing.T) {
 	}{
 		{"the tag", tag},
 		{"the shard", shard},
-		{"the sync policy", policy},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := c.s

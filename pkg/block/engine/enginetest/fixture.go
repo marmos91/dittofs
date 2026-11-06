@@ -124,7 +124,6 @@ func New(t *testing.T) *Fixture {
 		ID:         f.FS.Share.ID,
 		Tag:        journal.ShareTag(f.FS.Share.Tag),
 		Shard:      0, // every share has the one shard, zero
-		SyncPolicy: journal.Bounded,
 		State:      engine.Serving,
 	}
 

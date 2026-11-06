@@ -524,7 +524,7 @@ func TestRFC1C_AttachedShareRaisesCounter(t *testing.T) {
 	}
 
 	tag := journaltest.Tag(7)
-	h, err := f.J.Share(tag, 0, journal.Version{Counter: 9e8}, journal.Bounded)
+	h, err := f.J.Share(tag, 0, journal.Version{Counter: 9e8})
 	stub(t, "Share", err)
 	if err != nil {
 		t.Fatalf("attach a share at a floor of 9e8: %v", err)
@@ -544,12 +544,12 @@ func TestRFC1C_UnclaimedTagsAreTheCallersToName(t *testing.T) {
 	f := journaltest.New(t)
 	tt, pp := journaltest.Tag(3), journaltest.Tag(4)
 
-	th, err := f.J.Share(tt, 0, f.Floor(), journal.Bounded)
+	th, err := f.J.Share(tt, 0, f.Floor())
 	stub(t, "Share", err)
 	if err != nil {
 		t.Fatalf("attach T: %v", err)
 	}
-	ph, err := f.J.Share(pp, 0, f.Floor(), journal.Bounded)
+	ph, err := f.J.Share(pp, 0, f.Floor())
 	stub(t, "Share", err)
 	if err != nil {
 		t.Fatalf("attach P: %v", err)
@@ -569,7 +569,7 @@ func TestRFC1C_UnclaimedTagsAreTheCallersToName(t *testing.T) {
 
 	// U is attached first, and neither T nor P on its own: a journal that
 	// forgets every unattached tag at an attach drops them here.
-	_, err = f.J.Share(journaltest.Tag(5), 0, f.Floor(), journal.Bounded)
+	_, err = f.J.Share(journaltest.Tag(5), 0, f.Floor())
 	stub(t, "Share", err)
 	if err != nil {
 		t.Fatalf("attach U, which the caller names: %v", err)
@@ -580,7 +580,7 @@ func TestRFC1C_UnclaimedTagsAreTheCallersToName(t *testing.T) {
 		}
 	}
 
-	ph, err = f.J.Share(pp, 0, f.Floor(), journal.Bounded)
+	ph, err = f.J.Share(pp, 0, f.Floor())
 	stub(t, "Share", err)
 	if err != nil {
 		t.Fatalf("attach P after the reopen: %v", err)
@@ -593,7 +593,7 @@ func TestRFC1C_UnclaimedTagsAreTheCallersToName(t *testing.T) {
 		t.Fatalf("forget T, which the caller names: %v", err)
 	}
 
-	th, err = f.J.Share(tt, 0, f.Floor(), journal.Bounded)
+	th, err = f.J.Share(tt, 0, f.Floor())
 	stub(t, "Share", err)
 	if err != nil {
 		t.Fatalf("re-attach T: %v", err)
@@ -630,7 +630,7 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		// unrelated refusal, and the append the leg forbids is one the
 		// journal could otherwise have made.
 		qt := journaltest.Tag(8)
-		qh, err := f.J.Share(qt, 0, f.Floor(), journal.Bounded)
+		qh, err := f.J.Share(qt, 0, f.Floor())
 		stub(t, "Share", err)
 		if err != nil {
 			t.Fatalf("attach Q, whose content the leg forgets: %v", err)
@@ -772,7 +772,7 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		f.FailNext(journaltest.OpSync, "*.seg", 1)
 		before := f.J.Stats().Counters.SyncFailures
 		f.Advance(journal.SyncBound)
-		eventually(t, "the background sync of the bounded policy hits the failing one", func() bool {
+		eventually(t, "the background sync of the sync bound hits the failing one", func() bool {
 			return f.J.Stats().Counters.SyncFailures > before
 		})
 		f.Seam.SetFault(nil)
@@ -896,7 +896,7 @@ func TestRFC1C_RestampAfterLostStore(t *testing.T) {
 func TestRFC1C_ForgetLeavesNothingToSettle(t *testing.T) {
 	f := journaltest.New(t)
 	tt := journaltest.Tag(3)
-	th, err := f.J.Share(tt, 0, f.Floor(), journal.Bounded)
+	th, err := f.J.Share(tt, 0, f.Floor())
 	stub(t, "Share", err)
 	if err != nil {
 		t.Fatalf("attach T: %v", err)
@@ -948,7 +948,7 @@ func TestRFC1C_ForgetLeavesNothingToSettle(t *testing.T) {
 		t.Fatalf("%d removal markers survive the forget and the crash, want none of T", got)
 	}
 
-	th, err = f.J.Share(tt, 0, f.Floor(), journal.Bounded)
+	th, err = f.J.Share(tt, 0, f.Floor())
 	stub(t, "Share", err)
 	if err != nil {
 		t.Fatalf("attach T again after the crash: %v", err)
@@ -981,7 +981,7 @@ func TestRFC1C_ForgetLeavesNothingToSettle(t *testing.T) {
 func TestRFC1C_UnclaimedTagReported(t *testing.T) {
 	f := journaltest.New(t)
 	tt := journaltest.Tag(3)
-	th, err := f.J.Share(tt, 0, f.Floor(), journal.Bounded)
+	th, err := f.J.Share(tt, 0, f.Floor())
 	stub(t, "Share", err)
 	if err != nil {
 		t.Fatalf("attach T: %v", err)
@@ -1258,7 +1258,7 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 		// as the owner of a conflicted file is its own choice, so long as the
 		// error is an OtherShareError of this file and this share.
 		for _, tag := range []journal.ShareTag{a, b} {
-			h, err := g.J.Share(tag, 0, g.Floor(), journal.Bounded)
+			h, err := g.J.Share(tag, 0, g.Floor())
 			stub(t, "Share", err)
 			if err != nil {
 				t.Fatalf("attach tag %d over the conflict: %v", tag, err)
@@ -1305,7 +1305,7 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 		if cs := g.J.Stats().TagConflicts; len(cs) != 0 {
 			t.Fatalf("the conflict survives forgetting A: %+v", cs)
 		}
-		h, err := g.J.Share(b, 0, g.Floor(), journal.Bounded)
+		h, err := g.J.Share(b, 0, g.Floor())
 		stub(t, "Share", err)
 		if err != nil {
 			t.Fatalf("attach B once A is forgotten: %v", err)
