@@ -48,6 +48,7 @@ type rig struct {
 	clock   journaltest.DrivenClock
 	domains *testDomains
 	pool    *segment.Pool
+	set     *segment.Set
 	spares  int64
 	// sinks are the sinks the streams were built over, so a test can call
 	// Track and Synced on one directly.
@@ -110,7 +111,7 @@ func newRigLogging(t *testing.T, n int, tracer core.Tracer, log *slog.Logger) *r
 	})
 	t.Cleanup(func() { _ = streams.Close() })
 	t.Cleanup(d.Stop)
-	return &rig{d: d, streams: streams, seam: seam, clock: clock, domains: domains, pool: pool, spares: int64(2 * n), sinks: sinks}
+	return &rig{d: d, streams: streams, seam: seam, clock: clock, domains: domains, pool: pool, set: set, spares: int64(2 * n), sinks: sinks}
 }
 
 // file returns a file id distinguished by b.

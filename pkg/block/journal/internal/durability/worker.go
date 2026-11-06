@@ -75,18 +75,34 @@ func (d *Durability) syncStep(st *stream, fired bool) {
 		d.afterSync()
 	}
 
+	// The failure's time is read before the lock: the clock is never read
+	// under mu.
+	var failedAt time.Time
+	var failedMono time.Duration
+	if issued && err != nil && !errors.Is(err, segment.ErrStreamClosed) && !errors.Is(err, segment.ErrSegmentEnded) {
+		failedAt, failedMono = d.clock.Now(), d.clock.Elapsed()
+	}
+
 	st.mu.Lock()
+	failed := false
 	closing := errors.Is(err, segment.ErrStreamClosed)
+	ended := errors.Is(err, segment.ErrSegmentEnded)
 	switch {
 	case closing:
 		// The stream closed under the worker: nothing failed, so waiters get
 		// core.ErrClosed from check and no failure is counted or recorded.
 		st.closed = true
 		d.log.Debug("journal sync skipped, stream closed", "stream", st.no)
+	case ended:
+		// A failed append or seal ended the segment first: no sync was
+		// issued for it and nothing new failed, so nothing is counted. Its
+		// end event is on its way and takes the window.
+		st.ending[seg] = struct{}{}
+		d.log.Debug("journal sync skipped, segment ended", "stream", st.no, "segment", seg)
 	case !issued:
-		// The stream answered without an fsync, as for a sealed or an ended
-		// segment: no sync was issued, so none is counted as issued or as
-		// failed. A refusal still fails the waiters of that segment.
+		// The stream answered without an fsync, as for a sealed segment: no
+		// sync was issued, so none is counted as issued or as failed. A
+		// refusal still fails the waiters of that segment.
 		if err != nil {
 			st.failed[seg] = err
 			d.log.Debug("journal sync refused, no fsync issued", "stream", st.no, "err", err)
@@ -96,10 +112,15 @@ func (d *Durability) syncStep(st *stream, fired bool) {
 		st.sum.Add(int64(took))
 		st.buckets[bucketOf(took)].Add(1)
 		if err != nil {
+			failed = true
 			st.failures.Add(1)
+			st.lastFail.Store(&failStamp{SyncFailure: SyncFailure{Err: err, At: failedAt}, mono: failedMono})
 			// The failure belongs to the segment SyncSegment reported, which
-			// a roll after the sync cannot move.
-			st.failed[seg] = err
+			// a roll after the sync cannot move. The first failure of a
+			// segment stands.
+			if _, dup := st.failed[seg]; !dup {
+				st.failed[seg] = err
+			}
 			d.log.Error("journal sync failed", "stream", st.no, "err", err)
 		}
 	}
@@ -117,6 +138,14 @@ func (d *Durability) syncStep(st *stream, fired bool) {
 	st.mu.Unlock()
 	if end != nil {
 		end(err)
+	}
+	if failed {
+		// The failed segment takes no further append, not even a seal marker
+		// (R13). The failure stands whatever End answers: a failed sync is
+		// never retried.
+		if eerr := st.s.End(seg, err); eerr != nil && !errors.Is(eerr, segment.ErrStreamClosed) {
+			d.log.Error("journal could not end the failed segment", "stream", st.no, "segment", seg, "err", eerr)
+		}
 	}
 }
 

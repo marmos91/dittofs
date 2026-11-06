@@ -45,6 +45,9 @@ type Histogram struct {
 type Part struct {
 	Syncs, SyncFailures uint64
 	SyncDuration        Histogram
+	// LastSyncError is the most recent sync failure across the streams, nil
+	// when none has failed.
+	LastSyncError *SyncFailure
 }
 
 // Durability is the ledger and the workers of every stream.
@@ -154,6 +157,10 @@ type stream struct {
 	synced map[core.SegmentID]int64
 	// failed holds the segments whose sync failed.
 	failed map[core.SegmentID]error
+	// ending holds the segments a sync found already ended whose end event
+	// has not been taken yet: no waiter leads a sync for them and the timer
+	// skips them.
+	ending map[core.SegmentID]struct{}
 	// lastSeg is the newest segment the stream is known to have reached: the
 	// segment of a tracked record or of a sync, whichever is later.
 	lastSeg  core.SegmentID
@@ -178,8 +185,11 @@ type stream struct {
 	// The counters have one writer, the worker, and are read by Stats
 	// without mu, so a poll never waits on a lock an append takes.
 	syncs, failures atomic.Uint64
-	buckets         []atomic.Uint64
-	sum             atomic.Int64
+	// lastFail is the last sync failure, stored by the worker and read by
+	// Stats without mu.
+	lastFail atomic.Pointer[failStamp]
+	buckets  []atomic.Uint64
+	sum      atomic.Int64
 
 	// scratch and live are the worker's own, reused by each pass: the indices
 	// it completes and the segments that still hold an entry.
@@ -194,6 +204,7 @@ func newStream(d *Durability, no uint32) *stream {
 		live:    map[core.SegmentID]struct{}{},
 		synced:  map[core.SegmentID]int64{},
 		failed:  map[core.SegmentID]error{},
+		ending:  map[core.SegmentID]struct{}{},
 		kick:    make(chan struct{}, 1),
 		buckets: make([]atomic.Uint64, len(SyncDurationBounds)+1),
 	}
@@ -320,13 +331,21 @@ func (d *Durability) Stats() Part {
 		Bounds: append([]time.Duration(nil), SyncDurationBounds...),
 		Counts: make([]uint64, len(SyncDurationBounds)+1),
 	}}
+	var last *failStamp
 	for _, st := range made {
+		if f := st.lastFail.Load(); f != nil && (last == nil || f.mono > last.mono) {
+			last = f
+		}
 		p.Syncs += st.syncs.Load()
 		p.SyncFailures += st.failures.Load()
 		p.SyncDuration.Sum += time.Duration(st.sum.Load())
 		for i := range st.buckets {
 			p.SyncDuration.Counts[i] += st.buckets[i].Load()
 		}
+	}
+	if last != nil {
+		sf := last.SyncFailure
+		p.LastSyncError = &sf
 	}
 	return p
 }
@@ -524,8 +543,10 @@ func (st *stream) check(targets []target, failFast bool) (bool, error) {
 			continue
 		}
 		// A target in an older segment is waited on and never leads: the
-		// seal of its segment syncs it and reports through the sink.
-		if st.haveLast && t.loc.Segment == st.lastSeg {
+		// seal of its segment syncs it and reports through the sink. One in a
+		// segment a sync found ended never leads either: the segment takes
+		// no sync, and its end event is on its way.
+		if _, ended := st.ending[t.loc.Segment]; !ended && st.haveLast && t.loc.Segment == st.lastSeg {
 			lead = true
 		}
 	}

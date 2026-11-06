@@ -46,6 +46,9 @@ func (st *stream) oldestLocked() (seen time.Duration, ok bool) {
 		if _, bad := st.failed[e.w.Loc.Segment]; bad {
 			continue
 		}
+		if _, ended := st.ending[e.w.Loc.Segment]; ended {
+			continue
+		}
 		return e.seen, true
 	}
 	return 0, false
