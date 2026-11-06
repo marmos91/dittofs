@@ -456,9 +456,9 @@ listed test fails on the regression it names (after "catches").
 
 **Subtask T8.2 estimate: 5.25 man-days.**
 
-- **Track:** A. **Depends on:** T8.1a, T8.1b; epic 4's T4.3 (the per-file existence commit and
-  `waitBatch`) and T4.5 (the one sync function); epic 5's T5.1 (the guard, phase 1's order)
-  and T5.4 (the retry channel).
+- **Track:** A. **Depends on:** T8.1a, T8.1b; epic 4's T4.3 (the per-file existence commit
+  and `waitBatch`) and T4.5 (the one sync function); epic 5's T5.1 (the guard, phase 1's
+  order) and T5.4 (the retry channel); epic 6's T6.7 (`issued`).
 - **Covers:** R4 (the reservation, a source past its end), R10 (the source's release),
   R11–R17, R24, R26 (a store error), R33 (the stall before phase 1), R35 (the refused
   reservation), R38, R41, R42.
@@ -483,7 +483,9 @@ listed test fails on the regression it names (after "catches").
   `ErrUnavailable` at `Close` or `Drop`. The fake journal's `CloneTarget` (removes the extent
   as `Deallocate` does and leaves a marker with the spec), `Reserve` and `Reservation` (draw,
   refusal by an injected `NoSpaceError`, `Close`), and `Since` yielding the marker as
-  `Change.Clone`.
+  `Change.Clone`. The version the journal step returns, and each version a copy's
+  `Reservation.WriteAt` returns, is passed to epic 6's `issued`, as `Write` and `Draw` do
+  (RFC 8 §2.7).
 - **Rows:** §9.1 failure leaves the destination (the refused reservation), §9.1 clone keeps
   writes outside its extent (the stall before phase 1), §9.1 clone never waits.
 - **Tests:** the done signal is T8.3's, so an `export_test.go` hook fakes it, dropping the
@@ -526,7 +528,10 @@ listed test fails on the regression it names (after "catches").
   group commit changes nothing (catches `Clone` setting `applied` over the write, D15); a
   write to the destination outside the extent and an overwrite of part of it, both pending
   below *v*: after phase 1 an overwrite record covers the overlapped runs (catches phase 1
-  passing the destination's writes without their superseded runs).
+  passing the destination's writes without their superseded runs); over the fake, with the
+  test block of 16, a clone whose `CloneTarget` version is past the trigger and no other
+  call issuing a version: the raise runs and the journal gets the new limit (catches a clone
+  target that does not call `issued`).
 
 ### T8.3 The clone-kind open and phase 2
 
@@ -642,12 +647,13 @@ listed test fails on the regression it names (after "catches").
 - **Deliverables:** in `start.go`, a clone marker above `applied` handed by start step 3
   rebuilt as a clone: both registrations before either file is served, the destination's
   copies kept (its held extents above *v*), only the source's held runs they do not cover
-  re-made through a new reservation, a refused reservation leaving the clone waiting with the
-  destination answering `DelayCapacity`, then phase 1 and the rest from T8.2; a clone
-  `Removal` not done, from step 4's listing, rebuilt as both registrations (D10, its marker),
-  whose goroutine waits on `Holds.Served` (D11) and then posts it to the loop, which takes
-  T8.3's path, `Hold` finding the hold open state installed; one `Info` line per rebuilt
-  clone. No start step calls `Hold`.
+  re-made through a new reservation, each version a re-made copy's `Reservation.WriteAt`
+  returns passed to epic 6's `issued` as in T8.2, a refused reservation leaving the clone
+  waiting with the destination answering `DelayCapacity`, then phase 1 and the rest from
+  T8.2; a clone `Removal` not done, from step 4's listing, rebuilt as both registrations
+  (D10, its marker), whose goroutine waits on `Holds.Served` (D11) and then posts it to the
+  loop, which takes T8.3's path, `Hold` finding the hold open state installed; one `Info`
+  line per rebuilt clone. No start step calls `Hold`.
 - **Rows:** §9.1 failure leaves the destination (the crashes), §9.1 source registration
   rebuilt (adapted), §9.1 clone never waits (the power cut), §2.5 clone resumed at a full
   limit (adapted). Over E2's fixture, the journal's crash seam and the real open-state table.
