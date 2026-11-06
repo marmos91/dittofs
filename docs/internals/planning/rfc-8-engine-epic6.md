@@ -563,7 +563,10 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   - A content call never waits on the lifecycle mutex.
   - A `Bind` that fails at any step leaves no handle open that it opened, and the table
     unchanged; a handle it took over from the metadata reconcile is handed back to it
-    (RFC 8 §2.5), closed outside the lifecycle mutex.
+    (RFC 8 §2.5), closed outside the lifecycle mutex. It leaves the set of shares with a
+    lifecycle call in progress in the hold of the mutex where it clears the mark (and,
+    if the visit has ended, marks the handle closing), so a retried `Bind` waits for that
+    `Close` rather than answering `ErrDelay`.
   - A share bound above a floor of 9·10⁸ gets a first version above it from the real
     journal.
 - **Tests:** a content call on share A while a `Bind` of share B holds the lifecycle mutex

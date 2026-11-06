@@ -1607,13 +1607,14 @@ and **MUST NOT** block writes to it for longer than a read does.
 removal **and every loss** of `id` at or below `v`; a loss is recorded once the
 lost write's existence is committed, from the write or from its loss record.
 The journal drops every unsettled marker and every synced loss record of `id`
-at or below `v`, however many, and **MUST NOT** drop a held extent, whatever
+at or below `v`, however many, a `superseded` one excepted, and **MUST NOT** drop a held extent, whatever
 its version. `Settle` is not persisted and appends nothing: recovery rebuilds
 the markers from the removal records and starts every synced loss record
-unsettled again ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)), and the caller settles again ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)).
+unsettled again, a `superseded` one excepted ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)), and the caller settles again ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)).
 
 A caller **MUST NOT** settle at `v` while a removal or a loss of `id` at or
-below `v` is unrecorded: a crash could leave metadata never learning of the
+below `v` is unrecorded (a piece `DropOlder` drops as `superseded` is not a loss
+here: metadata already holds content newer than it): a crash could leave metadata never learning of the
 removal, and a dropped loss record leaves the lost range reading as the file was
 before the write, with no error.
 [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) says how the engine keeps to this; the journal does not check it.
@@ -2522,8 +2523,10 @@ short of a whole spare and the open's retirements don't make it up, the open sti
 serves, with the headroom a spare short, counted by `Stats.HeadroomSparesShort`, from which the engine raises `journal_headroom_short`. Every later
 retirement, by repack or an open, tries the remake again until the count is zero. Failing the open would stop `Start` on the full
 device this fallback is for. Repeated opens with no retirement between take at
-most one spare per damage event: an open appends a `reconcile` record only where no
-unsettled one is on disk ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), but `Reconciled` can settle it at once, so
+most one spare per damage event, or per re-count after a crash during `Reconciled`: an open appends a `reconcile` record only where no
+unsettled one is on disk that no per-range `reconciled` record follows ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), so
+a crash that keeps only some of `Reconciled`'s per-range records lets the next open
+count the rest again and take another, and `Reconciled` can settle it at once, so
 a later open with new damage takes another, and each stays counted in
 `Stats.HeadroomSparesShort` until a retirement remakes it. It is
 accounted to the journal, like the spare pool.

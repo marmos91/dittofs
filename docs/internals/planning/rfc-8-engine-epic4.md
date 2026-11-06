@@ -507,7 +507,9 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   `kvstore`'s marks write (RFC 6 §10.1): `Existence.Commit`'s `marks *MarksWrite`, its
   tracked `og` check, `ErrOpenGenMoved` and `ErrSyncMarks`, with its own test. E2's fake
   journal gains sync marks: `Sync` returns a mark per stream covering what it synced, and
-  `MarksRecorded` logs what it is handed.
+  `Stats().SyncMarks` reports the same marks after it returns, as epic 2's fixture reads
+  them, since the group commit builds its marks write from `Stats().SyncMarks` (RFC 8
+  §5.2); `MarksRecorded` logs what it is handed.
 - **Acceptance criteria:**
   - a file with pending writes and no stability point is committed within `existence_age`,
     by the test clock;
