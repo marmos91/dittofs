@@ -302,7 +302,7 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R12 | On open the placement index is reconstructed, including a removal marker for every truncate, deallocate, delete and clone target record on disk and the fill floor buckets at the highest version on disk or in the floor; every rebuilt marker, and every synced loss record on disk, starts unsettled, so `Since` yields it until `Settle` covers it; precedence decides between two records covering one byte | MUST | RFC 28 §3.1, RFC 1 §3.10 | T7.2, T7.5, T7.6 |
+| R12 | On open the placement index is reconstructed, including a removal marker for every truncate, deallocate, delete and clone target record on disk and the fill floor buckets at the highest version on disk or in the floor; every rebuilt marker, and every synced loss record on disk but a `superseded` one, starts unsettled, so `Since` yields it until `Settle` covers it; precedence decides between two records covering one byte | MUST | RFC 28 §3.1, RFC 1 §3.10 | T7.2, T7.5, T7.6 |
 | R13 | The mapping from extents to records is derived: a catalog is never authoritative, the segments win where they disagree, and no second durable index or log of the catalog is kept | MUST NOT | RFC 28 §2.4 | T7.3 |
 | R14 | Recovery can rebuild by scan alone, and reads a sealed segment's catalog where it verifies | MUST, SHOULD adopted | RFC 28 §3.1 | T7.2, T7.3 |
 | R15 | Catalogs and scan produce an identical index | MUST | RFC 28 §3.1 | T7.3 |
@@ -330,7 +330,7 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R29 | A file's tag is rebuilt from its records and kept while any record of it is on disk; a `FileID` rebuilt under two tags has every call through either tag refused, and is named in `TagConflicts`, until one tag is forgotten | MUST | RFC 1 §3, §3.7 | T7.6 |
-| R30 | The next sequence number exceeds every one on disk and every sync mark's `Sequence`, and the next content version every one on disk and the floor, all taken from the maxima the rebuild observed and the marks it was given, never from a persisted counter | MUST | RFC 1 §4.3, RFC 28 §3.1, §3.3 | T7.6, T7.15 |
+| R30 | The next sequence number exceeds every one on disk, every sync mark's `Sequence` and every number on the directory's failed list (E6's per-directory list of records a read-only journal failed earlier in the process), and the next content version every one on disk and the floor, all taken from the maxima the rebuild observed and the marks it was given, never from a persisted counter | MUST | RFC 1 §4.3, §5.4, RFC 28 §3.1, §3.3 | T7.6, T7.15 |
 | R31 | `Files`, `DirtyFiles`, the per-share accounting of `Stats().Shares` (every tag holding a record, attached or not), the footprint and the per-segment counters after open are those the segments describe | MUST | RFC 1 §3.7 | T7.6 |
 | R32 | Every header-only record the open attaches is live by RFC 1 §7.2's rule as the running journal would have it: a forget record while any segment holding a record of its tag below its sequence number remains, an unsynced loss record while any segment holding the record it names remains, a removal, release or synced loss record while it may outrank a record in another segment or its marker is unsettled | invariant | RFC 1 §3, §7.2, RFC 28 §3.1 | T7.6 |
 | R33 | An extent's offloaded bit after open is set only where an offloaded record covering it decides it, by RFC 28 §3.2's rule, or where it was filled; it is never inferred from a record's age, its segment's seal state, or the absence of a crash | MUST NOT | RFC 28 §3.2 | T7.6 |
@@ -770,7 +770,8 @@ test/journal/known.yaml  T7.10, T7.11, T7.13   entries removed and re-pointed
   R72.
 - **Deliverables:** `internal/recovery/assemble.go`: calls the builder's `Finish(floor)`, which
   refuses a floor with a non-zero epoch and sets the sequence and version counters above every
-  number fed and the floor (R22, R30; T7.15 raises the sequence counter above the marks); turns
+  number fed and the floor (R22, R30; T7.15 raises the sequence counter above the marks), and the
+  sequence counter above the largest number on E6's failed list for the directory (R30); turns
   the builder's rivalled files into E8's conflict flag (R29); rebuilds the dirty-file list, the
   files with an unsettled marker or synced loss, the per-share used, held, dirty and unreclaimed
   bytes for every tag that holds a record, and E5's ledger and per-segment counters from the
@@ -784,6 +785,8 @@ test/journal/known.yaml  T7.10, T7.11, T7.13   entries removed and re-pointed
 - **Acceptance criteria:**
   - After a crash, the next sequence number and the next content version exceed every one on
     disk; opened with a floor above them, the next version exceeds the floor.
+  - A read-only journal fails B, C and D before any reaches the device; the reopen in place gives
+    the next stable write a number above D's, and a second reopen in the process holds that write.
   - A record of F planted under tag B beside A's: `TagConflicts` names F with both tags and every
     call on F through either is refused.
   - `Files`, `DirtyFiles`, `Stats().Shares` and `UsedBytes` after a reopen equal what the running
@@ -798,7 +801,9 @@ test/journal/known.yaml  T7.10, T7.11, T7.13   entries removed and re-pointed
     a record of `T` below it is retired, and not after; a segment holding only settled, outranked
     removals reports not held without a read.
 - **Tests:** the rows of R72 (`TestRFC1C_Monotonicity`, `TestRFC1C_EpochHalfIsZero`, `TestRFC1C_CloneTargetSurvivesCrash`, `TestRFC1C_UnclaimedTagReported`, `TestRFC1C_UnclaimedTagsAreTheCallersToName`, `TestRFC1C_FileIsItsSharesShare`, `TestRFC28C_VersionFloor`, `TestRFC28A_WriteCarriesItsMtime`, `TestRFC1C_CancelledCallChangesNothingOrCompletes`); the before-and-after comparison of `Stats`, `Files` and
-  `DirtyFiles` (catches a derived value not rebuilt, R31, tested at its consumer); the floor case
+  `DirtyFiles` (catches a derived value not rebuilt, R31, tested at its consumer); RFC 1 §9.4's
+  "a failed number is never issued again" (catches a number taken from the disk alone, which gives
+  a new write a failed number and a later reopen drops it after its `Sync` succeeded, R30); the floor case
   (catches a counter taken from disk alone); the planted offloaded record (catches a bit dropped
   at rebuild or inferred from a sealed segment, R33, tested at `DirtyFiles`); the forget record's
   liveness across a reopen, checked through E9a's `Held` (catches a forget registered with a
@@ -1074,7 +1079,7 @@ test/journal/known.yaml  T7.10, T7.11, T7.13   entries removed and re-pointed
 - **Covers:** R6 (above the marks), R30 (the marks), R34, R35 and R36 (below `Through`), R44 (a
   lost tail, a range below `Through`), R45 (with marks), R55 (a mark's segment), R60–R62, R79.
 - **Deliverables:** `Open(ctx, dir, floor, expect, marks []SyncMark)` and `SyncMark` as RFC 1 §3
-  writes them, passed to `recovery.Run`; `Stats.SyncMarks`. `internal/recovery/marks.go`: the
+  writes them, each mark keyed by its `Stream` (a stream with no mark has nothing proven by one), passed to `recovery.Run`; `Stats.SyncMarks`. `internal/recovery/marks.go`: the
   marks' `Through` added to T7.4's proof, so a bad record or zeros below it in its segment are
   corruption, never a torn slot, and a refused range there in a segment whose catalog does not
   verify is a range that names no record (R35, R36, R44, D14); the next sequence number and the
@@ -1158,15 +1163,6 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **A failed sequence number can be issued again.** RFC 1 §5.4 keeps a read-only journal's
-  failed sequence numbers per directory, and the next open in the process drops each such record
-  it finds. R30 takes the next number from the maxima on disk, so a failed record that never
-  reached the device leaves its number free: a reopen in place can give it to a new stable write,
-  and a later reopen in the process then drops that write as failed. Either the open that
-  consumes the list clears it, or the next sequence number also exceeds the list's maximum; RFC 1
-  says neither. **Decides:** RFC 1's owner, in §4.3 or §5.4. R30 and E6's D7 follow it.
-  **Blocks:** T7.5 and T7.6's final rule; both build the second option meanwhile, which is safe
-  either way.
 - **The surface S1 froze lacks the open's names.** `Open` on the programme branch takes
   `(ctx, dir, floor, expect, opts...)`, and `SyncMark`, `SegmentRange`, `*UnreadableRangesError`,
   `ErrUnreadable` and `Stats.SyncMarks` are not declared. RFC 1 §3 declares all of them, so this

@@ -1939,7 +1939,8 @@ again. A re-append given new numbers would outrank records appended after the
 original — a release, a removal, a later write's loss record — and a crash would
 then bring back what those had covered. On recovery the next of each **MUST** exceed
 every one found on disk, the next sequence number every sync mark's too
-([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), and the next content version the floor too, taken from
+([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) and every one a read-only journal failed in this
+directory earlier in the process ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)), and the next content version the floor too, taken from
 the maximum observed during reconstruction, not from a separately persisted
 counter. A share attached after open raises the next content version above its
 own floor before it is served ([§3](#3.%20Interface)).
@@ -2300,7 +2301,12 @@ written again until it is closed and reopened, and that open's recovery
   records' failure was already reported, and a removal's failure reached its
   `Sync`. A segment whose sync failed can still hold
   them whole, and without this the reopen's recovery would hold again, and the
-  engine apply, a write or a removal whose `Sync` was told it failed.
+  engine apply, a write or a removal whose `Sync` was told it failed. A failed
+  record that never reached the device leaves its number on no record, so the
+  next sequence number that open issues **MUST** also exceed every number on the
+  list ([§4.3](#4.3%20Versions)): the list stays for the life of the process, and
+  a later open would otherwise drop a record that reused a listed number after its
+  `Sync` succeeded.
 
 > decision: a read-only journal is the one place a window's header-only records
 > are failed, against §5.3's rule, because nothing can be appended. They are
@@ -3317,6 +3323,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§3.8](#3.8%20Loss%20events) loss by exact record | Write v5 and `Sync` it; overwrite the same 64 KiB at v10 with no `Sync`; fail the timer's sync and resolve by failing the window. Assert a read serves v5, before and after a crash and reopen, and the loss record names v10's sequence number. A loss keyed on version inside the extent drops v5 too, and a design that let v5's record go once v10 was appended has nothing to restore. |
 | [§3.8](#3.8%20Loss%20events) a synced loss masks what it superseded | Write v5, `Sync`; write v10, `Sync`; corrupt v10's payload; reopen with v5's record still on disk. Assert the extent reads `missing`, never v5. A loss record that names only its record brings the superseded v5 back. |
 | [§5.4](#5.4%20A%20journal%20that%20cannot%20write) read-only fails every stream's unsynced records | On a second stream, write file G and leave it unsynced; on the first, write F, fail a sync and then the first sync in the spare it takes, so the journal turns read-only. Assert a loss event names G's write at the transition, the next `Sync(G)` fails, and the loss generation rose once for both streams. Then, in one run, fail the writeback of G's segment at the seam so G is torn on the device and in the cache, clear the faults and reopen in place: assert G is not held and the loss generation stays where the transition put it. In another, leave G whole in its segment and reopen in place: assert the reopen drops G, appending an unsynced loss record for it, and the loss generation stays where the transition put it. The loss generation alone does not tell this rule from one that fails only the failed segment's window, since failing F's window raises it too; that rule publishes no loss event for G, so G's file is never told of the loss, and in the second run the reopen holds G again after its `Sync` was told it failed. |
+| [§5.4](#5.4%20A%20journal%20that%20cannot%20write) a failed number is never issued again | Write A and `Sync` it; write B, C and D, then fail their sync with `EROFS` at the seam and have the seam discard their bytes, so none is on the device or in the cache and the journal turns read-only with B, C and D on its failed list. Clear the faults and reopen in place; write E and `Sync` it, which succeeds. Close and reopen in place again. Assert E's sequence number exceeds D's, and E is held and read after the second reopen. A rule taking the next number from the disk alone gives E B's number, and the second reopen drops a write whose `Sync` succeeded. |
 | [§5.3](#5.3%20A%20failed%20sync) a failed window is reported once | Write to file F with no `Sync` waiting; fail the timer's sync and fail the window. Assert the next `Sync(F)` fails, the one after succeeds, and a `Sync(G)` of a file with no write in the window succeeds throughout. A design that fails only the `Sync` calls waiting at the time lets F's next flush succeed with its data gone. |
 | [§4.3](#4.3%20Versions) a re-append keeps its numbers | Write A, fail its sync and resolve by re-appending; truncate over A; crash so the original, its copy and the truncate are all on disk; reopen. Assert the extent reads `missing`. A re-append given a new sequence number outranks the truncate and brings A back. |
 | [§3.3](#3.3%20Offload) no pin on a segment under repack | Select a segment for repack and hold the pass after its first copy; offload a file with dirty extents in that segment. Assert the offer pins no segment under repack, takes the copied extent from its new location, leaves the rest to a later call, and the repack completes and unlinks the segment. |
