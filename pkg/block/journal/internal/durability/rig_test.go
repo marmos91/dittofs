@@ -140,7 +140,7 @@ func (r *rig) syncStream(t *testing.T, f core.FileID) {
 
 // ledgerLen returns how many entries the stream's ledger holds.
 func (r *rig) ledgerLen(no int) int {
-	st := r.d.streams[no]
+	st := r.d.made[uint32(no)]
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return len(st.ledger)

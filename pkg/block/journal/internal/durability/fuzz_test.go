@@ -12,7 +12,7 @@ import (
 )
 
 // FuzzSyncInterleaving drives append, Sync, a Sync with a cancelled context
-// and a scheduled sync failure over two files on one stream, and checks what
+// and a scheduled sync failure, and a seal of a clean segment, over two files on one stream, and checks what
 // each Sync may return against what the test knows happened:
 //   - nil only if every earlier record of the file is Durable;
 //   - a SyncError only if a failure was scheduled while one of the file's
@@ -34,6 +34,7 @@ func FuzzSyncInterleaving(f *testing.F) {
 		maybeFailed := map[core.SegmentID]bool{}
 		var last segment.Location
 		appended := false
+		seals := 0
 
 		for _, op := range ops {
 			i := int(op>>2) & 1
@@ -64,6 +65,16 @@ func FuzzSyncInterleaving(f *testing.F) {
 					t.Fatalf("Sync of file %d returned %v", i, err)
 				}
 			case 2:
+				if op&8 != 0 && appended && !maybeFailed[last.Segment] && seals < 2 {
+					seals++
+					r.settlePool(t) // a roll takes a spare
+					// A seal of a segment no failure was scheduled for, so
+					// the stream rolls and the oracle sees several segments.
+					if _, err := r.streams.For(files[i]).Seal(false); err != nil && !errors.Is(err, segment.ErrWrongState) {
+						t.Fatalf("Seal: %v", err)
+					}
+					continue
+				}
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
 				if err := r.d.Sync(ctx, files[i]); !errors.Is(err, context.Canceled) {

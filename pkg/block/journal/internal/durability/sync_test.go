@@ -331,14 +331,22 @@ func TestFailedSyncFailsEveryWaiterAndIsNotRetried(t *testing.T) {
 		if !errors.Is(err, boom) {
 			t.Errorf("Sync of %s does not carry the cause: %v", name, err)
 		}
+		if want := map[string]core.FileID{"f": f, "g": g}[name]; len(se.Files) != 1 || se.Files[0] != want {
+			t.Errorf("Sync of %s: SyncError.Files = %v, want [%v]", name, se.Files, want)
+		}
 	}
 	if got := r.d.Stats().SyncFailures; got != 1 {
 		t.Errorf("SyncFailures = %d, want 1", got)
 	}
 
 	before := r.syncsOf(a.Segment)
-	if err := r.d.Sync(context.Background(), f); !errors.Is(err, core.ErrSyncFailed) {
+	err := r.d.Sync(context.Background(), f)
+	var later *core.SyncError
+	if !errors.Is(err, core.ErrSyncFailed) || !errors.As(err, &later) {
 		t.Fatalf("a later Sync of the failed segment = %v, want ErrSyncFailed", err)
+	}
+	if len(later.Files) != 1 || later.Files[0] != f {
+		t.Errorf("the later SyncError.Files = %v, want [%v]", later.Files, f)
 	}
 	if got := r.syncsOf(a.Segment); got != before {
 		t.Errorf("a Sync retried the failed segment: %d new syncs", got-before)

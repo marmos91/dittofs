@@ -38,8 +38,8 @@ func (d *Durability) run(st *stream) {
 // syncStep issues the sync a waiter asked for, or, when the timer fired and the
 // oldest uncovered record is past the bound, the bound's sync, with no lock
 // held.
-// A failure is recorded against the segment that was active and is never
-// retried (R10): the segment's tracker froze at the failure and will not
+// A failure is recorded against the segment the sync was of, as the stream
+// reports it, and is never retried (R10): the segment's tracker froze at the failure and will not
 // report it again.
 //
 // ponytail: a sync covers the whole active segment, so a file that syncs
@@ -69,21 +69,29 @@ func (d *Durability) syncStep(st *stream, fired bool) {
 		_, end = d.tracer(context.Background(), core.SpanSync, slog.Uint64("stream", uint64(st.no)))
 	}
 	start := d.clock.Elapsed()
-	err := st.s.Sync()
+	seg, err := st.s.SyncSegment()
 	took := d.clock.Elapsed() - start
-	if errors.Is(err, segment.ErrStreamClosed) {
-		err = core.ErrClosed
+	if d.afterSync != nil {
+		d.afterSync()
 	}
 
 	st.mu.Lock()
-	st.syncs++
-	st.sum += took
-	st.buckets[bucketOf(took)]++
-	if err != nil {
+	closing := errors.Is(err, segment.ErrStreamClosed)
+	if closing {
+		// The stream closed under the worker: nothing failed, so waiters get
+		// core.ErrClosed from check and no failure is counted or recorded.
+		st.closed = true
+		d.log.Debug("journal sync skipped, stream closed", "stream", st.no)
+	} else {
+		st.syncs++
+		st.sum += took
+		st.buckets[bucketOf(took)]++
+	}
+	if err != nil && !closing {
 		st.failures++
-		if st.haveLast {
-			st.failed[st.lastSeg] = err
-		}
+		// The failure belongs to the segment Stream.Sync reported, which a
+		// roll after the sync cannot move.
+		st.failed[seg] = err
 		d.log.Error("journal sync failed", "stream", st.no, "err", err)
 	}
 	st.syncing = false
@@ -137,7 +145,8 @@ func (d *Durability) complete(st *stream) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	kept := st.ledger[:0]
-	live := map[core.SegmentID]struct{}{}
+	live := st.live
+	clear(live)
 	for _, e := range st.ledger {
 		if !e.done {
 			kept = append(kept, e)

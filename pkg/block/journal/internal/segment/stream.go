@@ -1273,14 +1273,24 @@ func (s *Stream) rollSettle() {
 // that synced after closing. Withdraw it if the durability layer ever needs a
 // benign sync past the close; until then the refusal is the true answer.
 func (s *Stream) Sync() error {
+	_, err := s.SyncSegment()
+	return err
+}
+
+// SyncSegment is Sync that also names the segment the call was of, read under
+// the same append domain as the sync's own state, so the durability layer
+// attributes a failure to the segment that failed and not to whichever one is
+// active by the time it looks. The id is zero when no segment was active or
+// the stream was closed.
+func (s *Stream) SyncSegment() (core.SegmentID, error) {
 	s.appendMu.Lock()
 	if s.closed {
 		s.appendMu.Unlock()
-		return ErrStreamClosed
+		return 0, ErrStreamClosed
 	}
 	if s.id == 0 {
 		s.appendMu.Unlock()
-		return nil // no segment is active: nothing to make durable
+		return 0, nil // no segment is active: nothing to make durable
 	}
 	// A sealing segment is parked on the drain's cond until the seal
 	// settles, for the platform reports a writeback error once per file and
@@ -1296,11 +1306,13 @@ func (s *Stream) Sync() error {
 	}
 	switch s.sealState {
 	case sealSealed:
+		id := s.id
 		s.appendMu.Unlock()
-		return nil
+		return id, nil
 	case sealEnded:
+		id := s.id
 		s.appendMu.Unlock()
-		return ErrSegmentEnded
+		return id, ErrSegmentEnded
 	}
 	// Counted under the lock Close sets closed under, like Append's, and
 	// counted in the seal's drain: a sync in flight when the seal starts,
@@ -1330,7 +1342,7 @@ func (s *Stream) Sync() error {
 		s.tracker.syncFail()
 		s.noteFailure(err)
 		s.appendMu.Unlock()
-		return err
+		return id, err
 	}
 	s.appendMu.Lock()
 	// decision: a sync that completes after an earlier sync of the segment
@@ -1352,7 +1364,7 @@ func (s *Stream) Sync() error {
 	// second in a row (RFC 1 §5.4).
 	s.syncedOnce = true
 	s.appendMu.Unlock()
-	return nil
+	return id, nil
 }
 
 // Seal seals the stream's active segment: early truncates the free tail and

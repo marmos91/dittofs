@@ -16,8 +16,7 @@ import "context"
 //
 // limit bounds the record bytes of the share's records on disk; zero means no
 // limit below the journal's maximum, and a negative limit is refused with
-// ErrInvalidSetting. A tag may have more
-// than one handle open at once.
+// ErrInvalidSetting. A tag may have more than one handle open at once.
 func (j *Journal) Share(tag ShareTag, limit int64, floor Version) (*Handle, error) {
 	return nil, ErrNotImplemented
 }

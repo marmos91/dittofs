@@ -24,14 +24,19 @@ import (
 // worker lag comparable to the bound.
 
 // oldestLocked returns when the worker first saw the oldest record that a
-// timer sync could still cover: not completed, not covered, and not of a
-// segment whose sync failed, since nothing is retried (R10) and a timer
-// that kept firing for it would sync every second for nothing. The ledger
+// timer sync could still cover: not completed, not covered, in the segment
+// the stream is active on, and not of a segment whose sync failed. A sync
+// covers only the active segment, so an older segment's record is covered by
+// its seal or never, and a timer that counted it would fire back to back.
+// Nothing failed is retried either (R10). The ledger
 // is in Track order, so the first match is the oldest. The caller holds mu.
 func (st *stream) oldestLocked() (seen time.Duration, ok bool) {
 	for i := range st.ledger {
 		e := &st.ledger[i]
 		if e.done || !e.seenSet || st.covered(e.w.Loc) {
+			continue
+		}
+		if !st.haveLast || e.w.Loc.Segment != st.lastSeg {
 			continue
 		}
 		if _, bad := st.failed[e.w.Loc.Segment]; bad {

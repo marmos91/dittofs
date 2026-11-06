@@ -57,9 +57,18 @@ type Durability struct {
 	// call.
 	mu      sync.Mutex
 	made    map[uint32]*stream
-	streams []*stream // by stream number, set by Start
 	started bool
 	stopped bool
+
+	// afterSync, when set by a test, runs in the worker after a stream sync
+	// returns and before the worker takes the stream's lock.
+	afterSync func()
+
+	// cmu guards change, a layer-wide channel closed and replaced on every
+	// stream change, so a waiter on several streams wakes on any of them. It
+	// is a leaf lock, taken under a stream's mu.
+	cmu    sync.Mutex
+	change chan struct{}
 
 	done chan struct{}
 	stop sync.Once
@@ -85,7 +94,22 @@ func New(cfg Config) *Durability {
 		log:     log,
 		made:    map[uint32]*stream{},
 		done:    make(chan struct{}),
+		change:  make(chan struct{}),
 	}
+}
+
+// changes returns the channel the next stream change closes.
+func (d *Durability) changes() <-chan struct{} {
+	d.cmu.Lock()
+	defer d.cmu.Unlock()
+	return d.change
+}
+
+func (d *Durability) notifyAll() {
+	d.cmu.Lock()
+	close(d.change)
+	d.change = make(chan struct{})
+	d.cmu.Unlock()
 }
 
 // entry is one unsynced record of a stream's ledger.
@@ -105,6 +129,7 @@ type entry struct {
 // file domain or another lock (D13), because both sinks run under the
 // segment's append domain and must not wait on anything.
 type stream struct {
+	d  *Durability
 	no uint32
 	s  *segment.Stream
 
@@ -138,13 +163,17 @@ type stream struct {
 	buckets         []uint64
 	sum             time.Duration
 
-	// scratch is the worker's own, the indices it completes in one pass.
+	// scratch and live are the worker's own, reused by each pass: the indices
+	// it completes and the segments that still hold an entry.
 	scratch []int
+	live    map[core.SegmentID]struct{}
 }
 
-func newStream(no uint32) *stream {
+func newStream(d *Durability, no uint32) *stream {
 	return &stream{
+		d:       d,
 		no:      no,
+		live:    map[core.SegmentID]struct{}{},
 		synced:  map[core.SegmentID]int64{},
 		failed:  map[core.SegmentID]error{},
 		changed: make(chan struct{}),
@@ -165,6 +194,7 @@ func (st *stream) wake() {
 func (st *stream) notifyLocked() {
 	close(st.changed)
 	st.changed = make(chan struct{})
+	st.d.notifyAll()
 }
 
 // covered reports whether a sync has reached the end of the record. The caller
@@ -181,7 +211,7 @@ func (d *Durability) Sink(no uint32) segment.Sink {
 	if _, dup := d.made[no]; dup {
 		panic("durability: a second sink was asked for one stream")
 	}
-	st := newStream(no)
+	st := newStream(d, no)
 	d.made[no] = st
 	return segment.Sink{
 		Track: func(w segment.Written) {
@@ -214,17 +244,17 @@ func (d *Durability) Start(streams *segment.Streams) {
 	if streams.Len() != len(d.made) {
 		panic("durability: the streams do not match the sinks made")
 	}
-	d.streams = make([]*stream, streams.Len())
-	for i := range d.streams {
+	started := make([]*stream, streams.Len())
+	for i := range started {
 		st, ok := d.made[uint32(i)]
 		if !ok {
 			panic("durability: no sink was made for a stream")
 		}
 		st.s = streams.Stream(i)
-		d.streams[i] = st
+		started[i] = st
 	}
 	d.started = true
-	for _, st := range d.streams {
+	for _, st := range started {
 		d.wg.Add(1)
 		go d.run(st)
 	}
@@ -237,12 +267,7 @@ func (d *Durability) Start(streams *segment.Streams) {
 // ponytail: it scans every stream's ledger, O(streams x ledger). Upgrade to a
 // per-segment index when a profile shows the scan.
 func (d *Durability) Durable(at segment.Location) bool {
-	d.mu.Lock()
-	made := make([]*stream, 0, len(d.made))
-	for _, st := range d.made {
-		made = append(made, st)
-	}
-	d.mu.Unlock()
+	made := d.snapshot()
 	for _, st := range made {
 		st.mu.Lock()
 		for i := range st.ledger {
@@ -264,12 +289,7 @@ func (d *Durability) SyncBound() time.Duration { return core.SyncBound }
 // sync is counted just after the waiters it covered are released, so a Sync
 // that has just returned may not be in the counters yet.
 func (d *Durability) Stats() Part {
-	d.mu.Lock()
-	made := make([]*stream, 0, len(d.made))
-	for _, st := range d.made {
-		made = append(made, st)
-	}
-	d.mu.Unlock()
+	made := d.snapshot()
 
 	p := Part{SyncDuration: Histogram{
 		Bounds: append([]time.Duration(nil), SyncDurationBounds...),
@@ -293,11 +313,8 @@ func (d *Durability) Stop() {
 	d.stop.Do(func() {
 		d.mu.Lock()
 		d.stopped = true
-		made := make([]*stream, 0, len(d.made))
-		for _, st := range d.made {
-			made = append(made, st)
-		}
 		d.mu.Unlock()
+		made := d.snapshot()
 		close(d.done)
 		for _, st := range made {
 			st.mu.Lock()
@@ -309,7 +326,7 @@ func (d *Durability) Stop() {
 	d.wg.Wait()
 }
 
-// target is the last unsynced record of one file on a stream.
+// target is the last unsynced record of one file in one segment of a stream.
 type target struct {
 	file core.FileID
 	loc  segment.Location
@@ -394,14 +411,17 @@ func (d *Durability) snapshot() []*stream {
 	return made
 }
 
-// targetsOf returns, for each id, the last record of that file in the ledger
-// that no sync covers. Compaction removes only covered entries, so a target
-// stays in the ledger until a sync covers it.
+// targetsOf returns, for each id, the last record of that file in each
+// segment of the ledger that no sync covers. A sync covers a prefix of one
+// segment, so covering a file's last record says nothing of its records in an
+// older segment; each segment gets its own target and waits for its seal or
+// fails through the failed map. Compaction removes only covered entries, so a
+// target stays in the ledger until a sync covers it.
 func (st *stream) targetsOf(ids []core.FileID) []target {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	var ts []target
-	for i := len(st.ledger) - 1; i >= 0 && len(ts) < len(ids); i-- {
+	for i := len(st.ledger) - 1; i >= 0; i-- {
 		e := &st.ledger[i]
 		if e.done || st.covered(e.w.Loc) {
 			continue
@@ -412,7 +432,7 @@ func (st *stream) targetsOf(ids []core.FileID) []target {
 			}
 			dup := false
 			for _, t := range ts {
-				dup = dup || t.file == id
+				dup = dup || (t.file == id && t.loc.Segment == e.w.Loc.Segment)
 			}
 			if !dup {
 				ts = append(ts, target{file: id, loc: e.w.Loc})
@@ -426,17 +446,18 @@ func (st *stream) targetsOf(ids []core.FileID) []target {
 // target of a failed segment end the wait with its SyncError.
 func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error {
 	for {
-		var wait chan struct{}
+		// Taken before the checks, so a change after one is never missed, and
+		// shared by every stream so a change on any of them wakes the caller.
+		wait := d.changes()
+		pending := false
 		for _, w := range ws {
 			ch, err := w.st.check(w.targets, failFast)
 			if err != nil {
 				return err
 			}
-			if ch != nil && wait == nil {
-				wait = ch
-			}
+			pending = pending || ch != nil
 		}
-		if wait == nil {
+		if !pending {
 			return nil
 		}
 		select {
