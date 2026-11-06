@@ -166,7 +166,8 @@ func creating(dir vfs.Handle) lockorder.Set {
 // file an exclusive create's retry made, or ErrExist, and a check for name
 // failing for any other cause fails the create; then the store's create of a
 // file with ID id, or one the store draws when id is zero. The locks held
-// keep any other call from adding name between the two.
+// keep any other call from adding name between the two. Only a create that
+// added name is reported to the watches.
 func (fs *Filesystem) createLocked(ctx context.Context, a *admitted, c vfs.Call, op vfs.Op, dir vfs.Handle, name []byte, ca vfs.CreateArgs, id entity.FileID) (vfs.CreateResult, error) {
 	nf, err := newFile(ca)
 	if err != nil {
@@ -178,7 +179,9 @@ func (fs *Filesystem) createLocked(ctx context.Context, a *admitted, c vfs.Call,
 	if err != nil {
 		return r, err
 	}
-	if _, _, err := fs.meta.Namespace().Lookup(ctx, a.caller.Identity, dir, name); err != nil {
+	_, _, err = fs.meta.Namespace().Lookup(ctx, a.caller.Identity, dir, name)
+	added := err != nil
+	if added {
 		if !merrs.IsNotFoundError(err) {
 			return vfs.CreateResult{}, storeErr(err)
 		}
@@ -199,7 +202,9 @@ func (fs *Filesystem) createLocked(ctx context.Context, a *admitted, c vfs.Call,
 		return vfs.CreateResult{}, storeErr(err)
 	}
 	r.Dir.After = fs.attrs(ctx, a, dir)
-	fs.changedIn(ctx, dir, openstate.Change{What: openstate.ChangeAddEntry, Name: name})
+	if added {
+		fs.changedIn(ctx, dir, openstate.Change{What: openstate.ChangeAddEntry, Name: name})
+	}
 	return r, nil
 }
 

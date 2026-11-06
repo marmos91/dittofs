@@ -462,3 +462,26 @@ func TestACommittedChangeIsReportedThoughTheCallEnds(t *testing.T) {
 		t.Errorf("the watch heard %q, want f, f>g and g", got)
 	}
 }
+
+// An exclusive create's retry, answered with the file the first try made,
+// adds no entry and reports none: the next change heard is a later create.
+func TestAnExclusiveCreatesRetryIsNotReported(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	alice, cb := s.connected(t, signedIn(s.alice.Principal, 1), smb("alice-pc", 1))
+	_, err := s.Watch(ctx, alice, vfs.WatchSpec{Dir: s.fs.Root, Filter: ^openstate.ChangeMask(0)})
+	s.must(t, err)
+	admin := proven(s.fs.Admin.Principal, inLab)
+	excl := vfs.CreateArgs{Kind: vfs.CreateRegular, Verifier: &[8]byte{7}}
+	first, err := s.Create(ctx, admin, s.fs.Root, []byte("f"), excl)
+	s.must(t, err)
+	again, err := s.Create(ctx, admin, s.fs.Root, []byte("f"), excl)
+	s.must(t, err)
+	if again.File.ID != first.File.ID {
+		t.Fatalf("the retry made %v, want the first try's %v", again.File.ID, first.File.ID)
+	}
+	s.touch(t, s.fs.Root, "g")
+	if got := notes(t, s.shares, cb, 2); !reflect.DeepEqual(got, []string{"f", "g"}) {
+		t.Errorf("the watch heard %q, want f then g", got)
+	}
+}
