@@ -14,10 +14,6 @@ on it.
 **Package paths:** `feat/storage-v2`'s, after #3645 renamed `enginev2` to `engine` and
 `journalv2` to `journal`.
 **Epic 5 estimate: 5 subtasks, 15.25 man-days.**
-The plan had 12.5: T5.1 gains the guard's
-capture skip, the in-batch wait and the claim below *v* (+1.5), T5.4 lands `Delete`'s retry
-channel and `ErrFileOpen`, which the plan took as on the base (+1), and T5.5 the held-batch
-case (+0.25).
 **Depends on:** sync point **S2, red suite in CI**: E1's surface (`Truncate`, `Deallocate`,
 `Delete`, `Deps.Existence.Remove`, `Deps.Content.Resume` and `PruneRemovals`) and E2's fake
 journal; epic 3, built: T3.1's per-file entries, whose pending-operation kinds for truncate
@@ -39,15 +35,22 @@ phase 1's order from T5.1, runs its phase 2 as a clone item of T5.3's loop, and 
 
 ---
 
-## 1. Scope
+## 1. Goal
 
 Epic 5 builds RFC 8 §8's removals: `Truncate`, `Deallocate` and `Delete` through §8.1's
 guard, journal step, phase 1, `Settle` and post; §8.2's deallocate; the removal loop per
 journal that runs phase 2 and the prune; and the release's contract with the service (§8.1,
-RFC 17 §5.3). §3 maps each RFC section to the subtask that builds it; this document gives
-the split, the order, the estimates and the tests, and never restates the RFC.
+RFC 17 §5.3). §3 numbers each obligation the RFC places on the epic and names the subtask
+that meets it; this document gives the split, the order, the estimates and the tests, and
+cites the RFC rather than restating it.
 
-### 1.1 Out of scope
+### 1.1 In scope
+
+§3's requirements, through §6's subtasks; the `kvstore` changes they need (`Existence.Size`,
+the truncate above the File record's size, `kvstore.Refused`, the holder read) and `Delete`'s
+retry channel with `vfserr.ErrFileOpen`, landed from `feat/enginev2-delete-retry`.
+
+### 1.2 Out of scope
 
 - The cut gate a removal's phase 1 passes (`Deps.Gate`, RFC 12): the second part.
 - A pass in flight under a removal (RFC 8 §8.3, E16), and the offload guard's other holder,
@@ -66,7 +69,7 @@ the split, the order, the estimates and the tests, and never restates the RFC.
   retries: epic 8's T8.3, over this epic's loop.
 - The service's `Releasing` mark and its `done(...)`: the filesystem service's (RFC 17 §5.3).
 
-### 1.2 Names used here
+### 1.3 Names used here
 
 - **E1**, epic 1, interfaces: `pkg/block/engine`'s exported surface, `Deps` and its
   interfaces, frozen at S1.
@@ -78,7 +81,7 @@ the split, the order, the estimates and the tests, and never restates the RFC.
   failures; epics 3, 4 and 6 start here.
 - **S3**, engine complete over the fake journal: epics 3 to 8 done, every row whose journal
   call exists green.
-- **E6, E17, E19, E40**: RFC 8 §13's invariants of those numbers, not epics.
+- **E6, E16, E17, E19, E40**: RFC 8 §13's invariants of those numbers, not epics.
 - **Phase 1, phase 2**: a removal's first metadata transaction, `Existence.Remove`, and its
   later batches, `Content.Resume` (RFC 8 §8.1, RFC 6 §6.2).
 - **The integration epic**, epic 9: the filesystem service composed over the engine at
@@ -169,45 +172,70 @@ the split, the order, the estimates and the tests, and never restates the RFC.
 | 11 Exports | T5.1, T5.4 | `Deps.Existence` gains `Size` (D4), and `Delete`'s frozen signature becomes `(retry <-chan error, err error)` with `vfserr.ErrFileOpen` beside it (T5.4), the two changes to E1's surface (§9, point 1, for `Size`); the hooks live in `export_test.go` |
 | 12 Creates only what it declares | all | the guard lands in T5.1 with its first holder; the loop lands in T5.3 with its first item, phase 2; the channel's `DelayClone` branch lands with epic 8, its consumer |
 
-## 3. RFC coverage
+## 3. Requirements and invariants
 
-Which subtask builds each RFC section, step or invariant this epic owns. The RFC is the
-requirement; read it there.
+Every MUST and MUST NOT that RFC 8 and the journal and metadata RFCs place on this epic,
+numbered so that subtasks and tests can cite them. Each row names the obligation and cites
+where the RFC states it: the RFC's text is the requirement, so read it there. Numbers are
+stable: a row added later takes the next free number in its group's table, and a withdrawn
+one keeps its row.
 
-| RFC | Subtask |
-| --- | --- |
-| RFC 8 §8, a release is the journal's `Delete`, never its `Release` | T5.4 |
-| RFC 8 §8.1 first and second rules (the guard across the journal step and phase 1; pending existence committed and synced first), §6.4, E6, E19 | T5.1; a pending release's, T5.4 |
-| RFC 8 §8.1 steps 2–4, RFC 6 §6.2, RFC 1 §3.10 | T5.1; step 4 after a retried release, T5.4 |
-| RFC 8 §8.1 "Once its journal step is done, a removal does not fail" | T5.1; for a release, T5.4 |
-| RFC 8 §8.1's terminal failure, the file's other pending existence committed before the settle, RFC 1 §3.10 | T5.1; its retry, T5.3 |
-| RFC 8 §5.1 and §5.2's first rule, the group commit's stop at a removal whose phase 1 has not committed | epic 4's T4.3; tested in T5.3 |
-| RFC 8 §2.5 stop step 2, a file whose phase-1 retry was cancelled left for recovery | T5.3 |
-| RFC 8 §5.1 step 4's serialised commits, as a removal's phase 1 meets a batch in flight, RFC 6 §3.4 | T5.1 |
-| RFC 8 E17, the capture never waiting on a removal | T5.1 |
-| RFC 8 §6.4 and §9.1, a removal against a clone's registration | T5.1, with epic 8's T8.1b |
-| RFC 8 §7.1's resolution over a truncate in flight, RFC 1 §3.6 | T5.1, tested in T5.5 |
-| RFC 8 §8 truncate up, RFC 1 §3.6, RFC 6 §6.2 | T5.1 |
-| RFC 6 §6.2, a truncate above the File record's size | T5.1, in `kvstore` |
-| RFC 8 §8.2, a deallocate's merged hole and no zeros | T5.2 |
-| RFC 8 §8.1 step 5, the batches and the prune, E40 | T5.3 |
-| RFC 8 §8.1, the retry and `removal_stalled` | T5.3 (phase 2, prune), T5.4 (a pending release); the backoff is D5's (§9, point 3) |
-| RFC 8 §8.1 step 1, no open state in the engine | T5.4 |
-| RFC 8 §8.1 step 3, the release's holder re-check and abort, §2.5 step 3 | T5.4 |
-| RFC 8 §8.1, a pending release and its retry channel, RFC 17 §5.3 | T5.4; the `DelayClone` branch, epic 8's T8.2 |
-| RFC 17 §4.3 and RFC 20 §7.3, `ErrFileOpen` outside `vfs.Errors()` | T5.4 |
-| RFC 6 §3.4, removals ordered against writes by version | T5.5 |
-| RFC 8 §14, this epic's series, span and `removal_stalled` | rule 3's row in §2.1 |
+**The removal and its guard**
 
-**Test rows** each subtask's tests must pass (RFC 8 §15, by name):
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R1 | A file's release is the engine's `Delete`, which calls the journal's `Delete`, never its `Release` | invariant | RFC 8 §8 | T5.4 |
+| R2 | A removal holds the file's guard across its journal step and its phase 1, and returns once phase 1 commits, or first with a pending release's channel or `ErrDelay`, the guard kept until the retry commits or ends | MUST | §8.1 first rule, §6.4, E6 | T5.1 |
+| R3 | The group commit's capture never waits on a removal's journal call; correctness rests on the store's conflicts and the group commit's stop, never on the guard | invariant | E17, §5.2 | T5.1 |
+| R4 | Phase 1 commits with it the file's pending existence below *v*, the file synced first, and calls `Done` for every write it records; a write staged above *v* stays pending | MUST | §8.1 second rule, §5.1, E19, RFC 6 §3.4 | T5.1 |
+| R5 | The journal step assigns the removal its version *v*; phase 1 records the existence change and `Removal(file, v)` in one transaction, writing no ref and dropping none | MUST | §8.1 steps 2–3, RFC 6 §6.2 | T5.1 |
+| R6 | Once phase 1 commits: the guard released, `Settle(id, v)`, the post, in that order; a crash before `Settle` leaves the marker for recovery | MUST | §8.1 step 4, RFC 1 §3.10 | T5.1 |
+| R7 | A read between a truncate's journal step and its pending operation never finds the extent **Lost** | invariant | §7.1, RFC 1 §3.6 | T5.1, T5.5 |
+| R8 | A removal and a clone's registration of its extent are ordered as §6.4 and §9.1 give: the removal checks the registrations and marks itself in flight in one entry-lock section, the mark lasting until phase 1 ends | invariant | §6.4, §9.1, E6 | T5.1 |
+| R9 | A truncate to at or above the file's replayed size is a pending grow: the journal assigns its version, the group commit commits it, and it has no phase 1 | invariant | §8, RFC 1 §3.6, RFC 6 §6.2 | T5.1 |
+| R10 | A file's existence commits are serialised: phase 1 waits out a batch in flight on its file | invariant | §5.1 step 5, RFC 6 §3.4 | T5.1 |
+| R28 | Once its journal step is done, a removal fails only terminally: a truncate or deallocate whose phase 1 its call cannot commit answers `ErrDelay` and its phase 1 is retried with the guard held | MUST | §8.1 "Once its journal step is done, a removal does not fail" | T5.1, T5.3 |
+| R29 | A terminal failure leaves the removal's own operation out, commits the file's other pending existence first, a loss's included, then releases the guard and settles the marker without the removal; a failure of that commit is retried with the guard held and the marker unsettled | MUST | §8.1, RFC 1 §3.10 | T5.1, T5.3 |
+| R30 | `Close`'s last group commit leaves out a file whose phase-1 retry was cancelled, its pending operations left for recovery | MUST | §2.5 stop step 2 | T5.3 |
 
-| Row | Adaptation | Subtask |
-| --- | --- | --- |
-| §15.1 §8.2 deallocate | — | T5.2 |
-| §15.2 §8.1 removal wedge | a removal whose batches keep failing raises `removal_stalled` and wedges no other file; the undecodable ref is the second part's | T5.3 |
-| §15.1 §5.1 sync before existence | the truncate half, with a truncate up crashed before its group commit | T5.5 |
-| §15.2 §8.1 phase 1 past the journal step | engine assertions over the fake journal, the guard's skip turned off: `TestAGroupCommitStopsAtARetriedRemoval` | T5.3 |
-| §15.2 §8.1 terminal failure | engine assertions over the fake journal: `TestATerminalRemovalCommitsTheExistenceBelowItBeforeItsSettle`, `TestATerminalRemovalCommitsALossBelowItBeforeItsSettle` (T5.1), `TestATerminalRemovalsFailedCommitIsRetried` (T5.3); the restart's start step 3 is epic 6's | T5.1, T5.3 |
+**Deallocate**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R11 | A deallocate's phase 1 writes the extent's merged hole at *v*, under the merged hole's start key | MUST | §8.2, §8.1 step 3 | T5.2 |
+| R12 | A deallocate never stages zeros through the write path | MUST NOT | §8.2 | T5.2 |
+| R13 | §8.2 deallocate | test row | §15.1 | T5.2 |
+
+**Phase 2 and the loop**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R14 | The refs a removal drops are dropped later, in batches within `K` from its cursor, by version; until then the removal masks them from every read | MUST | §8.1 third rule, step 5, E40 | T5.3 |
+| R15 | A done removal is pruned by the file's primary once at or below the in-flight floor, its own version with no pass in flight | MUST | §8.1, RFC 6 §6.2 | T5.3 |
+| R16 | A failed phase-2 batch or prune is retried, backed off, while the node serves the shard; five consecutive failures raise `removal_stalled` naming the file and the removal's kind, cleared by its next batch that commits | MUST | §8.1 | T5.3 (the scheduler's backoff: §9, point 3) |
+| R17 | A removal that keeps failing wedges no other | invariant | §8.1, §15.2 | T5.3 |
+| R18 | §8.1 removal wedge (adapted: batches that keep failing raise `removal_stalled` and wedge no other file; the undecodable ref is the second part's) | test row | §15.2 | T5.3 |
+| R31 | §8.1 phase 1 past the journal step (engine assertions over the fake journal, the guard's skip turned off), which also tests epic 4's R41 and R42 | test row | §15.2 | T5.3 |
+| R32 | §8.1 terminal failure (engine assertions over the fake journal; the restart's start step 3 is epic 6's) | test row | §15.2 | T5.1, T5.3 |
+
+**The release**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R19 | A release reads and writes no open state in the engine | invariant | §8.1 step 1 | T5.4 |
+| R20 | A release's phase 1 re-checks the file's holders and aborts if one has arrived, handled as §2.5 step 3 gives | MUST | §8.1 step 3, §2.5 step 3 | T5.4 |
+| R21 | A release whose phase 1 has not committed at the call's deadline, its journal `Delete` done, is pending, not failed: `Delete` answers a retry channel and retries phase 1 with no goroutine of its own | MUST | §8.1 | T5.4 |
+| R22 | The channel yields the outcome once: nil, `ErrFileOpen`, `ErrDelay` (`DelayClone`, epic 8's T8.2) or `ErrUnavailable` | MUST | §8.1, RFC 17 §5.3 | T5.4 |
+| R23 | A pending release that keeps failing raises `removal_stalled` after five failures; its commit or abort clears it | MUST | §8.1 | T5.4 |
+| R24 | A pending release runs step 4 once its retried phase 1 commits | MUST | §8.1 step 4 | T5.4 |
+| R25 | `ErrFileOpen` passes only between the engine and the service: `vfs.Errors()` omits it | invariant | RFC 17 §4.3, RFC 20 §7.3 | T5.4 |
+
+**Interleavings**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R26 | §5.1 sync before existence, the truncate half, with a truncate up crashed before its group commit | test row | §15.1 | T5.5 |
+| R27 | Removals interleaved with writes and group commits leave the file reading what the version order says | invariant | §8.1, RFC 6 §3.4 | T5.5 |
 
 ## 4. Decisions this epic takes
 
@@ -301,15 +329,16 @@ test/engine/known.yaml  T5.2, T5.3, T5.5  their entries
 
 ## 6. Subtasks
 
-Each subtask's acceptance: the named rows pass, and each listed test fails on the
-regression it names (after "catches").
+Each subtask's acceptance: the requirements it covers hold, the named rows pass, and each
+listed test fails on the regression it names (after "catches").
 
 ### T5.1 The removals through phase 1
 
 **Subtask T5.1 estimate: 4 man-days.**
 
 - **Track:** B. **Depends on:** epic 4's T4.3, T4.5 and T4.7; epic 8's T8.1a; T8.1b lands with it.
-- **Covers:** RFC 8 §8.1's first two rules, steps 2–4, "Once its journal step is done, a
+- **Covers:** R2–R10, R28, R29, R32 (the call's half).
+  RFC 8 §8.1's first two rules, steps 2–4, "Once its journal step is done, a
   removal does not fail" and its terminal failure, for `Truncate`; truncate up (§8); E6,
   E17, E19.
 - **Deliverables:** in `remove.go` and `file.go`, the guard (D1) and the in-flight mark's
@@ -356,7 +385,7 @@ regression it names (after "catches").
 **Subtask T5.2 estimate: 1 man-days.**
 
 - **Track:** B. **Depends on:** T5.1.
-- **Covers:** RFC 8 §8.2, and §8.1 step 3's merged hole.
+- **Covers:** R11–R13. RFC 8 §8.2, and §8.1 step 3's merged hole.
 - **Deliverables:** `Deallocate` over T5.1's phase 1 with `kvstore.RemoveDeallocate`, the
   entry's lock held across the journal's `Deallocate` and the insert, under D2's marker.
 - **Rows:** §8.2 deallocate, over the real journal; red until the journal's `Deallocate`
@@ -371,7 +400,8 @@ regression it names (after "catches").
 **Subtask T5.3 estimate: 3 man-days.**
 
 - **Track:** B. **Depends on:** T5.1; epic 4's T4.4 (the retrying-owner mark).
-- **Covers:** RFC 8 §8.1 step 5, the prune, the retry and `removal_stalled`, a terminal
+- **Covers:** R14–R18, R28 and R29 (their retries), R30, R31, R32 (the retry's half).
+  RFC 8 §8.1 step 5, the prune, the retry and `removal_stalled`, a terminal
   failure's existence commit retried; §2.5's stop step 2; E40.
 - **Deliverables:** `removals.go`: the loop per journal (D5), joined at `Close`, which ends
   its pending releases' channels with `ErrUnavailable` and leaves a cancelled phase-1 retry's
@@ -402,7 +432,8 @@ regression it names (after "catches").
 **Subtask T5.4 estimate: 4.5 man-days.**
 
 - **Track:** B. **Depends on:** T5.1, T5.3.
-- **Covers:** RFC 8 §8, §8.1 step 1, step 3's re-check and abort, the pending release and
+- **Covers:** R1, R19–R25.
+  RFC 8 §8, §8.1 step 1, step 3's re-check and abort, the pending release and
   its channel, step 4 after a retry; §2.5 step 3's abort; RFC 17 §4.3, §5.3; RFC 20 §7.3.
 - **Deliverables:** from `feat/enginev2-delete-retry`: E1's `Delete` signature
   `(retry <-chan error, err error)`, `vfserr.ErrFileOpen` and `vfs.Errors()` omitting it, and
@@ -431,7 +462,8 @@ regression it names (after "catches").
 **Subtask T5.5 estimate: 2.75 man-days.**
 
 - **Track:** B. **Depends on:** T5.2, T5.3.
-- **Covers:** RFC 8 §7.1 over a truncate in flight (D2), RFC 6 §3.4's version order, §5.1's
+- **Covers:** R7, R26, R27.
+  RFC 8 §7.1 over a truncate in flight (D2), RFC 6 §3.4's version order, §5.1's
   sync before existence for a truncate.
 - **Deliverables:** tests only, and the fake journal's hooks they need in `export_test.go`.
 - **Rows:** §5.1 sync before existence, the truncate half, and a truncate up crashed before
@@ -449,8 +481,8 @@ regression it names (after "catches").
 
 ```mermaid
 flowchart TD
-  E4(["epic 4: T4.3 group commit, T4.5 sync function, T4.7 claim"]):::sync --> T5_1["T5.1 Removals through phase 1"]
-  E8(["epic 8: T8.1a registrations"]):::sync --> T5_1
+  epic4(["epic 4: T4.3 group commit, T4.5 sync function, T4.7 claim"]):::sync --> T5_1["T5.1 Removals through phase 1"]
+  epic8(["epic 8: T8.1a registrations"]):::sync --> T5_1
   T5_1 --> T5_2["T5.2 Deallocate"]
   T5_1 --> T5_3["T5.3 Removal loop"]
   T5_1 --> C1(["after T5.1: the guard and phase 1, epic 8's T8.2 can start"]):::sync
