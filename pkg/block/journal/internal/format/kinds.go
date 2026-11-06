@@ -83,16 +83,6 @@ const (
 	LossCorrupt    LossReason = 1 // the record was found corrupt
 	LossStale      LossReason = 2 // the record's offload mark was stale
 	LossFailedSync LossReason = 3 // a failed sync window failed the record
-	// decision: reason 4 is accepted ahead of the format table, which now
-	// documents reasons 1, 2, 3 and 5 and leaves 4 unlisted. When an engine
-	// reconcile finds older content under a newer committed version, it
-	// drops the older record with a loss record naming reason 4 — one more
-	// way a record becomes unreachable — and the format table has yet to
-	// list it. The bound is LossReason.known's ceiling and the refusal text
-	// "%w: loss reason %d, want one of 1-5" and its tests: if the format's
-	// owner rules otherwise — drops `superseded`, renumbers it, or widens
-	// the range — known, the refusal text and those tests all change with
-	// it.
 	LossSuperseded LossReason = 4 // a superseding record replaced it
 
 	LossAcknowledged LossReason = 5 // an operator acknowledged the record unreadable
