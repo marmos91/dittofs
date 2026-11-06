@@ -577,9 +577,14 @@ func TestSinkSealSyncs(t *testing.T) {
 
 func errorsIsEnded(err error) bool { return errors.Is(err, segment.ErrSegmentEnded) }
 
-// TestSinkHandOffDoesNotBlockAppend pins the contract a hand-off consumer
-// relies on: a Track and a Synced that only queue never block an append, even
-// while the consumer's worker is parked and has re-entered the stream.
+// TestSinkHandOffDoesNotBlockAppend pins the consumer pattern a hand-off sink
+// uses: a Track and a Synced that only queue, and a worker that re-enters the
+// stream through Sync and then parks. Such a sink neither deadlocks nor stalls
+// appends. It does not prove the stream tolerates a blocking sink: the worker
+// parks only after Sync returned, holding no stream lock, and the stream calls
+// the sink synchronously under its append domain, so "a sink that blocks does
+// not block the append" is met by the sink's own contract (it never blocks),
+// not enforced by the stream.
 func TestSinkHandOffDoesNotBlockAppend(t *testing.T) {
 	type event struct {
 		track bool

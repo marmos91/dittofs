@@ -29,10 +29,12 @@ type Written struct {
 // its location. Synced is called with the offset each completed sync of a
 // segment covered, whoever issued the sync.
 //
-// Both functions are called with the stream's segment append domain held —
-// Track always, Synced from a stream's Sync — and Track possibly with the
-// file append domain the caller of Append holds. So neither may take a lock of
-// this package or block: the consumer hands each event to its own per-stream
+// Track is always called with the stream's segment append domain held, and
+// possibly with the file append domain the caller of Append holds. Synced
+// arrives with the segment append domain held when it comes from a stream's
+// Sync, and with no stream lock held when it comes from a seal's own sync
+// (WriteSeal). So neither may take a lock of this package or block, whichever
+// way it arrives: the consumer hands each event to its own per-stream
 // worker. Synced values of one segment may arrive out of order, for two syncs
 // can run at once, so a consumer takes the largest.
 //
@@ -41,7 +43,8 @@ type Written struct {
 // Synced that covers the record, and a queue would need an order of its own to
 // keep both. The cost lands on the sink, which must meet the non-blocking
 // contract; withdraw the synchronous call if a sink that cannot meet it
-// appears.
+// appears. The stream cannot enforce that contract: it calls the sink under
+// the segment append domain, so a sink that blocks blocks the append.
 type Sink struct {
 	Track  func(Written)
 	Synced func(seg core.SegmentID, through int64)
