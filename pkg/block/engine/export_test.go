@@ -1,6 +1,9 @@
 package engine
 
 import (
+	"runtime"
+	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -20,11 +23,84 @@ var (
 	ErrUnidentified = errUnidentified
 )
 
-// SetJournalsForTest sets the journals the engine has open, as Start will.
+// SetJournalsForTest sets the journals the engine has open, as Start will,
+// each with the limit last passed read from the journal itself, so the engine
+// and the journal agree on it.
 func (e *Engine) SetJournalsForTest(js ...Journal) {
+	vls := make([]*versionLimit, 0, len(js))
+
+	for _, j := range js {
+		vl := &versionLimit{
+			j: j,
+		}
+		vl.last.Store(j.Stats().VersionLimit.Counter)
+		vls = append(vls, vl)
+	}
+
 	e.mu.Lock()
-	e.journals = js
+	e.journals = vls
 	e.mu.Unlock()
+}
+
+// SetBlockForTest sets the versions one raise of the version limit covers,
+// before Start or Bind.
+func (e *Engine) SetBlockForTest(n uint64) {
+	e.block = n
+}
+
+// TrackRaisesForTest counts the version limit raise goroutines alive, for
+// WaitRaises, and every one started, for RaisesStarted. Call it before Start
+// or Bind.
+func (e *Engine) TrackRaisesForTest() {
+	e.raising.count = &atomic.Int32{}
+	e.raising.started = &atomic.Int64{}
+}
+
+// RaisesStarted is how many raise goroutines started since
+// TrackRaisesForTest.
+func (e *Engine) RaisesStarted() int64 {
+	return e.raising.started.Load()
+}
+
+// WaitRaises returns once every version limit raise has ended or waits on
+// the test clock to retry, so a test reads what the raises did. It fails the
+// test when a raise does neither within 5 s, which only wrong code reaches.
+// A raise is the engine's only caller of Clock.After, so each wait the clock
+// holds is a raise waiting to retry; this no longer holds once anything else
+// in the engine waits on the clock.
+func (e *Engine) WaitRaises(t testing.TB) {
+	t.Helper()
+
+	count := e.raising.count
+
+	if count == nil {
+		t.Fatal("WaitRaises: TrackRaisesForTest was not called")
+	}
+
+	clock, ok := e.d.Clock.(interface {
+		Pending() int
+	})
+	if !ok {
+		t.Fatal("WaitRaises: the engine's clock reports no pending waits")
+	}
+
+	// Correct raises settle at once; the deadline is met only by a raise
+	// stuck on something other than the clock.
+	deadline := time.Now().Add(5 * time.Second)
+
+	for {
+		n := count.Load()
+
+		if n == 0 || int(n) <= clock.Pending() {
+			return
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("WaitRaises: a raise neither ended nor waits to retry")
+		}
+
+		runtime.Gosched()
+	}
 }
 
 // MarkRaisedForTest records shard as raised by this process, as Start will.

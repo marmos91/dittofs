@@ -40,12 +40,15 @@ type Engine struct {
 	// share table and the fields below, never across I/O, and no content call
 	// takes it.
 	mu       sync.Mutex
-	journals []Journal                   // the journals open, one per device; Start opens them
+	journals []*versionLimit             // the journals open, one per device; Start opens them
 	busy     map[entity.ShareID]struct{} // the shares with a lifecycle call in progress
 	raised   map[entity.ShardID]struct{} // the shards whose incarnation this process raised
 	starting bool                        // a Start runs: a lifecycle call answers ErrDelay
 	started  bool                        // a Start succeeded
 	health   Stats                       // the shares refused at start and the conditions raised
+
+	block   uint64 // the versions one raise of the version limit covers
+	raising raises // the version limit raises running
 }
 
 // New checks d and builds the engine. It takes no settings, opens nothing and
@@ -73,13 +76,17 @@ func New(d Deps) (*Engine, error) {
 	}
 	d.Logger = d.Logger.With("component", "engine")
 
-	return &Engine{
+	e := &Engine{
 		d:      d,
 		files:  newFiles(d.Clock),
 		sample: zeroVerifier,
 		busy:   map[entity.ShareID]struct{}{},
 		raised: map[entity.ShardID]struct{}{},
-	}, nil
+		block:  versionBlock,
+	}
+	e.raising.ctx, e.raising.cancel = context.WithCancel(context.Background())
+
+	return e, nil
 }
 
 // Apply hands the engine its node-level settings: first before Start, then on
@@ -138,7 +145,7 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error {
 	e.shares.Store(&t)
 
 	if o.journal != nil {
-		e.journals = []Journal{o.journal}
+		e.journals = []*versionLimit{o.journal}
 	}
 
 	e.health = o.stats
@@ -167,6 +174,8 @@ func (e *Engine) start(ctx context.Context, shares []Share) (opened, error) {
 	if err != nil {
 		return opened{}, u.unwind(err)
 	}
+
+	u.push(e.stopRaises)
 
 	return o, nil
 }

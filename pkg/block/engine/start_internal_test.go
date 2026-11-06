@@ -94,7 +94,7 @@ func TestTheOpenFloorIsTheLargestOfAll(t *testing.T) {
 // block the journal issues nothing, and with the epoch copied the next open
 // fails.
 func TestTheStartLimitIsABlockAboveTheNextVersion(t *testing.T) {
-	got := startLimit(journal.Version{Epoch: 3, Counter: 5})
+	got := startLimit(journal.Version{Epoch: 3, Counter: 5}, versionBlock)
 
 	want := journal.Version{Counter: 5 + versionBlock}
 

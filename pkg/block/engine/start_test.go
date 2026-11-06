@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -41,6 +43,10 @@ type starter struct {
 	two  engine.Share // a second share of the store
 	id   journal.JournalID
 
+	more  []engine.Share // the shares withShares adds, started with one and two
+	spare engine.Share   // a share withSpare adds before Start, which Start does not bind
+	clock *sim.TestClock
+
 	mu      sync.Mutex
 	opens   []openCall
 	openErr error // what Open answers in place of the journal
@@ -57,6 +63,10 @@ type openCall struct {
 // starterConfig is what a test asks of newStarter.
 type starterConfig struct {
 	noRecord bool
+	noApply  bool
+	smallK   bool
+	spare    bool
+	shares   int
 	deps     func(*engine.Deps)
 }
 
@@ -67,6 +77,34 @@ type starterOption func(*starterConfig)
 func noRecord() starterOption {
 	return func(c *starterConfig) {
 		c.noRecord = true
+	}
+}
+
+// noApply builds the engine with no settings applied.
+func noApply() starterOption {
+	return func(c *starterConfig) {
+		c.noApply = true
+	}
+}
+
+// withShares adds n shares to the store, started with the first two.
+func withShares(n int) starterOption {
+	return func(c *starterConfig) {
+		c.shares = n
+	}
+}
+
+// withSpare adds a share that Start does not bind, for a test to bind.
+func withSpare() starterOption {
+	return func(c *starterConfig) {
+		c.spare = true
+	}
+}
+
+// withSmallK makes the store's key budget K seven keys a batch.
+func withSmallK() starterOption {
+	return func(c *starterConfig) {
+		c.smallK = true
 	}
 }
 
@@ -94,12 +132,28 @@ func newStarter(t *testing.T, opts ...starterOption) *starter {
 		logs: newLogRecorder(),
 		id:   journal.JournalID{'A'},
 	}
-	s.fs = kvstoretest.NewFS(t, memKV)
+	open := memKV
+
+	if c.smallK {
+		open = smallKV
+	}
+
+	s.fs = kvstoretest.NewFS(t, open)
 	s.lc = &startLifecycle{
 		Lifecycle: s.fs.Store.Lifecycle(),
 	}
 	s.one = enginetest.ShareOf(t, s.fs.Store, s.fs.Share.ID, 1<<30)
 	s.two = enginetest.AddShare(t, s.fs.Store, "two", 1<<30)
+
+	for i := range c.shares {
+		s.more = append(s.more, enginetest.AddShare(t, s.fs.Store, fmt.Sprintf("more%d", i), 1<<30))
+	}
+
+	if c.spare {
+		s.spare = enginetest.AddShare(t, s.fs.Store, "spare", 1<<30)
+	}
+
+	s.clock = sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 
 	if !c.noRecord {
 		err := s.fs.Store.RecordJournal(t.Context(), s.id, entity.NodeID{1}, entity.JournalDir(startDevice))
@@ -116,7 +170,7 @@ func newStarter(t *testing.T, opts ...starterOption) *starter {
 		Content:   s.fs.Store.Content(),
 		Lifecycle: s.lc,
 		Holds:     noHolds{},
-		Clock:     sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		Clock:     s.clock,
 		Logger:    slog.New(s.logs),
 		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
 			return ctx, func(error) {
@@ -133,8 +187,10 @@ func newStarter(t *testing.T, opts ...starterOption) *starter {
 		t.Fatal(err)
 	}
 
-	if err := e.Apply(enginetest.Settings); err != nil {
-		t.Fatal(err)
+	if !c.noApply {
+		if err := e.Apply(enginetest.Settings); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	s.e = e
@@ -180,7 +236,7 @@ func (s *starter) openCalls() []openCall {
 func (s *starter) start(t *testing.T) error {
 	t.Helper()
 
-	return s.e.Start(t.Context(), []engine.Share{s.one, s.two})
+	return s.e.Start(t.Context(), append([]engine.Share{s.one, s.two}, s.more...))
 }
 
 // write writes one byte to a new file of share id.
@@ -230,6 +286,43 @@ type startLifecycle struct {
 	engine.Lifecycle
 	fail    map[string]error
 	removed map[entity.ShareID]entity.TagRecord
+
+	// hold holds the next RaiseVersionLimits that names its share, any call
+	// when the share is zero, before the store sees it, once.
+	hold atomic.Pointer[heldRaise]
+
+	mu     sync.Mutex
+	plan   []error     // the next RaiseVersionLimits calls fail with these, in order; nil passes
+	raises []raiseCall // every RaiseVersionLimits call, in order
+}
+
+// heldRaise is a gate for the next RaiseVersionLimits naming share.
+type heldRaise struct {
+	g     *gate
+	share entity.ShareID
+}
+
+// raiseCall is one RaiseVersionLimits call: the shares it named, and the
+// stack of the goroutine that made it.
+type raiseCall struct {
+	shares []entity.ShareID
+	stack  string
+}
+
+// failRaises makes the next RaiseVersionLimits calls answer errs, in order.
+func (l *startLifecycle) failRaises(errs ...error) {
+	l.mu.Lock()
+	l.plan = append(l.plan, errs...)
+	l.mu.Unlock()
+}
+
+// raiseCalls is every RaiseVersionLimits call so far.
+func (l *startLifecycle) raiseCalls() []raiseCall {
+	l.mu.Lock()
+
+	defer l.mu.Unlock()
+
+	return slices.Clone(l.raises)
 }
 
 func (l *startLifecycle) JournalID(
@@ -275,6 +368,37 @@ func (l *startLifecycle) VersionLimits(
 func (l *startLifecycle) RaiseVersionLimits(ctx context.Context, to map[entity.ShareID]entity.JournalVersion) error {
 	if err := l.fail["RaiseVersionLimits"]; err != nil {
 		return err
+	}
+
+	buf := make([]byte, 1<<16)
+	call := raiseCall{
+		shares: slices.Collect(maps.Keys(to)),
+		stack:  string(buf[:runtime.Stack(buf, false)]),
+	}
+
+	l.mu.Lock()
+	l.raises = append(l.raises, call)
+
+	var planned error
+
+	if len(l.plan) > 0 {
+		planned = l.plan[0]
+		l.plan = l.plan[1:]
+	}
+
+	l.mu.Unlock()
+
+	if h := l.hold.Load(); h != nil {
+		_, named := to[h.share]
+
+		if (h.share.IsZero() || named) && l.hold.CompareAndSwap(h, nil) {
+			close(h.g.entered)
+			<-h.g.release
+		}
+	}
+
+	if planned != nil {
+		return planned
 	}
 
 	return l.Lifecycle.RaiseVersionLimits(ctx, to)
