@@ -266,9 +266,11 @@ func TestAMissedRecallRevokesTheGrant(t *testing.T) {
 	if _, err := s.Write(ctx, holder, vfs.Delegated(r.Grant.ID, h), 0, []byte("x"), vfs.Unstable); !stateKind(err, vfs.StateRevoked) {
 		t.Errorf("a write under the revoked delegation: %v, want StateError Revoked", err)
 	}
-	again, err := s.Open(ctx, holder, byName(s.fs.Root, "g", vfs.OpenExisting, entity.ReadData))
+	next := byName(s.fs.Root, "g", vfs.OpenExisting, entity.ReadData)
+	next.Want = openstate.GrantRead
+	again, err := s.Open(ctx, holder, next)
 	if err != nil || again.Grant != nil {
-		t.Errorf("the holder's next open: %+v, %v; want it offered no grant", again.Grant, err)
+		t.Errorf("the holder's next open asking a delegation: %+v, %v; want it offered none", again.Grant, err)
 	}
 }
 
@@ -459,5 +461,32 @@ func TestARevokedCallerStillReleasesItsLocks(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if got := waitOvers(hostCB); got["waits"] {
 		t.Errorf("the cancelled waiter was granted: %v", hostCB.Calls())
+	}
+}
+
+// An unlock resent under one lock sequence after a lost reply is answered
+// as the first was, not refused for the range it already released; and a
+// test under no open is decided as the caller's read of the file.
+func TestAnUnlockReplayAndANoOpenTestPassThrough(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	s.file(t, "f", s.alice.Principal, 0o666)
+	pc, _ := s.connected(t, signedIn(s.alice.Principal, 1), smb("alice-pc", 1))
+	ref := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
+	o := vfs.LockOwner{Client: pc.Client, Name: []byte("o"), Stack: true}
+	if _, err := s.Lock(ctx, pc, ref, vfs.LockReq{Owner: o, Ranges: span(0, 10, true)}); err != nil {
+		t.Fatal(err)
+	}
+	seq := &vfs.LockSequence{Index: 1, Seq: 1}
+	for i := range 2 {
+		if _, err := s.Unlock(ctx, pc, ref, o, []vfs.ByteRange{{Length: 10}}, vfs.Seqs{}, seq); err != nil {
+			t.Errorf("unlock %d under one lock sequence: %v", i, err)
+		}
+	}
+
+	shut := s.file(t, "shut", s.alice.Principal, 0o600)
+	host, _ := s.connected(t, proven(s.bob.Principal, inLab), nlmHost("build01", 1))
+	if _, err := s.TestLock(ctx, host, vfs.Anonymous(shut), vfs.LockOwner{Client: host.Client, Name: []byte("t")}, vfs.ByteRange{Length: 1}, false); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("bob's NLM test of alice's 0600 file: %v, want ErrAccess", err)
 	}
 }
