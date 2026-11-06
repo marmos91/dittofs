@@ -52,24 +52,17 @@ func TestEndedOlderSegmentDoesNotSpinTheTimer(t *testing.T) {
 	}
 }
 
-// TestSyncOverARecordStrandedInAnOlderSegmentIsNotNil pins that Sync names
+// TestSyncOverARecordStrandedInAnOlderSegmentIsASyncError pins that Sync names
 // every segment a file has an uncovered record in: the later record's sync
-// does not make the earlier, stranded one durable, and a waiter on it never
-// leads a sync of the active segment.
-func TestSyncOverARecordStrandedInAnOlderSegmentIsNotNil(t *testing.T) {
+// does not make the earlier, stranded one durable, and a waiter on it fails
+// with the segment's SyncError instead of leading a sync of the active one.
+func TestSyncOverARecordStrandedInAnOlderSegmentIsASyncError(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
 	f := file(1)
 	a, b := r.strand(t, f, f)
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	defer cancel()
-	err := r.d.Sync(ctx, f)
-	if err == nil {
-		t.Fatal("Sync returned nil over a record that is not durable")
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Sync = %v, want the context's error", err)
-	}
+	err := mustReturn(t, "Sync", r.syncAsync(context.Background(), f))
+	wantSyncError(t, err, a.Segment, f)
 	if r.d.Durable(a) {
 		t.Fatal("the stranded record reads durable")
 	}
@@ -86,11 +79,6 @@ func TestFailureIsRecordedAgainstTheSegmentSynced(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRigUnstarted(t, 1)
 	f, g := file(1), file(2)
-	a := r.appendWrite(t, f, 0, "a")
-	boom := errors.New("sync boom")
-	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, boom)); err != nil {
-		t.Fatal(err)
-	}
 	var once sync.Once
 	r.d.afterSync = func() {
 		once.Do(func() {
@@ -98,7 +86,13 @@ func TestFailureIsRecordedAgainstTheSegmentSynced(t *testing.T) {
 			r.appendWrite(t, g, 0, "b")
 		})
 	}
+	// Started before the first append: the end events are registered there.
 	r.d.Start(r.streams)
+	a := r.appendWrite(t, f, 0, "a")
+	boom := errors.New("sync boom")
+	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, boom)); err != nil {
+		t.Fatal(err)
+	}
 
 	err := mustReturn(t, "Sync of the failed segment", r.syncAsync(context.Background(), f))
 	var se *core.SyncError
@@ -140,6 +134,11 @@ func TestClosedStreamIsNotAFailedSync(t *testing.T) {
 func TestRollToAnUntrackedSegmentDoesNotSpin(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRigUnstarted(t, 1)
+	var calls atomic.Int64
+	r.d.afterSync = func() { calls.Add(1) }
+	// The layer registers its end consumer on Start, which must precede the
+	// stream's first append.
+	r.d.Start(r.streams)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "r1")
 	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, errors.New("seal boom"))); err != nil {
@@ -159,12 +158,11 @@ func TestRollToAnUntrackedSegmentDoesNotSpin(t *testing.T) {
 	if _, err := r.streams.For(f).Append(h, format.RecordBody{Payload: []byte("r2"), MTime: 1}); err == nil {
 		t.Fatal("the append into the new segment was expected to fail")
 	}
-	if n := r.ledgerLen(0); n != 1 {
-		t.Fatalf("the ledger holds %d entries, want only r1", n)
+	// The failed seal ended the first segment, so r1 left the ledger for that
+	// segment's window and the new segment tracks nothing.
+	if n := r.ledgerLen(0); n != 0 {
+		t.Fatalf("the ledger holds %d entries, want none", n)
 	}
-	var calls atomic.Int64
-	r.d.afterSync = func() { calls.Add(1) }
-	r.d.Start(r.streams)
 
 	r.clock.Advance(core.SyncBound)
 	// A Sync waiter on r1 leads the same way the timer does; it ends at the
@@ -211,6 +209,10 @@ func TestSyncOnAnEndedSegmentIssuesNoFsync(t *testing.T) {
 	if _, err := r.streams.For(f).Seal(false); err == nil {
 		t.Fatal("the seal was expected to fail")
 	}
+	// The failed seal is itself reported once, as a failure and an Error log,
+	// when its end event is taken; the Sync below must add nothing to either.
+	eventually(t, "the seal's end event to be counted", func() bool { return r.d.Stats().SyncFailures == 1 })
+	sealFailures, sealLogs := r.d.Stats().SyncFailures, logs.n.Load()
 	before := r.syncsOf(a.Segment)
 
 	err := mustReturn(t, "Sync on the ended segment", r.syncAsync(context.Background(), f))
@@ -222,10 +224,10 @@ func TestSyncOnAnEndedSegmentIssuesNoFsync(t *testing.T) {
 		t.Errorf("the ended segment saw %d fsyncs after the Sync, want %d", got, before)
 	}
 	st := r.d.Stats()
-	if st.Syncs != 0 || st.SyncFailures != 0 {
-		t.Errorf("Stats = %d syncs, %d failures for a call that issued no fsync, want 0 and 0", st.Syncs, st.SyncFailures)
+	if st.Syncs != 0 || st.SyncFailures != sealFailures {
+		t.Errorf("Stats = %d syncs, %d failures for a call that issued no fsync, want 0 and %d", st.Syncs, st.SyncFailures, sealFailures)
 	}
-	if n := logs.n.Load(); n != 0 {
-		t.Errorf("%d Error logs for a refused sync", n)
+	if n := logs.n.Load(); n != sealLogs {
+		t.Errorf("%d Error logs after the refused sync, want the seal's %d", n, sealLogs)
 	}
 }

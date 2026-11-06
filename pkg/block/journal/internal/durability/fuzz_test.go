@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -89,6 +90,156 @@ func FuzzSyncInterleaving(f *testing.F) {
 					t.Fatal(err)
 				}
 				maybeFailed[last.Segment] = true
+			}
+		}
+	})
+}
+
+// FuzzFailedSyncWindow drives writes over three files on one stream, Syncs,
+// and scheduled sync and write failures, and checks R14: a Sync that returns
+// nil never covers a record of a segment whose sync or append failed while the
+// record was unsynced, and no Sync hangs.
+//
+// The model dooms a record when a failure is certain to meet it: it was
+// unsynced when a sync failure was scheduled on its segment, was written to a
+// segment a failure was scheduled on or one a Sync already saw fail, or was
+// unsynced when a write to its segment failed. Nothing syncs by itself, since
+// the driven clock never moves, so a scheduled sync failure fires on the first
+// Sync that has a record of its segment to cover.
+func FuzzFailedSyncWindow(f *testing.F) {
+	f.Add([]byte{0, 4, 2, 1, 5})             // the RFC row: two files, one failed sync, both synced again
+	f.Add([]byte{0, 2, 1, 0, 2, 1, 0})       // the second refusal: a failure in the spare before a sync
+	f.Add([]byte{0, 1, 0, 3, 0, 1, 0, 5, 9}) // a failed append over a synced prefix
+	f.Add([]byte{0, 4, 8, 3, 0, 1, 5, 9})
+	f.Fuzz(func(t *testing.T, ops []byte) {
+		if len(ops) > 24 {
+			ops = ops[:24]
+		}
+		r := newRig(t, 1)
+		files := [3]core.FileID{file(1), file(2), file(3)}
+		type rec struct {
+			file   int
+			loc    segment.Location
+			doomed bool
+		}
+		var recs []*rec
+		armedSync := map[core.SegmentID]bool{}
+		failedSeg := map[core.SegmentID]bool{}
+		var writeArmed core.SegmentID
+		var last core.SegmentID
+		appended, stopped := false, false
+		var off int64
+
+		// The seam holds one scheduled fault, a second replacing the first.
+		anyArmed := func() bool {
+			if writeArmed != 0 {
+				return true
+			}
+			for _, on := range armedSync {
+				if on {
+					return true
+				}
+			}
+			return false
+		}
+		doomSegment := func(seg core.SegmentID, onlyUnsynced bool) {
+			for _, x := range recs {
+				if x.loc.Segment == seg && (!onlyUnsynced || !r.d.Durable(x.loc)) {
+					x.doomed = true
+				}
+			}
+		}
+
+		for _, op := range ops {
+			i := int(op>>2) % 3
+			switch op & 3 {
+			case 0:
+				if stopped {
+					continue
+				}
+				h := format.RecordHeader{Kind: format.KindWrite, File: files[i], Extent: core.Extent{Off: off, Len: 1}, Version: core.Version{Counter: uint64(off + 1)}, Tag: 1}
+				off++
+				p, err := r.streams.For(files[i]).Append(h, format.RecordBody{Payload: []byte("x"), MTime: 1})
+				switch {
+				case err == nil:
+					x := &rec{file: i, loc: p.Loc}
+					x.doomed = armedSync[p.Loc.Segment] || failedSeg[p.Loc.Segment]
+					recs = append(recs, x)
+					last, appended = p.Loc.Segment, true
+					if writeArmed != 0 && writeArmed != p.Loc.Segment {
+						writeArmed = 0 // the segment ended before the write failure met it
+					}
+					if writeArmed != 0 {
+						t.Fatalf("an append to segment %d succeeded with a write failure scheduled for it", writeArmed)
+					}
+				case errors.Is(err, segment.ErrStreamStopped):
+					stopped = true
+				case writeArmed != 0:
+					doomSegment(writeArmed, true)
+					failedSeg[writeArmed] = true
+					writeArmed = 0
+				default:
+					t.Fatalf("Append failed with no failure scheduled: %v", err)
+				}
+				r.settlePool(t) // a roll takes a spare; keep one ready
+			case 1:
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				err := r.d.Sync(ctx, files[i])
+				cancel()
+				doomedFile := false
+				for _, x := range recs {
+					doomedFile = doomedFile || (x.file == i && x.doomed)
+				}
+				switch {
+				case err == nil:
+					if doomedFile {
+						t.Fatalf("Sync of file %d returned nil with a record of a failed window", i)
+					}
+					for _, x := range recs {
+						if x.file == i && !r.d.Durable(x.loc) {
+							t.Fatalf("Sync of file %d returned nil with %+v not durable", i, x.loc)
+						}
+					}
+				case errors.Is(err, core.ErrSyncFailed):
+					if !doomedFile {
+						t.Fatalf("Sync of file %d failed with no failure scheduled for it: %v", i, err)
+					}
+					// The armed failure fired if the file had an unsynced
+					// record in its segment.
+					for _, x := range recs {
+						if x.file == i && armedSync[x.loc.Segment] && !r.d.Durable(x.loc) {
+							failedSeg[x.loc.Segment] = true
+							armedSync[x.loc.Segment] = false
+						}
+					}
+				default:
+					t.Fatalf("Sync of file %d returned %v (a hang or an unexpected error)", i, err)
+				}
+			case 2:
+				if !appended || anyArmed() || failedSeg[last] {
+					continue
+				}
+				if st, err := r.set.State(last); err != nil || st != segment.Active {
+					continue
+				}
+				rule := journaltest.Failing(journaltest.OpSync, format.SegmentName(last), 1, errors.New("injected sync"))
+				if err := r.seam.Schedule(rule); err != nil {
+					t.Fatal(err)
+				}
+				armedSync[last] = true
+				doomSegment(last, true)
+			case 3:
+				if !appended || stopped || anyArmed() || failedSeg[last] {
+					continue
+				}
+				if st, err := r.set.State(last); err != nil || st != segment.Active {
+					continue
+				}
+				rule := journaltest.Failing(journaltest.OpWrite, format.SegmentName(last), 1, errors.New("injected write"))
+				if err := r.seam.Schedule(rule); err != nil {
+					t.Fatal(err)
+				}
+				writeArmed = last
 			}
 		}
 	})

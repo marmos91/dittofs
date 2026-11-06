@@ -48,6 +48,7 @@ type rig struct {
 	clock   journaltest.DrivenClock
 	domains *testDomains
 	pool    *segment.Pool
+	set     *segment.Set
 	spares  int64
 	// sinks are the sinks the streams were built over, so a test can call
 	// Track and Synced on one directly.
@@ -72,11 +73,18 @@ func newRigUnstarted(t *testing.T, n int) *rig { return newRigTracing(t, n, nil)
 // newRigTracing is newRigUnstarted with a tracer on the layer.
 func newRigTracing(t *testing.T, n int, tracer core.Tracer) *rig {
 	t.Helper()
-	return newRigLogging(t, n, tracer, nil)
+	return newRigConfigured(t, n, func(c *Config) { c.Tracer = tracer })
 }
 
 // newRigLogging is newRigTracing with a logger on the layer.
 func newRigLogging(t *testing.T, n int, tracer core.Tracer, log *slog.Logger) *rig {
+	t.Helper()
+	return newRigConfigured(t, n, func(c *Config) { c.Tracer, c.Log = tracer, log })
+}
+
+// newRigConfigured is newRigUnstarted with the layer's Config adjusted by cfg
+// before the layer is built.
+func newRigConfigured(t *testing.T, n int, cfg func(*Config)) *rig {
 	t.Helper()
 
 	seam, err := journaltest.NewSeam(t.TempDir())
@@ -101,7 +109,9 @@ func newRigLogging(t *testing.T, n int, tracer core.Tracer, log *slog.Logger) *r
 	})
 	clock := journaltest.NewStopwatchClock()
 	domains := &testDomains{}
-	d := New(Config{Clock: clock, Domains: domains, Tracer: tracer, Log: log})
+	c := Config{Clock: clock, Domains: domains}
+	cfg(&c)
+	d := New(c)
 	sinks := map[uint32]segment.Sink{}
 	streams := segment.NewStreams(n, rigIdentity, set, pool, cache, func(no uint32) segment.Sink {
 		s := d.Sink(no)
@@ -110,7 +120,7 @@ func newRigLogging(t *testing.T, n int, tracer core.Tracer, log *slog.Logger) *r
 	})
 	t.Cleanup(func() { _ = streams.Close() })
 	t.Cleanup(d.Stop)
-	return &rig{d: d, streams: streams, seam: seam, clock: clock, domains: domains, pool: pool, spares: int64(2 * n), sinks: sinks}
+	return &rig{d: d, streams: streams, seam: seam, clock: clock, domains: domains, pool: pool, set: set, spares: int64(2 * n), sinks: sinks}
 }
 
 // file returns a file id distinguished by b.

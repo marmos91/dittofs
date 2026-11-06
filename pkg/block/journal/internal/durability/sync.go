@@ -24,6 +24,10 @@ type Config struct {
 	Domains Domains      // required
 	Tracer  core.Tracer  // optional
 	Log     *slog.Logger // optional; nil means discard
+	// Resolved, when set, is told that a failed segment's window is resolved
+	// (R19): no record of it is pending any more. It runs on the stream's
+	// worker with no lock held, so it must not wait on a Sync.
+	Resolved func(stream uint32, seg core.SegmentID)
 }
 
 // SyncDurationBounds are the upper bounds of the sync duration histogram's
@@ -45,6 +49,9 @@ type Histogram struct {
 type Part struct {
 	Syncs, SyncFailures uint64
 	SyncDuration        Histogram
+	// LastSyncError is the most recent sync failure across the streams, nil
+	// when none has failed.
+	LastSyncError *SyncFailure
 }
 
 // Durability is the ledger and the workers of every stream.
@@ -54,8 +61,32 @@ type Durability struct {
 	tracer  core.Tracer
 	log     *slog.Logger
 
-	// mu guards made, started and stopped, and is never held across a stream
-	// call.
+	// resolved is Config.Resolved: the announcement of a resolved window.
+	resolved func(stream uint32, seg core.SegmentID)
+
+	// readOnly is the journal's read-only entry, handed the failure that
+	// stopped a stream. It is set before Start.
+	//
+	// decision: nil until the code that turns the journal read-only installs
+	// it. While it is nil a stopped stream stays stopped, and its appends fail
+	// with segment.ErrStreamStopped wrapping the cause, and nothing more
+	// happens: the stream is refused, not the journal. Withdrawn once the
+	// entry is wired, when a stopped stream must always reach it.
+	//
+	// decision: it is reached only through an EndEvent carrying Stopped, but
+	// the stream also stops without an event, for example on a failed
+	// successor header write after a failed sync (or one carrying EROFS on
+	// any roll), whose stop travels through later appends' ErrStreamStopped;
+	// on End of an already ended segment with EROFS; and on a straggler
+	// write's EROFS after the segment's event was handed over. So a stream
+	// can stop with readOnly uncalled, as when segment 1's sync fails and
+	// then the spare's header write fails on the roll. The stream stack needs a stop notification of its own before this
+	// can claim a stopped stream always reaches it.
+	readOnly func(cause error)
+
+	// mu guards made, started and stopped. It is not held across a stream
+	// call, except that Start registers the layer's end consumer under it:
+	// nothing takes mu below a stream's own locks, so that cannot deadlock.
 	mu      sync.Mutex
 	made    map[uint32]*stream
 	started bool
@@ -96,13 +127,14 @@ func New(cfg Config) *Durability {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &Durability{
-		clock:   cfg.Clock,
-		domains: cfg.Domains,
-		tracer:  cfg.Tracer,
-		log:     log,
-		made:    map[uint32]*stream{},
-		done:    make(chan struct{}),
-		change:  make(chan struct{}),
+		clock:    cfg.Clock,
+		domains:  cfg.Domains,
+		tracer:   cfg.Tracer,
+		log:      log,
+		resolved: cfg.Resolved,
+		made:     map[uint32]*stream{},
+		done:     make(chan struct{}),
+		change:   make(chan struct{}),
 	}
 }
 
@@ -154,6 +186,23 @@ type stream struct {
 	synced map[core.SegmentID]int64
 	// failed holds the segments whose sync failed.
 	failed map[core.SegmentID]error
+	// ending holds the segments a sync found already ended whose end event
+	// has not been taken yet: no waiter leads a sync for them and the timer
+	// skips them.
+	ending map[core.SegmentID]struct{}
+
+	// counted holds the segments whose failed sync the worker counted and
+	// whose end event has not been taken yet. failed alone cannot say so: the
+	// completion pass drops a failure nothing names (a segment's only window
+	// comes from its end event, so no resolved window can precede it), and
+	// a seal's EndSeal for that segment arriving after would count the one
+	// fsync again. takeWindow removes the mark with the event, the one every
+	// ended segment gets.
+	counted map[core.SegmentID]struct{}
+	// ends are the end events the stream's consumer queued for the worker.
+	ends []segment.EndEvent
+	// windows are the pending windows, in end order.
+	windows []*window
 	// lastSeg is the newest segment the stream is known to have reached: the
 	// segment of a tracked record or of a sync, whichever is later.
 	lastSeg  core.SegmentID
@@ -178,8 +227,11 @@ type stream struct {
 	// The counters have one writer, the worker, and are read by Stats
 	// without mu, so a poll never waits on a lock an append takes.
 	syncs, failures atomic.Uint64
-	buckets         []atomic.Uint64
-	sum             atomic.Int64
+	// lastFail is the last sync failure, stored by the worker and read by
+	// Stats without mu.
+	lastFail atomic.Pointer[failStamp]
+	buckets  []atomic.Uint64
+	sum      atomic.Int64
 
 	// scratch and live are the worker's own, reused by each pass: the indices
 	// it completes and the segments that still hold an entry.
@@ -194,6 +246,8 @@ func newStream(d *Durability, no uint32) *stream {
 		live:    map[core.SegmentID]struct{}{},
 		synced:  map[core.SegmentID]int64{},
 		failed:  map[core.SegmentID]error{},
+		ending:  map[core.SegmentID]struct{}{},
+		counted: map[core.SegmentID]struct{}{},
 		kick:    make(chan struct{}, 1),
 		buckets: make([]atomic.Uint64, len(SyncDurationBounds)+1),
 	}
@@ -252,7 +306,9 @@ func (d *Durability) Sink(no uint32) segment.Sink {
 }
 
 // Start binds the streams, whose count must equal the number of sinks made,
-// and launches one worker per stream. It is idempotent and a no-op after Stop.
+// registers the layer for their end events and launches one worker per stream.
+// It is idempotent and a no-op after Stop. It must run before any stream's
+// first append: the stream panics on a consumer registered after one.
 func (d *Durability) Start(streams *segment.Streams) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -272,6 +328,7 @@ func (d *Durability) Start(streams *segment.Streams) {
 		started[i] = st
 	}
 	d.started = true
+	streams.OnEnd(d.onEnd)
 	for _, st := range started {
 		d.wg.Add(1)
 		go d.run(st)
@@ -279,15 +336,22 @@ func (d *Durability) Start(streams *segment.Streams) {
 }
 
 // Durable reports whether the record at the location is durable: its segment
-// has been synced through the record's end.
+// has been synced through the record's end. A location in a pending window
+// of a failed segment reports false, however far a sync reached.
 //
-// decision: a location with no ledger entry reports true. A caller holding a
-// location Append returned has a record that was tracked and, if it is gone
-// from the ledger, already completed, so true is right for every location the
-// contract lets a caller hold. It fails open for a location Append never
-// returned, which reads durable although nothing was written there. Overturn
-// this if a caller can ask about an arbitrary location, which then needs a
-// record of the completed ones to tell the two apart.
+// decision: a location with no ledger entry and in no window reports true. A
+// caller holding a location Append returned has a record that was tracked and,
+// if it is gone from the ledger, already completed, so true is right for every
+// location the contract lets a caller hold. It fails open for a location
+// Append never returned, which reads durable although nothing was written
+// there. Overturn this if a caller can ask about an arbitrary location, which
+// then needs a record of the completed ones to tell the two apart.
+//
+// It also fails open for a failed record once a window holding records is
+// dropped: the record leaves the window and the ledger, and no entry reads as
+// durable. That cannot happen yet, for only empty windows are resolved. The
+// code that resolves a non-empty window must keep failed records out of the
+// "no entry means durable" answer.
 //
 // ponytail: it scans every stream's ledger, O(streams x ledger). Upgrade to a
 // per-segment index when a profile shows the scan.
@@ -301,6 +365,12 @@ func (d *Durability) Durable(at segment.Location) bool {
 				st.mu.Unlock()
 				return ok
 			}
+		}
+		// A record of a pending window is never durable, whatever the
+		// segment's synced offset says.
+		if st.inWindowLocked(at) {
+			st.mu.Unlock()
+			return false
 		}
 		st.mu.Unlock()
 	}
@@ -320,13 +390,21 @@ func (d *Durability) Stats() Part {
 		Bounds: append([]time.Duration(nil), SyncDurationBounds...),
 		Counts: make([]uint64, len(SyncDurationBounds)+1),
 	}}
+	var last *failStamp
 	for _, st := range made {
+		if f := st.lastFail.Load(); f != nil && (last == nil || f.mono > last.mono) {
+			last = f
+		}
 		p.Syncs += st.syncs.Load()
 		p.SyncFailures += st.failures.Load()
 		p.SyncDuration.Sum += time.Duration(st.sum.Load())
 		for i := range st.buckets {
 			p.SyncDuration.Counts[i] += st.buckets[i].Load()
 		}
+	}
+	if last != nil {
+		sf := last.SyncFailure
+		p.LastSyncError = &sf
 	}
 	return p
 }
@@ -361,8 +439,8 @@ type work struct {
 	targets []target
 }
 
-// pending reports whether the record at loc is still in the ledger and no
-// sync covers it. A record gone from the ledger was covered and completed, so
+// pending reports whether the record at loc is in a pending window, or still in
+// the ledger and no sync covers it. A record gone from both was covered and completed, so
 // the answer does not depend on the segment's synced offset, which the worker
 // forgets once a segment has no entries. The caller holds mu.
 //
@@ -372,6 +450,21 @@ func (st *stream) pending(loc segment.Location) bool {
 	for i := len(st.ledger) - 1; i >= 0; i-- {
 		if st.ledger[i].w.Loc == loc {
 			return !st.covered(loc)
+		}
+	}
+	// A record of a pending window is pending whatever the segment's synced
+	// offset: no sync value satisfies a record of a failed segment (R14).
+	return st.inWindowLocked(loc)
+}
+
+// inWindowLocked reports whether a pending window holds the record at loc. The
+// caller holds mu.
+func (st *stream) inWindowLocked(loc segment.Location) bool {
+	for _, w := range st.windows {
+		for i := range w.entries {
+			if w.entries[i].w.Loc == loc {
+				return true
+			}
 		}
 	}
 	return false
@@ -435,7 +528,7 @@ func (d *Durability) snapshot() []*stream {
 }
 
 // targetsOf returns, for each id, the last record of that file in each
-// segment of the ledger that no sync covers. A sync covers a prefix of one
+// segment of the ledger that no sync covers, and in each pending window. A sync covers a prefix of one
 // segment, so covering a file's last record says nothing of its records in an
 // older segment; each segment gets its own target and waits for its seal or
 // fails through the failed map. Compaction removes only covered entries, so a
@@ -444,11 +537,7 @@ func (st *stream) targetsOf(ids []core.FileID) []target {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	var ts []target
-	for i := len(st.ledger) - 1; i >= 0; i-- {
-		e := &st.ledger[i]
-		if e.done || st.covered(e.w.Loc) {
-			continue
-		}
+	consider := func(e *entry) {
 		for _, id := range ids {
 			if e.w.File != id {
 				continue
@@ -460,6 +549,19 @@ func (st *stream) targetsOf(ids []core.FileID) []target {
 			if !dup {
 				ts = append(ts, target{file: id, loc: e.w.Loc})
 			}
+		}
+	}
+	for i := len(st.ledger) - 1; i >= 0; i-- {
+		if e := &st.ledger[i]; !e.done && !st.covered(e.w.Loc) {
+			consider(e)
+		}
+	}
+	// A pending window's records are targets whatever the segment's synced
+	// offset; the segment is failed, so the waiter gets its SyncError.
+	for j := len(st.windows) - 1; j >= 0; j-- {
+		w := st.windows[j]
+		for i := len(w.entries) - 1; i >= 0; i-- {
+			consider(&w.entries[i])
 		}
 	}
 	return ts
@@ -506,6 +608,21 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 // and a target still uncovered leads the next one. The worker, not the
 // waiter's goroutine, issues the sync so a cancelled waiter is never stuck in
 // the syscall.
+//
+// decision: a target of a failed segment answers its *core.SyncError as soon
+// as failed[seg] is stored. For the worker's own failed sync that is syncStep,
+// before the segment's End and before any end event, so before the window
+// exists; for a seal or append failure it is takeWindow, with the window. Either
+// way it is before the window's records are failed through the index. The answer is non-nil today because nothing here re-appends a
+// failed segment's records: the answer then holds for as long as the failure
+// stands. It stops holding once the code that re-appends them lands, for the
+// writes' Sync calls must then wait for the new sync (RFC 1 §5.3), so a
+// failFast answer there would be wrong. The order is not a small cost either:
+// §5.3 raises the loss generation before any Sync it fails returns, and an
+// early answer can return first. Overturn this when the window's records are
+// failed through the index (the window-failing step) or re-appended (the
+// re-append step): the answer must then follow the loss, and wait for a
+// re-append.
 func (st *stream) check(targets []target, failFast bool) (bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -524,8 +641,10 @@ func (st *stream) check(targets []target, failFast bool) (bool, error) {
 			continue
 		}
 		// A target in an older segment is waited on and never leads: the
-		// seal of its segment syncs it and reports through the sink.
-		if st.haveLast && t.loc.Segment == st.lastSeg {
+		// seal of its segment syncs it and reports through the sink. One in a
+		// segment a sync found ended never leads either: the segment takes
+		// no sync, and its end event is on its way.
+		if _, ended := st.ending[t.loc.Segment]; !ended && st.haveLast && t.loc.Segment == st.lastSeg {
 			lead = true
 		}
 	}
