@@ -75,7 +75,7 @@ func (h RecordHeader) Size() int64 {
 // record no room for itself at its own offset; a write or fill whose payload
 // is not the length in bytes; another kind carrying a payload; a non-zero
 // epoch in the version or in the clone's AsOf; a clone source offset that
-// overflows with the length; a loss reason outside 1–4; a header breaking the
+// overflows with the length; a loss reason outside 1–5; a header breaking the
 // kinds table's zero-field rules, which the decoder refuses as damage, so
 // what the writer hands over never comes back as a record it has to refuse.
 // It does not police a body's fields against the
@@ -128,7 +128,7 @@ func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body Reco
 		}
 	case KindLoss:
 		if !body.Loss.Reason.known() {
-			panic(fmt.Sprintf("format: loss reason %d is outside 1-4", uint8(body.Loss.Reason)))
+			panic(fmt.Sprintf("format: loss reason %d is outside 1-5", uint8(body.Loss.Reason)))
 		}
 	case KindCloneTarget:
 		if body.Clone.AsOf.Epoch != 0 {
@@ -375,7 +375,7 @@ func VerifyRecordBody(body []byte, identity core.JournalID, h RecordHeader) (Rec
 		}
 		reason := LossReason(flags >> 8)
 		if !reason.known() {
-			return RecordBody{}, fmt.Errorf("%w: loss reason %d, want one of 1-4", ErrDamaged, uint8(reason))
+			return RecordBody{}, fmt.Errorf("%w: loss reason %d, want one of 1-5", ErrDamaged, uint8(reason))
 		}
 		out.Loss = Loss{
 			Dropped:   core.Seq(binary.LittleEndian.Uint64(body[0:8])),
