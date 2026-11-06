@@ -206,6 +206,14 @@ homebrew_casks:
       - dfs-archive
     binaries:
       - dfs
+    # The binaries are not notarized, so Gatekeeper kills a quarantined copy
+    # on launch (exit 137). Casks quarantine downloads; strip it after install.
+    hooks:
+      post:
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}"]
+          end
     directory: Casks
     repository:
       owner: cubbit
@@ -224,6 +232,14 @@ homebrew_casks:
       - dfsctl-archive
     binaries:
       - dfsctl
+    # The binaries are not notarized, so Gatekeeper kills a quarantined copy
+    # on launch (exit 137). Casks quarantine downloads; strip it after install.
+    hooks:
+      post:
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}"]
+          end
     directory: Casks
     repository:
       owner: cubbit
