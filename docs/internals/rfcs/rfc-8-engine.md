@@ -270,16 +270,18 @@ from being either:
   sequences rather than stores them: they flow from the journal
   through the carver to the syncer and back, and a write is a journal append
   and an acknowledgement ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)). No payload is copied through engine state.
-- **Nothing on the request path spans shares or files, but three named points.**
+- **Nothing on the request path spans shares or files, but four named points.**
   The engine **MUST NOT** hold a lock, a queue or any other serialisation point
   shared by more than one file, or by more than one share, across I/O or a wait
   on the path of a write, a read or a commit. The request path shares exactly
-  three things, each bounded: the device journal's append stream and its sync,
+  four things, each bounded: the device journal's append stream and its sync,
   which every file of the journal uses by design ([RFC 1 §5](rfc-1-journal.md#5.%20Durability%20and%20ordering)); the
   journal's group existence commit, bounded at `G` files and split on conflict,
   which only a stability point covering an overwrite waits on, and joins rather
-  than issues ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal), [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)); and the
-  capacity reservation, an atomic counter taken without a lock ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)).
+  than issues ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal), [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)); the
+  capacity reservation, an atomic counter taken without a lock ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)); and
+  the version limit trigger's per-journal counters, atomics taken without a lock
+  ([§2.7](#2.7%20The%20version%20limit)).
   Per-file state is keyed by file and per-share state by share ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)).
   Background work runs per journal ([§6.1](#6.1%20The%20work%20queue)), and the events that feed it
   never block the request that posts them. The table of storage bindings is read
@@ -1007,7 +1009,9 @@ max-write — raising every served share's first, as [§2.7](#2.7%20The%20versio
 raised counter leaves fewer versions than its raise trigger; for an imported
 share, it then strands the journal's unclaimed tags as step 5 does. It opens the
 share's flow and raises the shard's incarnation before it publishes the
-binding; a failure undoes these in reverse and publishes nothing. Only then is
+binding, before or after the limit write and the strand: start raises the
+incarnation after the limits (step 1) and before the strand (step 5). A failure
+undoes these in reverse and publishes nothing. Only then is
 the share served. Imported refs keep the versions they
 were written at, and a new write staged at a lower version than an imported ref
 would lose to it: reported offloaded, released, and read back as the older,
@@ -1257,10 +1261,13 @@ every served share's limit at the journal's next version, as `Stats`
 reports it ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), plus one block (proposal: 2²⁴ versions; the counter
 is 64-bit), and passes it with `SetVersionLimit`
 ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)) once every write has committed. While the journal serves, the engine raises every served
-share's limit by a block whenever `Stats` shows fewer
+share's limit to one block above the larger of the limit last passed with
+`SetVersionLimit` and the journal's next version, as `Stats` reports it,
+whenever `Stats` shows fewer
 versions left than the larger of half a block and the journal's peak version
 rate times the margin, and passes the new limit only after every share's
-raise has committed. Both run in as many transactions as the key budget `K`
+raise has committed. A raise that fails at the store is retried until it
+commits ([§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)). Both run in as many transactions as the key budget `K`
 takes — 10⁴ shares are 2 × 10⁴ keys — never one over every share (E40). It
 evaluates that trigger on every version it issues. The **peak version rate** is the highest
 count of versions drawn in any one second of the last 60 s; the **margin** is
@@ -3873,7 +3880,7 @@ remote, cold, or pinned. Residency is computed ([RFC 0 §4.2](rfc-0-data-lifecyc
 | E34 | A clone never waits on the remote tier: unoffloaded source bytes are copied through the journal and synced before phase 1 commits their existence, carved refs are adopted by metadata-only batches, and a source run uncarved and not held at `asOf`, or whose chunk record is gone, is carried into the destination as uncarved, reading **Lost** there, never zeros and never a stale ref. |
 | E35 | A failed sync window drops exactly its data records, re-appending its header-only ones outside a read-only journal ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)), is reported once to the next `Sync` of each file with a write in it, waiting or not, and raises that file's loss sequence; later syncs of the file proceed. |
 | E36 | The lost-journal operator gate applies only to a shard with no surviving replica. |
-| E37 | The request path shares only the journal's append stream and sync, the bounded group existence commit, and the capacity counter; no lock shared across files is held across I/O. |
+| E37 | The request path shares only the journal's append stream and sync, the bounded group existence commit, the capacity counter, and the version limit trigger's per-journal counters; no lock shared across files is held across I/O. |
 | E38 | The engine fences the node once a write transaction is outstanding or failing and 30 s have passed since the later of the last commit and the moment one became outstanding or failing on a node with none, answering writes and stability points `ErrDelay` and serving reads; it clears the fence on the next commit, or once none is outstanding or failing. |
 | E39 | A pass's chunk IDs, names and commits stay in the write namespace it captured with its offer; a plan whose namespace is no longer the share's write namespace is refused before its intent. |
 | E40 | No engine transaction exceeds the key budget `K`: group commits, offload commits, removal and clone batches are bounded by keys written, not by files or refs. |

@@ -339,7 +339,8 @@ listed test fails on the regression it names (after "catches").
 
 **Subtask T5.1 estimate: 4.25 man-days.**
 
-- **Track:** B. **Depends on:** epic 4's T4.3, T4.5 and T4.7; epic 8's T8.1a; T8.1b lands with it.
+- **Track:** B. **Depends on:** epic 4's T4.3, T4.5 and T4.7; epic 8's T8.1a; epic 6's T6.7
+  (`issued`); T8.1b lands with it.
 - **Covers:** R2–R10, R28, R29, R32 (the call's half), R33.
   RFC 8 §8.1's first two rules, steps 2–4, "Once its journal step is done, a
   removal does not fail" and its terminal failure, for `Truncate`; §5.1's "A commit carries
@@ -357,7 +358,11 @@ listed test fails on the regression it names (after "catches").
   (D10), the file's other pending existence committed first as RFC 8 §8.1 gives. In
   `groupcommit.go`, the capture's skip and `commitThrough`'s wait (D1, D2). The wait
   on T8.1a's admitted-write count (D2). `Existence.Size` in `kvstore` and `Deps` (D4);
-  `kvstore`'s truncate above the File record's size (RFC 6 §6.2) and `kvstore.Refused`.
+  `kvstore`'s truncate above the File record's size (RFC 6 §6.2) and `kvstore.Refused`. The
+  version the journal step returns is passed to epic 6's `issued`, as `Write` and `Draw` do
+  (RFC 8 §2.7). The fake journal draws the versions of `Truncate`, `Deallocate`, `Delete`
+  and `CloneTarget` from the same counter T6.7 bounds, so these tests run with T6.7's test
+  block.
 - **Rows:** §8.1 terminal failure, the call's half, over the real journal, `kvstore` and E2's
   fault-injecting `kv.KV` (T2.3); red until the journal's `Truncate` and `Settle` exist.
   `TestATerminalRemovalCommitsTheExistenceBelowItBeforeItsSettle` and
@@ -390,22 +395,30 @@ listed test fails on the regression it names (after "catches").
   without their superseded runs);
   `TestATerminalRemovalCommitsTheExistenceBelowItBeforeItsSettle` and
   `TestATerminalRemovalCommitsALossBelowItBeforeItsSettle` (catch a settle before the
-  existence below it commits, a loss's included).
+  existence below it commits, a loss's included); over the fake, with the test block of 16,
+  a `Truncate` whose version is past the trigger and no other call issuing a version: the
+  raise runs and the journal gets the new limit (catches a truncate that does not call
+  `issued`).
 
 ### T5.2 `Deallocate`
 
 **Subtask T5.2 estimate: 1 man-days.**
 
-- **Track:** B. **Depends on:** T5.1.
+- **Track:** B. **Depends on:** T5.1; epic 6's T6.7 (`issued`).
 - **Covers:** R11–R13. RFC 8 §8.2, and §8.1 step 3's merged hole.
 - **Deliverables:** `Deallocate` over T5.1's phase 1 with `kvstore.RemoveDeallocate`, the
-  entry's lock held across the journal's `Deallocate` and the insert, under D2's marker.
+  entry's lock held across the journal's `Deallocate` and the insert, under D2's marker. The
+  version the journal step returns is passed to epic 6's `issued`, as `Write` and `Draw` do
+  (RFC 8 §2.7).
 - **Rows:** §8.2 deallocate, over the real journal; red until the journal's `Deallocate`
   exists.
 - **Tests:** over the real `kvstore`, the merged hole present after phase 1 with phase 2 held
   by the loop's hook (catches a hole left to phase 2); a write into the extent between the
   phases reads back, not zeros (the same bug through its consumer); over the fake, no
-  `WriteAt` during a deallocate (catches zeros staged).
+  `WriteAt` during a deallocate (catches zeros staged); over the fake, with the test block
+  of 16, a `Deallocate` whose version is past the trigger and no other call issuing a
+  version: the raise runs and the journal gets the new limit (catches a deallocate that does
+  not call `issued`).
 
 ### T5.3 The removal loop
 
@@ -446,7 +459,7 @@ listed test fails on the regression it names (after "catches").
 
 **Subtask T5.4 estimate: 4.5 man-days.**
 
-- **Track:** B. **Depends on:** T5.1, T5.3.
+- **Track:** B. **Depends on:** T5.1, T5.3; epic 6's T6.7 (`issued`).
 - **Covers:** R1, R19–R25.
   RFC 8 §8, §8.1 step 1, step 3's re-check and abort, the pending release and
   its channel, step 4 after a retry; §2.5 step 3's abort; RFC 17 §4.3, §5.3; RFC 20 §7.3.
@@ -458,7 +471,8 @@ listed test fails on the regression it names (after "catches").
   kept across the retries; step 4 once the retried phase 1 commits; `removal_stalled` after
   five failed retries, cleared by the commit or the abort; `kvstore`'s holder read (D6). The
   `DelayClone` branch is epic 8's; `Close`'s and `Drop`'s `ErrUnavailable` are tested in
-  epic 6.
+  epic 6. The version the journal step returns is passed to epic 6's `issued`, as `Write`
+  and `Draw` do (RFC 8 §2.7).
 - **Rows:** none of its own.
 - **Tests,** over the fake: `Delete` never calls the journal's `Release` (catches the
   eviction call); a store stalled past the deadline, then cleared: the channel yields nil
@@ -470,7 +484,9 @@ listed test fails on the regression it names (after "catches").
   `kvstore`: an open by handle racing the last close's release loses no bytes, and an
   aborted phase 1 leaves the file openable, its loss logged and the reservation counter at
   zero (catches an abort that drops the pending writes it should keep, or keeps the file
-  marked).
+  marked); over the fake, with the test block of 16, a `Delete` whose version is past the
+  trigger and no other call issuing a version: the raise runs and the journal gets the new
+  limit (catches a delete that does not call `issued`).
 
 ### T5.5 Removals interleaved with writes and commits
 
