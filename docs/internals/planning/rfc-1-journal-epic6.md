@@ -6,7 +6,7 @@ read-only and mixed durability); [RFC 28](../rfcs/rfc-28-journal-format.md) §2.
 append, a failed segment, the spare's directory entry) and §3.3 (the read-time half: "The response
 is to stop holding the extent" and "Scope of the refusal").
 **Track:** A.
-**Epic 6 estimate: 8 subtasks, 40.25 man-days.**
+**Epic 6 estimate: 9 subtasks, 42 man-days.**
 **Depends on:** sync point **S2, red suite in CI**; epic 1's `core` types, errors, `Stats` shapes and
 tracer; epic 2's test clock, fault schedule, crash-simulating seam and fixture; epic 3's record
 codec (the loss kind) and the `platform` sync and platform checks; epic 4's retained-extent set
@@ -16,7 +16,7 @@ reports every completed sync of a segment, a seal's and a roll's included, the e
 state and its end event (its T5.10), the spare pool and the headroom, and its background workers
 (the pool's refill, the idle seal, retirement's unlinks), which consult this epic's read-only
 state before they take a spare or write (its R89).
-**Blocks:** sync point **S3, the walking skeleton**: T6.1 to T6.4 and T6.7 land before it, with
+**Blocks:** sync point **S3, the walking skeleton**: T6.1 to T6.4, T6.7 and T6.9 land before it, with
 the parts of epic 5 they need (the spare pool, the seal, the roll and the end event), so
 the skeleton's writes are tracked and synced, the content they supersede stays retained until
 their sync, a failed sync resolves its window, and a read that finds a record that does not
@@ -104,7 +104,7 @@ sync and to end a segment, and epic 4's index to drop and re-hold extents.
   unlink, and when a segment is not held: epics 5 and 9. This epic publishes which records are
   durable (R12); it applies none of those rules.
 - Selecting a segment for repack, and refusing to select a damaged one that still backs held
-  extents it cannot produce: epic 9. This epic reports the damage and clears it (R60).
+  extents it cannot produce: epic 9. This epic reports the damage, keeps it counted until close, and ends the block (R60).
 - `Offered`'s whole-record verification, repack's verification, and `report`'s in-memory-only
   offloaded bits in a read-only journal: epic 9. They call this epic's handler and read its
   state.
@@ -137,8 +137,8 @@ sync and to end a segment, and epic 4's index to drop and re-hold extents.
   amendments this epic makes to it).
 - **S2**, red suite in CI: E2's suite runs in CI from every pull request.
 - **S3**, walking skeleton: E5's streams with the spare pool, the seal, the roll and the end
-  event (its T5.1, T5.2, T5.4a, T5.4b, T5.5, T5.6, T5.7 and T5.10), this epic's T6.1 to T6.4 and
-  T6.7, and E8's `WriteAt` and `ReadAt`.
+  event (its T5.1, T5.2, T5.4a, T5.4b, T5.5, T5.6, T5.7 and T5.10), this epic's T6.1 to T6.4,
+  T6.7 and T6.9, and E8's `WriteAt` and `ReadAt`.
 
 ## 2. General rules for each epic
 
@@ -244,7 +244,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 | R11 | Mixed durability: on one stream, the bytes a writer that syncs every 4 KiB waits for stay at or below what another writer appended within one sync's interval, and never grow with that writer's file size | MUST | RFC 1 §9.7, §5.2 | T6.8 |
 | R12 | A completed sync advances the stream's synced-through value and publishes which records are durable, so that epics 5, 7 and 9 can apply the rules that a release record, a segment's records and a removal's retention are durable before an unlink or a drop. This epic applies none of those rules | invariant | RFC 1 §5.1 | T6.1 |
 | R87 | A record whose resolution touches what its publish put in the index (the content a write, fill or repack copy superseded, which a sync lifts and a failed window holds again; or the marker a removal published and the extent a release dropped, which the read-only undo reverses, R33) is resolved (its superseded content lifted on sync, its window failed or re-appended) only under its file's append domain, which each of those paths holds from its `Append` to its publish (RFC 1 §8.2), so resolution never sees such a record between the two: a sync that completes in that gap lifts the content once the publish has made it retained, and a window that fails in it never has a failed record brought back by the publish. A loss record supersedes no content, publishes nothing into a file's index that its resolution changes, and is never failed outside a read-only journal (R22), so the gap cannot change what its resolution does; the worker resolves it with no file domain. An offloaded, unmark, hold, unhold, stamp or forget record is never failed outside a read-only journal either, but its read-only undo reverses what its publish changed (R33), and RFC 1 §8.2's file append row lists none of them: the lock that keeps the undo out of the gap is epic 9's to name (§9). Resolution runs on the stream's own worker, or for a corrupt record on the reader under the same file append domain (T6.7), never under an appender's locks | invariant | RFC 1 §3.8, §5.3, §8.2, §8.3 | T6.1, T6.4, T6.7 |
-| R88 | A removal, which must be durable on return and has appended its header-only record, waits for that record's sync with no context, consulting and clearing no file's mark, and with its file's append domain released. When the record's window fails, the wait follows the record to its re-appended location; it returns `ErrJournalReadOnly` when the journal turns read-only before the record is durable, and `ErrClosed` when the journal closes. It never returns `SyncError` or the context's error | invariant | RFC 1 §3.6, §3, §5.3, §5.4, §8.7 | T6.1, T6.5, T6.6 |
+| R88 | A removal, which must be durable on return and has appended its header-only record, waits for that record's sync with no context, consulting and clearing no file's mark, and with its file's append domain released. When the record's window fails, the wait follows the record to its re-appended location; it returns `ErrJournalReadOnly` when the journal turns read-only before the record is durable, and `ErrClosed` when `Stop` runs first (epic 8's `Close` drains its removals before it stops `Durability`, so one of its removals returns when its sync is released, not with `ErrClosed`). It never returns `SyncError` or the context's error | invariant | RFC 1 §3.6, §3, §5.3, §5.4, §8.7 | T6.1, T6.5, T6.6 |
 | R85 | A sync epic 5 issues to seal or roll a segment is a completed sync like this epic's own: it advances which records are durable, drops the ledger entries it covered, lifts the retained extents its records superseded and releases the `Sync` calls waiting on them. A failed seal sync ends the segment, and its window reaches the failed-window resolution like a failed append's | invariant | RFC 1 §5.2, §5.3, RFC 28 §2.2 | T6.1, T6.3 |
 
 **A failed sync window**
@@ -320,7 +320,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 | R57 | The refusal is confined to the records that do not verify: one bad record says nothing of its neighbours | MUST | RFC 28 §3.3 | T6.7 |
 | R58 | Each record dropped as corrupt is a loss event with a loss record, unless another copy of it verifies. Among copies with equal numbers the one that verifies is used, and a copy that does not verify while another with its sequence number does is not a loss and gets no loss record. A copy used this way is served in place; outside a read-only journal it is then re-appended to a healthy segment, so a resolved failed segment never again backs a record of its window (RFC 1 §5.3) | invariant | RFC 28 §3.3, RFC 1 §5.3 | T6.5, T6.7 |
 | R59 | A record found corrupt before its sync is dropped with an unsynced loss record, and one found corrupt after its sync with a synced one | invariant | RFC 1 §3.8 | T6.7 |
-| R60 | A segment holding one or more unreadable records is reported, in `DamagedSegments` and its per-segment row, and is not selected by a reclamation pass while it still backs held extents it cannot produce. Once those extents are dropped it may proceed. (Selection is epic 9's; this epic reports and clears the damage) | MUST | RFC 28 §3.3, RFC 1 §3.7 | T6.7 |
+| R60 | A segment holding one or more unreadable records is reported, in `DamagedSegments` and its per-segment row, and stays counted, with its row, until the journal closes, even after the extents it backed are dropped; a runtime retirement, which `Retired` reports, marks the row retired and keeps it (RFC 1 §4.4). It is not selected by a reclamation pass while it still backs held extents it cannot produce; once those are dropped only that block ends (a repack-ready signal), never the count or the row. (Selection is epic 9's; this epic reports the damage and ends the block) | MUST | RFC 28 §3.3, RFC 1 §3.7 | T6.7 |
 | R61 | A read that fails with an I/O error, not a verification failure, drops nothing and reports no loss. What the journal does with such a read is open (D11) | invariant | RFC 28 §3.3 | T6.7 |
 
 **Stats and metrics of this area**
@@ -334,7 +334,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 | R90 | A read appends nothing and never surfaces an append refusal: a corrupt record's extents are dropped on the read and the generation is raised there, under the stream's leaf mutex (memory only), before `Corrupt` returns, so a `Sync` or a read of the generation that follows already includes the loss (RFC 1 §3.8, RFC 8 §5.1); its loss record and then its event are handed to the stream's worker (RFC 1 §3.8 orders the record before the event, not before the read returns), so a read never rolls, seals or waits on a sync or another file's write (RFC 1 §8.1). `Corrupt` returns `Dropped` with no error, and a loss record the worker cannot append leaves the drop standing (R83) | invariant | RFC 1 §3.8, §5.4, §6, §8.1, RFC 28 §3.3 | T6.7 |
 | R91 | A record found corrupt before its sync reaches nothing else: the content it superseded is held again, as a failed window's is, and its ledger entry is removed, so a later sync does not lift that content and a later failure of its window does not re-append it | invariant | RFC 1 §3.8 | T6.7 |
 | R92 | A loss of a record an open drops as corrupt, which does not fit in the open reserve, is deferred (the loss records of a read-only journal's failed records are never deferred, R34): the extent is dropped and not held, a synced loss outranks what it superseded and is registered in E4's marker set as if its record were on disk (R84), the generation follows its rules, and the event is published marked deferred, but no record is appended. The record is written with the copy that retires the dropped record's segment (epic 9's repack and epic 7's emptying), never on the headroom. `Settle` ends only the marker; the record is still owed | invariant | RFC 1 §3.8, §6, §3.10 | T6.2 |
-| R86 | Every drop and re-hold this epic makes in the index (a retained extent lifted on sync, a failed window's drop and re-hold, the read-only undo, a corrupt record's drop) is passed, with epic 4's change, to the account function the journal registers, so held and dirty bytes, the per-share figures and the dirty-file list stay maintained counters | invariant | RFC 1 §3.7 | T6.4, T6.6, T6.7 |
+| R86 | Every drop and re-hold this epic makes in the index (a retained extent lifted on sync, a failed window's drop and re-hold, the read-only undo, a corrupt record's drop) is passed, with epic 4's change, to the account function the journal registers, so held and dirty bytes, the per-share figures and the dirty-file list stay maintained counters | invariant | RFC 1 §3.7 | T6.4, T6.6, T6.7, T6.9 |
 
 **Test rows of the RFCs for this area**
 
@@ -378,7 +378,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
   - `Sync(ctx, ids ...core.FileID) error`, and `SyncBound() time.Duration`;
   - `WaitDurable(at) error`: the internal wait of a removal for its header-only record, with no
     context and no mark consulted or cleared, following the record to its re-appended location,
-    and returning nil, `ErrJournalReadOnly` or `ErrClosed`, never `SyncError` (R88). Epic 8's
+    and returning nil, `ErrJournalReadOnly` or, when `Stop` runs first, `ErrClosed`, never `SyncError` (R88). Epic 8's
     removals call it, with the file's append domain released, never the public `Sync`;
   - `Durable(at segment.Location) bool`: whether the record at a location is covered by a
     completed sync (R12);
@@ -460,7 +460,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
   retained extent lifted on sync, a failed window's drop and re-hold, the read-only undo and a
   corrupt record's drop change held and dirty bytes, the per-share figures and the dirty-file
   list, which epic 8 keeps as maintained counters (RFC 1 §3.7). `Durability` takes, when it is
-  built, the account function epic 8's constructor passes (`datapath.Account`, epic 8's D16), and
+  built, the account function epic 8's constructor passes (`datapath.Account`, epic 8's D16, which takes the `index.HeldDelta` epic 4's mutators return), and
   every index change it makes is passed to it with epic 4's change (R86). The file append
   domain's table is passed the same way: epic 8's `datapath` owns it (its D15) and imports this
   package, so this package declares the small interface it needs (lock a file's domain, get its
@@ -494,7 +494,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
   record when another copy with its sequence number verifies. At read time the index holds one
   location per extent, so the only other copies the journal knows are the failed segment's
   originals of a re-append (T6.5), until that segment is retired. `Durability` keeps those in a
-  table by sequence number, which T6.7 builds and T6.5 fills through `RegisterCopy`, each with the payload checksum the ledger kept when the record was
+  table by sequence number, drops a segment's entries when epic 5's retirement executor reports the segment retired (a hook its constructor takes, T5.9), so the table is bounded by the failed segments still on disk, and splits a failed copy read: a gone segment (`ErrSegmentGone` from E5's descriptor cache, or `ENOENT` from the seam) is a copy that does not verify, while every other error (`ErrNoDescriptor`, `EIO`, a short read) is D11's case and decides nothing, which T6.7 builds and T6.5 fills through `RegisterCopy`, each with the payload checksum the ledger kept when the record was
   first written, so a copy is verified against that checksum and never against the one read back
   with it (RFC 1 §5.3: a failed segment's pages are not evidence). A copy that verifies is never
   a loss (RFC 28 §3.3): `Corrupt` repoints the index to it in place and returns `UseCopy` with its
@@ -611,6 +611,7 @@ pkg/block/journal/
       corrupt.go     T6.7   the corruption handler and the copy table
     index/
       window.go      T6.4   the failed-window operation exported for this package
+      delta.go       T6.9   HeldDelta, returned by every mutator that changes held state
     *_test.go
 ```
 
@@ -847,7 +848,7 @@ pkg/block/journal/
 
 **Subtask T6.4 estimate: 6.5 man-days.**
 
-- **Track:** A. **Depends on:** T6.1, T6.2, T6.3; epic 4's retained-extent set and its failed-window
+- **Track:** A. **Depends on:** T6.1, T6.2, T6.3, T6.9; epic 4's retained-extent set and its failed-window
   operation.
 - **Covers:** R6, R16–R19, R25–R27, R44, R48, R51, R66, R69, R71, R72, R76, R82, R86, R87.
 - **Deliverables:** `internal/durability/retain.go`: when a sync completes, for each published
@@ -1007,7 +1008,7 @@ pkg/block/journal/
 
 **Subtask T6.6 estimate: 6 man-days.**
 
-- **Track:** A. **Depends on:** T6.3, T6.4; E3's platform checks; E5's `Make` and its workers'
+- **Track:** A. **Depends on:** T6.3, T6.4, T6.9; E3's platform checks; E5's `Make` and its workers'
   read-only check (its R89).
 - **Covers:** R16, R24, R28–R38, R62, R63, R75, R83, R86, R89.
 - **Deliverables:** `internal/durability/readonly.go`: the state and the error that entered it;
@@ -1078,15 +1079,15 @@ pkg/block/journal/
 
 ### T6.7 A record that does not verify when it is read
 
-**Subtask T6.7 estimate: 5.75 man-days.**
+**Subtask T6.7 estimate: 6 man-days.**
 
-- **Track:** A. **Depends on:** T6.1 (`Durable`, the ledger), T6.2, T6.3 (the pending window it takes a record out of), T6.4 (the file marks it sets); E3's record codec; E4's index
-  and its failed-window operation (E4-6). The read-only check is the function `Durability` holds
+- **Track:** A. **Depends on:** T6.1 (`Durable`, the ledger), T6.2, T6.3 (the pending window it takes a record out of), T6.4 (the file marks it sets), T6.9 (`index.HeldDelta`); E3's record codec; E4's index
+  and its failed-window operation (E4-6); T5.9's retirement executor, which calls `Retired` (a hook its constructor takes). The read-only check is the function `Durability` holds
   (D10), so T6.6 is not a dependency.
 - **Covers:** R17, R44, R54–R62, R69, R70, R76, R80, R81, R86, R87, R90, R91.
 - **Deliverables:** `internal/durability/corrupt.go`: `Corrupt(ctx, Corruption) (CorruptOutcome,
   error)` (D9), and the copy table of D10 with `RegisterCopy(seq, location, checksum)`, which
-  T6.5 fills. Given the record a reader found not to verify (checksum, or header against its
+  T6.5 fills, and `Retired(segment)`, the hook epic 5's retirement executor calls after each retirement (T5.9) and epic 8's `New` passes it, which drops that segment's entries and marks its damaged row retired, keeping the row (R60). A copy is read through E5's descriptor cache, which never surfaces `ENOENT`: it returns `ErrSegmentGone` for a segment whose file does not exist and for one the retirement executor has closed, which it does before the unlink, and `ErrNoDescriptor` when the descriptor budget is spent. A copy whose segment is gone (`ErrSegmentGone`, or `ENOENT` from the seam) counts as one that does not verify, so the record that failed verification goes to `Lose` rather than the read erroring for ever. Every other error is not a verdict, as in D11: `ErrNoDescriptor`, `EIO` and a short read make `Corrupt` return the error and drop nothing, so a descriptor budget spent or a transient error on a failed segment never drops dirty data that would have verified. A `decision:` marker at the copy read records the split and what overturns it (#3511's retry bound, once it settles, or #3440's answer that an `EIO` drops), and its ceiling: a persistent `EIO` on the copy errors every read of that record until the failed segment is retired, which for a read-only journal, whose retirement does not run (R89), is until it closes. Given the record a reader found not to verify (checksum, or header against its
   catalog entry), it first looks for another copy of it with the same sequence number in the copy
   table (D10) and verifies it against the payload checksum the table kept from the write, never
   the one read back with it. When that copy verifies, it repoints the index to the copy in place
@@ -1126,8 +1127,9 @@ pkg/block/journal/
   its per-segment row, and returns `Dropped`, after which the caller reports the extent missing;
   the read appends nothing and an append refusal reaches only the worker, where the drop stands
   (R83, R90). A read that failed with an I/O error is returned as such and drops
-  nothing (D11). `Stats().DamagedSegments` and the row; a call that clears the damage once the
-  segment backs no extent it cannot produce. The `decision:` of D11 and the `ponytail:` of D10 sit
+  nothing (D11). `Stats().DamagedSegments` and the row stay until the journal closes, since `Corrupt` drops the
+  extents in the same call that marks the segment; the one thing cleared is the block on
+  reclamation selection, once the segment backs no extent it cannot produce. The `decision:` of D11 and the `ponytail:` of D10 sit
   here.
 - **Why over 5 man-days:** the copy, the re-hold of an unsynced record and the synced flag
   decided against the ledger are the outcomes of the one decision this handler makes; split off,
@@ -1188,8 +1190,15 @@ pkg/block/journal/
     claim on it until the worker's re-append lands: a retirement of the segment, started after the
     retirer read "resolved" and while a `Corrupt` on another file of the segment takes its claim,
     is refused, and a copy whose segment epic 5 reports retired is a loss.
-  - The segment is counted damaged while it backs an extent it cannot produce, and a repack-ready
-    signal is given once none remains.
+  - A segment's table entries are dropped when it is retired: a re-appended record found corrupt
+    after the original's segment was retired finds no entry and is a loss, never an error, and the
+    table holds no entry for a retired segment.
+  - A copy whose segment is gone (`ErrSegmentGone`, or `ENOENT`) is a loss; one whose read fails with
+    `ErrNoDescriptor`, `EIO` or comes back short drops nothing and returns the error, even when the
+    original is intact.
+  - The segment is counted damaged from the call that reports it until the journal closes, with its
+    row, even though `Corrupt` has already dropped its extents (so `DamagedSegments` never reads 0
+    at once); the repack-ready signal is given once no held extent it cannot produce remains.
   - A read that fails with `EIO` drops nothing and reports no loss.
 - **Tests:** a fuzz-driven flip at every byte of a record's header and payload, asserting no byte
   of the record is ever served (R54); the dirty and offloaded rows through the index and the ring
@@ -1211,7 +1220,7 @@ pkg/block/journal/
   with no mark, so that its `Sync` returns nil for a lost write; the second call must return nil); a failed segment announced resolved with copies of two files
   in it, a retirement held after it read "resolved", and `Corrupt` on the second file's record
   taking its claim (catches a resolved state guarded by one file's domain, which excludes no other
-  file's `Corrupt`, and a segment retired under a read); two corrupt reads on a failed segment's
+  file's `Corrupt`, and a segment retired under a read); a corrupt read after the copy's segment was retired, with the copy file removed (catches a stale entry that errors every read and reports no loss, and a table that grows, R58); the entry still present and the copy's read failing at the seam, once with `ENOENT` (a loss), once with `EIO` and once short (nothing dropped, the error returned, no loss record; catches a transient error that drops dirty data, D11); two corrupt reads on a failed segment's
   records, the first re-append landing before the second (catches a segment announced resolved,
   and its claim released, while a second record still points at it); two corrupt reads on two records of a failed segment while a repack holds its claim, then the
   repack letting go and the worker retrying (catches a second read that repoints into a segment
@@ -1227,8 +1236,7 @@ pkg/block/journal/
   loss, RFC 8 §5.1); a corrupt read followed at once by `Stop` (catches a queued loss record never
   written); the headroom drawn to exhaustion, then a corrupt read (R90), the same with only the open reserve left (R83); a failed segment's
   original whose page cache returns stale bytes with a matching read-back checksum (catches a copy
-  verified against itself, RFC 1 §5.3); the damage count before and after the extents are
-  dropped (R60); an `EIO` at the seam (D11). Conformance rows that stay red until `Open`: corrupt
+  verified against itself, RFC 1 §5.3); the damage count and row at once after the extents are dropped, after the repack-ready signal and after the segment's retirement through `Retired`, still counted and the row marked retired (catches a gauge cleared with the extents, R60); an `EIO` at the seam, and an `ErrNoDescriptor` from the cache, which return the error and drop nothing, against an `ErrSegmentGone` and an `ENOENT`, which lose the record (D11). Conformance rows that stay red until `Open`: corrupt
   dirty, corrupt offloaded, a synced loss masks what it superseded, neighbours survive, a loss
   raises the loss generation.
 
@@ -1255,11 +1263,39 @@ pkg/block/journal/
   metrics test, whose re-append case needs T6.5. Conformance rows that stay red until
   `Open`: metrics are reachable (the part of it that is this area's).
 
+### T6.9 `index.HeldDelta`: epic 4's mutators return the change they made
+
+**Subtask T6.9 estimate: 1.5 man-days.**
+
+- **Track:** A. **Depends on:** E4's file index, counters and retained set (E4-2, E4-3, E4-4, E4-6).
+- **Covers:** R86.
+- **Deliverables:** `internal/index/delta.go`: `HeldDelta{Tag, File, HeldBytes, DirtyBytes,
+  RetainedBytes, the offloaded bit's transition}` (epic 8's D16), a type distinct from `Since`'s
+  `index.Change`, which has no tag and no byte deltas. Every epic 4 mutator that changes held,
+  dirty or retained state returns it with its `error`: the publish of a record's extents, the
+  removals' drops, the retained set's lift by superseder and its failed-window operation, and the
+  offloaded bit's change. The delta is built inside the mutator, under the lock it already takes,
+  so no caller computes one from a before and an after (epic 8's R108). No caller changes
+  behaviour: existing callers ignore the new return value until T6.4, T6.6, T6.7 and epic 8's
+  `Account` read it.
+- **Acceptance criteria:**
+  - Each mutator returns a delta whose figures equal the change in the file's held, dirty and
+    retained bytes, and in the offloaded bit, that the same call made.
+  - A mutator that changes nothing returns the zero delta.
+  - A refused or failed mutator returns the zero delta with its error, and the index is unchanged.
+  - The sum of the deltas of a sequence of mutations equals the counters' difference over the
+    sequence.
+- **Tests:** a property test that applies a random mutation sequence and compares the running
+  sum of the deltas with the counters read back (catches a delta that drifts from the change,
+  R86); a table test, one row per mutator, of the delta for a hit, a miss and a refusal; a
+  race test that two files' mutators return the deltas of their own files only (catches a delta
+  read from a shared counter).
+
 ## 7. Order of work
 
 T6.1 comes first: epic 8 consumes `Sync`, and everything else here is a way a sync fails or
 what a sync leaves out. It carries the sync bound and the removal of `SyncPolicy`, so epic 8
-codes against `Share(tag, limit, floor)` from the first pull request. **T6.1 to T6.4 and T6.7
+codes against `Share(tag, limit, floor)` from the first pull request. **T6.1 to T6.4, T6.7 and T6.9
 land before S3**, which therefore also waits for epic 5's spare pool, seal, roll and end event
 (T6.1 needs its T5.7, T6.2 its T5.6, T6.3 its T5.10): epic 8's T8.1 depends on T6.1 and T6.4, so the walking skeleton's writes are
 tracked and synced, their superseded content is retained until synced, and a failed sync
@@ -1270,7 +1306,9 @@ turns into the read-only state. The **loss lane**: T6.2, then T6.7, which give
 every loss a record, an event and a generation and build the handler epic 8's `ReadAt` and
 epic 9's offers call. The lanes meet at T6.4, which needs the loss API and the generation, and
 at T6.5, which registers its originals in T6.7's copy table. T6.7 therefore comes before T6.5,
-although its number is higher. T6.8 closes the epic: its counted check and metrics
+although its number is higher. T6.9, the `index.HeldDelta` change to epic 4's mutators, is
+small and has no epic 6 dependency, so it is done with T6.2 and before T6.4, T6.6 and T6.7, which
+pass their changes to the account function. T6.8 closes the epic: its counted check and metrics
 sweep read the sync, the failed sync, the re-append, the read-only state and the corruption
 handler.
 
@@ -1283,6 +1321,8 @@ flowchart TD
   E4r(["E4 retained set and failed-window operation"]):::sync --> T4
   E4r --> T7
   E4m(["E4 marker set"]):::sync --> T2
+  E4d(["E4 mutators"]):::sync --> T9["T6.9 index.HeldDelta"]
+  T9 --> T4
   T1 --> C1(["after T6.1: E8 can call Sync"]):::sync
   T1 --> T3["T6.3 Failed sync and window"]
   T2 --> T4["T6.4 Superseded kept until synced, failing a window"]
@@ -1297,7 +1337,7 @@ flowchart TD
   T4 --> T7
   T7 --> T5
   T2 --> C2(["after T6.2: Lose and the generation usable by E7 and E9"]):::sync
-  T4 --> S3(["S3 walking skeleton: E8's T8.1 needs T6.1 and T6.4, T8.2 needs T6.7"]):::sync
+  T4 --> S3(["S3 walking skeleton: E8's T8.1 needs T6.1, T6.4 and T6.9, T8.2 needs T6.7"]):::sync
   T7 --> S3
   T7 --> C3(["after T6.7: ReadAt's failure path and offers can drop"]):::sync
   T6 --> T8["T6.8 Counted check and metrics"]
@@ -1306,7 +1346,7 @@ flowchart TD
 ```
 
 The graph draws each subtask's direct dependencies after transitive reduction: T6.4 also depends
-on T6.1, T6.5 on T6.3, and T6.8 on T6.1, T6.3 and T6.7, through the edges drawn.
+on T6.1, T6.5 on T6.3, T6.6 and T6.7 on T6.9, and T6.8 on T6.1, T6.3 and T6.7, through the edges drawn.
 
 Checkpoints:
 
@@ -1323,9 +1363,9 @@ Checkpoints:
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T6.1 | 6.75 | E5 tracker and seal, E3 platform sync | the sync, group commit and the bound, with `SyncPolicy` removed: what E8 wires first |
-| 2 | T6.2 | 5.25 | E5 headroom, E3 loss record, E4 markers | the loss record, the event, the ring and the generation: one entry point for every loss |
+| 2 | T6.2, T6.9 | 6.75 | E5 headroom, E3 loss record, E4 markers and mutators | the loss record, the event, the ring and the generation: one entry point for every loss; and the `index.HeldDelta` that epic 4's mutators return, which the later pull requests pass to the account function |
 | 3 | T6.3, T6.4 | 10.5 | PR 1, PR 2, E4 retained set, E5 hand-off | a failed sync and its resolution by failing, so no window is left pending |
-| 4 | T6.7 | 5.75 | PR 1, PR 2, PR 3 | the corruption handler and its copy table, which S3's `ReadAt` calls |
+| 4 | T6.7 | 6 | PR 1, PR 2, PR 3 | the corruption handler and its copy table, which S3's `ReadAt` calls |
 | 5 | T6.5 | 4.75 | PR 3, PR 4 | the re-append that replaces failing where the bytes can be proven, registering its originals as copies and moving a used copy off the failed segment |
 | 6 | T6.6, T6.8 | 7.25 | PR 3, PR 4, PR 5 | the read-only state and its probe, with the two public additions, and the checks that close the epic |
 
@@ -1373,13 +1413,15 @@ suggestion only: one pull request per subtask works as well.
   undo T6.6 makes of a read-only window cannot take that domain to stay out of the gap between
   its `Append` and its publish. Epic 9 owns those records: it should name the lock each publishes
   under, and T6.6's undo take it. Confirm with epic 9's owner.
+- **`index.HeldDelta` (D16).** The account function takes epic 4's `index.HeldDelta`, and epic 4's mutators return only `error` today. T6.9 changes them to return it, ahead of T6.4, T6.6, T6.7 and epic 8's T8.1, which all depend on it; epic 4's document is merged, so the change is a task here. Confirm with epic 4's owner, as epic 8's §9 asks.
 - **A synced loss as a marker (R84).** Epic 4's marker set holds removal markers only. T6.2
   registers a synced loss there; confirm with epic 4's owner that the set takes a loss kind,
   which `Settle` drops like a removal's. Epic 8's §9 asks the same.
 - **A read that fails with `EIO`.** #3440 asks what the journal does with it, and #3511 would
   keep the extent held, retry a bounded number of times and count the segment suspect. D11 drops
-  nothing and returns the error, which holds under #3511 and is not decided for #3440. If the
-  RFC's answer is that an `EIO` read drops the extent, T6.7 gains a branch.
+  nothing and returns the error, which holds under #3511 and is not decided for #3440. A copy read
+  that fails with `EIO` or comes back short follows the same rule (T6.7). If the RFC's answer is that
+  an `EIO` read drops the extent, T6.7 gains a branch, for the record and for its copy.
 - **A header that does not verify.** #3449 asks whether a loss is named when a record's header
   fails to verify in a scanned segment. At read time the index already names the record, so
   T6.7 names it; the scanned case is E7's, and the two should agree. #3518 (open, closes #3449)

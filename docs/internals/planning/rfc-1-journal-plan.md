@@ -313,7 +313,7 @@ everything before it.
   model and profiler are green. Implementation epics start here.
 - **S3. Walking skeleton** (mid E5 / mid E6 / mid E8). E5's append streams with the spare
   pool, the seal, the roll and the end event (its T5.1, T5.2, T5.4a, T5.4b, T5.5, T5.6, T5.7
-  and T5.10), E6's T6.1 to T6.4 and T6.7, and E8's `WriteAt`, `ReadAt` and a minimal `Init`
+  and T5.10), E6's T6.1 to T6.4, T6.7 and T6.9, and E8's `WriteAt`, `ReadAt` and a minimal `Init`
   and `Open` of a directory with no segment, with `Share` for their handles (its T8.1, T8.2, T8.3
   and T8.15), on top of E4's index.
   The skeleton therefore includes durability tracking (`Sync`, group commit and the sync
@@ -354,8 +354,8 @@ everything before it.
 - **E4** blocks E7 (rebuild fills the index), E8 and E9. It is pure in-memory code with no
   storage dependency, so it can start at S2.
 - **E5** blocks E6, E7 and E8's integration tests.
-- **E6's T6.1 to T6.4 and T6.7** block S3: E8's `WriteAt` needs `Sync`, the ledger epic 5's
-  `Append` fills, the retained-extent drop and the failed-window resolution, and its `ReadAt`
+- **E6's T6.1 to T6.4, T6.7 and T6.9** block S3: E8's `WriteAt` needs `Sync`, the ledger epic 5's
+  `Append` fills, the retained-extent drop, the failed-window resolution and the `index.HeldDelta` its mutators return, and its `ReadAt`
   the corruption rule. They need E5's seal (T5.7), headroom (T5.6) and end event (T5.10), so
   those block S3 too.
 - **E6** blocks E7: recovery appends E6's loss records.
@@ -392,7 +392,7 @@ owner (for example, epic 1's 1.4 is on track B).
 | --- | --- | --- | --- |
 | 0 | E1: skeleton and import test, observability, storage seam | E1: value types, errors, lifecycle, public API (`Journal`, `Handle`, ops) | review → **S1** |
 | 1 | E2: test clock and fault schedule, crash-simulating seam, profiler, `raw` | E2: reference model, fixture and `dt` registration, conformance test bodies, traceability matrix | → **S2** |
-| 2 | E3, then E5's stream, pool, seal, roll and end event, then E6's T6.1 to T6.4 and T6.7 | E4, then E8's storage-independent parts (share registry, capacity counters, version counter), then `WriteAt`, `ReadAt` and the minimal `Init` and `Open` | → **S3** |
+| 2 | E3, then E5's stream, pool, seal, roll and end event, then E6's T6.1 to T6.4, T6.7 and T6.9 | E4, then E8's storage-independent parts (share registry, capacity counters, version counter), then `WriteAt`, `ReadAt` and the minimal `Init` and `Open` | → **S3** |
 | 3 | E6's remaining subtasks (re-append, read-only state and probe, counted checks), then E7 | E8 remainder, then E9 | → **S4**; S4a with rif |
 | 4 | E10: device config keys, start check, journal side of initialisation | E11 planning, once S4a exists | |
 | 5 | E11 | E11 | → **S5** |
@@ -739,7 +739,7 @@ and supersedes this section where they differ.
 **S3 needs the stream, the pool, the seal, the roll and the end event:** epic 6's subtasks
 before S3 need the seal's sync, the headroom and the hand-off of a failed segment.
 
-### Epic 6 — Durability and loss (8 subtasks, A)
+### Epic 6 — Durability and loss (9 subtasks, A)
 
 Epic 6 implements RFC 1 §5 and §3.8.
 
