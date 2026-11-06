@@ -35,6 +35,9 @@ rfc1 / 9.4 / A / "repack under read":
   tests: [TestRFC1A_RepackUnderRead]
 rfc1 / 9.4 / A / "removals survive to `Since`":
   tests: [TestRFC1A_RemovalsSurviveToSince]
+rfc1 / 9.4 / A / "`Settle` drops by version, never content":
+  owner: epic 8
+  reason: 'Settle over held extents, both markers and synced loss records needs the data path''s Settle over the real journal'
 rfc1 / 9.4 / A / "no resurrection":
   tests: [TestRFC1A_NoResurrection]
 rfc1 / 9.4 / A / "removal outlives its segment":
