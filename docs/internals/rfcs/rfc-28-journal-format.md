@@ -284,8 +284,8 @@ around it were written, synced and acknowledged. That failed write's `WriteAt`
 returns the error and is never acknowledged; the slot stays zeros, and a scan
 steps over it ([§3.3](#3.3%20Torn%20and%20corrupt%20records)).
 
-**A segment is made ahead of need, as a spare.** The headroom and the repack
-reserve ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), and the next segment of every stream, are held as
+**A segment is made ahead of need, as a spare.** The headroom, the repack
+reserve and the reconcile spare ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), and the next segment of every stream, are held as
 **spares**: segments allocated at their cap and taken by no stream yet. **A
 spare is made under a temporary name and renamed into place only once whole**:
 it is created as `<id>.spare.tmp`, allocated, zero-filled where Appendix A
@@ -459,12 +459,13 @@ it describes.
 Each record carries a header; a write or fill record carries a payload of
 content, a loss record a fixed payload naming the record it drops ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), a
 clone target record a fixed payload carrying its clone spec ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)), and a hold,
-unhold or stamp record the cut number it is for ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)). The header
+unhold or stamp record the cut number it is for ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)), and a `reconciled`
+record the range it names, or none ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). The header
 **MUST** identify:
 
 - the record's kind: write, fill, release, truncate, deallocate, delete, clone
   target ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)), offloaded, unmark ([§3.2](#3.2%20Offload%20state%20after%20recovery)), loss ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), hold, unhold, stamp
-  ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)) or forget ([RFC 1 §3](rfc-1-journal.md#3.%20Interface))
+  ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)), forget ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), reconcile or reconciled ([§3.3](#3.3%20Torn%20and%20corrupt%20records))
 - the segment it was written into, and its own offset in that segment
 - the `FileID` it belongs to, and the tag of its share ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)); a forget record names
   only the tag, with a zero `FileID`
@@ -522,7 +523,7 @@ over a removal resurrects what it removed.
 
 | Field | Example | What it is for |
 | --- | --- | --- |
-| kind | `write` | what the record does: stage bytes (`write`, `fill`) or remove or mark them (`release`, `truncate`, `deallocate`, `delete`, `clone target`, `offloaded`, `unmark`, `loss`, `hold`, `unhold`, `stamp`, `forget`) |
+| kind | `write` | what the record does: stage bytes (`write`, `fill`) or remove or mark them (`release`, `truncate`, `deallocate`, `delete`, `clone target`, `offloaded`, `unmark`, `loss`, `hold`, `unhold`, `stamp`, `forget`), or record the journal's own state (`reconcile`, `reconciled`) |
 | segment id | 42 | which segment the record was written into; a record found anywhere else is not this segment's |
 | record offset | 183 500 896 | where in its segment the record starts; a record read at any other offset is not this one, so a write the device put at the wrong place in the segment is caught |
 | `FileID` | `7c1e…` (alice.vhdx) | which file the bytes belong to |
@@ -538,7 +539,7 @@ over a removal resurrects what it removed.
 | payload | 64 KiB of data | the bytes themselves; only `write` and `fill` carry content. A `loss` record's payload is 16 bytes: the sequence number of the record it drops, then a flag word whose lowest bit says the dropped record was synced ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)). A `clone target` record's payload is 56 bytes: the source `ShareID`, the source `FileID`, the source offset and `AsOf`, a 16-byte content version like the header's; its file offset and length are the spec's `DstOff` and `Len` ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)) |
 
 Only `write` and `fill` carry content. Every other kind — `loss`, `clone
-target`, `hold`, `unhold` and `stamp` with their fixed payloads included — changes what the earlier records mean: a `release` stops holding an extent, an
+target`, `hold`, `unhold` and `stamp` with their fixed payloads included, and `reconciled` with its range — changes what the earlier records mean: a `release` stops holding an extent, an
 `offloaded` marks it offloaded, a `truncate` drops everything past an offset.
 
 **The record header's byte layout.** All integers little-endian, packed without
@@ -563,7 +564,7 @@ padding; 96 bytes.
 | 92 | 4 | header checksum, over bytes `[0, 92)` |
 
 **Record kinds.** Values are stable: a value is never reassigned, nor reused once
-its kind is retired. 0 is never a kind, so a zero slot never reads as one. 15–127
+its kind is retired. 0 is never a kind, so a zero slot never reads as one. 17–127
 are reserved for later core kinds and 128–255 for extensions ([RFC 10](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)),
 each assigned with the format version that introduces it. A field this table
 gives as 0 is written as zero.
@@ -579,14 +580,18 @@ gives as 0 is written as zero.
 | 7 | `clone target` | the destination | `DstOff`, `Len` | its version | 56 bytes: source `ShareID`, source `FileID`, source offset, `AsOf` (16 bytes, epoch then counter) |
 | 8 | `offloaded` | the file | one extent marked; one record per extent | the newest version marked | none |
 | 9 | `unmark` | the file | one extent unmarked; one record per extent | the version of the content unmarked | none |
-| 10 | `loss` | the dropped record's | the extent dropped | the version dropped | 16 bytes: dropped sequence number, then a flag word — bit 0 synced, bit 1 its offloaded bit was set, bits 8–15 the reason: 1 corrupt, 2 stale, 3 failed sync window, 5 acknowledged unreadable ([§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)); the rest zero |
+| 10 | `loss` | the dropped record's | the extent dropped | the version dropped | 16 bytes: dropped sequence number, then a flag word — bit 0 synced, bit 1 its offloaded bit was set, bits 8–15 the reason: 1 corrupt, 2 stale, 3 failed sync window, 4 superseded (`DropOlder`), 5 acknowledged unreadable ([§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)); the rest zero |
 | 11 | `hold` | the file | 0, 0 | the hold mark | 8 bytes: the cut number ([RFC 6](rfc-6-block-metadata.md)'s `SnapshotCut`) |
 | 12 | `unhold` | zero | 0, 0 | zero | 8 bytes: the cut number |
 | 13 | `stamp` | the file | 0, 0 | `through` | 8 bytes: the cut number |
 | 14 | `forget` | zero | 0, 0 | zero | none |
+| 15 | `reconcile` | zero | 0, 0 | zero | none: the engine owes a metadata reconcile ([§3.3](#3.3%20Torn%20and%20corrupt%20records)) |
+| 16 | `reconciled` | zero | 0, 0 | zero | 16 bytes: the range it marks counted, as segment id (8), then the range's start and end in it (4 each); or all zero, which settles every `reconcile` record with a lower sequence number |
 
-The share tag field carries the share in every kind; it is all a `forget`
-names, and all an `unhold` names besides its cut.
+The share tag field carries the share in every kind but `reconcile` and
+`reconciled`; it is all a `forget`
+names, and all an `unhold` names besides its cut. `reconcile` and `reconciled` are
+the journal's, not a share's, and carry tag zero, which no share is given ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)).
 
 A `write` record is followed, before its payload, by an 8-byte **modification
 time**: nanoseconds since the Unix epoch, UTC, that the write sets as the file's
@@ -597,7 +602,7 @@ value, and never from the clock at commit, so a suspended time stays suspended a
 replayed write keeps the time the client saw. No other kind carries the field.
 
 A record starts at a multiple of 8 bytes within its segment: the modification
-time for `write`, then the payload, of `length` bytes for `write` and `fill`, 16 bytes for `loss`, 56 for `clone target`, 8 for `hold`, `unhold` and `stamp`, and none otherwise, is followed by zero
+time for `write`, then the payload, of `length` bytes for `write` and `fill`, 16 bytes for `loss` and `reconciled`, 56 for `clone target`, 8 for `hold`, `unhold` and `stamp`, and none otherwise, is followed by zero
 padding to the next multiple of 8, which no checksum covers and a reader ignores.
 Both checksums are CRC32C **seeded with the journal identity**: each is the CRC32C
 of the 16-byte journal identity of [§2.1](#2.1%20Layout) followed by the bytes it covers. A
@@ -608,13 +613,19 @@ that merely look like a record — a client file that contains a copy of a journ
 segment, held in some record's payload, or a segment of another journal — never
 verify as one of this journal's records, which is what lets a scan resume past
 damage ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). A header slot that is all zeros is not damage unless a later verifying record's
-synced-through offset lies past it or a verifying seal marker follows it, and marks the end of what was written only where no verifying header follows it ([§2.2](#2.2%20Segments), [§3.3](#3.3%20Torn%20and%20corrupt%20records)).
+synced-through offset lies past it, a sync mark's `Through` in its segment does
+([§3.3](#3.3%20Torn%20and%20corrupt%20records)), or a verifying seal marker follows it, and marks the end of what was written only where no verifying header follows it ([§2.2](#2.2%20Segments), [§3.3](#3.3%20Torn%20and%20corrupt%20records)).
 
 A record whose payload checksum does not verify **MUST NOT** be used to serve a
 read. A record wholly covered by a release, truncate, deallocate, delete, clone target
-or synced loss record that outranks it ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)), named by a loss record, or of a
+or synced loss record that outranks it ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)), named by a loss record (a `superseded` one
+only over its own extent, [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), or of a
 tag a later forget record names, is not held, and recovery **MUST NOT** verify or
-report its payload.
+report its payload. A record a `superseded` loss record names over part of its
+extent is still held over the rest, so recovery verifies that rest, and if it is
+corrupt drops it with a loss record of its own over each run of it, as for any
+corrupt record ([§3.3](#3.3%20Torn%20and%20corrupt%20records)): the `superseded` one outranks older content only over
+its own extent.
 
 ### 2.4 The segment catalog
 
@@ -636,7 +647,7 @@ implementation **SHOULD** then append a catalog describing every record in it: f
 version, and the record's offset within the segment. An entry carries no
 payload: a header-only record whose payload the index needs — a `loss` record's
 dropped sequence number and flags, a `clone target`'s spec, a `hold`'s, an
-`unhold`'s or a `stamp`'s 8 bytes — is read at its `recordOffset` and verified
+`unhold`'s or a `stamp`'s 8 bytes, a `reconciled`'s range — is read at its `recordOffset` and verified
 like any record ([§2.3](#2.3%20Records)). Those kinds are not rare — a stamp per file per
 existence commit, a hold per dirty file per cut — so a catalog read is one small
 read per segment plus one per such record, and J6 reports their count; a write's modification time is read
@@ -670,8 +681,16 @@ of the records the new one holds.
 the one write permitted to a sealed segment, and it **MUST** happen at most once.
 An implementation **MAY** write a footer for a segment sealed by a previous
 process — a segment sealed at a crash legitimately has none — and **MUST** verify
-by scanning before doing so. It **MUST NOT** rewrite or extend a footer that
-already verifies.
+by scanning before doing so. It **MUST NOT** write one for a segment in which a
+scan found a range that names no record not yet counted ([§3.3](#3.3%20Torn%20and%20corrupt%20records)): a catalog names only
+the records that verify, so a later open would read it in place of a scan and never
+find the range again. It **MUST
+NOT** rewrite or extend a footer that already verifies.
+
+> [!note] ponytail
+> A segment sealed without a footer is scanned at every open until it is
+> retired, one segment's read per open. Upgrade to a footer that marks the range,
+> a catalog layout change, when J6's recovery time shows those scans.
 
 An implementation **MUST NOT** place this index in a separate file or keep any
 second durable log of it: the record headers already are that log.
@@ -689,8 +708,8 @@ All integers are little-endian and packed without padding.
 **Trailer — the last 32 bytes of the segment file.** A seal writes the footer
 entries immediately after the seal marker, and the trailer is always the
 file's last 32 bytes. A segment sealed early, idle or at
-recovery ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), takes its trailer immediately after the footer and is
-then truncated to end there ([RFC 1 §7.3](rfc-1-journal.md#7.3%20Accounting)). A segment sealed
+recovery ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), takes its trailer immediately after the footer, or, sealed
+without a footer ([§2.4](#2.4%20The%20segment%20catalog)), has none, and is then truncated to end there ([RFC 1 §7.3](rfc-1-journal.md#7.3%20Accounting)). A segment sealed
 full is not truncated ([§2.2](#2.2%20Segments)): its trailer is written at the cap's last 32
 bytes, and `footerOffset` still names the footer just past the seal marker; the
 bytes between footer and trailer — zeros, or the old life's on a recycled
@@ -752,8 +771,10 @@ understand it loses speed and nothing else.
 
 **Writing.** At seal: wait for every append reserved below the seal marker to
 complete; if one fails, the segment is ended, not sealed ([§2.2](#2.2%20Segments)); then make every record durable; then append the seal marker,
-the footer and the trailer and make them durable; then, for a segment sealed
-early, truncate the file past the trailer and make that durable. A full seal
+the footer and the trailer and make them durable, or the seal marker alone for a
+segment sealed without a footer ([§2.4](#2.4%20The%20segment%20catalog)); then, for a segment sealed
+early, truncate the file past the trailer, or past the seal marker where there is
+no footer, and make that durable. A full seal
 needs as few as two syncs and an early one three; an implementation **MAY**
 split a step into more. The second step needs no order among its writes: a
 crash that keeps only part of them is "no footer" above, and the segment, which
@@ -863,7 +884,7 @@ checks its size against the cap and, where the platform reports it, that no
 extent is left unallocated or unwritten; one that fails is unlinked and made
 again rather than adopted. A re-adopted spare whose header slot or trailer slot
 is not zeros — a recycle interrupted before its zeroing was synced — has both
-slots zeroed and synced before a stream may take it ([§2.2](#2.2%20Segments)). Recovery **MUST** re-adopt a segment that passes as a spare ([§2.2](#2.2%20Segments)), counted toward the
+slots zeroed and synced before a stream may take it ([§2.2](#2.2%20Segments)). Recovery **MUST** re-adopt a segment that passes as a spare ([§2.2](#2.2%20Segments)), unless a sync mark names its id ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), counted first toward the reconcile spare while the journal has none ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), then toward the
 headroom, the repack reserve or a stream's next segment, and **MUST NOT** treat it
 as an orphan: unlinking it after an age gate would leave the reserves the re-appends
 below draw on short at the very start that needs them. Open syncs the
@@ -918,7 +939,8 @@ active segment that has taken no append for 30 s **MUST** be sealed once the
 bytes it holds beyond its last catalogued point pass
 `journal.idle_seal_bytes` (proposal: 16 MiB), so the unavoidable scan stays bounded — with the proposed
 16 streams, at most 16 segments' tails. The seal returns the segment's unwritten tail
-([RFC 1 §7.3](rfc-1-journal.md#7.3%20Accounting)), so an early seal strands no space. An idle segment below the
+([RFC 1 §7.3](rfc-1-journal.md#7.3%20Accounting)), so an early seal strands no space. A segment holding the copies of a
+segment a failure ended is sealed sooner, by [RFC 1 §3.1](rfc-1-journal.md#3.1%20Write)'s bound on that hold. An idle segment below the
 threshold stays open: sealing it would cost a footer and a new segment every
 30 s for a trickle of writes, and scanning it costs little.
 
@@ -1009,8 +1031,9 @@ is here. An unmark is safe in every case: it costs at most a redundant offload.
 **A torn tail is not corruption.** In the newest segment of a stream — the only
 one that could have been open for append at a crash — the **torn tail** is
 everything after the last record that verifies, and a bad record before it is a
-**torn slot** unless a later record proves it synced (below). Both **MUST** be
-treated as never written and **MUST NOT** be reported as damage. Unsynced writes
+**torn slot** unless a later record or a sync mark proves it synced (below). Both **MUST** be
+treated as never written and **MUST NOT** be reported as damage, except where a
+sync mark proves them synced: that is a range that names no record (below). Unsynced writes
 may survive out of order, so a record that verifies after a torn slot is whole and
 may have been answered: it is attached, never cut off with the slot, and a later sync
 may already have made it durable. A seal marker that verifies proves every record
@@ -1046,7 +1069,12 @@ a seal marker carries no data and every record before it still verifies.
 Recovery **MUST** truncate the segment at the start of the torn tail — never below
 a record that verifies, and so never below the highest synced-through offset any
 verifying record in it names — make the truncation durable, and seal the segment, with
-its seal marker, footer and trailer written after the last verifying record. The
+its seal marker, footer and trailer written after the last verifying record. A
+segment in which the open found a range that names no record is sealed with its
+seal marker and no footer ([§2.4](#2.4%20The%20segment%20catalog)), while the range is not yet counted. If
+its seal marker later fails as well, it is a named predecessor whose marker and
+trailer both fail, a refused range with no catalog: that costs a reconcile, never
+data. The
 stream then continues in a new segment. Without it, the next append would land
 after bytes a scan cannot cross, and a second crash would lose acknowledged
 writes behind the first one's debris. This truncation and the seal's are the
@@ -1063,13 +1091,14 @@ open finds its failed slot as above. **A segment recovery ends is emptied before
 Nothing can prove its records synced any more. Left in place, later damage to them would
 read as torn. So, once every unproven tail has been verified in place or re-appended ([§3.1](#3.1%20Rebuilding)),
 recovery empties the segments it ends one at a time, drawing on the repack reserve
-([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)). Before the first, it appends the loss record of each record it dropped as corrupt that no loss record on disk names yet,
+([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)). Before the first, it appends the loss record of each record it dropped as corrupt that no loss record on disk names yet over the extent dropped,
 drawing on the open reserve of the headroom ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), and syncs them. Past that reserve it defers them rather than failing the open ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)):
 a deferred loss record is written into the target of whatever retires its dropped record's segment, this emptying included. Then it retires every attached segment that is not held
 ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), never a spare, recycling or unlinking it as [§2.2](#2.2%20Segments) decides at retirement. Each segment it
 retires refills the reserve before the next is emptied. For each segment it empties, it
 re-appends, whole and never merged, keeping their numbers, the records of the segment
-that repack would carry forward ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), together with the loss record of each
+that repack would carry forward ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)) (a `reconcile` record that fails to verify
+then is re-appended as RFC 1 §7.2 says, with no loss record), together with the loss record of each
 record that fails to verify only when read for the copy while no other copy of it verifies; where one does, recovery uses that copy and appends no loss record, as for any copy below. It writes them to a spare, which it seals and syncs; the
 spare's entry is already durable ([§2.2](#2.2%20Segments)). If that sync fails, it re-appends them to another spare and never fails them, and the target whose sync failed is a failed segment ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)). If a write or sync of that spare fails too, the second refusal in a row ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)), or a target finds no spare ready and none can be made ([§2.2](#2.2%20Segments)), the open fails with that error and leaves the ended segment in place. It
 skips a record whose copy with the same sequence number already verifies, payload
@@ -1100,20 +1129,12 @@ of the segment. If one does, the zeros are the slot of a write that failed and w
 never acknowledged ([§2.2](#2.2%20Segments)): they are stepped over, reported as neither damage
 nor a torn tail, and the records after them are attached. Only zeros with no
 verifying header anywhere after them are the end of what was written. Zeros
-below the synced-through offset a later verifying record names, or before a seal
-marker that verifies, are neither: the offset never passes a failed slot ([§2.2](#2.2%20Segments)),
+below the synced-through offset a later verifying record names, below a sync mark's
+`Through` in its segment (below), or before a seal marker that verifies, are neither: the offset never passes a failed slot ([§2.2](#2.2%20Segments)),
 and a seal makes every record before it durable, so they are synced content the
 device lost, corruption by the rule above.
 
 > [!note] ponytail
-> The synced-through offset stops at a failed or unfinished slot, so in a
-> segment a failed append ended, nothing on disk proves the records synced
-> above that slot: at the next open, one the device later loses reads as a
-> failed write and one it later damages as a torn slot or tail, a loss nobody
-> reports. Bounded by that segment's life, since repack carries those records
-> forward once its window is resolved. Upgrade to a record naming the failed
-> slot, a format change, when failed appends are seen in the field.
->
 > The forward search reads the whole unwritten remainder of each newest segment
 > at open, up to one segment cap per stream. Upgrade to bounding it by the
 > stream's largest in-flight reservation — a later record can start no further
@@ -1132,7 +1153,9 @@ When a record is found not to verify, the journal **MUST** remove the extents it
 backs from the placement index, so that the journal no longer claims to hold
 them, and **MUST NOT** serve any byte from that record.
 
-That is the whole of the recovery action, and it is sufficient because the
+For a record whose extent is known, that is the whole of the recovery action. A
+range that names no record also needs the metadata reconcile below. The action is
+sufficient because the
 residency function ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)) resolves both cases correctly from the journal
 simply not holding the extent:
 
@@ -1168,6 +1191,179 @@ one flipped bit into the loss of every dirty record behind it. In the newest
 segment of a stream the torn-tail rule above still decides whether the bad one is
 torn or corrupt: a record found past it that names a synced-through offset beyond
 it proves it synced.
+
+**Corruption that names no record is reconciled against metadata.** Nothing in a
+header that does not verify can be trusted. Where no catalog verifies, a lost
+record's footer entry is gone too, so nothing names its file, extent or sequence
+number, and no loss record can. The lost record may have superseded an older one
+held elsewhere. If the journal served that older record, a stable overwrite would
+read as the content it replaced. An open finds a **range that names no record** in
+exactly these cases:
+- a range a scan refuses in a segment whose catalog does not verify, where the
+  torn-tail rule makes it corruption: any refused range in a sealed segment or a
+  named predecessor, and one in a stream's newest segment only where a later
+  record proves it synced;
+- a refused range, a torn slot or a zero slot included, in a sync mark's segment
+  below the mark's `Through`, the synced-through offset (below), in a segment whose
+  catalog does not verify: the mark proves it synced, so it is neither a torn slot
+  nor a failed write's slot, which `Through` never passes. A slot
+  between `Through` and `Offset` is not proven: it may be an append still in flight
+  when the sync completed, never answered;
+- a segment named as another's predecessor that ends without its seal marker. It
+  was truncated after it was sealed, so records past its end may be gone;
+- a lost synced tail (below), one range per mark found lost.
+
+None of these is one:
+- a torn slot or torn tail above every mark's `Through`, which was never proven
+  synced;
+- a refused range in a segment whose catalog verifies, whose footer entries name
+  the records, so each gets a loss record;
+- a refused range made up wholly of records whose headers verify and whose
+  payloads do not: each header names its record, so each gets a loss record.
+  Refused bytes no verifying header covers still trigger;
+- a named predecessor whose seal marker alone fails to verify while its trailer
+  verifies and names a footer just past the marker. Every record before the marker
+  verifies, and the marker carries no data. A named predecessor whose marker and
+  trailer both fail is a refused range with no catalog, the first case;
+- a range a `reconciled` record names (below), which was counted already.
+
+> decision: three of these exemptions are narrower than "damage". A torn slot
+> above every mark's `Through` is not proven synced, so it is read as never written. A seal
+> marker whose trailer still verifies carries no data, and triggering on it would
+> set a loss point on every replica shard for a loss of nothing. A counted range
+> raised the loss generation once already, and its reconcile stays owed until it
+> settles. Overturned if a stale read is
+> traced to any of them.
+
+One **range** is one of these, with the start and end a `reconciled` record names
+it by:
+- a contiguous run of refused bytes, from the first byte that does not verify to
+  the next verifying header or the segment's end;
+- a truncated predecessor's missing end, from the end of its last verifying record
+  to the segment's length on disk, counted once with a refused run of the same
+  bounds;
+- one lost mark, from the end of its segment's last verifying record, 0 if none,
+  to the mark's offset.
+
+Each is found again with the same bounds while its segment is unchanged. For each such range the journal
+reports the segment as damaged, raises the loss generation once ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), and names the segment in `Stats.Recovery`. The
+engine then runs the **metadata reconcile** ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), which gates each file's
+content until it has visited the file, drops each held extent that metadata
+proves superseded, and records each drop with a loss record of its own, or,
+where a snapshot hold keeps it, retains it in memory. Recovery
+itself still reads nothing outside the journal ([§3.1](#3.1%20Rebuilding)).
+
+**A `reconcile` record keeps the reconcile owed across crashes.** The evidence of
+a range that names no record does not outlive the open that found it: the open's
+own retirements and emptying, a repack, or the group commit's next sync marks can
+each remove it. So, before it appends its loss records, retires a segment or
+empties one it ends (above), an open that found such a range appends a
+`reconcile` record ([§2.3](#2.3%20Records)) into the spare kept for it ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), seals that
+segment early and syncs it, unless an unsettled one is on disk that no per-range
+`reconciled` record follows, which keeps the same debt. Its seal marker proves the record synced, so no later open reads it
+as a torn tail, and the spare is there even on a full device. If that append or a
+sync of it fails, the open fails and has retired nothing. A `reconcile` record is
+**settled** once a `reconciled` record naming no range, with a higher sequence
+number, exists, and is live until then ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)). `Reconciled` ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)), which the engine calls
+once the reconcile has covered its scope ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), appends two kinds of
+`reconciled` record:
+- **One per range the open found, marking it counted**, by segment id and the
+  range's start and end in it, all in one sync. A later open that finds exactly a
+  counted range in that segment does not count it again: it neither raises the loss
+  generation for it, nor reports the segment as damaged, nor names it in
+  `Stats.Recovery`. Damage anywhere else in that segment is a new range. A crash
+  that keeps only some of these leaves ranges uncounted, which the next open counts
+  again.
+- **One naming no range, which settles the reconcile.** It is appended at once
+  unless a snapshot hold keeps content the reconcile found superseded. Such a piece
+  is retained in memory, not dropped, and the reconcile stays owed until the last
+  one's retained extent ends and every such piece's `superseded` loss record is durable
+  ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)).
+
+> decision: while a snapshot hold keeps content the reconcile found superseded,
+> the reconcile stays owed and every open runs it again over its whole scope,
+> rather than recording on disk which piece is superseded. Metadata stays the one
+> authority for that, and a marker would be a second copy of it that has to
+> survive repack, the hold's end and every reopen. The cost is one full reconcile
+> per open for as long as a cut keeps such a piece unoffloaded, which a remote
+> that stays down can make indefinite, or, where its offload was reported below
+> half the headroom and appended no record, until a later open; `Stats.Recovery`
+> says why it is owed. Overturned if that re-run shows up in time to first read after a
+> restart, by a durable list of the affected files that the re-run reads in place
+> of its whole scope.
+
+Until the settling record is durable, every open finds the `reconcile` record
+unsettled and sets `Stats.Recovery`'s reconcile-owed flag, whether or not it found a
+new range. The engine then runs the reconcile again ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). That re-run gates
+each file before any of it is served, and decides again from metadata, by version,
+what is superseded. So a held piece the open rebuilt as held, a repack copy under
+a new sequence number included, is retained again before it is read. A crash
+during a re-run leaves the record unsettled, so the next open does the same. A
+re-run is safe: it drops only content still older than metadata. The engine's
+repack of the named segments after `Reconciled` only returns their storage.
+
+**A lost synced tail is detected against the caller's sync marks.** A device can
+acknowledge a sync and then lose the last records it covered. No later record then
+proves them, so the scan alone reads the loss as a torn tail. The group commit
+records each stream's sync mark in metadata ([RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)), and `Open` is handed
+the marks as it is handed the floor ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). The check runs after §3.1 has verified
+every unproven tail and before the `reconcile` record is appended, so no record the
+open appends lands past a mark's offset. A segment holding no verifying record whose
+id a mark names is not re-adopted as a spare ([§3.1](#3.1%20Rebuilding)): it is that mark's segment, and
+a re-append landing in it would hide the loss. It is ended, as a segment with a
+torn header is, so it takes no append, and the open's emptying unlinks it, after
+the `reconcile` record is durable where there is one. It is reported as damaged
+only where the loss below holds. A mark's tail is lost when two
+things hold after recovery's own tail re-appends: its segment is on disk with its
+last verifying record, if any, ending below the mark's `Offset`, and no copy of the
+record carrying the mark's `Sequence` verifies anywhere. Both sides count
+records only ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)'s `SyncMark`). A mark whose segment is not on disk is read as
+retired: repack retired it once its records were carried forward or released.
+
+`ponytail:` a segment's absence is taken as its retirement, so a device that loses
+both a synced tail and the directory entry of the segment holding it hides the
+loss. Upgrade to recording each retirement where the marks can see it, a metadata
+write per retired segment, when a lost directory entry is seen in the field.
+
+The open sets each stream's entry in `Stats.SyncMarks` to what it recovered:
+`Through` and `Offset` the end of the stream's last verifying record, a re-append
+included, and `Sequence` that record's number. The group commit records every
+stream's entry as it is ([RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)), so its first commit after the open writes the
+recovered mark of a stream not synced since, lower where the device lost a tail
+([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), and an idle stream does not report the same loss at every open. A
+mark is written by nothing else. The marks
+only find a loss; the `reconcile` record keeps it owed, and correctness rests on it. The next
+sequence number and the next segment id exceed every mark's, as they exceed every
+one on disk. That way a restored or drained directory never reissues them.
+
+**What the marks cannot see.** A mark is recorded at the group commit after its
+sync, at most `existence_age` later ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)). A stability point follows a `Sync`
+that returns only once its records are proven synced in-process ([RFC 1 §3.1](rfc-1-journal.md#3.1%20Write)), and
+returns the marks that cover them; the engine records one read after it where its
+recorded marks fall short ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)), which carries that proof to disk, so any later loss of a stable overwrite is counted, never read as torn. A stable write over an append
+whose existence had not committed is not an overwrite of committed content; its
+loss falls under RFC 8 §2.5's supersede `decision:` ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). On a device that loses acknowledged syncs, records synced
+since the last mark can still vanish undetected.
+
+> decision: an append or hole fill whose existence has not committed can vanish
+> even below a mark, because nothing in metadata names it for the metadata
+> reconcile to find. The file reads as it did before the write. The raised loss
+> generation tells clients only of their unstable writes, so a stable one gives its
+> client no signal: the client was answered after the sync and does not resend. Closing the gap would make every stable
+> append wait for the next existence commit, up to `existence_age` per reply, to
+> guard against a device that breaks its own sync contract. Overturned if devices
+> that lose acknowledged syncs show up in the fault record, or a benchmark shows
+> stable appends can wait for the commit within their latency budget.
+
+> decision: a replica-only journal records no marks, because no group commit runs
+> on it, so a replica that loses a synced tail is not detected by marks. Its
+> committed point comes from its primary ([RFC 10 §4](rfc-10-journal-replication.md#4.%20The%20write%20path)) and does not fall when its
+> own device loses records, so the primary's mark for it ([RFC 10 §7.2](rfc-10-journal-replication.md#7.2%20Removal)) does not
+> catch it either. The loss stays hidden until the replica rejoins by copy, or is
+> promoted and serves the records as never written. A replica whose tail is lost
+> to corruption is still caught by the scan rules above. Overturned if replicas are
+> seen losing synced tails: then each replica records marks in its install record,
+> as the group commit does for a primary.
 
 Each record dropped as corrupt is a loss event with a loss record ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)) — written
 later, into the copy that retires its segment, where the open defers it past its reserve ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)) —
@@ -1282,7 +1478,13 @@ While a record is unread:
   extent, so one its header or a catalog names makes its **file** unread instead: every read
   of the file fails with `ErrUnreadable` until the record reads, since applying the
   file without it could serve what its loss, removal or clone changed. An
-  unread forget record makes every file of its tag unread. A content record
+  unread forget record makes every file of its tag unread. A `reconcile` or
+  `reconciled` record carries tag 0 and names no file, so an unread one makes no
+  file unread; it bears on the reconcile instead. While a `reconcile` record is
+  unread, the open treats the reconcile as owed, as if the record read. An unread `reconciled`
+  record neither settles the reconcile nor marks its range counted until it
+  reads, so meanwhile the open counts that range again and keeps the reconcile
+  owed: the safe direction, which costs a raised loss generation and a rerun. A content record
   above its file's `applied` whose payload is unread makes its file unread the
   same way: `Since` cannot yield its modification time, which its payload
   carries. `Since` of an unread file yields `ErrUnreadable` ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)),
@@ -1353,7 +1555,12 @@ the two do the same:
    `offloaded` record drops nothing: its bits are lost in the safe direction, and
    the extents are offered again. An unread `unmark` clears the offloaded bit of
    every extent of its file, the safe direction, which the reseed sets again
-   where a ref justifies it. For a removal, release, loss or clone target, every
+   where a ref justifies it. An unread `reconcile` record drops nothing and is
+   re-appended in its place under its own sequence number, as a rotten one is
+   ([RFC 1 §5.1](rfc-1-journal.md#5.1%20Ordering%20rules)), so the reconcile stays owed. An unread `reconciled` record
+   drops nothing and is not carried: its range is counted again and its settling
+   undone, so the journal appends a `reconcile` record and owes the reconcile
+   again. For a removal, release, loss or clone target, every
    extent the journal holds for its file (for a forget record, every file of
    its tag) from a record with a lower content version is dropped the same way — versions, not sequence numbers, because a
    repack copy of content takes a new sequence number and keeps its version
@@ -1750,6 +1957,15 @@ A check here fails by **coming back up describing something other than what is o
 | [§2.5](#2.5%20Catalog%20layout) trailer torn | Truncate a segment mid-footer, and separately corrupt one entry byte; assert both are treated as "no footer", the segment is scanned, and the resulting index is identical to the footer-read one. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) a seal marker only the cache holds | Append and `Sync` A, then seal its segment with the marker's write reaching the seam's cache and the seal's second sync failing, then fail the first sync in the spare the stream takes, so the journal turns read-only ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)). Reopen in place with the seam serving the marker from the cache and not the device, and let the reopen's sync of the segment succeed without writing it; then drop every write the seam never saw synced and reopen again. Assert the first reopen re-read the marker from the device, did not take the segment as sealed until its own seal of it was durable, A reads back both times, and the second reopen reports no damage. Repeat with the process killed after the marker's write and before the seal's second sync, reopening in a new process with the cache kept: assert the same. A recovery that verifies the marker through the cache has the next segment name it, and the second reopen reports a segment as damaged that lost no record. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) truncated sealed segment | Truncate a segment that a later one names as its predecessor, mid-record and with its footer gone; assert it is reported as corruption, not as a torn tail. Truncate the newest segment of a stream the same way; assert it is treated as a torn tail. |
+| [§3.3](#3.3%20Torn%20and%20corrupt%20records) a range that names no record | Write v6 of a range and seal its segment; overwrite it stable with v7 in a segment sealed with no catalog; flip a bit in v7's header; reopen. Assert the segment is reported damaged, `Stats.Recovery` names it, the loss generation rose by one, and v6 is never served. Then each trigger in turn: a named predecessor truncated past its last record, a refused range in a sealed segment without a catalog, and a torn slot below a mark's `Through` in a segment without a catalog; assert each is named. And each non-trigger: a torn slot between a mark's `Through` and its `Offset`, a torn tail above every mark's `Through`, a refused range in a segment whose catalog verifies, and a named predecessor whose seal marker alone fails while its trailer verifies; assert none is named and the loss generation does not move for it. A design that triggers on the damaged marker raises every shard's loss point for nothing; one that reads a torn slot below a mark's `Through` as never written serves what it superseded. |
+| [§3.3](#3.3%20Torn%20and%20corrupt%20records) the reconcile stays owed | Reopen after a range that names no record; crash at each step from the open's `reconcile` record to the engine's `Reconciled` and the repack after it, with the open's retirements, its emptying, a repack and a group commit's new marks each run before the crash; reopen. Assert every reopen before `Reconciled` reports the reconcile owed and runs it, even where the damaged segment is gone and the marks no longer fall short, and that a second pass drops nothing the first kept. Fail the `reconcile` record's sync; assert the open fails and retired nothing. After `Reconciled` and the repack, assert the next open owes nothing and names nothing. Repack a segment holding an unsettled `reconcile` record; assert the record is carried forward. A design that keeps the owed reconcile only in the evidence serves stale content after any of those crashes. Strand and forget every unclaimed tag at start; assert tag 0 is never named in `Stats.Shares`, never stranded or forgotten, and the `reconcile` record survives. Fill the headroom below half, and separately exhaust it, empty the spare pool and fill the filesystem, crash, and reopen with a range that names no record; assert the `reconcile` record is still written into its own spare, sealed early, each time, that a replacement reconcile spare is made as soon as it is taken, and that an open finding none on a full device takes one of the headroom's spares. |
+| [§3.3](#3.3%20Torn%20and%20corrupt%20records) a recovery seal holds no catalog of a range | Overwrite v6 with a stable v7 in a stream's newest segment with no catalog, behind a later record that proves v7 synced; rot v7's header; open, and crash after the recovery seal and before the `reconcile` record's sync. Assert the sealed segment has no footer, the next open scans it, finds the range, owes the reconcile, and never serves v6. Write a footer for a segment sealed by a previous process; assert none is written for one whose scan finds an uncounted range. Rot the `reconcile` record's header in a spare sealed with it; assert a seal marker that verifies still proves it synced, and repack re-appends it under its own sequence number with no loss record. |
+| [§3.3](#3.3%20Torn%20and%20corrupt%20records) a mark proves only up to `Through` | On one stream, hold append A at the seam while a later append C completes and its `Sync` returns, so the group commit records a mark whose `Through` stops at A's start and whose `Offset` and `Sequence` are C's. Let A complete unsynced, cut its payload and lose power; assert A reads as a torn slot, nothing reports it, no loss record names it, and the content A would have overwritten still reads. Tear A's header instead; assert no range is counted for it. Rot a record below `Through`; assert it is a range that names no record. Lose C; assert the tail is reported lost. Then write a stable overwrite B of committed content behind A while A is in flight: assert `Sync(B)` does not return while A is in flight, and returns once A completes and the stream's synced-through offset passes B. Before it returns, lose B and reopen; assert nothing was acknowledged stable and nothing is reported. After it returns, rot B's header, and separately cut B's payload, and reopen; assert each is counted as a range that names no record, the reconcile runs, and the content B replaced is never served. Let the segment seal at a roll instead; assert `Sync(B)` returns on the seal. Fail A's append, and separately fail the stream's next sync after B's own sync succeeded, while `Sync(B)` waits; assert `Sync` re-appends B once under its numbers into the next segment, returns once the copy is synced, and a later rot of the original is not a loss. Fail the copy's segment too; assert only the copy is dropped and B stays held. Write B unstable instead, let the lazy group commit commit its existence while A is in flight, then complete A and send `Commit`; assert its `Sync` returns a mark the last recorded one does not cover and the engine waits for a marks transaction read after it; send `Commit` once more and assert it does not wait again, since the recorded mark now covers B; then lose power and rot B as the stream's last record, and assert B's loss is counted. Turn the journal read-only while `Sync(B)` waits; assert it fails with `ErrJournalReadOnly`, B stays held, and the reopen seals or empties its segment and proves it. Make a stable append past the committed size behind A; assert its `Commit` waits for no marks transaction. Answer a stable overwrite B under a mark naming its segment, then fail the stream's next append; assert B is re-appended at once into the next segment, the recorded mark keeps naming the ended segment until the copy is synced, and a crash at each point with B's original rotted either counts B as a range or reads the copy. |
+| [§3.3](#3.3%20Torn%20and%20corrupt%20records) a counted range is not counted again | Reconcile a range that names no record in a sealed segment, with no snapshot hold over the files; crash after `Reconciled` and before the repack, and separately fail the repack with `ENOSPC` and with the segment still backing held extents; reopen. Assert the range is found but not counted, the loss generation does not move for it, nothing is owed, and no reconcile runs. Then flip a bit in another record of the same segment and reopen; assert that new range is counted and owed. Reopen with an unsettled `reconcile` record no per-range record follows and a new range; assert the open appends no second `reconcile` record; reopen with one whose ranges are already counted and a new range; assert it appends one. Keep only some of `Reconciled`'s per-range records at a crash; assert the next open counts the others again. Reconcile a range that splits one record R at a metadata boundary, dropping one piece and keeping the other; settle and reopen; assert the kept piece of R still reads back and only the dropped piece is excluded. Rot only a record's payload under a verifying header, in a segment with no catalog; assert it gets a corrupt loss record and no range is counted. Return zeros for a stable overwrite's slot below a mark's `Through`; assert it is counted as a range, not stepped over. |
+| [§3.3](#3.3%20Torn%20and%20corrupt%20records) a held superseded piece stays owed | Hold a cut over v3 of an extent, overwrite it stable with v5 and commit v5, then lose v5's record in a range that names no record; let the reconcile run. Assert v3 becomes retained, not dropped, no settling record is appended, and the reconcile stays owed. Repack v3's own segment so its copy carries a new sequence number; crash after `Reconciled`, and again during the re-run that follows; reopen each time. Assert every reopen owes the reconcile, gates the file, makes the copy retained again from metadata before any read of it, never serves v3, and does not raise the loss generation for the range already counted. A design that records the piece as superseded on disk by sequence number serves the repack copy as current. Write v10 over the extent while v3 is reconcile-retained and fail v10's window; assert v3 is not held again and never served. |
+| [§3.3](#3.3%20Torn%20and%20corrupt%20records) the reconcile settles when the hold ends | Continue from the row above: `Unhold` the cut, and separately commit v3's offload under the cut. Assert a `superseded` loss record for v3 is synced after the event's own record and before the settling `reconciled` record, the next open owes nothing, runs no reconcile, and serves v3 nowhere, its offloaded bit set or not. Crash between each of those syncs; assert every reopen before the settling record is durable still owes the reconcile, and none serves v3. Commit the offload with the headroom below half, so no offloaded record is appended; assert the reconcile does not settle, and that the next open, with the cut still held, reseeds v3's bit from its history ref, drops it and settles. Let the last reconcile-retained piece end while the walk is still visiting other files, before `Reconciled`, then crash; assert the reconcile is still owed and the unvisited files are reconciled at the next open. Let it end before `Reconciled` and let `Reconciled` run without a crash; assert `Reconciled` syncs v3's `superseded` loss record before its settling record, then crash and assert v3 is served nowhere. Hold a second, older cut over v1 while the cut over v3 is released; assert v1 is still rebuilt as retained after a crash and is offloaded under the older cut. Hold the remote down so the cut is never offloaded; assert every open owes the reconcile and `Stats.Recovery` says only a hold keeps it owed. |
+| [§3.3](#3.3%20Torn%20and%20corrupt%20records) `Reconciled` with no headroom | Exhaust the headroom during the reconcile; assert `DropOlder` drops in memory, returns `ErrNoSpace`, the file is ungated, offloads and evictions of it proceed, and `Reconciled` returns `ErrNoSpace` under `journal_unreconciled`. Crash then and reopen; assert the reconcile is owed and drops the same content again. Let repack return headroom and the reconcile finish; assert the next open owes nothing. A design that gates the file until its loss record is durable deadlocks a full journal. |
+| [§3.3](#3.3%20Torn%20and%20corrupt%20records) a lost synced tail | Write and `Sync` records on two streams and let a group commit record both marks; at the seam drop the last synced records of each stream from the device; reopen with the marks. Assert both tails are reported lost, the loss generation rose by two, and the metadata reconcile runs. Leave one stream idle afterwards, let the reconcile finish and reopen twice; assert neither reopen reports a loss. Seal a segment whose mark is its last record and reopen; assert its seal marker, footer and trailer are not counted against the mark and nothing is reported lost. Let repack retire a mark's segment after carrying its records forward and reopen before the next group commit; assert no loss is reported. Lose a sync that took a fresh spare whole, header included; assert the open does not re-adopt that segment as a spare, reports the tail lost, and no re-append lands in it. |
 | [§3.1](#3.1%20Rebuilding) foreign segment | Copy a valid segment from another journal into the directory; assert it is not attached, no read serves its bytes, it is reported and left on disk. |
 | [§3.1](#3.1%20Rebuilding) version floor | Reopen with a floor above every version on disk; assert the next write's version exceeds the floor, and that `MarkOffloaded` with the floor as `newest` leaves that write unmarked. |
 | [§3.2](#3.2%20Offload%20state%20after%20recovery) stale extent | Write A into one segment and offload it; write B over it into a later segment, offload and release it, and let reclamation unlink B's segment; restore A's segment from a copy taken before; reopen and `MarkOffloaded` at B's versions; assert A is dropped, reported as stale, and the read reports the extent missing. |
@@ -1765,10 +1981,11 @@ A check here fails by **coming back up describing something other than what is o
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) a scan resynchronises | Without a catalog, in a sealed segment, corrupt one record's length field; reopen; assert that record is reported as corruption, every record after it still reads, and `scan_resyncs` counts one. Write a file whose content is a byte copy of a segment of this journal; crash so its record is scanned; assert no record inside its payload is attached. In a sealed segment without its catalog, copy a verifying record over another record of the same size that has records after it; reopen; assert the copy is not attached there, `scan_resyncs` counts one, the segment is reported as damaged, and the original still reads back. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) torn tail cut off | Tear the last record of the newest segment; reopen; write and `Sync` A; crash again and reopen. Assert A reads back, `torn_tails` counted one, and the torn segment is sealed. A design that appends after the torn bytes loses A to the second scan. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) a bad copy does not mask a good one | Write A, fail its sync and resolve by re-appending; corrupt the original on the failed segment; crash before that segment is unlinked and reopen. Assert A reads back, no loss record names its sequence number, and nothing is reported as damage: the original is torn. |
+| [§3.3](#3.3%20Torn%20and%20corrupt%20records) a partly superseded record is still checked | Write Q, v3 of a file over [0, 128K), then R, v5 over the same extent, in a segment with no catalog; `DropOlder` over [0, 64K) below v7, so a `superseded` loss record names that piece of R; corrupt R's payload and reopen. Assert a corrupt loss record names R over [64K, 128K), [64K, 128K) reads **Lost** and never Q's bytes, the loss is reported, and a second reopen appends no other loss record for R. A design that skips a record any loss record names leaves Q to serve over the kept piece. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) an open at an exhausted headroom | Fill the journal to its maximum and append removals, unmarks and the loss records of failed windows until one is refused naming the headroom; corrupt one synced record that superseded content still on disk, in a sealed segment and separately in a segment the open ends; crash and reopen. Assert the open succeeds, one synced loss record names the corrupt record, the superseded content is never served, the ended segment is emptied, and a third open appends no second loss record for it. Then corrupt more records than the open reserve holds, every one a synced append past its file's committed end or a synced write into a hole, none of whose existence has committed, and reopen; assert the open succeeds, every corrupt record is dropped and reported, those past the reserve marked deferred, and loss records for exactly the reserve's worth are on disk. Of the deferred ones, take one append and one hole fill; before any `Settle`, assert `Files` lists both files, `Since` yields both as losses above `applied`, and both ranges read **Lost**, not past the end of file or as zeros. Then `Settle` both files past those versions; assert neither is yielded again and neither segment is retired on its own. Leave the headroom exhausted and make the segments holding the deferred records the only repack candidates, one of them holding nothing else live; assert repack selects and retires them, their targets carry the deferred loss records, the settled ones included, and the headroom refills. With the reserve already spent, corrupt a synced record in a segment the open ends; assert the open defers it and the emptying's target carries its loss record. Separately, draw the headroom down to the open reserve, fail a sync and the spare's so the journal turns read-only failing records, corrupt more synced records than the reserve holds, and reopen in place; assert the reopen succeeds, the failed records' loss records are on the reserve before any corrupt record's and none of theirs is deferred. Repeat with more failed records than the reserve holds; assert the reopen succeeds, appends none past the reserve, empties each segment still holding one without it, and that none of them reads back after the process restarts, which loses the list. Crash at every step between the target's write and the source's unlink, dropping unsynced writes; assert each reopen either finds the target's loss record synced or the dropped record still on disk, and the superseded content is never served. A design that draws an open's loss records on the headroom any running record can drain fails the first open; one that waits on the headroom to write a deferred loss record wedges with no other candidate; one that unlinks the source before the target's sync serves superseded content; one that leaves a deferred loss out of `Files` or `Since` reads a lost write as a hole; one that forgets a deferred loss once settled brings back what it superseded; one that lets corrupt records take the reserve first fails the reopen after read-only at every retry. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) an ended segment is emptied once | End a segment at open (a torn slot before a verifying record), with a record that a later record proves synced corrupted, and empty it into a recycled spare; give another segment a corrupted synced record that superseded content still on disk, and nothing else live, and leave an untaken spare and a dead segment sealed full, with the pool below its target. Crash at every step of the emptying with writes reordered, the retirements before it included, and reopen twice: once with the process killed, and once with power lost right after the second open's unlink. Assert every record the ended segment held reads back each time, none is held twice, each corrupt record's loss is still reported by exactly one loss record, after a crash before the unlink too, `DamagedSegments` still counts the retired segment under its old id, the superseded content is never served, the spare is kept, and the dead segment is recycled. With power lost after the first open synced its target and before the ended segment's unlink was durable, assert the second open re-appends none of that segment's records. Then fail the target's sync; assert the records go to another spare and no loss record names them. Give the ended segment a record that verifies at the scan and fails when read for the copy; assert exactly one loss record names it, in the target. Give a second ended segment a verifying copy of that record with its numbers; assert no loss record names it and it reads back. Fail the second target's sync too; assert the open fails with the sync error, takes no third spare, and the ended segment is still on disk. Fail the first target's sync again with no spare left; assert the open fails and the ended segment is still on disk. Reopen a journal whose ended segments were emptied; assert no target is synced or re-read at that open. A design that lets two ended segments skip each other's copies, or skips a copy only the page cache holds, loses a synced record; one that unlinks a segment before its loss record is durable serves superseded content; one that retires the first open's target copies the ended segment again. |
 | [§2.3](#2.3%20Records) record layout | Encode a record of every kind; assert the bytes match the committed golden headers, a header checksummed under another journal identity does not verify, and every record starts at a multiple of 8. |
-| [§2.3](#2.3%20Records) kind values | Golden vectors, one per kind of the kinds table, with fixed identity, `FileID`, tag, offsets, version and payload: assert each encodes to the committed bytes and decodes back, that the kind byte is the table's value, and that every payload and zero field is as the table gives. Flip a verifying header's kind to 15 and to 128, re-checksumming it; assert both fail the open and neither is skipped. |
+| [§2.3](#2.3%20Records) kind values | Golden vectors, one per kind of the kinds table, with fixed identity, `FileID`, tag, offsets, version and payload: assert each encodes to the committed bytes and decodes back, that the kind byte is the table's value, and that every payload and zero field is as the table gives. Flip a verifying header's kind to 17 and to 128, re-checksumming it; assert both fail the open and neither is skipped. |
 | [§2.2](#2.2%20Segments) segment header and seal marker | Golden vectors for a segment header with and without a predecessor, and for a seal marker: assert the committed bytes. Write a segment under another identity; assert its header verifies and the segment is reported as foreign, not damaged. Copy a seal marker into a write's payload; assert a scan does not stop at it. |
 | [§2.1](#2.1%20Layout) `format` file | Golden vector for a version-1 `format` file: assert the committed 56 bytes. Assert a 55- or 57-byte file, a bad checksum and version 2 each fail the open. Crash after `format.tmp` is synced but before the rename, and again after the rename before the directory sync; assert each reopen sees the old file or the new one whole. |
 | [§2.5](#2.5%20Catalog%20layout) trailer | Golden vector for a trailer over two entries: assert magic `DJT1`, version 1, and `footerOffset` equal to the seal marker's offset plus 32. |
@@ -1795,7 +2012,8 @@ each region has its own required outcome:
 
 - a record header or payload: caught at open by a scan, otherwise on the read
   that would serve it; the extent is dropped and reported as data loss or as
-  repairable, by its offloaded bit ([§3.3](#3.3%20Torn%20and%20corrupt%20records));
+  repairable, by its offloaded bit ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), or, for a header §3.3's scan finds corrupt,
+  run through the engine's metadata reconcile ([§3.3](#3.3%20Torn%20and%20corrupt%20records));
 - a catalog entry, footer or trailer: recovery scans the segment instead
   ([§3.1](#3.1%20Rebuilding)) and no byte served changes;
 - a segment header: the segment is reported as damaged if the header is proven
@@ -1836,7 +2054,7 @@ fails them after a crash with no fault.
 > check asserts the journal's own order at the seam, whatever the faults: a
 > source is unlinked only after the sync covering its copies returned
 > success ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), a segment is retired at open only after the sync of the open's
-> loss records returned success ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), and a successor is taken only after its predecessor's seal
+> `reconcile` record, where it appends one, and of its loss records returned success ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), and a successor is taken only after its predecessor's seal
 > sync returned success. Overturned by a device the set must survive that loses an
 > acknowledged sync, which would need a copy kept until a second sync.
 
@@ -1853,7 +2071,7 @@ assert *when* the journal notices, not *whether*:
 | the `format` file removed or changed | at open | open fails ([§2.1](#2.1%20Layout), [§3.4](#3.4%20Unattachable%20files)) |
 | the whole directory deleted, emptied or replaced | at open, by the identity the caller expects ([§3.4](#3.4%20Unattachable%20files)) | open fails; no new journal is created until an operator acknowledges the loss |
 | a file the journal did not name added | at open | left alone ([§2.1](#2.1%20Layout)) |
-| a sealed segment truncated | at open, when a later segment names it as predecessor ([§3.3](#3.3%20Torn%20and%20corrupt%20records)) | reported as corruption; the newest segment of a stream is indistinguishable from a crash and is treated as one |
+| a sealed segment truncated | at open, when a later segment names it as predecessor ([§3.3](#3.3%20Torn%20and%20corrupt%20records)) | reported as corruption, and its missing end is a range that names no record, which the metadata reconcile covers; the newest segment of a stream is treated as a crash unless a sync mark proves the lost part synced, which is then a lost synced tail |
 | a valid segment copied in from another journal | at open, by its journal identity | not attached, reported, left alone ([§3.1](#3.1%20Rebuilding)) |
 | the whole directory restored from an old copy | at reseed, by version ([§3.2](#3.2%20Offload%20state%20after%20recovery)) | stale extents are dropped and refetched; new versions start above the floor, so no new write can be taken for offloaded |
 | one old segment of this journal restored | at reseed, by version ([§3.2](#3.2%20Offload%20state%20after%20recovery)) | its extents are dropped as stale and refetched; before reseed reaches a file, a read of it can still serve the old bytes, and an offloaded record restored with them can let them be evicted, which is safe |
@@ -1880,7 +2098,8 @@ benchmarks.
    ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)), and a settled removal's marker is gone ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)). A lost
    release only holds offloaded content again ([RFC 1 §3.5](rfc-1-journal.md#3.5%20Release)); what a lost
    truncate, deallocate or delete would bring back is recovery's to handle, not
-   a pass's. Overturned if one node ever keeps a second local copy to repair
+   a pass's ([§3.3](#3.3%20Torn%20and%20corrupt%20records); a range that names no record goes through the engine's
+   metadata reconcile, [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). Overturned if one node ever keeps a second local copy to repair
    from.
    **(cluster)** Whether a replica, which can repair by rejoining, scrubs its
    dirty content is [RFC 10 §16](rfc-10-journal-replication.md#16.%20Open%20questions)'s.

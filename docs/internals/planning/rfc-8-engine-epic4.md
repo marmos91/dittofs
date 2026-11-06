@@ -38,8 +38,9 @@ acknowledged write may have been lost.
 
 **At the end of the epic:**
 
-- a `Commit` over appends and hole fills is answered after the journal's sync, with no
-  metadata transaction; one over an overwrite of committed content waits for the group
+- a `Commit` whose extent covers no committed content is answered after the journal's
+  sync, with no metadata transaction; one whose extent covers committed content also
+  waits for a recorded sync mark; one over an overwrite of committed content waits for the group
   commit that covers its file, and under a stalled store answers `ErrDelay` at its
   deadline, never success;
 - every file's pending existence is committed within `existence_age`, one transaction per
@@ -56,11 +57,11 @@ due set, its batches, its in-batch mark, its split and its backoff; the per-file
 other epics call and the wait on a batch in flight; the
 loss sequence, the journal-wide floor and the drain of the journal's loss ring; the failed
 window reported per file; `Done` on the four paths this epic builds; the split of
-`kvstore.PendingOp`'s time into a modify and a change time; the series
+`kvstore.PendingOp`'s time into a modify and a change time; `kvstore`'s marks write; the series
 `engine_stability_points_total`, `engine_pending_existence_ops` and
 `engine_group_commit_splits_total`; the spans `engine.sync` and `engine.existence_commit`;
 the condition `existence_commit_failing`. The test components it adds to E2's: the fake
-journal's `FailSync(also)` and `Durable`, the fixture's `FailNextSync` and `Stall`, and
+journal's sync marks, `FailSync(also)` and `Durable`, the fixture's `FailNextSync` and `Stall`, and
 the engine test package's `newUnitOver`.
 
 ### 1.2 Out of scope
@@ -219,13 +220,13 @@ subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R7 | `Commit` calls the journal's `Sync` on the file over the extent it names, the whole file when it names none, and answers once the sync is done and the existence of every pending write in the extent that overwrites committed content has committed | MUST | §5.1 | T4.2 |
+| R7 | `Commit` follows RFC 8 §5.1 steps 1 to 4 | MUST | §5.1 | T4.2 |
 | R8 | The engine keeps no committed size or holes: `Commit` asks `Existence.Overwrites`, one read per call | invariant | §5.1, RFC 6 §10.1 | T4.2 |
-| R9 | The wait covers only pending writes at or below the version the sync reached; appends and hole fills are never waited for | invariant | §5.1 | T4.2 |
+| R9 | What each of `Commit`'s waits covers: RFC 8 §5.1 steps 2 and 3 | invariant | §5.1 | T4.2 |
 | R10 | A stability point joins the group commit and never issues its own: it asks the journal's group commit to run now and waits for the batch that covers its file, or the last of them for a file split over several; points that arrive together share transactions | invariant | §5.1 | T4.2, T4.3 |
-| R11 | Under a store that commits nothing, a `Commit` over appends is answered after its sync, and one over an overwrite of committed content waits until the caller's deadline and answers `ErrDelay`, never success | MUST | §5.1, §11.2, E31 | T4.2 |
-| R12 | `Commit` answers with the verifier and the loss sequence, both sampled after the sync and the wait | MUST | §5.1 step 3 | T4.2 |
-| R13 | §5.1 stable write, lazy existence; overwrite waits for existence (adapted: an overwrite of journal-held committed content); stalled store | test row | §15.1 | T4.2 |
+| R11 | Under a store that commits nothing, `Commit` answers as RFC 8 §11.2's one rule for a stalled store gives | MUST | §5.1, §11.2, E31 | T4.2 |
+| R12 | `Commit` answers as RFC 8 §5.1 step 4 | MUST | §5.1 step 4 | T4.2 |
+| R13 | §5.1 stable write, lazy existence; overwrite waits for existence (adapted: an overwrite of journal-held committed content); stalled store; marks wait, §11.2 stalled store | test row | §15.1, §11.2 | T4.2 |
 
 **The group commit**
 
@@ -239,7 +240,7 @@ subtasks and tests can cite them.
 | R19 | A file's existence commits are serialised, a removal's phase 1 and a clone's among them: none starts on a file while a batch that captured it has not returned, so no commit at a higher version lands first and leaves the captured operations at or below `applied`, skipped | invariant | §5.1 step 4, RFC 6 §3.4 | T4.3 |
 | R20 | An entry dropped once its operations commit never orphans a write: a write that found the entry before the drop lands in a live entry, and the next commit commits it | invariant | §5.1, E15 | T4.3 |
 | R21 | §5.1 sync before existence, the write and `Commit` half: every committed `size` is backed by synced records | test row | §15.1 | T4.3 |
-| R21a | A commit is reported only once durable: no `Commit` that waits on an existence commit answers, and no `Settle` covers a version, before that commit has returned; a `Commit` over appends answers on its sync alone (RFC 8 §5.1 step 3) | MUST | §5.1 | T4.2, T4.3 |
+| R21a | A commit is reported only once durable: no `Commit` that waits on an existence commit answers, and no `Settle` covers a version, before that commit has returned; what else a `Commit` waits for is RFC 8 §5.1 steps 1 to 4 | MUST | §5.1 | T4.2, T4.3 |
 | R21b | A stability point never waits for an offload. Nothing in this part offloads, so it holds by construction; the second part's offload commit carries its test | MUST NOT | §5.1 | none here |
 
 **The split and conflicts**
@@ -250,7 +251,7 @@ subtasks and tests can cite them.
 | R23 | A file that still fails alone is backed off by itself and raises `existence_commit_failing` naming it; its stability points answer `ErrDelay` meanwhile, and no other file waits on it | MUST | §5.2, §11.1 | T4.4 |
 | R24 | A metadata conflict is retried under the caller's deadline and never reaches a client as an I/O error; one unresolved at the deadline answers `ErrDelay` with `DelayConflict` | MUST, MUST NOT | §11.3 | T4.4 |
 | R25 | A failed existence commit is retried by the next group commit, and fails a reply only through R11's rule | invariant | §5.1 | T4.4 |
-| R26 | §5.2 group commit: 64 writers flushing while `chmod` hits random files of the journal; one file's File record undecodable, and another's removal record (an adaptation: §15.2's row names the File record only; the existence fence is checked for presence, never decoded) | test row | §15.2 | T4.4 |
+| R26 | §5.2 group commit: 64 writers flushing while `chmod` hits random files of the journal; one file's File record undecodable, and another's removal record (an adaptation: §15.2's row names the File record only; the existence fence is checked for presence, never decoded); §5.2 sync marks ride in one batch | test row | §15.2 | T4.4 |
 
 **Losses**
 
@@ -449,30 +450,32 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
 
 - **Track:** B. **Depends on:** T4.1, T4.3, T4.5.
 - **Covers:** R7–R13, R28.
-- **Deliverables:** in `commit.go`: `Commit(ctx, s, f, off, n)`: the version under the entry
-  lock (D3), the sync through the sync function (D9) inside an `engine.sync` span, one
-  `Existence.Overwrites` over the pending writes in the extent at or below that version,
-  and when it answers true, `commitThrough` that version (D10) within the caller's context; then the verifier
-  and the loss sequence sampled. `ErrDelay` at the deadline: `DelayCommit` from a stalled
+- **Deliverables:** in `commit.go`: `Commit(ctx, s, f, off, n)` as RFC 8 §5.1 steps 1–4: the
+  version under the entry lock (D3), the sync through the sync function (D9) inside an
+  `engine.sync` span, one `Existence.Overwrites` over the pending writes in the extent at or
+  below that version, and when it answers true, `commitThrough` that version (D10) within the
+  caller's context; the marks wait of step 3 over the marks the sync returned; then the
+  verifier and the loss sequence sampled. `ErrDelay` at the deadline: `DelayCommit` from a stalled
   store, T4.4's cause from a failing file. `engine_stability_points_total`. RFC 8 §5.1's
   `decision:` on lazy appends and its `ponytail:` on the stable-overwrite cost at the
   `Overwrites` call.
 - **Acceptance criteria:**
-  - a `Commit` over appends makes one sync and no `Existence.Commit`;
+  - a `Commit` over an extent with no committed content makes one sync and no `Existence.Commit`;
   - a `Commit` over an overwrite of committed content returns only after the transaction that
     commits it, and a write staged after the sync is not waited for;
-  - with the store stalled, an append's `Commit` answers and an overwrite's answers
+  - with the store stalled, a `Commit` over an extent with no committed content answers and
+    an overwrite's, or a whole-file one over committed content plus appends, answers
     `ErrDelay` at its deadline.
-- **Tests:** over the fake and the real `kvstore` with a transaction counter: an append's
-  `Commit` makes zero transactions (catches a commit before every reply); an overwrite's
+- **Tests:** over the fake and the real `kvstore` with a transaction counter: a `Commit` over
+  an extent with no committed content makes zero transactions (catches a commit before every reply); an overwrite's
   returns after one (catches an answer after the sync alone); an operation staged during
   `Commit`'s sync whose batch a hook keeps from being captured does not hold the `Commit`,
   which returns once its own version is committed (catches a wait on versions above D3's,
   through `commitNow` in place of `commitThrough`); with a stalling `Existence` wrapper
   standing in for E2's fault-injecting `kv.KV`, which does not exist, an overwrite's
-  `Commit` answers `ErrDelay` at its deadline and an append's succeeds (catches success under
-  a stall, R11). Conformance rows over the real journal for §5.1 overwrite waits for
-  existence (adapted) and stalled store, the latter through E2's `Fixture.Stall`, added here, red until the journal's `Sync` exists, and the
+  `Commit` answers `ErrDelay` at its deadline and one over an extent with no committed content
+  succeeds (catches success under a stall, R11). Conformance rows over the real journal for §5.1 overwrite waits for
+  existence (adapted), stalled store, and "§5.1 marks wait, §11.2 stalled store", the latter two through E2's `Fixture.Stall`, added here, red until the journal's `Sync` exists, and the
   engine assertions of `TestRFC8A_StableWriteLazyExistence`.
 
 ### T4.3 The group commit per journal
@@ -488,7 +491,10 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   first form; T4.7 makes it exclusive against the other paths); one sync per share among the
   batch's files through each share's handle, replaced by the sync function in T4.5; then,
   under each entry's lock, `PendingExistence` built from the claimed operations with D6's
-  times, and `Existence.Commit` inside an `engine.existence_commit` span; on
+  times, and `Existence.Commit` inside an `engine.existence_commit` span, the journal's
+  sync marks passed as its `marks` argument on exactly one transaction of each group commit,
+  or alone in a call with no pending existence, and the marks a committed transaction
+  recorded handed to the journal's `MarksRecorded` (RFC 8 §5.2); on
   return, each committed file settled in the journal, `Settle(id, v)` at the highest version
   the commit applied for it, so a truncate up's removal marker (epic 5 D4) and a synced
   loss committed as `OpLost` are dropped at once rather than at the next start (RFC 1 §3.6,
@@ -498,6 +504,10 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   `commitNow`, `commitThrough` and `commitAll` (D5, D10); `dropShare(s)`, which removes a share's files from
   the due set and waits for the batch in flight, built here and called by epic 6's `Drop`,
   which tests it (T6.9). `kvstore`'s `PendingOp` split (D6), with its own test.
+  `kvstore`'s marks write (RFC 6 §10.1): `Existence.Commit`'s `marks *MarksWrite`, its
+  tracked `og` check, `ErrOpenGenMoved` and `ErrSyncMarks`, with its own test. E2's fake
+  journal gains sync marks: `Sync` returns a mark per stream covering what it synced, and
+  `MarksRecorded` logs what it is handed.
 - **Acceptance criteria:**
   - a file with pending writes and no stability point is committed within `existence_age`,
     by the test clock;
@@ -519,6 +529,10 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   R18); a `waitBatch` on the file returns only once the batch returns (catches a commit that
   overtakes the batch, R19); a `commitNow` for a write staged after the capture returns only
   after the next batch, not the held one (catches D10's "covers" taken as "any batch").
+  Over the fake: 64 due files and `G = 16` carry the marks on exactly one of the four calls,
+  a group commit with no batch due makes one call with the marks alone, and `MarksRecorded`
+  is called with what each committed call recorded (catches marks on every transaction, or
+  on none).
   Under `-race`, a hook between `lockFor`'s lookup and its lock in which the commit drops the
   entry: the write lands in a live entry, `Overlay` reflects it, the next batch commits it
   and its `Done` runs once (catches an orphaned write, R20). A conformance row over the real
@@ -529,9 +543,11 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
 
 **Subtask T4.4 estimate: 3 man-days.**
 
-- **Track:** B. **Depends on:** T4.3.
+- **Track:** B. **Depends on:** T4.2, T4.3.
 - **Covers:** R22–R26.
-- **Deliverables:** in `groupcommit.go`: the files `Existence.Commit`'s map names, the other
+- **Deliverables:** in `groupcommit.go`: T4.3's sync marks kept through a split, and on
+  `ErrOpenGenMoved` or `ErrSyncMarks` the batch and the marks handled, as RFC 8 §5.2 gives; the
+  files `Existence.Commit`'s map names, the other
   files having committed in the same call, retried alone in the next batch; a whole-call
   error halving the batch until each failing file stands alone; a file failing alone backed
   off by D7's schedule; `existence_commit_failing` naming it, raised and cleared, logged at
@@ -554,7 +570,8 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   - the condition clears on the file's next commit that succeeds, when a capture finds its
     entry gone, on `lostWhole` and on `dropShare`.
 - **Tests:** the split's table over a stub `Existence`: each failure shape (a file in the
-  map, a whole-call error, two failing files, every file failing) against the expected calls
+  map, a whole-call error, two failing files, every file failing, each on a batch that
+  carries the marks) against the expected calls
   (catches a committed file resubmitted, or a failing one resubmitted with the rest). Over
   the real `kvstore` over a `kv.KV` wrapper, through `newUnitOver`, making one file's File
   record undecodable: the other files' overwrite `Commit`s succeed, that file's answers `ErrDelay`,
@@ -570,7 +587,8 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   no `Existence.Overwrites` call of a `Commit` (catches a retried call left unmarked, which
   the self-fence would never count). The §5.2 group commit row, a conformance row over the real
   journal and `kvstore`: 64 writers flushing while `chmod` writes random File records, no
-  flush waiting beyond the split bound, red until the journal's `Sync` exists.
+  flush waiting beyond the split bound, red until the journal's `Sync` exists. The §5.2 sync
+  marks ride in one batch row, over the same, red until the journal's `Sync` returns marks.
 
 ### T4.5 The loss sequence
 
@@ -697,7 +715,7 @@ flowchart TD
   T4_3 --> C1(["after T4.3: per-file commit, epics 5, 6 and 8 can commit existence"]):::sync
   T4_3 --> T4_5["T4.5 Loss sequence"]
   T4_1 & T4_3 & T4_5 --> T4_2["T4.2 Commit"]
-  T4_3 --> T4_4["T4.4 Split"]
+  T4_2 & T4_3 --> T4_4["T4.4 Split"]
   T4_2 & T4_5 --> T4_6["T4.6 Failed window"]
   T4_6 --> T4_7["T4.7 Done exactly once"]
   T4_4 & T4_6 & T4_7 --> C2(["after T4.7: every accepted write gets one Done"]):::sync

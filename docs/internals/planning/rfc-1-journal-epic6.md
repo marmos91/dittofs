@@ -786,8 +786,8 @@ pkg/block/journal/
   content; the headroom drawn to exhaustion, then a corrupt loss, asserting the drop, the event
   and the list entry (catches a drop undone because its record could not be appended, R83), and the same with only the open reserve left, where a `Lose` from a read is refused and an `AtOpen` one succeeds (R83); a deferred synced loss read back through `Since` and `Files`, and one that appended nothing (catches a deferred loss that is lost or written to the headroom, R92); a synced and an unsynced loss read back through E4's markers, and a
   `Settle` above the synced one (catches a synced loss `Since` never yields, R84); a second `Lose`
-  of one sequence number; the record's durability through the crash seam (R79, write half); and for the generation, the four loss reasons in a table, asserting
-  the generation after each; the order hooks (generation before event, before the failing
+  of one sequence number; the record's durability through the crash seam (R79, write half); and for the generation, the five loss reasons of RFC 28 §2.3 in a table, asserting
+  the generation after each, unchanged after a stale and a `superseded` one; the order hooks (generation before event, before the failing
   `Sync`; catches a generation raised late, which lets a client keep a verifier the loss
   invalidated); close and reopen on one directory and on two (catches a restart at zero, R52); a
   window of many records (catches a raise per record). Conformance rows that stay red until
