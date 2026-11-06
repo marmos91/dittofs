@@ -42,7 +42,7 @@ func idleOver(t *testing.T, cap int64, clock core.Clock) (*Stream, *journaltest.
 	}
 	set := NewSet(cap, nil)
 	maker := NewMaker(seam.FS(), set, 1<<62, 0, nil)
-	pool := NewPool(maker, Targets{Content: 2}, nil)
+	pool := NewPool(maker, Targets{Content: 2}, nil, nil)
 	t.Cleanup(func() { pool.Stop() })
 	pool.Start()
 	waitSpares(t, pool, 2)
@@ -52,7 +52,7 @@ func idleOver(t *testing.T, cap int64, clock core.Clock) (*Stream, *journaltest.
 			t.Errorf("the cache's Shutdown: %v", err)
 		}
 	})
-	s := NewStream(1, probeIdentity, set, pool, cache)
+	s := NewStream(1, probeIdentity, set, pool, cache, nopInternalSink())
 	t.Cleanup(func() { _ = s.Close() })
 	s.watchIdle(clock)
 	return s, seam, set, pool

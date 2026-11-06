@@ -156,12 +156,12 @@ func (s *Stream) endLocked(cause EndCause, err error) (core.SegmentID, bool) {
 // Withdrawn only by a window that reads the segment's own ledger, which
 // would then carry the slots itself.
 //
-// decision: the named completion is the append's own completion section, not
-// R88's Track registration, for R88's durability sink is not part of this
-// stack yet: "registered its record" here means the completion ran the
-// tracker's complete under appendMu. The day R88 lands, its Track call goes
-// before that completion section, and this wait then implies the registration
-// too — the order is R88's to keep, not this wait's.
+// decision: the named completion is the append's own completion section. The
+// sink's Track call runs inside that section, before the slot completes, so the
+// wait for every slot implies each record was registered with the sink as well
+// as completed in the tracker under appendMu. That order is Append's to keep,
+// not this wait's: withdraw the implication if Track ever moves after the slot
+// completes.
 //
 // The roll cannot move the segment the wait reads — s.id, and the tracker's
 // synced value with it — for it installs only once the end's record is

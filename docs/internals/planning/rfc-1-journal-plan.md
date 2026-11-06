@@ -25,7 +25,7 @@ differ at the root:
 | What it knows | carving, chunk sizes, eviction, cold seeding (`Hydrate`, `Commit`, `SeedCold`, …) | extents of files only. No chunks, no blocks, no remote tier ([RFC 1 §1.1](../rfcs/rfc-1-journal.md)) |
 | Read of absent data | depends on the path | always an exact `missing` list, caller's buffer untouched |
 | Eviction | journal-driven | engine-driven: `Offload` → `report` → `Release` → `Repack` |
-| On-disk format | v1 segments | RFC 28: `format` file, 48-byte segment header, 96-byte record header, 14 record kinds, catalog and trailer, CRC32C |
+| On-disk format | v1 segments | RFC 28: `format` file, 48-byte segment header, 96-byte record header, 16 record kinds, catalog and trailer, CRC32C |
 
 The v2 package's dependency set is the Go standard library plus the OS file interface
 (RFC 1 §1.1), which admits `golang.org/x/sys` in `internal/platform` only (epic 1, D6). An
@@ -558,7 +558,7 @@ failure.
   - catalog equals scan;
   - a foreign segment is not attached;
   - `format` at 55 or 57 bytes, or version 2;
-  - unknown kinds 15 and 128;
+  - unknown kinds 17 and 128;
   - an interrupted `Init`, `format.tmp` replace and spare creation;
   - an interrupted recycle;
   - unproven-tail re-verification with direct I/O;
@@ -636,7 +636,7 @@ rule 12), and places epic 1's D6 `decision:` marker (`golang.org/x/sys` in
   - the `format` file (56 bytes, `DJF1`);
   - the segment header (48 bytes, `DJH1`, unseeded CRC);
   - the seal marker (32 bytes, `DJS1`);
-  - the record header (96 bytes, `DJR1`), with its 14 kinds, 8-byte alignment and the
+  - the record header (96 bytes, `DJR1`), with its 16 kinds, 8-byte alignment and the
     `write` mtime prefix;
   - the catalog entry (72 bytes) and the trailer (32 bytes, `DJT1`).
 - **CRC32C**, seeded and unseeded.

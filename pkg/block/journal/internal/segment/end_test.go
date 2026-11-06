@@ -519,7 +519,7 @@ func TestEndARecycledSegmentsFailedAppend(t *testing.T) {
 	maker := segment.NewMaker(seam.FS(), set, 2*streamCap, adopted, nil)
 	budget := core.NewDescriptorBudget(64)
 	cache := segment.NewDescriptors(seam.FS(), format.SegmentName, budget)
-	pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil)
+	pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil, nil)
 	e := streamEnv{seam: seam, set: set, maker: maker, pool: pool, cache: cache, budget: budget, cap: streamCap}
 
 	// The pool's Adopt accounts the spare in the ledger itself, the way
@@ -555,7 +555,7 @@ func TestEndARecycledSegmentsFailedAppend(t *testing.T) {
 	pool.Start()
 	awaitCounters(t, "the adopted and the made content spares ready", pool,
 		func(c segment.PoolCounters) bool { return c.Spares == 2 })
-	e.s = segment.NewStream(1, streamIdentity, set, pool, cache)
+	e.s = segment.NewStream(1, streamIdentity, set, pool, cache, nopSink())
 	t.Cleanup(func() { _ = e.s.Close() })
 
 	// The first append lands in the adopted spare.

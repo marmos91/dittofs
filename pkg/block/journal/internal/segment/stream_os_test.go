@@ -33,14 +33,14 @@ func TestStreamOnRealStorageAllocatesNoMoreThanAccounted(t *testing.T) {
 	// spares — so the refill the take kicks is refused by the maximum and
 	// the footprint assertions below stand on the appends alone.
 	maker := segment.NewMaker(o, set, 2*osStreamCap, 0, nil)
-	pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil)
+	pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil, nil)
 	t.Cleanup(func() { pool.Stop() })
 	pool.Start()
 	awaitCounters(t, "a content spare ready", pool,
 		func(c segment.PoolCounters) bool { return c.Spares >= 1 })
 	budget := core.NewDescriptorBudget(64)
 	cache := segment.NewDescriptors(o, format.SegmentName, budget)
-	s := segment.NewStream(1, streamIdentity, set, pool, cache)
+	s := segment.NewStream(1, streamIdentity, set, pool, cache, nopSink())
 	t.Cleanup(func() {
 		if err := cache.Shutdown(); err != nil {
 			t.Errorf("the cache's Shutdown = %v, want nil", err)

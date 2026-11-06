@@ -89,7 +89,7 @@ func streamOver(t *testing.T, cap int64, setup func(e streamEnv)) streamEnv {
 	maker := segment.NewMaker(seam.FS(), set, 2*cap, 0, nil)
 	budget := core.NewDescriptorBudget(64)
 	cache := segment.NewDescriptors(seam.FS(), format.SegmentName, budget)
-	pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil)
+	pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil, nil)
 
 	e := streamEnv{seam: seam, set: set, maker: maker, pool: pool, cache: cache, budget: budget, cap: cap}
 	setup(e)
@@ -103,7 +103,7 @@ func streamOver(t *testing.T, cap int64, setup func(e streamEnv)) streamEnv {
 	// spares are ready, which the pinned maximum holds there.
 	awaitCounters(t, "the two content spares ready", pool,
 		func(c segment.PoolCounters) bool { return c.Spares == 2 })
-	e.s = segment.NewStream(1, streamIdentity, set, pool, cache)
+	e.s = segment.NewStream(1, streamIdentity, set, pool, cache, nopSink())
 	return e
 }
 
@@ -991,7 +991,7 @@ func TestStreamReadAtARefusedSegmentMakesOneAttempt(t *testing.T) {
 	}
 	// A closed stream refuses reads, so a second stream over the same cache
 	// reads the retired segment.
-	reader := segment.NewStream(2, streamIdentity, e.set, e.pool, e.cache)
+	reader := segment.NewStream(2, streamIdentity, e.set, e.pool, e.cache, nopSink())
 	if _, err := reader.ReadAt(1, buf, p.Loc.Off); !errors.Is(err, segment.ErrSegmentGone) {
 		t.Fatalf("the ReadAt of a closed segment = %v, want ErrSegmentGone", err)
 	}
@@ -1249,11 +1249,11 @@ func TestStreamClosesUnderDenseAppendsRacingAppendsDoesNotPanic(t *testing.T) {
 		}
 		set := segment.NewSet(streamCap, nil)
 		maker := segment.NewMaker(seam.FS(), set, 3*streamCap, 0, nil)
-		pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil)
+		pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil, nil)
 		pool.Start()
 		budget := core.NewDescriptorBudget(64)
 		cache := segment.NewDescriptors(seam.FS(), format.SegmentName, budget)
-		s := segment.NewStream(1, streamIdentity, set, pool, cache)
+		s := segment.NewStream(1, streamIdentity, set, pool, cache, nopSink())
 		// The round settles itself, so the next round starts from an empty
 		// heap — a hundred rounds of caches held to the test's end would
 		// read as growth to the profiler.
@@ -1720,7 +1720,7 @@ func streamOverFS(t *testing.T, cap int64, fsys storage.FS, setup func(e streamE
 	maker := segment.NewMaker(fsys, set, 3*cap, 0, nil)
 	budget := core.NewDescriptorBudget(64)
 	cache := segment.NewDescriptors(fsys, format.SegmentName, budget)
-	pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil)
+	pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil, nil)
 
 	e := streamEnv{set: set, maker: maker, pool: pool, cache: cache, budget: budget, cap: cap}
 	setup(e)
@@ -1728,7 +1728,7 @@ func streamOverFS(t *testing.T, cap int64, fsys storage.FS, setup func(e streamE
 	pool.Start()
 	awaitCounters(t, "the two content spares ready", pool,
 		func(c segment.PoolCounters) bool { return c.Spares == 2 })
-	e.s = segment.NewStream(1, streamIdentity, set, pool, cache)
+	e.s = segment.NewStream(1, streamIdentity, set, pool, cache, nopSink())
 	return e
 }
 

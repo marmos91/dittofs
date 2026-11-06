@@ -1152,9 +1152,10 @@ every reclaim after the first failover. Instead:
   only. A later failover starts a new instance, in which the same client may
   reclaim again.
 - **A grace instance never repeats, on one node too.** Every start of a node
-  raises the incarnation of every shard it serves, in the transaction that
-  starts it and before any open-state request is answered
-  ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard),
+  raises the incarnation of every shard it serves, in the start's transactions,
+  before any open-state request is answered
+  ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing),
+  [RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard),
   [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)), so
   a single-node restart opens a new instance. Were the instance to repeat, the
   `RECLAIM_COMPLETE` a client sent at mount would end the new grace for it at
@@ -1747,13 +1748,17 @@ metadata (`FILE_SYNC`).
   carries the data and the modification time the write sets
   ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), and once the existence commit
   of every pending write in its range that overwrites committed content — the
-  writes that need an overwrite record — has committed. An append or a hole
-  fill does not wait for its existence commit, which follows lazily within the
-  group commit's bounded age; a waiting reply joins the next group commit
-  rather than issuing a transaction of its own
+  writes that need an overwrite record — has committed, and, where its range
+  covers committed content, once a recorded sync mark covers the sync. An append
+  or a hole fill does not wait for its existence commit, which follows lazily
+  within the group commit's bounded age; a waiting reply joins the next group
+  commit rather than issuing a transaction of its own
   ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)).
-  So an untar or a log append costs one journal sync per stability point, and
-  only an overwrite of committed bytes costs a share of one group commit too.
+  So a flush whose range covers no committed content, an untar's included, costs
+  one journal sync; one whose range covers committed content, a log append's
+  whole-file `COMMIT` included, can also wait for a share of one transaction that
+  records marks, and an overwrite of committed bytes for a share of one group
+  commit.
   There is no cheaper level to offer: `DATA_SYNC` waits for what `FILE_SYNC`
   waits for.
 - **A stalled store delays only the replies that wait on it.** While the
@@ -1761,7 +1766,9 @@ metadata (`FILE_SYNC`).
   `ErrDelay` at the caller's deadline, never success, and is answered
   `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX`, which the client retries
   ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal));
-  one that covers only appends and hole fills is answered after the sync.
+  one whose extent covers no committed content is answered after the sync, and
+  one whose extent covers committed content, appends included, also waits for a
+  recorded sync mark and is answered `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX` the same way.
 - The verifier in every `WRITE` and `COMMIT` reply — which changes when the
   server may have lost unstable writes, telling the client to resend them — is
   RFC 17's ([RFC 17 §5.8](rfc-17-vfs.md#5.8%20The%20write%20verifier)), passed
@@ -2524,7 +2531,7 @@ a name, an owner string, a principal or a client address
 | N14 | A lock request from another client recalls a read or write delegation before the lock is decided, and meanwhile is answered retry or blocked, never denied; a delegation is never a handle grant. |
 | N15 | An NLM host is its name and source address; NLM callbacks are calls to the host's NLM service, on a connection the server opens from the floating address the host used. |
 | N16 | Audit entries are read or changed only by an administrator, on every minor version; the ctime NFS reports moves on every change. |
-| N17 | A stability reply waits for the journal sync of its range and for the existence commit of every pending overwrite of committed content in it, never for an append's or hole fill's; a capacity refusal is answered as RFC 8 §10.2 classifies it, a transient one retry-later for as long as it lasts, never "no space" because a deadline passed; only a logical quota or a permanent cause is answered at once. |
+| N17 | A stability reply waits for the journal sync of its range, for the existence commit of every pending overwrite of committed content in it, never for an append's or hole fill's, and, where its range covers committed content, for a recorded sync mark covering the sync; a capacity refusal is answered as RFC 8 §10.2 classifies it, a transient one retry-later for as long as it lasts, never "no space" because a deadline passed; only a logical quota or a permanent cause is answered at once. |
 | N18 | The owner string (`Name`), verifier (`Boot`), creating principal (`Owner`), state protection (`Protect`), back-channel node, session holders and, in the adapter's own bytes, the last `CREATE_SESSION` sequence and reply of a client are in its durable record; its lease expiry is not; an unconfirmed client is a `Pending` proposal, volatile at the node that answered; an NFSv4.0 owner's sequence and confirmation are in its `Sequence`. |
 | N19 | A directory's `change_info4` is never reported atomic, and NFSv3 pre-operation attributes are returned only when read from the File and its overlay in the hold of the file's accept lock that accepts the operation, never for a directory. |
 | N20 | A single node advertises no pNFS role and answers every layout operation `NFS4ERR_NOTSUPP`. |

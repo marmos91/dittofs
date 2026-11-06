@@ -264,7 +264,7 @@ func groupBuild(t *testing.T) groupEnv {
 
 	e := rollBuild(t, streamCap, segment.Targets{Content: 2}, nil)
 	awaitSpares(t, e.pool, 2)
-	ss := segment.NewStreams(1, streamIdentity, e.set, e.pool, e.cache)
+	ss := segment.NewStreams(1, streamIdentity, e.set, e.pool, e.cache, nopSinkFor)
 	r := segment.NewRetirer(segment.RetirerConfig{
 		Set: e.set, Cache: e.cache, Pool: e.pool, Maker: e.maker, FS: e.seam.FS(),
 	})
@@ -510,7 +510,7 @@ func TestGroupCloseIdempotent(t *testing.T) {
 	}
 
 	bare := rollBuild(t, streamCap, segment.Targets{Content: 1}, nil)
-	ss := segment.NewStreams(1, streamIdentity, bare.set, bare.pool, bare.cache)
+	ss := segment.NewStreams(1, streamIdentity, bare.set, bare.pool, bare.cache, nopSinkFor)
 	g := segment.NewGroup(segment.GroupConfig{Streams: ss, Pool: bare.pool, Cache: bare.cache})
 	if err := g.Close(); err != nil {
 		t.Fatalf("Close without idle sealer or retirer = %v, want nil", err)
@@ -578,7 +578,7 @@ func TestGroupCloseMakesNoSpare(t *testing.T) {
 		quietPool(e.p)
 		creates := e.seam.Calls(journaltest.OpCreate)
 
-		ss := segment.NewStreams(1, streamIdentity, e.set, e.p, e.c)
+		ss := segment.NewStreams(1, streamIdentity, e.set, e.p, e.c, nopSinkFor)
 		g := segment.NewGroup(segment.GroupConfig{Streams: ss, Pool: e.p, Retirer: e.r, Cache: e.c})
 		if err := g.Close(); err != nil {
 			t.Fatalf("Close = %v, want nil", err)
@@ -618,7 +618,7 @@ func TestStreamsCloseRefusesEveryStreamBeforeAnyDrains(t *testing.T) {
 
 	e := rollBuild(t, streamCap, segment.Targets{Content: 3}, nil)
 	awaitSpares(t, e.pool, 3)
-	ss := segment.NewStreams(2, streamIdentity, e.set, e.pool, e.cache)
+	ss := segment.NewStreams(2, streamIdentity, e.set, e.pool, e.cache, nopSinkFor)
 	t.Cleanup(func() { _ = ss.Close() })
 
 	h0, b0 := streamWriteHeader(streamFileID(1), 0, streamTestBody(64, 0x5a), 7, core.Version{Counter: 1})

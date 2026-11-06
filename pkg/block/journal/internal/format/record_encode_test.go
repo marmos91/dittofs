@@ -207,3 +207,31 @@ func TestAppendRecordWritesWhatItIsGiven(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordPayloadCRCReadsTheHeaderColumn pins that the accessor returns the
+// checksum column the decoder reads, for every kind: a write, a fill and the
+// header-only kinds.
+func TestRecordPayloadCRCReadsTheHeaderColumn(t *testing.T) {
+	for name, want := range recordGoldens(t) {
+		b := AppendRecord(nil, testIdentity, want.h, want.body)
+
+		h, err := DecodeRecordHeader(b[:RecordHeaderSize], testIdentity, want.h.Segment, want.h.Offset)
+		if err != nil {
+			t.Fatalf("record_%s: DecodeRecordHeader = %v, want no error", name, err)
+		}
+		if got := RecordPayloadCRC(b); got != h.PayloadCRC {
+			t.Errorf("record_%s: RecordPayloadCRC = %#x, want the decoded %#x", name, got, h.PayloadCRC)
+		}
+	}
+}
+
+// TestRecordPayloadCRCPanicsOnAShortRecord pins that a slice shorter than a
+// header is a caller bug, never a read of a neighbour's bytes.
+func TestRecordPayloadCRCPanicsOnAShortRecord(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("RecordPayloadCRC over a short slice did not panic")
+		}
+	}()
+	RecordPayloadCRC(make([]byte, RecordHeaderSize-1))
+}

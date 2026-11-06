@@ -209,11 +209,11 @@ func streamProbeStream(t *testing.T) *Stream {
 	dir := t.TempDir()
 	set := NewSet(64<<10, nil)
 	maker := NewMaker(probeFS(dir), set, 1<<62, 0, nil)
-	pool := NewPool(maker, Targets{Content: 1}, nil)
+	pool := NewPool(maker, Targets{Content: 1}, nil, nil)
 	t.Cleanup(func() { pool.Stop() })
 	pool.Start()
 	cache := NewDescriptors(probeFS(dir), format.SegmentName, core.NewDescriptorBudget(64))
-	return NewStream(1, probeIdentity, set, pool, cache)
+	return NewStream(1, probeIdentity, set, pool, cache, nopInternalSink())
 }
 
 // probeIdentity is the identity the probe stream writes under.
@@ -223,3 +223,9 @@ var probeIdentity = core.JournalID{0xd, 0xe, 0xc, 0xa, 0xd, 0x0}
 // temp directory: neither takes a nil one, though the checks above never
 // reach storage through them.
 func probeFS(dir string) storage.FS { return platform.NewOS(dir) }
+
+// nopInternalSink is a durability sink that drops every event, for the
+// internal tests that build a stream and care for neither report.
+func nopInternalSink() Sink {
+	return Sink{Track: func(Written) {}, Synced: func(core.SegmentID, int64) {}}
+}

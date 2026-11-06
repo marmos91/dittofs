@@ -447,3 +447,60 @@ rfc28 / 4.2 / A / "unread, offloaded":
 rfc28 / 4.2 / A / "a dead unread record":
   owner: epic 7
   reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc1 / 9.4 / A / "`DropOlder`":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc1 / 9.4 / A / "two drop calls, two reasons":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc1 / 9.4 / A / "an unread `reconcile` or `reconciled` record":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc1 / 9.4 / A / "a reconcile-retained piece is never held again":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc1 / 9.4 / A / "an ended segment outlives its copies' proof":
+  owner: epic 6
+  reason: 'an ended segment held until a recorded mark or a seal past its copies is not built yet'
+rfc1 / 9.4 / A / "the hold on an ended segment is bounded":
+  owner: epic 6
+  reason: 'an ended segment held until a recorded mark or a seal past its copies is not built yet'
+rfc1 / 9.4 / A / "read-only fails every stream's unsynced records":
+  owner: epic 6
+  reason: 'the read-only transition failing every stream''s unsynced records is not built yet'
+rfc1 / 9.4 / C / "`Share` twice on one tag":
+  owner: epic 8
+  reason: 'Share of an open tag returning its handle with the new limit is not built yet'
+rfc28 / 4.2 / C / "a seal marker only the cache holds":
+  owner: epic 7
+  reason: 'the open proving seal markers on the device is not built yet'
+rfc28 / 4.2 / C / "a range that names no record":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc28 / 4.2 / C / "the reconcile stays owed":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc28 / 4.2 / C / "a recovery seal holds no catalog of a range":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc28 / 4.2 / C / "a mark proves only up to `Through`":
+  owner: epic 7
+  reason: 'sync marks and the open''s use of them are not built yet'
+rfc28 / 4.2 / C / "a counted range is not counted again":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc28 / 4.2 / C / "a held superseded piece stays owed":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc28 / 4.2 / C / "the reconcile settles when the hold ends":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc28 / 4.2 / C / "`Reconciled` with no headroom":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc28 / 4.2 / C / "a lost synced tail":
+  owner: epic 7
+  reason: 'sync marks and the open''s use of them are not built yet'
+rfc28 / 4.2 / C / "a partly superseded record is still checked":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'

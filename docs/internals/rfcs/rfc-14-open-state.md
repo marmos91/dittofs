@@ -1688,8 +1688,13 @@ so the new primary, already named, writes `GraceInstance` = its incarnation by
 compare-and-swap before it serves
 ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)).
 Every start of a node, the single node's included, **MUST** raise the
-incarnation of every shard it serves in the transaction that starts it, before
-any open-state request is answered, so a grace instance never repeats
+incarnation of every shard it serves, each transaction within the engine's key
+budget `K` ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), E40). Until the last of them commits it **MUST NOT**
+answer an open-state request, return a write verifier (`WRITE`, `COMMIT`,
+`COPY`), send an NSM restart notice or let a shard enter grace
+(`Recovery.ServeShard`, §11.2), so a grace instance never repeats. A start cut off
+between two of them is not a start: the next one raises every shard again, those
+already raised included, and since a raise only goes up, no incarnation repeats
 ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)).
 Were it to repeat, the `ReclaimComplete` a client sent at mount would end the
 new instance at once, and another client could take its lock.
@@ -2880,10 +2885,12 @@ The node ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)), whi
 and before the engine's and the service's `Start`
 ([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)), and `Stop` after the service's
 `Stop` and the engine's `Close`, which joins the clone batches that call
-`CloneClose`, before the store's. `Start` starts the timer and nothing
-else; the service's `Start` then calls `Recovery.ServeShard` for each shard
-this node serves, passing the shard's `GraceInstance`, which the node's start
-transaction raised ([§4.4](#4.4%20Grace%20is%20per%20shard)); it installs its persistent and clone
+`CloneClose`, before the store's. On a single node `Start` raises the node
+epoch by one, in its own transaction, before the engine's start raises any
+shard's incarnation ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)); it then starts the timer, and nothing
+else; the service's `Start` then calls
+`Recovery.ServeShard` for each shard this node serves, passing the shard's
+`GraceInstance`, which the node's start transactions raised ([§4.4](#4.4%20Grace%20is%20per%20shard)); it installs its persistent and clone
 source opens, enters grace, and arms the shard's timers.
 
 There is no deadline heap. The timer is one goroutine that sweeps every 10 s

@@ -26,8 +26,11 @@ type Streams struct {
 // panics on a nil dependency, as NewStream does, and on a count below one or
 // above MaxUint32, for no header could carry a stream number of the kind. Every
 // stream shares the set, the pool and the cache, so a file's roll and every
-// other's draw on the one spare pool and the one footprint.
-func NewStreams(n int, identity core.JournalID, set *Set, pool *Pool, cache *Descriptors) *Streams {
+// other's draw on the one spare pool and the one footprint. The sink is built
+// once per stream, by calling sink with the stream's number, so a consumer
+// registers functions that reach the one stream's own state and no other's. It
+// panics on a nil sink function.
+func NewStreams(n int, identity core.JournalID, set *Set, pool *Pool, cache *Descriptors, sink func(no uint32) Sink) *Streams {
 	if n < 1 || uint64(n) > math.MaxUint32 {
 		// Below 1 and above the 32-bit column the header carries are one
 		// refusal: no stream number the format spells could name a stream
@@ -35,9 +38,12 @@ func NewStreams(n int, identity core.JournalID, set *Set, pool *Pool, cache *Des
 		// would overflow before it refused.
 		panic(fmt.Sprintf("segment: the stream count %d is below 1 or above MaxUint32, so no header could carry its stream numbers", n))
 	}
+	if sink == nil {
+		panic("segment: the streams need a function that builds each one's durability sink")
+	}
 	ss := &Streams{s: make([]*Stream, n)}
 	for i := range ss.s {
-		ss.s[i] = NewStream(uint32(i), identity, set, pool, cache)
+		ss.s[i] = NewStream(uint32(i), identity, set, pool, cache, sink(uint32(i)))
 	}
 	return ss
 }

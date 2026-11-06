@@ -270,7 +270,7 @@ func TestEndTheEventWaitsForAnEarlierSlotStillWriting(t *testing.T) {
 	e := rollBuild(t, streamCap, segment.Targets{Content: 2}, nil)
 	awaitCounters(t, "the content spares ready", e.pool,
 		func(c segment.PoolCounters) bool { return c.Spares >= 2 })
-	ss := segment.NewStreams(2, streamIdentity, e.set, e.pool, e.cache)
+	ss := segment.NewStreams(2, streamIdentity, e.set, e.pool, e.cache, nopSinkFor)
 	t.Cleanup(func() {
 		if err := ss.Close(); err != nil {
 			t.Errorf("the streams' Close: %v", err)
@@ -789,12 +789,12 @@ func TestEndEveryEndedSegmentHandsOneEventUnderRace(t *testing.T) {
 	maker := segment.NewMaker(seam.FS(), set, streamMax, 0, nil)
 	budget := core.NewDescriptorBudget(512)
 	cache := segment.NewDescriptors(seam.FS(), format.SegmentName, budget)
-	pool := segment.NewPool(maker, segment.Targets{Content: 4}, nil)
+	pool := segment.NewPool(maker, segment.Targets{Content: 4}, nil, nil)
 	t.Cleanup(func() { pool.Stop() })
 	pool.Start()
 	awaitCounters(t, "the content spares ready", pool,
 		func(c segment.PoolCounters) bool { return c.Spares >= 4 })
-	ss := segment.NewStreams(2, streamIdentity, set, pool, cache)
+	ss := segment.NewStreams(2, streamIdentity, set, pool, cache, nopSinkFor)
 	t.Cleanup(func() {
 		if err := ss.Close(); err != nil {
 			t.Errorf("the streams' Close: %v", err)

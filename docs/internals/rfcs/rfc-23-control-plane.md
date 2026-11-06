@@ -429,8 +429,9 @@ node is the primary" could act unfenced, and a retry first sent locally could
 apply twice after a takeover. On one node there is no gateway and no fence.
 
 **The node builds no journal.** The engine opens each device's journal itself,
-through the opener the node passes as `Open`, once it has read the version floor
-and the journal identity the store records ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); it closes them at its
+through the opener the node passes as `Open`, once it has read the version floor,
+the journal identity and the sync marks the store records, raising the journal's
+open generation with the marks ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); it closes them at its
 stop. A journal built before that read could open with the wrong floor.
 
 Beside the rows: the clock, the fault seam ([RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition)), the
@@ -515,7 +516,7 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
 3. **Register the node**: its version ranges and roles in its node record
    ([RFC 13 §5.5](rfc-13-configuration.md#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap)), refused in the same transaction if an active version lies
    outside them. A refusal stops the node here, before the engine's start
-   transaction runs or any adapter serves.
+   transactions run or any adapter serves.
 4. **Read the records**: the settings, the share list and the principals
    generation, and apply the provisioning file if one is named
    ([RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)). Then `apply` (§2.3) hands identity,

@@ -205,7 +205,7 @@ func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body Reco
 	// The checksum slots redone, so the whole record is covered. Both are
 	// over slices of dst from start, never over a caller's prefix, and
 	// derived from the seed, never a slice of the identity.
-	binary.LittleEndian.PutUint32(dst[start+84:start+88], crc32cSeeded(seed, dst[bodyStart:]))
+	binary.LittleEndian.PutUint32(dst[start+payloadCRCOff:start+payloadCRCOff+4], crc32cSeeded(seed, dst[bodyStart:]))
 	binary.LittleEndian.PutUint32(dst[start+92:start+96], crc32cSeeded(seed, dst[start:start+92]))
 
 	// The padding lines the record up within its segment, not within dst:
@@ -216,6 +216,10 @@ func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body Reco
 	}
 	return dst
 }
+
+// payloadCRCOff is where a record header keeps its seeded payload checksum, at
+// [84,88).
+const payloadCRCOff = 84
 
 // DecodeRecordHeader reads a record header, opened under journal's identity,
 // at the given segment and offset. An error matching ErrDamaged means the
@@ -290,7 +294,7 @@ func DecodeRecordHeader(b []byte, identity core.JournalID, segment core.SegmentI
 		Version:       core.Version{Epoch: epoch, Counter: binary.LittleEndian.Uint64(b[64:72])},
 		Tag:           core.ShareTag(binary.LittleEndian.Uint32(b[72:76])),
 		SyncedThrough: int64(binary.LittleEndian.Uint64(b[76:84])),
-		PayloadCRC:    binary.LittleEndian.Uint32(b[84:88]),
+		PayloadCRC:    binary.LittleEndian.Uint32(b[payloadCRCOff : payloadCRCOff+4]),
 		Offset:        storedOffset,
 	}
 
@@ -400,4 +404,14 @@ func VerifyRecordBody(body []byte, identity core.JournalID, h RecordHeader) (Rec
 		out.Cut = core.SnapshotCut(binary.LittleEndian.Uint64(body[0:8]))
 	}
 	return out, nil
+}
+
+// RecordPayloadCRC returns the payload checksum an encoded record carries in
+// its header, the same column DecodeRecordHeader reads. It panics on a slice
+// shorter than a header.
+func RecordPayloadCRC(rec []byte) uint32 {
+	if len(rec) < RecordHeaderSize {
+		panic("format: a record is shorter than its header")
+	}
+	return binary.LittleEndian.Uint32(rec[payloadCRCOff : payloadCRCOff+4])
 }
