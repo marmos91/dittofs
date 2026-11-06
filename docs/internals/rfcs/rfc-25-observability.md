@@ -522,8 +522,10 @@ offload stall that fills the journal — is two conditions, each raised by its o
 evidence (`offload_stalled`, then `journal_full`), never one whose severity
 creeps with a timer.
 
-A refusal that is part of normal operation — an `ErrDelay` under pacing, a
-quota refusal, a recall in progress — is not a condition. It is counted by its
+A refusal that is part of normal operation is not a condition: an `ErrDelay`
+under pacing, a quota refusal, a share at its own journal limit, a segment roll
+refused for no spare ready while the device has room
+([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), a recall in progress. It is counted by its
 owner.
 
 ### 3.3 Scopes, and how they combine
@@ -702,15 +704,15 @@ row.
 | `offload_age_exceeded` | [RFC 8 §11.4](rfc-8-engine.md#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable) | share | degraded | ticket at once |
 | `work_queue_stalled` | [RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler) | journal for the engine, node for GC, naming the source and tenant | degraded: a run has outlived twice its run timeout, or entries have been due with none dispatched for 5 min | ticket at 15 min |
 | `removal_stalled` | [RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches) | share, naming the FileID and the removal's kind | degraded; unhealthy for a clone, whose destination's writes are held | ticket at 1 h; page at 15 min for a clone |
-| `journal_full` | [RFC 1 §6](rfc-1-journal.md#6.%20Capacity) | journal | unhealthy: writes held or refused at capacity | page at 5 min |
+| `journal_full` | [RFC 1 §6](rfc-1-journal.md#6.%20Capacity), [RFC 8 §11.1](rfc-8-engine.md#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) | journal | unhealthy: writes held or refused at capacity | page at 5 min |
 | `journal_headroom_short` | [RFC 1 §6](rfc-1-journal.md#6.%20Capacity) | journal | degraded: an open took a headroom spare for its `reconcile` record and could not make it again; writes are served, and it clears once a retirement has made every such spare again | ticket at 1 h |
-| `journal_sync_failed` | [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync) | journal | unhealthy: acknowledged writes lost | page at once |
+| `journal_sync_failed` | [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync), [RFC 8 §11.1](rfc-8-engine.md#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) | journal | unhealthy: acknowledged writes lost in a sync window that failed in the last hour | page at once |
 | `journal_unsuitable` | [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | journal, naming the directory and what refused the latest open or late attach, the rule or another cause | unhealthy: the journal's shares are not served until the mount or the directory is fixed and the late attach serves; a retried open that finds the journal missing or foreign raises `journal_lost` instead | page at once |
 | `journal_range_unreadable` | [RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) | journal, naming the segment and the byte range | unhealthy: reads of the files it holds fail, or, for a range nothing names, the journal's shares are refused; leaves when the range reads or an operator acknowledges it | page at 15 min |
 | `journal_unreconciled` | [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) | share, naming the metadata read that failed; or the journal, naming the `Reconciled` refusal or a settling step the headroom refuses | unhealthy while a file of the share is gated and answers retry-later; degraded once every file is visited and only `Reconciled` or settling is retried; the reconcile stays owed until it succeeds | page at 5 min when unhealthy; ticket at 15 min when degraded |
-| `journal_lost` | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | journal | unhealthy; waits for an operator | page at once |
+| `journal_lost` | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model), [RFC 8 §11.1](rfc-8-engine.md#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) | journal | unhealthy; waits for an operator | page at once |
 | `journal_read_only` | [RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write) | journal | unhealthy: writes refused, reads served while the journal is open, until a spare is made, the storage checks pass and the reopen succeeds | page at once |
-| `stranded_export_failed` | [RFC 1 §3](rfc-1-journal.md#3.%20Interface), [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | node | degraded | ticket |
+| `stranded_export_failed` | [RFC 1 §3](rfc-1-journal.md#3.%20Interface), [RFC 8 §11.1](rfc-8-engine.md#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included), [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | node | degraded | ticket |
 | `node_fenced` | [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) | node | unhealthy: writes answer retry-later | page at once — it already waited 30 s |
 | `metadata_store_unhealthy`, `metadata_store_degraded` | [RFC 16 §8.3](rfc-16-metadata-store.md#8.3%20Health%20and%20debugging) | node | as named | page at 5 min; ticket |
 | `metadata_store_lost` | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | installation | unhealthy; waits for an operator | page at once |
