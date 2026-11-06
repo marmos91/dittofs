@@ -158,9 +158,22 @@ func TestDueFilesCommitInBoundedBatches(t *testing.T) {
 	}
 }
 
+// closedStore is a store whose existence commits, once on, answer it closed.
+type closedStore struct {
+	engine.Existence
+	on atomic.Bool
+}
+
+func (x *closedStore) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+	if x.on.Load() {
+		return nil, kvstore.ErrClosed
+	}
+	return x.Existence.Commit(ctx, p, marks)
+}
+
 // Marks whose call failed are not handed to the journal as recorded.
 func TestMarksOfAFailedCallAreNotRecorded(t *testing.T) {
-	c := &conflicting{}
+	c := &closedStore{}
 	u := newUnit(t, func(d *engine.Deps) { c.Existence = d.Existence; d.Existence = c })
 	f := u.create(t, "a")
 	u.write(t, f, 0, []byte("a"))
@@ -529,8 +542,8 @@ func TestAFailingFileFailsNoOther(t *testing.T) {
 	}
 }
 
-// conflicting is a store whose existence commits, once set, answer a
-// conflict.
+// conflicting is a store whose existence commits of files, once set, answer
+// a conflict.
 type conflicting struct {
 	engine.Existence
 	on    atomic.Bool
@@ -538,7 +551,7 @@ type conflicting struct {
 }
 
 func (x *conflicting) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
-	if x.on.Load() {
+	if x.on.Load() && len(p) > 0 {
 		x.calls.Add(1)
 		return nil, kvstore.ErrConflict
 	}
@@ -771,4 +784,77 @@ func TestACorruptFileFailsNoOther(t *testing.T) {
 	if !u.e.Failing(u.rec, x) {
 		t.Error("existence_commit_failing does not name the corrupt file")
 	}
+}
+
+// refusingMarks is a store that, while on, refuses every call carrying marks
+// with err, counting those calls.
+type refusingMarks struct {
+	engine.Existence
+	err   error
+	on    atomic.Bool
+	calls atomic.Int32
+}
+
+func (x *refusingMarks) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+	if marks != nil && x.on.Load() {
+		x.calls.Add(1)
+		return nil, x.err
+	}
+	return x.Existence.Commit(ctx, p, marks)
+}
+
+// A batch whose marks the store refuses because another open moved the open
+// generation commits its files at once without them, and marks stop: no
+// later call carries them, and a Commit waiting on them answers ErrDelay.
+func TestAMovedOpenGenerationStopsTheMarks(t *testing.T) {
+	x := &refusingMarks{err: kvstore.ErrOpenGenMoved}
+	x.on.Store(true)
+	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	a, b := u.create(t, "a"), u.create(t, "b")
+	u.write(t, a, 0, []byte("a"))
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if err := u.e.CommitNow(ctx, u.share.ID, a); err != nil {
+		t.Fatalf("the batch beside the refused marks: %v", err)
+	}
+	u.write(t, b, 0, []byte("b"))
+	if err := u.e.CommitNow(ctx, u.share.ID, b); err != nil {
+		t.Fatal(err)
+	}
+	u.write(t, a, 1, []byte("tail"))
+	short, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	_, _, err := u.e.Commit(short, u.share.ID, a, 0, 0)
+	var d *vfserr.Delay
+	if !errors.As(err, &d) {
+		t.Errorf("a Commit waiting on stopped marks: %v, want ErrDelay", err)
+	}
+	if n := x.calls.Load(); n != 1 {
+		t.Errorf("%d calls carried marks, want only the one refused", n)
+	}
+	if got := u.j.Recorded(); len(got) != 0 {
+		t.Errorf("MarksRecorded was handed %v", got)
+	}
+}
+
+// A batch whose marks are still conflicting at the deadline commits its
+// files at once without them, and the marks are retried alone once their
+// backoff has passed.
+func TestMarksNotWrittenAreRetriedAlone(t *testing.T) {
+	x := &refusingMarks{err: kvstore.ErrSyncMarks}
+	x.on.Store(true)
+	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	a := u.create(t, "a")
+	u.write(t, a, 0, []byte("a"))
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if err := u.e.CommitNow(ctx, u.share.ID, a); err != nil {
+		t.Fatalf("the batch beside the refused marks: %v", err)
+	}
+	if n := x.calls.Load(); n != 1 {
+		t.Fatalf("%d calls carried marks within their backoff, want 1", n)
+	}
+	x.on.Store(false)
+	u.clock.Advance(time.Second) // past the backoff
+	eventually(t, "the marks are recorded alone", func() bool { return len(u.j.Recorded()) == 1 })
 }

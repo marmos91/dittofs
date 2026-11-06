@@ -13,26 +13,35 @@ import (
 
 // splitStore answers an existence commit as its rules say: a file in inMap
 // fails in the map, the others committing; a file in whole fails the whole
-// call. It records each call's files by name.
+// call; marks beside a file fail it with marksErr when set. It records each
+// call's files by name, and a "*" for its marks.
 type splitStore struct {
 	Existence
-	names map[entity.FileID]string
-	inMap map[string]bool
-	whole map[string]bool
-	err   error // what a whole-call failure answers
-	calls []string
+	names    map[entity.FileID]string
+	inMap    map[string]bool
+	whole    map[string]bool
+	err      error // what a whole-call failure answers
+	marksErr error
+	calls    []string
 }
 
 // errConflict is a conflict the store kept retrying until the call's bound.
 var errConflict = errors.Join(kvstore.ErrConflict, context.DeadlineExceeded)
 
-func (s *splitStore) Commit(_ context.Context, p []kvstore.PendingExistence, _ *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+func (s *splitStore) Commit(_ context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
 	var call []string
 	failWhole := false
 	for _, pe := range p {
 		n := s.names[pe.File]
 		call = append(call, n)
 		failWhole = failWhole || s.whole[n]
+	}
+	if marks != nil {
+		call = append(call, "*")
+		if s.marksErr != nil && len(p) > 0 {
+			s.calls = append(s.calls, strings.Join(call, ""))
+			return nil, s.marksErr
+		}
 	}
 	s.calls = append(s.calls, strings.Join(call, ""))
 	if failWhole {
@@ -86,7 +95,7 @@ func TestTheSplit(t *testing.T) {
 			}
 			e := &Engine{d: Deps{Existence: s}}
 			failed, alone := map[entity.FileID]error{}, map[entity.FileID]bool{}
-			e.commitSplit(context.Background(), pending, nil, failed, alone)
+			_, _ = e.commitSplit(context.Background(), pending, nil, failed, alone)
 			if !slices.Equal(s.calls, c.calls) {
 				t.Errorf("calls %v, want %v", s.calls, c.calls)
 			}
@@ -97,6 +106,64 @@ func TestTheSplit(t *testing.T) {
 			slices.Sort(got)
 			if strings.Join(got, "") != c.failed {
 				t.Errorf("failed %v, want %q", got, c.failed)
+			}
+		})
+	}
+}
+
+// Every failure shape on a batch carrying the marks: one call at a time
+// carries them, through a split on its first half, until they commit; beside
+// a file failing alone they go in a call of their own; a marks error has the
+// batch retried at once without them and splits nothing.
+func TestTheSplitCarriesTheMarks(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		inMap, whole string
+		calls        []string
+		failed       string
+		recorded     bool
+	}{
+		{"none fails", "", "", []string{"abcd*"}, "", true},
+		{"a file in the map", "c", "", []string{"abcd*"}, "c", true},
+		{"a whole-call error", "", "d", []string{"abcd*", "ab*", "cd", "c", "d"}, "d", true},
+		{"two failing files", "", "bd", []string{"abcd*", "ab*", "a*", "b", "cd", "c", "d"}, "bd", true},
+		{"every file failing", "", "abcd", []string{"abcd*", "ab*", "a*", "*", "b", "cd", "c", "d"}, "abcd", true},
+		{"the store closed", "", "d", []string{"abcd*"}, "abcd", false},
+		{"marks not written", "", "", []string{"abcd*", "abcd"}, "", false},
+		{"the open generation moved", "c", "", []string{"abcd*", "abcd"}, "c", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := &splitStore{names: map[entity.FileID]string{}, inMap: set(c.inMap), whole: set(c.whole), err: errConflict}
+			switch c.name {
+			case "the store closed":
+				s.err = kvstore.ErrClosed
+			case "marks not written":
+				s.marksErr = kvstore.ErrSyncMarks
+			case "the open generation moved":
+				s.marksErr = kvstore.ErrOpenGenMoved
+			}
+			var pending []kvstore.PendingExistence
+			for _, n := range "abcd" {
+				f := entity.NewFileID()
+				s.names[f] = string(n)
+				pending = append(pending, kvstore.PendingExistence{File: f})
+			}
+			e := &Engine{d: Deps{Existence: s}}
+			failed, alone := map[entity.FileID]error{}, map[entity.FileID]bool{}
+			recorded, err := e.commitSplit(context.Background(), pending, &kvstore.MarksWrite{}, failed, alone)
+			if !slices.Equal(s.calls, c.calls) {
+				t.Errorf("calls %v, want %v", s.calls, c.calls)
+			}
+			var got []string
+			for f := range failed {
+				got = append(got, s.names[f])
+			}
+			slices.Sort(got)
+			if strings.Join(got, "") != c.failed {
+				t.Errorf("failed %v, want %q", got, c.failed)
+			}
+			if recorded != c.recorded || (s.marksErr != nil && !errors.Is(err, s.marksErr)) {
+				t.Errorf("recorded %v, err %v; want recorded %v", recorded, err, c.recorded)
 			}
 		})
 	}
@@ -116,7 +183,7 @@ func TestTheSplitIsBounded(t *testing.T) {
 		pending = append(pending, kvstore.PendingExistence{File: f})
 	}
 	e := &Engine{d: Deps{Existence: s}}
-	e.commitSplit(context.Background(), pending, nil, map[entity.FileID]error{}, map[entity.FileID]bool{})
+	_, _ = e.commitSplit(context.Background(), pending, nil, map[entity.FileID]error{}, map[entity.FileID]bool{})
 	if n := len(s.calls); n > 1+2*6 {
 		t.Errorf("%d calls for one failing file of 64, want at most 13", n)
 	}

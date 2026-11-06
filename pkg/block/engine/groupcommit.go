@@ -57,9 +57,10 @@ type marks struct {
 	recorded  []entity.SyncMark // what the last committed marks write recorded
 	reads     uint64            // the marks reads made so far
 	readAt    uint64            // the read whose marks are recorded
-	ask       bool              // a stability point waits for marks read after the last read
-	backoff   time.Duration     // a write of marks alone that failed: its last backoff
+	ask       bool              // a stability point waits for marks read after the last read, or a failed write is retried
+	backoff   time.Duration     // a marks write that failed: its last backoff
 	notBefore time.Time         // and the next one's earliest time
+	stopped   bool              // another open replaced this one: no marks are recorded again
 }
 
 // errClosed answers a write after the engine's group commits stopped.
@@ -545,8 +546,11 @@ func (e *Engine) syncAndCommit(ctx context.Context, g *groupCommit, batch []capt
 		mw, read = g.readMarks()
 	}
 	ctx, end := e.d.Tracer(ctx, "engine.existence_commit", slog.Int("files", len(batch)))
-	if e.commitSplit(ctx, pending, mw, failed, alone) {
+	switch recorded, err := e.commitSplit(ctx, pending, mw, failed, alone); {
+	case recorded:
 		g.recorded(mw, read)
+	case mw != nil:
+		g.marksFailed(mw, err)
 	}
 	end(nil)
 	return failed, alone
@@ -554,9 +558,13 @@ func (e *Engine) syncAndCommit(ctx context.Context, g *groupCommit, batch []capt
 
 // readMarks is the journal's sync marks as a marks write of its current
 // open, and the number of the read, which answers a stability point's ask
-// made before it.
+// made before it; nil once marks are stopped.
 func (g *groupCommit) readMarks() (*kvstore.MarksWrite, uint64) {
 	g.mu.Lock()
+	if g.marks.stopped {
+		g.mu.Unlock()
+		return nil, 0
+	}
 	g.marks.ask = false
 	g.marks.reads++
 	m := g.marks
@@ -569,8 +577,35 @@ func (g *groupCommit) readMarks() (*kvstore.MarksWrite, uint64) {
 func (g *groupCommit) recorded(mw *kvstore.MarksWrite, read uint64) {
 	g.mu.Lock()
 	g.marks.recorded, g.marks.readAt = mw.Marks, read
+	g.marks.backoff, g.marks.notBefore = 0, time.Time{}
 	g.mu.Unlock()
 	g.j.MarksRecorded(mw.Marks)
+}
+
+// marksFailed handles marks mw that did not commit, err why. On
+// ErrOpenGenMoved the write is dropped, and when it carried the current
+// open's generation another open replaced this one, so marks stop. Any other
+// failure retries marks alone once a backoff, doubling as a failing file's
+// does, has passed.
+func (g *groupCommit) marksFailed(mw *kvstore.MarksWrite, err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if errors.Is(err, kvstore.ErrOpenGenMoved) {
+		if mw.Gen == g.marks.gen && !g.marks.stopped {
+			// decision: a process another open replaced stops recording
+			// marks but goes on committing existence for the journal,
+			// since nothing else stops two processes on one journal
+			// directory and the open generation fences only the marks.
+			// Overturned if a double open is seen outside a test: then
+			// fence the process off the journal.
+			g.marks.stopped = true
+			g.e.d.Logger.Warn("sync marks stopped: another open replaced this one", "err", err)
+		}
+		return
+	}
+	g.marks.ask = true
+	g.marks.backoff = min(max(2*g.marks.backoff, backoffMin), backoffMax)
+	g.marks.notBefore = g.e.d.Clock.Now().Add(g.marks.backoff)
 }
 
 // marksDue is how long until a write of marks alone is due: -1 when no
@@ -579,31 +614,24 @@ func (g *groupCommit) recorded(mw *kvstore.MarksWrite, read uint64) {
 func (g *groupCommit) marksDue() time.Duration {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if !g.marks.ask || g.closed || g.halted {
+	if !g.marks.ask || g.marks.stopped || g.closed || g.halted {
 		return -1
 	}
 	return max(0, g.marks.notBefore.Sub(g.e.d.Clock.Now()))
 }
 
 // commitMarks records the journal's sync marks in a call of their own, for a
-// stability point waiting on them while no batch is due, and wakes the
-// waiters. One that fails is retried once its backoff, doubling as a failing
-// file's does, has passed.
+// stability point waiting on them while no batch is due, or retrying a
+// failed write, and wakes the waiters.
 func (g *groupCommit) commitMarks(ctx context.Context) {
-	mw, read := g.readMarks()
-	cctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
-	_, err := g.e.d.Existence.Commit(cctx, nil, mw)
-	cancel()
-	if err == nil {
-		g.recorded(mw, read)
+	if mw, read := g.readMarks(); mw != nil {
+		if err := g.e.commitMarksAlone(ctx, mw); err == nil {
+			g.recorded(mw, read)
+		} else {
+			g.marksFailed(mw, err)
+		}
 	}
 	g.mu.Lock()
-	if err == nil {
-		g.marks.backoff, g.marks.notBefore = 0, time.Time{}
-	} else {
-		g.marks.backoff = min(max(2*g.marks.backoff, backoffMin), backoffMax)
-		g.marks.notBefore = g.e.d.Clock.Now().Add(g.marks.backoff)
-	}
 	close(g.returned)
 	g.returned = make(chan struct{})
 	g.mu.Unlock()
@@ -645,17 +673,24 @@ func (g *groupCommit) awaitMarks(ctx context.Context, read uint64) error {
 // keeps retrying is answered as one. A conflict or any other failure of one
 // file therefore fails no other, and no conflict holds the journal's batches.
 //
-// A non-nil mw rides on the first call, which records it when it commits,
-// and the answer is whether it did.
+// A non-nil mw rides on the first call, and through a split on the first
+// half, until it commits: recorded answers whether it did, and err why not.
+// The marks never split the batch nor fail a file: a marks error has the
+// call's existence retried at once without them, and when the file left
+// beside them fails alone they go in a call of their own.
 //
 // ponytail: the split is checked by its table of failure shapes rather than
 // fuzzed: it parses nothing, and its inputs are the store's answers. Fuzz it
 // if the store's failure shapes grow beyond a file in the map and a whole
 // call.
-func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExistence, mw *kvstore.MarksWrite, failed map[entity.FileID]error, alone map[entity.FileID]bool) (recorded bool) {
+func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExistence, mw *kvstore.MarksWrite, failed map[entity.FileID]error, alone map[entity.FileID]bool) (recorded bool, err error) {
 	cctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
 	m, err := e.d.Existence.Commit(cctx, pending, mw)
 	cancel()
+	if mw != nil && (errors.Is(err, kvstore.ErrOpenGenMoved) || errors.Is(err, kvstore.ErrSyncMarks)) {
+		e.commitSplit(ctx, pending, nil, failed, alone)
+		return false, err
+	}
 	if err == nil {
 		for f, ferr := range m {
 			if ferr != nil {
@@ -663,20 +698,35 @@ func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExist
 				alone[f] = len(pending) == 1
 			}
 		}
-		return mw != nil
+		return mw != nil, nil
 	}
 	if len(pending) == 1 || ctx.Err() != nil || storeWide(err) {
 		for _, p := range pending {
 			failed[p.File] = err
 			alone[p.File] = len(pending) == 1
 		}
-		return false
+		if mw == nil || len(pending) > 1 || ctx.Err() != nil || storeWide(err) {
+			return false, err
+		}
+		if err := e.commitMarksAlone(ctx, mw); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	e.splits.Add(1)
 	mid := len(pending) / 2
-	e.commitSplit(ctx, pending[:mid], nil, failed, alone)
+	recorded, err = e.commitSplit(ctx, pending[:mid], mw, failed, alone)
 	e.commitSplit(ctx, pending[mid:], nil, failed, alone)
-	return false
+	return recorded, err
+}
+
+// commitMarksAlone writes mw in a call with no pending existence, under the
+// bound every existence commit runs under.
+func (e *Engine) commitMarksAlone(ctx context.Context, mw *kvstore.MarksWrite) error {
+	cctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
+	defer cancel()
+	_, err := e.d.Existence.Commit(cctx, nil, mw)
+	return err
 }
 
 // storeWide reports that err fails every file alike, so halving the batch
