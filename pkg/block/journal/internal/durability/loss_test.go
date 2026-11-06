@@ -923,6 +923,40 @@ func TestLoseOfASupersededPieceDoesNotNameTheWholeRecord(t *testing.T) {
 	}
 }
 
+// TestLoseOfASupersededPieceAfterACorruptOneAppendsItsOwnRecord catches a
+// superseded piece skipped because a corrupt piece already named its seq: the
+// corrupt record names the whole dropped record, but a superseded one
+// excludes it only over its own extent, so the second piece still owes its
+// own record. The reverse order (superseded first, corrupt second) appends
+// two records too, which TestLoseOfASupersededPieceDoesNotNameTheWholeRecord
+// pins: the superseded record never names the whole record.
+func TestLoseOfASupersededPieceAfterACorruptOneAppendsItsOwnRecord(t *testing.T) {
+	e := newEnv(t)
+	if _, err := e.d.Lose(context.Background(), piece(9, 0, 3)); err != nil {
+		t.Fatalf("Lose of the corrupt piece: %v", err)
+	}
+	sup := piece(9, 5, 3)
+	sup.Reason = core.LossSuperseded
+	if _, err := e.d.Lose(context.Background(), sup); err != nil {
+		t.Fatalf("Lose of the superseded piece: %v", err)
+	}
+	lh, lb := e.lossRecords()
+	if len(lh) != 2 {
+		t.Fatalf("%d loss records, want 2", len(lh))
+	}
+	if lh[0].Extent != (core.Extent{Off: 0, Len: 3}) || lb[0].Reason != format.LossCorrupt {
+		t.Errorf("first record = %+v %v, want the corrupt piece [0,+3)", lh[0].Extent, lb[0].Reason)
+	}
+	if lh[1].Extent != (core.Extent{Off: 5, Len: 3}) || lb[1].Reason != format.LossSuperseded {
+		t.Errorf("second record = %+v %v, want the superseded piece [5,+3)", lh[1].Extent, lb[1].Reason)
+	}
+	for i, b := range lb {
+		if b.Dropped != 9 {
+			t.Errorf("record %d names dropped seq %d, want 9", i, b.Dropped)
+		}
+	}
+}
+
 // TestPlaceKeysOnTheDroppedSeqAndTheExtent catches a Place that reports only
 // the first piece of a record dropped in two.
 func TestPlaceKeysOnTheDroppedSeqAndTheExtent(t *testing.T) {
