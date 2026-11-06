@@ -1,7 +1,8 @@
 package durability
 
-// SetAfterAppend installs a hook Lose runs once its record is appended and
-// synced, before anything else of the loss takes effect.
+// SetAfterAppend installs a hook Lose runs once its append step is over, that
+// is once the record is appended and synced or the append was refused or
+// failed, before anything else of the loss takes effect.
 func (d *Durability) SetAfterAppend(f func()) { d.afterAppend = f }
 
 // SetBeforePublish installs a hook Lose runs after the generation is raised

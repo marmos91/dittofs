@@ -62,19 +62,23 @@ func (f *file) lose(e core.Extent, v core.Version) error {
 	return nil
 }
 
-// lose applies a synced loss of e at v to id as a deallocate is applied: the
-// admission reserves the entries the split and the marker may add, and the
-// commit applies the marker under the file's lock. A zero-length e is refused
-// before anything is reserved.
+// lose applies a synced loss of e at v to id as a delete is applied: under
+// the file's lock, with no admission. A zero-length e is refused before
+// anything changes.
+//
+// decision: a loss marker is never refused at the index bound, unlike a
+// deallocate. The marker is the only thing that tells Since of a synced loss
+// and masks content below its version, and a loss is not a request the
+// caller can retry or trim, so a refusal would leave the loss invisible to
+// the metadata. The split and the marker may add two entries past the
+// ceiling; the commit's delta keeps the count exact, and the next admitted
+// operation sees it. Withdraw this if the bound must hold against a burst
+// of losses.
 func (fs *files) lose(id core.FileID, e core.Extent, v core.Version) error {
 	if e.Len == 0 {
 		return core.ErrZeroLength
 	}
-	adm, err := fs.admitRemoval(id, e, 2)
-	if err != nil {
-		return err
-	}
-	return fs.commit(id, adm, func(f *file) error { return f.lose(e, v) })
+	return fs.update(id, func(f *file) error { return f.lose(e, v) })
 }
 
 // delete stops holding every extent of the file below v and leaves a marker

@@ -41,8 +41,9 @@ type env struct {
 	counters *index.Counters
 	d        *durability.Durability
 
-	mu    sync.Mutex
-	marks []marked
+	mu      sync.Mutex
+	marks   []marked
+	markErr error // what MarkLoss returns, nil by default
 }
 
 // newEnv builds the env over a fresh directory.
@@ -141,7 +142,7 @@ func (e *env) newDurabilityAt(dir string) *durability.Durability {
 			e.mu.Lock()
 			defer e.mu.Unlock()
 			e.marks = append(e.marks, marked{f, x, v})
-			return nil
+			return e.markErr
 		},
 	})
 	if err != nil {

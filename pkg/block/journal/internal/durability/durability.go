@@ -57,7 +57,16 @@ type Durability struct {
 	corruptDataLoss   uint64
 	corruptRepairable uint64
 	stale             uint64
-	named             map[core.Seq]struct{}
+
+	// named holds every dropped seq a Lose or a Place has taken, so a loss
+	// is reported once.
+	//
+	// ponytail: it grows by one seq per loss for the life of the
+	// Durability and is never pruned, so it follows the number of loss
+	// records the journal holds, not the ring. Upgrade to dropping a seq
+	// once no copy of its dropped record remains to be reported again, when
+	// a journal with a long loss history shows up in a heap profile.
+	named map[core.Seq]struct{}
 }
 
 // New returns a Durability over cfg. It panics on a nil Streams, Counters or
@@ -110,22 +119,26 @@ type Part struct {
 }
 
 // Stats returns a copy of the loss state.
+//
+// The generation is read after the ring is copied: Lose raises it before it
+// publishes, so every event in the copy has already raised it and a load
+// made afterwards includes that raise.
 func (d *Durability) Stats() Part {
-	gen := d.dir.load()
-
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	losses := make([]core.LossEvent, d.count)
 	for i := range losses {
 		losses[i] = d.ring[(d.head+i)%core.LossRingSize]
 	}
-	return Part{
+	p := Part{
 		Losses:            losses,
-		LossGeneration:    gen,
 		CorruptDataLoss:   d.corruptDataLoss,
 		CorruptRepairable: d.corruptRepairable,
 		StaleExtents:      d.stale,
 	}
+	d.mu.Unlock()
+
+	p.LossGeneration = d.dir.load()
+	return p
 }
 
 // pushLocked publishes ev with the next event number, overwriting the oldest
@@ -145,10 +158,15 @@ func (d *Durability) pushLocked(ev core.LossEvent) core.LossEvent {
 
 // Place publishes ev, a loss record found at open, for the dropped record
 // seq. It appends nothing, raises nothing and counts nothing: the counters
-// are of drops this run made, and the record is already on disk.
+// are of drops this run made, and the record is already on disk. A dropped
+// seq already named by a Lose or a Place publishes nothing, so one dropped
+// record is never reported twice.
 func (d *Durability) Place(ev core.LossEvent, dropped core.Seq) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if _, ok := d.named[dropped]; ok {
+		return
+	}
 	d.named[dropped] = struct{}{}
 	ev.AtOpen = true
 	d.pushLocked(ev)

@@ -40,11 +40,11 @@ type Loss struct {
 func toFormat(r core.LossReason) format.LossReason {
 	switch r {
 	case core.LossCorrupt:
-		return 1
+		return format.LossCorrupt
 	case core.LossStale:
-		return 2
+		return format.LossStale
 	case core.LossFailedWindow:
-		return 3
+		return format.LossFailedSync
 	case core.LossAcknowledged:
 		return format.LossAcknowledged
 	}

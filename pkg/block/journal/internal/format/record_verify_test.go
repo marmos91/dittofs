@@ -80,8 +80,9 @@ func TestVerifyRecordBodyRefusesAWrongLength(t *testing.T) {
 
 // TestVerifyRecordBodyRefusesFields pins the per-kind body rules: a loss
 // record's reason outside 1-5 is refused as damage — reason 4, a
-// superseding record, and reason 5, an acknowledged unreadable one, are accepted — and so is a flag word holding bits
-// outside bit 0, bit 1 and bits 8-15; a clone target's source offset above
+// superseding record, and reason 5, an acknowledged unreadable one, are
+// accepted — and so is a flag word holding bits outside bit 0, bit 1 and
+// bits 8-15; a clone target's source offset above
 // MaxInt64 or overflowing with its length is damage, and a non-zero AsOf
 // epoch is refused in its own class. Each case's payload and header are
 // rechecksummed, so only the rule can refuse it.

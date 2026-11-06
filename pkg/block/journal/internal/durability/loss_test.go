@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 	"syscall"
 	"testing"
 
@@ -610,5 +611,139 @@ func TestFailedIsSortedAndACopy(t *testing.T) {
 	// The list is the directory's: a Durability built later on it sees it.
 	if later := e.newDurability().Failed(); !slices.Equal(later, []core.Seq{3, 6, 9}) {
 		t.Errorf("a later Durability on the directory sees %v, want [3 6 9]", later)
+	}
+}
+
+// TestStatsNeverShowsAnEventBeyondItsGeneration catches a snapshot whose
+// generation was read before a loss that its ring already holds: a poller
+// pairing the two would record a generation from before the loss.
+func TestStatsNeverShowsAnEventBeyondItsGeneration(t *testing.T) {
+	e := newEnv(t)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	bad := 0
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				p := e.d.Stats()
+				for _, ev := range p.Losses {
+					if ev.SeqNum > p.LossGeneration {
+						mu.Lock()
+						bad++
+						mu.Unlock()
+						break
+					}
+				}
+			}
+		}()
+	}
+	for i := range 200 {
+		if _, err := e.d.Lose(context.Background(), loss(core.Seq(100+i))); err != nil {
+			t.Errorf("Lose: %v", err)
+		}
+	}
+	close(stop)
+	wg.Wait()
+	if bad != 0 {
+		t.Fatalf("%d snapshots held an event whose generation raise they did not include", bad)
+	}
+}
+
+// TestLoseReturnsTheMarkersError catches a refused marker swallowed: the
+// caller is the only one who can learn a synced loss left none. The loss
+// itself still stands.
+func TestLoseReturnsTheMarkersError(t *testing.T) {
+	e := newEnv(t)
+	sentinel := errors.New("marker refused")
+	e.mu.Lock()
+	e.markErr = sentinel
+	e.mu.Unlock()
+
+	l := loss(5)
+	l.Synced = true
+	ev, err := e.d.Lose(context.Background(), l)
+
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Lose = %v, want the marker's error", err)
+	}
+	if ev.SeqNum != 1 || ev.Reason != core.LossCorrupt {
+		t.Errorf("event = %+v, want the published event", ev)
+	}
+	if got := e.d.Generation(); got != 1 {
+		t.Errorf("generation = %d, want 1", got)
+	}
+	if got := e.d.Stats().CorruptDataLoss; got != 1 {
+		t.Errorf("CorruptDataLoss = %d, want 1", got)
+	}
+	if lh, _ := e.lossRecords(); len(lh) != 1 {
+		t.Errorf("%d loss records, want 1", len(lh))
+	}
+	if got := e.d.Failed(); len(got) != 0 {
+		t.Errorf("Failed = %v, want none: the record was appended", got)
+	}
+}
+
+// TestLoseReturnsTheAppendErrorBeforeTheMarkers catches the marker's error
+// hiding the one that explains why no record exists.
+func TestLoseReturnsTheAppendErrorBeforeTheMarkers(t *testing.T) {
+	e := newEnv(t)
+	e.mu.Lock()
+	e.markErr = errors.New("marker refused")
+	e.mu.Unlock()
+	e.d.SetReadOnly(func() error { return errReadOnly })
+
+	l := loss(5)
+	l.Synced = true
+	if _, err := e.d.Lose(context.Background(), l); !errors.Is(err, errReadOnly) {
+		t.Fatalf("Lose = %v, want the append's error first", err)
+	}
+}
+
+// TestPlaceOfASeqAlreadyNamedPublishesNothing catches one dropped record
+// reported twice, which a failed sync that still reached the segment can
+// cause at the next open.
+func TestPlaceOfASeqAlreadyNamedPublishesNothing(t *testing.T) {
+	t.Run("a second Place", func(t *testing.T) {
+		e := newEnv(t)
+		e.d.Place(core.LossEvent{Reason: core.LossCorrupt}, 9)
+		e.d.Place(core.LossEvent{Reason: core.LossCorrupt}, 9)
+		if got := len(e.d.Stats().Losses); got != 1 {
+			t.Errorf("%d events for one dropped seq, want 1", got)
+		}
+	})
+	t.Run("after Lose", func(t *testing.T) {
+		e := newEnv(t)
+		if _, err := e.d.Lose(context.Background(), loss(9)); err != nil {
+			t.Fatalf("Lose: %v", err)
+		}
+		e.d.Place(core.LossEvent{Reason: core.LossCorrupt}, 9)
+		if got := len(e.d.Stats().Losses); got != 1 {
+			t.Errorf("%d events for one dropped seq, want 1", got)
+		}
+	})
+}
+
+// TestFailedHoldsASeqOnceAcrossDurabilities catches a seq listed twice when
+// two Durabilities on one directory both fail to append its record.
+func TestFailedHoldsASeqOnceAcrossDurabilities(t *testing.T) {
+	e := newEnv(t)
+	other := e.newDurability()
+	e.d.SetReadOnly(func() error { return errReadOnly })
+	other.SetReadOnly(func() error { return errReadOnly })
+
+	_, _ = e.d.Lose(context.Background(), loss(7))
+	_, _ = other.Lose(context.Background(), loss(7))
+
+	if got := e.d.Failed(); !slices.Equal(got, []core.Seq{7}) {
+		t.Errorf("Failed = %v, want [7]", got)
 	}
 }
