@@ -248,9 +248,8 @@ func (c *endingCtx) Err() error {
 // Existence staged and committed between a read's journal step and its
 // metadata step sends the read back to the journal: an overwrite, a fill of
 // a hole the read saw and a write growing the file past the end it saw each
-// read back, never lost. With the read's deadline passed before it is asked
-// again, the read is to be retried; with the caller's cancellation, it is
-// answered that.
+// read back, never lost. A context ended before the read is asked again,
+// cancelled or past its deadline, is answered its own error.
 func TestExistenceAboveAsOfIsAskedAgain(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -295,16 +294,9 @@ func TestExistenceAboveAsOfIsAskedAgain(t *testing.T) {
 				c.setup(u, f)
 				dst := make([]byte, c.n)
 				n, err := u.e.Read(ctx, u.share.ID, f, c.off, dst)
-				switch ended {
-				case context.Canceled:
-					if !errors.Is(err, context.Canceled) {
-						t.Errorf("Read = %d, %v; want the caller's cancellation", n, err)
-					}
-					return
-				case context.DeadlineExceeded:
-					var d *vfserr.Delay
-					if !errors.As(err, &d) || d.Cause != vfserr.DelayConflict {
-						t.Errorf("Read = %d, %v; want ErrDelay(DelayConflict)", n, err)
+				if ended != nil {
+					if !errors.Is(err, ended) {
+						t.Errorf("Read = %d, %v; want the context's %v", n, err, ended)
 					}
 					return
 				}
@@ -520,18 +512,20 @@ func TestAWriteAfterTheJournalAnsweredIsNotApplied(t *testing.T) {
 	}
 }
 
-// A part asked again that comes back short or failed counts the bytes before
-// it and those its second ask read: a hole, then a part whose applied is
-// above asOf, answered on its second ask with 2 KiB of hole and then the end
-// of file or a lost run.
-func TestAPartAskedAgainCountsTheBytesBeforeIt(t *testing.T) {
+// A window asked again is read whole, and answers the count of its last
+// pass alone: a hole, then a part whose applied is above asOf, and on the
+// second ask, of the whole window, 2 KiB of hole and then the end of file or
+// a lost run.
+func TestAWindowAskedAgainCountsItsLastPass(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		tail entity.Class
 		err  error
 	}{{"short", 0, nil}, {"failed", entity.Uncarved, vfserr.ErrLost}} {
 		t.Run(c.name, func(t *testing.T) {
+			var asked []string
 			st := &stubContent{cover: func(call int, off, n int64) []entity.Span {
+				asked = append(asked, fmt.Sprintf("%d+%d", off, n))
 				if call == 1 {
 					return []entity.Span{
 						{Extent: entity.Extent{Offset: 0, Length: 4 * kib}, Class: entity.Hole},
@@ -546,10 +540,141 @@ func TestAPartAskedAgainCountsTheBytesBeforeIt(t *testing.T) {
 			}}
 			u := newUnit(t, func(d *engine.Deps) { d.Content = st })
 			n, err := u.e.Read(t.Context(), u.share.ID, entity.NewFileID(), 0, make([]byte, 8*kib))
-			if n != 6*kib || !errors.Is(err, c.err) || (c.err == nil) != (err == nil) || st.calls != 2 {
-				t.Errorf("Read = %d, %v after %d lookups; want 6 KiB, %v after 2", n, err, st.calls, c.err)
+			if n != 2*kib || !errors.Is(err, c.err) || (c.err == nil) != (err == nil) {
+				t.Errorf("Read = %d, %v; want 2 KiB, %v", n, err, c.err)
+			}
+			if fmt.Sprint(asked) != "[0+8192 0+8192]" {
+				t.Errorf("covering lookups %v; want the whole window twice", asked)
 			}
 		})
+	}
+}
+
+// A read asked again returns a state the file held, never bytes of two: the
+// journal holds b at [4k, 8k) over a hole at [0, 4k), and between the read's
+// journal step and its lookup d is written over b, then c over the hole, and
+// both commit. The read answers 0…b or c…d, never c…b.
+func TestAReadAskedAgainIsNeverTorn(t *testing.T) {
+	u := newUnit(t)
+	f := u.create(t, "f")
+	u.write(t, f, 4*kib, fill(4*kib, 'b'))
+	u.commit(t, f)
+	u.e.ClearOps(f)
+	u.e.BindForTest(u.share, u.j, writeAfterRead{u.h, &sync.Once{}, func() {
+		u.write(t, f, 4*kib, fill(4*kib, 'd'))
+		u.commit(t, f)
+		u.e.ClearOps(f)
+		u.write(t, f, 0, fill(4*kib, 'c'))
+		u.commit(t, f)
+		u.e.ClearOps(f)
+	}})
+	dst := make([]byte, 8*kib)
+	n, err := u.e.Read(t.Context(), u.share.ID, f, 0, dst)
+	if n != 8*kib || err != nil {
+		t.Fatalf("Read = %d, %v", n, err)
+	}
+	held := false
+	for _, s := range [][]byte{
+		append(fill(4*kib, 0), fill(4*kib, 'b')...),
+		append(fill(4*kib, 0), fill(4*kib, 'd')...),
+		append(fill(4*kib, 'c'), fill(4*kib, 'd')...),
+	} {
+		held = held || bytes.Equal(dst, s)
+	}
+	if !held {
+		t.Errorf("Read answered %q…%q, a state the file never held", dst[:1], dst[4*kib:4*kib+1])
+	}
+}
+
+// deadlineCtx is a context with a deadline on the test's clock, which its
+// Err never reports.
+type deadlineCtx struct {
+	context.Context
+	at time.Time
+}
+
+func (c deadlineCtx) Deadline() (time.Time, bool) { return c.at, true }
+
+// A read whose lookups keep answering above asOf is asked again until its
+// deadline by the engine's clock, then told to retry; a read its caller
+// cancels is answered that. Either is counted under no class, its time
+// recorded once.
+func TestAReadAskedAgainEndsAtItsDeadline(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		want func(error) bool
+	}{
+		{"deadline", func(err error) bool {
+			var d *vfserr.Delay
+			return errors.As(err, &d) && d.Cause == vfserr.DelayConflict
+		}},
+		{"cancelled", func(err error) bool { return errors.Is(err, context.Canceled) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var u *unit
+			cctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			st := &stubContent{cover: func(call int, off, n int64) []entity.Span {
+				s := entity.Span{Extent: entity.Extent{Offset: off, Length: n}, Class: entity.Uncarved, Applied: entity.VersionOf(5)}
+				switch {
+				case call > 100:
+					s = entity.Span{Extent: s.Extent, Class: entity.Hole} // ends a read nothing else ends
+				case c.name == "cancelled" && call == 3:
+					cancel()
+				}
+				u.clock.Advance(10 * time.Millisecond)
+				return []entity.Span{s}
+			}}
+			u = newUnit(t, func(d *engine.Deps) { d.Content = st })
+			var ctx context.Context = cctx
+			if c.name == "deadline" {
+				ctx = deadlineCtx{cctx, u.clock.Now().Add(50 * time.Millisecond)}
+			}
+			n, err := u.e.Read(ctx, u.share.ID, entity.NewFileID(), 0, make([]byte, 4*kib))
+			if !c.want(err) || n != 0 || st.calls > 5 {
+				t.Errorf("Read = %d, %v after %d lookups", n, err, st.calls)
+			}
+			for _, class := range []string{"journal", "hole", "lost", "corrupt", "unavailable"} {
+				if got := u.e.Reads(class); got != 0 {
+					t.Errorf("counted under %s: %d", class, got)
+				}
+			}
+			if k, _ := u.e.ReadSeconds(); k != 1 {
+				t.Errorf("engine_read_seconds counted %d reads; want 1", k)
+			}
+		})
+	}
+}
+
+// failOnSecondRead is a journal handle whose second ReadAt ends the read's
+// context with its deadline and answers that.
+type failOnSecondRead struct {
+	engine.Handle
+	ctx   *endingCtx
+	calls int
+}
+
+func (h *failOnSecondRead) ReadAt(ctx context.Context, id journal.FileID, off int64, p []byte) (int, []journal.Extent, []journal.Held, journal.Version, error) {
+	if h.calls++; h.calls == 2 {
+		h.ctx.end(context.DeadlineExceeded)
+		return 0, nil, nil, journal.Version{}, context.DeadlineExceeded
+	}
+	return h.Handle.ReadAt(ctx, id, off, p)
+}
+
+// A deadline that passes inside the journal step of a window asked again is
+// answered as the context's own error, not a retry.
+func TestADeadlineInsideAReaskIsTheContextsOwn(t *testing.T) {
+	st := &stubContent{cover: func(_ int, off, n int64) []entity.Span {
+		return []entity.Span{{Extent: entity.Extent{Offset: off, Length: n}, Class: entity.Uncarved, Applied: entity.VersionOf(5)}}
+	}}
+	u := newUnit(t, func(d *engine.Deps) { d.Content = st })
+	ctx := &endingCtx{Context: t.Context(), done: make(chan struct{})}
+	u.e.BindForTest(u.share, u.j, &failOnSecondRead{Handle: u.h, ctx: ctx})
+	_, err := u.e.Read(ctx, u.share.ID, entity.NewFileID(), 0, make([]byte, 4*kib))
+	var d *vfserr.Delay
+	if !errors.Is(err, context.DeadlineExceeded) || errors.As(err, &d) {
+		t.Errorf("Read: %v; want context.DeadlineExceeded itself", err)
 	}
 }
 

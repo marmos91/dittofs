@@ -49,23 +49,50 @@ type reader struct {
 	zeros bool
 }
 
-// window reads dst at off: the journal's answer, then each extent it reports
-// missing resolved in file order. A part to be asked again is read as a
-// window of its own, while ctx lives.
+// window reads dst at off, passes until one needs no asking again. Each
+// pass reads the whole window at one journal answer, so a read never mixes
+// bytes from two of them.
+//
+// decision: existence keeps landing above the journal's answer only while
+// writes race this read, so the window is asked again until the read's
+// deadline, by the engine's clock, and then the read is told to retry rather
+// than failed or answered stale. A read with no deadline whose writes never
+// settle is asked again until its caller cancels. A context that ended is
+// answered its own error. Overturned if a read is ever seen to end this way
+// under a load whose writes have stopped.
 func (r *reader) window(ctx context.Context, off int64, dst []byte) (int, error) {
+	for {
+		r.zeros = false
+		n, again, err := r.pass(ctx, off, dst)
+		if !again {
+			return n, err
+		}
+		if dl, ok := ctx.Deadline(); ok && !r.e.d.Clock.Now().Before(dl) {
+			return 0, &vfserr.Delay{Cause: vfserr.DelayConflict}
+		}
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+	}
+}
+
+// pass reads dst at off once: the journal's answer, then each extent it
+// reports missing resolved in file order. again: a part's existence landed
+// after the journal answered, and the window is to be asked again.
+func (r *reader) pass(ctx context.Context, off int64, dst []byte) (n int, again bool, err error) {
 	_, missing, _, asOf, err := r.b.h.ReadAt(ctx, fileID(r.f), off, dst)
 	if err != nil {
-		return 0, r.e.journalErr(err)
+		return 0, false, r.e.journalErr(err)
 	}
 	if len(missing) == 0 {
-		return len(dst), nil
+		return len(dst), false, nil
 	}
 	ops := r.e.files.opsAt(r.f, asOf)
 	at := entity.JournalVersion(asOf.Bytes())
 	for _, m := range missing {
 		parts, err := r.e.resolve(ctx, r.s, r.f, m, ops, at)
 		if err != nil {
-			return int(m.Off - off), err
+			return int(m.Off - off), false, err
 		}
 		for _, p := range parts {
 			n, end := int(p.off-off), int(p.end-off)
@@ -74,38 +101,22 @@ func (r *reader) window(ctx context.Context, off int64, dst []byte) (int, error)
 				clear(dst[n:end])
 				r.zeros = true
 			case resEOF:
-				return n, nil
+				return n, false, nil
 			case resLost:
 				r.e.reportLoss(r.f, p.off, p.end-p.off, "lost")
-				return n, fmt.Errorf("engine: file %v [%d, %d) lost: %w", r.f, p.off, p.end, vfserr.ErrLost)
+				return n, false, fmt.Errorf("engine: file %v [%d, %d) lost: %w", r.f, p.off, p.end, vfserr.ErrLost)
 			case resCarved:
 				// decision: a carved run fails the read unavailable, as an
 				// unreachable remote does, because nothing here fetches a
 				// chunk: no code of this engine writes a ref, so one is
 				// another writer's. Withdraw it once the fetch is built.
-				return n, fmt.Errorf("engine: file %v [%d, %d) is carved and not fetched: %w", r.f, p.off, p.end, vfserr.ErrUnavailable)
+				return n, false, fmt.Errorf("engine: file %v [%d, %d) is carved and not fetched: %w", r.f, p.off, p.end, vfserr.ErrUnavailable)
 			case resReask:
-				// decision: existence keeps landing above the journal's
-				// answer only while writes race this read, so the part is
-				// asked again until the read's deadline, and then the read
-				// is told to retry rather than failed or answered stale. A
-				// caller that cancelled is answered its own error. Overturned
-				// if a read is ever seen to end this way under a load whose
-				// writes have stopped.
-				if err := ctx.Err(); err != nil {
-					if !errors.Is(err, context.DeadlineExceeded) {
-						return n, err
-					}
-					return n, &vfserr.Delay{Cause: vfserr.DelayConflict}
-				}
-				k, err := r.window(ctx, p.off, dst[n:end])
-				if err != nil || k < end-n {
-					return n + k, err
-				}
+				return 0, true, nil
 			}
 		}
 	}
-	return len(dst), nil
+	return len(dst), false, nil
 }
 
 // opsAt is f's pending operations at or below asOf, the ones the journal had
