@@ -1268,41 +1268,26 @@ func (s *Stream) Sync() error {
 	defer s.leaveDrain()
 
 	through := s.tracker.syncStart()
-	// The segment the fsync covers is named here, and the checks below hold
-	// the stream to it. The end's notifier waits this sync out before the roll
-	// that installs a successor can start, so today the stream cannot move
-	// while the fsync runs; the id check keeps a sync of an ended segment from
-	// ever applying its window to a successor's tracker (R10) or its success
-	// to the successor's own second-refusal word, should a roll ever stop
-	// waiting for the drain.
-	id, ref := s.id, s.ref
+	// The stream cannot move while the fsync runs: the sync is counted in the
+	// drain, a seal waits for it before it seals, and the end's notifier —
+	// which the roll over an ended segment waits out — waits for it too, so
+	// the tracker and the second-refusal word below are still the segment's
+	// own when the fsync returns (R10).
+	ref := s.ref
 	s.appendMu.Unlock()
 
 	if err := ref.Sync(); err != nil {
 		// The failure belongs to the durability layer's failed window: the
 		// caller owns the records the window holds, and no later sync of
 		// this segment claims what the failure left — the value stands where
-		// the failure found it. A stream that moved on while the fsync ran
-		// takes no word of the failure either: the window it names is the
-		// ended segment's, whose durability the caller owns through its
-		// end's event, never the successor's.
+		// the failure found it.
 		s.appendMu.Lock()
-		if s.id == id {
-			s.tracker.syncFail()
-			s.noteFailure(err)
-		}
+		s.tracker.syncFail()
+		s.noteFailure(err)
 		s.appendMu.Unlock()
 		return err
 	}
 	s.appendMu.Lock()
-	// A success owns only the segment it covered: a failure path's roll that
-	// installed a successor while the fsync ran owns that successor's
-	// tracker and second-refusal word, which no sync of the ended segment
-	// may reach.
-	if s.id != id {
-		s.appendMu.Unlock()
-		return nil
-	}
 	s.tracker.syncDone(through)
 	// A sync of the active segment has succeeded: the second-refusal rule
 	// reads this beside leftFailed, for a stream that proved this segment

@@ -21,7 +21,9 @@ import (
 // hand-over waits for it, and the roll waits for the event — so the
 // successor starts blank: its tracker takes no window the old segment's fsync
 // made durable (R10) and its second-refusal word stays blank until a sync of
-// the successor itself succeeds.
+// the successor itself succeeds. What the check pins is the roll's wait for
+// the event, hence for the in-flight sync: Sync itself carries no guard
+// against the stream moving, because the wait keeps it from moving.
 func TestEndSyncInFlightAcrossAFailureRollOwnsItsOwnSegment(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -96,7 +98,9 @@ func TestEndSyncInFlightAcrossAFailureRollOwnsItsOwnSegment(t *testing.T) {
 // half of the straddling sync: a failure of the sync in flight when the
 // segment ended neither marks the successor sync-failed nor ends it for a
 // failure it never had. It answers its error to its caller, which owns its
-// window through End.
+// window through End. The roll's wait for the event, hence for the in-flight
+// sync, is what keeps the failure on the segment it covered: the sync's own
+// failure path holds no check of the stream's segment.
 func TestEndTheStraddlingSyncsFailureMarksItsOwnSegmentAlone(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
