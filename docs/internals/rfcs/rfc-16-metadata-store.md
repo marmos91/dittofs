@@ -2252,7 +2252,7 @@ serial order of the committed operations.
   proof of its last segment's tail. It commits only while `J‖journal‖og` still equals the
   value the open whose marks it carries wrote ([RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)); nothing else
   writes it. A stored value that does not decode is replaced by the next such
-  write, and every read logs it as a codec error and returns it as absent, with
+  write that carries its stream, and every read logs it as a codec error and returns it as absent, with
   no error: `SyncMarks` returns an error only when its transaction failed; deleting `J‖journal` deletes every mark under
   it ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)).
 - **Refusal:** decoding a newer version, a truncated value, a trailing byte or a

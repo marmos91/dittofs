@@ -313,7 +313,7 @@ subtasks and tests can cite them.
   file's transactions are done. Each existence commit runs under its own bound,
   `conflictBound`, 1 s, because `kv.Update` retries a conflict until its context ends; a
   whole-call error splits the batch (T4.4) unless it is store-wide: the bound expiring with
-  no conflict (a stalled store) or the store closed. A file's removal records (its masks) or the
+  no conflict (a stalled store) or the store closed (RFC 8 §5.2). A file's removal records (its masks) or the
   hole and overwrite records a commit loads that do not decode reach the engine as a whole-call error, so the split is what isolates them
   (RFC 8 §5.2's "any other per-file failure"). On return the committed operations leave their entries, the
   in-batch mark is cleared and its waiters woken. A batch wakes the waiters on every file it
@@ -584,7 +584,8 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   does one file's removal record made undecodable over the real `kvstore` (the
   other files commit, that file fails alone: catches a split on conflicts only, RFC 8
   §5.2); a store stalled past the bound, or closed, does not split (catches 2G−1 bounded
-  calls on a store-wide failure, or a commit left retrying until the caller's deadline); the condition cleared on `dropShare` and on `lostWhole`
+  calls on a store-wide failure, or a commit left retrying until the caller's deadline);
+  §15.2's "sync marks are keyed by stream" row over the fake and the real `kvstore` (R26); the condition cleared on `dropShare` and on `lostWhole`
   (catches a condition naming a file nothing will commit); a `kv.KV` wrapper through
   `newUnitOver` that records the mark on each call sees it on every group-commit call and on
   no `Existence.Overwrites` call of a `Commit` (catches a retried call left unmarked, which

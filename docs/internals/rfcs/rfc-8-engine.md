@@ -548,10 +548,7 @@ the share's shards in the scheduler (`CancelTenant`), so no entry for the tag ru
 against a closed handle, then closes the share's journal handle on the tag (`Close`, [RFC 1 §3](rfc-1-journal.md#3.%20Interface)), runs the
 whole-tag `Forget`, which is refused while a handle is open, and closes the
 share's flow, **before** the shard's `rm` row is advanced to forgotten. Node
-stop never calls `Drop`: `Close` closes handles and keeps tags. A `Bind`,
-`Unbind` or `Drop` naming a share with another lifecycle call in progress is
-answered `ErrDelay`, which its caller retries, and `Close` waits for every such
-call in progress before it closes anything ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). `Forget` is durable and idempotent, so a crash between
+stop never calls `Drop`: `Close` closes handles and keeps tags. `Forget` is durable and idempotent, so a crash between
 the two only repeats it, and at every start the engine runs `Forget` again for
 each tag `Stats` still names whose share's `rm` rows read forgotten, before that share could attach ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1). On one
 node a journal holds one shard per tag, and the `rm` row is the only record of
@@ -562,7 +559,10 @@ live, through repack, until the whole-tag record exists.
 Without the join, a create admitted before the mark could commit a File record
 after step 4 has passed it, and nothing would delete it. From then on the
 binding runs nothing that takes a journal version: step 4's file drops are
-metadata transactions alone.
+metadata transactions alone. A `Bind`,
+`Unbind` or `Drop` naming a share with another lifecycle call in progress is
+answered `ErrDelay`, which its caller retries, and `Close` waits for every such
+call in progress before it closes anything ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 
 Per-file state is keyed by file within its shard, and held at that shard's
 primary, which offloads the whole file. A file is never split across shards
@@ -1043,7 +1043,8 @@ stopping the node:
    commit's own lock, which no lifecycle call takes and under which the drain sets
    the mark, so the drain either stops it or joins it ([§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)). Every call on their files is answered retry-later from here until
    the file is served again, and so is every `Bind`, `Unbind` and `Drop` that
-   names a share the journal serves or would serve, an addition included; its
+   names a share the journal serves or would serve, an addition included, and
+   the drain waits for every one already in progress, as `Close` does ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)); its
    caller retries it as any `ErrDelay`, and a share's removal resumes at the
    step it recorded ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)). A drain past its bound abandons
    this attempt: the shards' tenants are added back as step 6 adds them, the
@@ -1481,9 +1482,7 @@ inputs:
   the same process changes the verifier though neither the node nor the process
   did;
 - the **loss generation** of the journal holding the file, which rises only on the
-  events [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events) lists: among them every loss of an extent not yet
-  offloaded, every sync window the journal fails ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)) and its turn to
-  read-only ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)). A loss of content the remote tier already holds makes no
+  events [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events) lists. A loss of content the remote tier already holds makes no
   client resend.
 
 It changes whenever an acknowledged but unstable write might have been lost —
@@ -1797,9 +1796,10 @@ older content served as newer.
   the conflicting keys. Any other conflict is the files', and the split narrows it
   as below: one half keeps the marks, and they go alone once the last file fails.
   On any other whole-call failure, the engine takes the marks out and sends them
-  alone once, at once, while the files split without them, so no file is backed
-  off without having been tried without the marks. Marks alone failing with any
-  other store error are retried alone and backed off, as on `ErrSyncMarks`. Once that transaction commits, the engine hands the marks it recorded to
+  alone once, at once, while the files go on without them as below, so no file is
+  backed off without having been tried without the marks. Marks alone failing with
+  any other store error are retried alone and backed off, as on `ErrSyncMarks`. A
+  queued marks retry is dropped once a later group commit's marks commit. Once that transaction commits, the engine hands the marks it recorded to
   the journal's `MarksRecorded` ([RFC 1 §3.1](rfc-1-journal.md#3.1%20Write)), which keeps a segment a failure ended
   until they cover the copies made from it, or the journal seals the copies' segment. **One group commit at a time records a journal's marks, in the order it
   read them,** so its write replaces the stored marks unconditionally. Within a
@@ -1812,7 +1812,7 @@ older content served as newer.
   still equals it, so it never overwrites the marks of a later open. The key
   is the open's alone: lease renewals do not touch it.
   A stored mark that does not decode is logged as a codec error, left out of what
-  `SyncMarks` returns with no error, handed to `Open` as absent, and overwritten by the next group commit: the marks only find a loss, and correctness rests on the `reconcile`
+  `SyncMarks` returns with no error, handed to `Open` as absent, and overwritten by the next group commit that carries its stream: the marks only find a loss, and correctness rests on the `reconcile`
   record ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). A marks error never splits a batch or blames a file: the
   engine retries the batch's existence at once without the marks, and only then
   handles the marks. On `ErrSyncMarks` the marks are retried alone, backed off, and
@@ -1868,6 +1868,10 @@ older content served as newer.
   an offload ([§6.3](#6.3%20The%20offload%20pipeline)), and raises `existence_commit_failing` naming it
   ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)); its stability points answer `ErrDelay` meanwhile, and no other
   file's flush or offer waits on it.
+  A whole-call failure that is store-wide — the commit's bound expiring with no
+  conflict, a stalled store, or the store closed — does not split: no file is
+  blamed, and the batch is retried whole by the next group commit, under
+  [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)'s rule for a stalled store.
 
 **Why.** An existence commit rewrites the file's record, which a namespace
 operation — `chmod`, a rename's `ctime`, an unlink — also writes. Without the
