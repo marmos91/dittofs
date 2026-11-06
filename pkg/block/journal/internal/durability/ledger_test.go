@@ -193,10 +193,11 @@ func TestSinkTwiceForOneStreamPanics(t *testing.T) {
 // TestNewRequiresClockAndDomains pins that a missing dependency is a caller bug.
 func TestNewRequiresClockAndDomains(t *testing.T) {
 	for name, cfg := range map[string]Config{
-		"no clock":    {Domains: &testDomains{}},
-		"no domains":  {Clock: nopClock{}},
-		"no counters": {Clock: nopClock{}, Domains: &testDomains{}, MarkLoss: func(core.FileID, core.Extent, core.Version) error { return nil }},
-		"no marker":   {Clock: nopClock{}, Domains: &testDomains{}, Counters: &index.Counters{}},
+		"no clock":    {Domains: &testDomains{}, Index: index.New(1 << 20)},
+		"no domains":  {Clock: nopClock{}, Index: index.New(1 << 20)},
+		"no index":    {Clock: nopClock{}, Domains: &testDomains{}, Counters: &index.Counters{}, MarkLoss: func(core.FileID, core.Extent, core.Version) error { return nil }},
+		"no counters": {Clock: nopClock{}, Domains: &testDomains{}, Index: index.New(1 << 20), MarkLoss: func(core.FileID, core.Extent, core.Version) error { return nil }},
+		"no marker":   {Clock: nopClock{}, Domains: &testDomains{}, Index: index.New(1 << 20), Counters: &index.Counters{}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			defer func() {

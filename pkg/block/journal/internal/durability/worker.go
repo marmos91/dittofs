@@ -166,7 +166,8 @@ func bucketOf(d time.Duration) int {
 // complete drops every covered entry from the ledger: each is marked
 // done under its file's append domain, one domain at a time, so a record whose
 // sync landed is never dropped in the gap between a writer's append and the
-// accounting it does under that same domain. Only the worker compacts and
+// accounting it does under that same domain. A content record's superseded
+// extents stop being retained under the same hold. Only the worker compacts and
 // Track only appends, so the indices collected stay valid between the steps.
 func (d *Durability) complete(st *stream) {
 	st.mu.Lock()
@@ -189,9 +190,15 @@ func (d *Durability) complete(st *stream) {
 
 	for _, i := range idx {
 		st.mu.Lock()
-		f := st.ledger[i].w.File
+		w := st.ledger[i].w
 		st.mu.Unlock()
-		unlock := d.domains.Lock(f)
+		unlock := d.domains.Lock(w.File)
+		if isContent(w) {
+			// st.mu is not held: the index takes the file's lock and the
+			// account is the caller's. The entry is done only after the
+			// lift, so a Sync that returns on it sees the lift.
+			d.lift(w.File, w.Version)
+		}
 		st.mu.Lock()
 		st.ledger[i].done = true
 		st.mu.Unlock()
@@ -201,6 +208,8 @@ func (d *Durability) complete(st *stream) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.removeLocked(func(e *entry) bool { return e.done }, nil)
+	// A Sync waits for its records to be completed, not only covered.
+	d.notifyAll()
 	live := st.live
 	clear(live)
 	// A segment with a pending window keeps its failure and its synced value.

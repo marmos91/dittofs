@@ -152,6 +152,7 @@ func (e *env) newDurabilityAt(dir string) *durability.Durability {
 	d, err := durability.New(durability.Config{
 		Clock:    journaltest.NewStopwatchClock(),
 		Domains:  noDomains{},
+		Index:    index.New(1 << 20),
 		Dir:      dir,
 		Counters: e.counters,
 		Log:      e.log,
