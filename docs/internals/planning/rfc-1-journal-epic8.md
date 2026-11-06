@@ -458,9 +458,10 @@ the rule that a persisted index is not authoritative (E3, E5, epic 7).
   only by an action of the engine's (reclaiming headroom, raising the limit), the next three by
   reclamation, and `spare` by itself. Open point in §9.
 - **D7, what a refusal says is missing.** The share's limit and the headroom: bytes. The
-  journal's maximum: the whole segments the write needs, k times the cap, `UsedBytes` plus that
-  less `MaxBytes`, not the record's bytes, where k is the number of spares its pieces need (RFC 1
-  §9.4's named-refusal row). The index: entries. The version limit: versions. `spare`: k segments.
+  journal's maximum: the whole segments the write needs that no ready spare covers, k times the
+  cap, `UsedBytes` plus that less `MaxBytes` (a ready spare is already in `UsedBytes`), not the
+  record's bytes, where k is the number of spares its pieces need less the ready ones (RFC 1
+  §9.4's named-refusal row). The index: entries. The version limit: versions. `spare`: the ready spares short of what its pieces need.
 - **D8, the headroom is measured by epic 5's pool.** The RFC states the headroom's size and a
   half rule but not what is measured. This epic reads the headroom as E5's `HeadroomBytes`, the
   bytes of headroom-class spares allocated now, against the size the settings give: below half
@@ -792,7 +793,7 @@ before admission). The recorder's order across a tagged write is T8.11's test.
   fits the stream's room less what is promised is granted from it, holds no spare and never touches the pool. The bytes beyond
   that room hold ready spares with one `Pool.Hold(n)`, n being the spares those bytes need, one per cap they cross (so at least one, never the zero
   that panics), and a spare that is not ready is refused, never counted as one that can be made. `Take` tests the journal's maximum first, under D9,
-  for the segments the bytes beyond the room need, so at the maximum the refusal is already the journal's maximum (R71), and a `Hold` refused
+  for the segments the bytes beyond the room need that no ready spare covers, so at the maximum the refusal is already the journal's maximum (R71), and a `Hold` refused
   below it names `spare`, which clears once the refill has served the demand the refusal recorded. Held, not only counted, so
   two writes on two files, on one stream or on two, cannot both be granted one spare or one room, and a write is never published
   in part (R70). `Take` calls `Pool.Hold` after its critical section under D9's mutex has ended, never inside it, because the pool's lock is of the same capacity domain and
@@ -833,7 +834,7 @@ before admission). The recorder's order across a tagged write is T8.11's test.
     missing, with no I/O at the seam and without waiting, while another share still writes; a
     release and repack that return those bytes (simulated by epic 5's retirement) make the
     retry succeed.
-  - At the journal's maximum the missing bytes are those of the whole segments the write needs (k times the cap),
+  - At the journal's maximum the missing bytes are those of the whole segments the write needs that no ready spare covers (k times the cap),
     and the retry succeeds once `UsedBytes` has fallen by at least them.
   - A reservation of exactly the remaining space succeeds and one byte more is refused, for the
     share and for the journal.
