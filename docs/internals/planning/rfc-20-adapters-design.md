@@ -89,11 +89,14 @@ Clean slate, decided by the owner:
    `tests.yml`'s V2 filter, which already skips `e2e`, `pjdfstest`, `pynfs`, `wpts`,
    `smbtorture`, the conformance and client suites and `integration/ad-dc`. The filter grows by
    `integration/kerberos`, whose package is deleted, and the required job's fixed
-   `dt run integration/kerberos` step goes on the branch. `test/suites.yaml` stays as develop has
-   it, so each suite keeps one switch. `unit`, `integration`, journal, engine and lint keep
+   `dt run integration/kerberos` step goes on the branch. `test/suites.yaml` gains one cell,
+   `unit/adapter-allocs`, run per change from a fixed step as `unit/journal-index` is; otherwise
+   it stays as develop has it, so each suite keeps one switch. `unit`, `integration`, journal, engine and lint keep
    running.
-3. Nothing persisted needs migrating: an adapter holds no durable state (A2), and RFC 14's
-   `Adapter` bytes are new with v2.
+3. An adapter holds no durable state (A2), and RFC 14's `Adapter` bytes are new with v2. What
+   the control plane persists for adapters (the `NFSAdapterSettings` and `SMBAdapterSettings`
+   rows, the share adapter config) is mapped onto `pkg/adapter/config` at cutover; the plan's
+   ledger carries it.
 
 ## Order
 

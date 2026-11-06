@@ -650,7 +650,12 @@ with its connection
 writer whose client does not read holds its reservation until the write
 deadline closes the connection
 ([RFC 20 §6.4](rfc-20-adapters.md#6.4%20Deadlines%20and%20limits)); that is
-the slowest way a reply is freed, and it needs no other reservation.
+the slowest way a reply is freed, and it needs no other reservation. A parked
+request — a waiting lock, a change notification — keeps its reply reservation
+while it waits, so its reply is never encoded outside the budget; the adapter
+caps how many a connection parks
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+`Park`).
 
 Receive and reply are two pools rather than one so that a flood of large writes
 cannot leave no room for the reads that would let clients finish, and so that a

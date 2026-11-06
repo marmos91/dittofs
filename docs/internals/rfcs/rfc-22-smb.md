@@ -473,8 +473,13 @@ flight.
   past a floor while the pool cannot take it is not held, and is answered
   `STATUS_INSUFFICIENT_RESOURCES` at once (§16.5), which MS-SMB2
   3.3.4.2 allows when asynchronous processing would exceed the server's
-  resources, and nothing is held for it. Waiting locks (§7) are not counted:
-  they hold no data and no worker, and end only as RFC 14's waiter does.
+  resources, and nothing is held for it. Waiting locks (§7) and change
+  notifications are not counted: they hold no data and no worker, and end only
+  as RFC 14's waiter or the watch does. They are parked instead, and a
+  connection parks at most **511**, one fewer than the credit target, past which
+  a new one is answered `STATUS_INSUFFICIENT_RESOURCES` at once
+  ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+  `Park`).
 
 > ponytail: one credit target and one hold floor per connection, neither a
 > setting, over RFC 17's one hold pool per node. 512 credits keep a client's

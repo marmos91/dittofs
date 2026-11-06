@@ -106,7 +106,9 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
   `Deps` (with `Watch`, RFC 20 §3.7).
 - **A test with every new package.** `lint-repo` runs `test/new-package-tests.sh`, which fails a
   directory new to the base branch that has no `_test.go`. Each package epic 1 creates lands with
-  a test that can fail (rule 8): the settings' live and restart-only marks, `ErrRestartRequired`
+  a test that can fail (rule 8): `pkg/adapter`'s `Deps` with a nil `Watch` watching nothing,
+  `pkg/resources`' class sizes ascending as RFC 24 §2.5 lists them, the settings' live and
+  restart-only marks, `ErrRestartRequired`
   on a restart-only change, `New` refusing invalid settings, and for `core` `Bind`, whose body
   lands in T1.7: the `Invocation` its `Decode` returns hands `Bound`, `Resolve`, `EndsState`,
   `Call` and `Encode` the request it decoded.
@@ -132,7 +134,8 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
 RFC 20's suites paragraph puts every layer this plan builds in `unit`, and the allocation gates
 in a non-race cell. `unit/nonrace` is nightly, and the nightly runs on develop's schedule, never
 on `feat/storage-v2`, so the gates get a per-change cell of their own, `unit/adapter-allocs`, as
-the journal's run in `unit/journal-index`. `unit` keeps no `known.yaml`, so it cannot hold a red test: **epic 2
+the journal's run in `unit/journal-index`. Like that cell, it runs from a fixed step in the unit
+job (T1.3): the branch's cell filter drops a cell with no job, so the cell alone would never run. `unit` keeps no `known.yaml`, so it cannot hold a red test: **epic 2
 registers no red suite**. Each test lands green with the epic that makes it pass. Epic 2 builds
 what those tests stand on:
 
@@ -145,8 +148,11 @@ what those tests stand on:
   handshake, session and tree levels, protocol state carried to a related member, kept state
   past the idle timeout, holds with interim and final headers and a cancel, a parked operation
   completed by a callback the test fires, an end-state operation decided by an argument, as
-  SMB's `LOCK` is, and chained frames with a related member after a held one and a pending last
-  member.
+  SMB's `LOCK` is, and chained frames: a related member after a held one, answered at once and
+  gone pending; a pending last member; a related member with a bad toy checksum refused; the
+  parked operation before the last refused with nothing registered, and past the park cap; a
+  chain's replies wrapped once; a cancel that arrives before its target holds; a drain that
+  cancels a parked operation.
 - **The import test** (RFC 20 §7.1), reusing the `go/parser` walk of
   `internal/vfs/arch_test.go`, and seeded with one violation in its own `testdata`. It checks the
   adapters' imports; `arch_test.go` keeps checking the other direction, that the service imports
@@ -237,7 +243,7 @@ and 5.
    decisions). A `ponytail:` marker records a knowingly simple implementation, naming its
    ceiling and the upgrade path. A `decision:` marker records deliberate behaviour, naming the
    rule, why it holds and the evidence that would overturn it. RFC 20's notes go at their code
-   sites: no attribute cache, `unwrap` on the reader, the cap of 64, one goroutine per request,
+   sites: parked requests off the hold floor, capped instead, `unwrap` on the reader, the cap of 64, one goroutine per request,
    `sync.Pool` per class, no self-probe. `pkg/resources`'s missing turns, `Reclaim`, `ShareCap`
    and `Split` each carry a `ponytail:` naming RFC 24.
 8. **A test must be able to fail.** Keep a test only if a plausible change would make it fail and
@@ -409,10 +415,12 @@ deleted).
 - T1.2 Delete the Runtime's adapter half: `runtime/adapters`, the Runtime's adapter fields and
   methods, the lifecycle `AdapterLoader`, the adapter health checks, the `/api/v1/adapters`
   routes and handlers, the settings watcher, the `grace` and `nfs_clients` handlers, the
-  `testruntime` API tests, the harness fixture's adapter calls; `dfsctl adapter`; regenerate
+  `testruntime` API tests, the harness fixture's adapter calls; `dfsctl adapter`, and the
+  `dfsctl grace`, `netgroup` and `client` commands whose routes go with them; regenerate
   `docs/guide/cli.md`.
 - T1.3 `tests.yml`'s V2 filter extended by `integration/kerberos` and the fixed
-  `dt run integration/kerberos` step removed on the branch; the `GOOS=windows` and `GOOS=darwin`
+  `dt run integration/kerberos` step removed on the branch; a fixed `dt run unit/adapter-allocs`
+  step in the unit job, as `unit/journal-index` has; the `GOOS=windows` and `GOOS=darwin`
   vet cell for the adapter packages; `test/required-tests.json` repinned to
   `internal/vfs/admit`'s gate tests; `lint-go`'s vet tags pruned to those with files left.
 - T1.4 `pkg/adapter`: the contract and `Deps`, `Watch` included.
@@ -533,8 +541,8 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
   `HoldCodec.Final`, re-drive from `Resolve` with a fresh attempt deadline inside the hold bound,
   `vfs.WithHold` added to `pkg/vfs` (RFC 17 §5.9) and passed on every call, the per-connection
   floor and the hold pool, a cancel (`HoldCodec.Cancels`) and close ending a hold with no reply
-  to the cancel; the write data's `Buf` kept across re-drives; a held chain member before the last waiting
-  inline with no interim, and the last going pending (RFC 20 §4.7).
+  to the cancel, and a cancel that arrives first remembered; the write data's `Buf` kept across
+  re-drives; chain members held: RFC 20 §4.7.
 - T5.6 The middleware chain: recovery (server fault, logged with the stack, the connection's
   other requests unharmed), trace span, metrics, deadline; order pinned by a test.
 - T5.7 `ErrorTable`: mapping by error, operation and version; `ErrDelay` by cause; an unmapped
@@ -545,7 +553,8 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
 - T5.9 RFC 20 §10's metrics, spans and logs, all in `core`; series resolved at table build.
 - T5.10 The pipeline micro-benchmark on `testproto` over `vfstest.Null`, its allocation ceiling
   checked in and registered in `unit/adapter-allocs`.
-- T5.11 Parked requests: RFC 20 §4.7's `Park` and §6.5, on `testproto`'s parked operation.
+- T5.11 Parked requests: RFC 20 §4.7's `Park` (`ErrNotLast`, `MaxParked`, the reply reservation
+  kept), §3.1's cancel at drain and §6.5, on `testproto`'s parked operation.
 
 ### Epic 6 — Protocol scaffolds
 
@@ -641,7 +650,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | Deferred | Why not here | Owner | Comes back when |
 | --- | --- | --- | --- |
 | NFSv3 procedures; NFSv4.0, 4.1 and 4.2 operations; the `ops/` tables | handlers are RFC 21's | RFC 21 plan | its handler epics |
-| MOUNT, NLM, NSM, `SM_NOTIFY`; NLM and NSM over UDP (RFC 20 §11 q3) | auxiliary programs are RFC 21's | RFC 21 plan | its auxiliary-services epic |
+| MOUNT, NLM, NSM, `SM_NOTIFY`; MOUNT, NLM and NSM over UDP (RFC 20 §11 q3) | auxiliary programs are RFC 21's | RFC 21 plan | its auxiliary-services epic |
 | RPCSEC_GSS context table and window; NFSv4.1 slots and reply cache; the v3 and v4.0 duplicate-request cache (RFC 20 §11 q2) | stage state machines, no driver here | RFC 21 plan | with `EXCHANGE_ID`/`CREATE_SESSION` and GSS `INIT` |
 | NFS-over-TLS (`Conn.StartTLS`, `tlsconfig` reload, `require` mode) | starts at the `NULL` handler | RFC 21 plan | with `NULL` |
 | NFS callbacks (`CB_RECALL`, `CB_NOTIFY`, `CB_RECALL_ANY`, NLM `GRANTED` via `Deps.Dial`) | need sessions and handlers | RFC 21 plan | with delegations and NLM |
@@ -664,7 +673,8 @@ feature parity with develop. A row moves only to another owner, never off the le
 | RFC 24's turns, `Reclaim`, `ShareCap`, `Detect`, `Split` | no consumer here | RFC 24 plan | when the node budgets memory |
 | `node.New` wiring; config loader for `pkg/adapter/config`; conditions in RFC 25 §3.9's registry; alert rules | need `internal/node` | epic 7 | S4 |
 | concrete sidecars: mDNS, WS-Discovery (`pkg/discovery`), port mapper, rpcbind registration | need serving protocols | cutover | stage 7 |
-| `/api/v1/adapters`, the settings watcher, `dfsctl adapter` (deleted in T1.2) | built on the Runtime | cutover, on `pkg/adapter` | stage 7 |
+| `/api/v1/adapters`, the settings watcher, `dfsctl adapter` (deleted in T1.2); the persisted `NFSAdapterSettings` and `SMBAdapterSettings` rows and the share adapter config, mapped onto `pkg/adapter/config` | built on the Runtime | cutover, on `pkg/adapter` | stage 7 |
+| the `/clients`, `/mounts` and `/durable-handles` listings, empty once T1.1 deletes their producers; `dfsctl client` (deleted in T1.2) | read v1's connection and handle state | RFC 23 §4.2 (connections, mounts), RFC 22 plan (durable handles) | with their records |
 | netgroup CRUD under `/api/v1/adapters/{type}/netgroups` (deleted in T1.2) | a control-plane record (RFC 23 §3.5) | RFC 23 | with RFC 23's records |
 | client eviction: `DELETE /api/v1/clients/{id}`, `dfsctl client evict` (`Runtime.DisconnectClient` → `ForceCloseClientConnection`, deleted in T1.2) | RFC 23 §4.2 makes v2's connection listing read-only, so nothing brings it back | RFC 23 edit, or dropped there by decision | when RFC 23 decides |
 | `grace` and `nfs_clients` API endpoints (deleted in T1.2) | read NFSv4 state | RFC 21 plan, with cutover | stage 7 |
