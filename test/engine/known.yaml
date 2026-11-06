@@ -23,6 +23,13 @@
   category: feature
   reason: 'Epic 6: start and stop; also the verifier (epic 4). Fails at the fixture until the journal has Init, Open and WriteAt.'
   issue: '#3589'
+- test: TestRFC8A_IncarnationAtStart
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: a restart raises the incarnation of every served shard and opens a new grace instance on it. Fails at the fixture until the journal has Init and Open, and the engine has Close (T6.8).'
+  issue: '#3589'
 - test: TestRFC8C_DeclaredInterfaces
   message: 'the engine never calls'
   status: fail

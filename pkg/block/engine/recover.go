@@ -27,15 +27,19 @@ var (
 	// journal for, while its directory holds segments and no format file
 	// (RFC 28 §3.4).
 	errUnidentified = errors.New("engine: the device holds segments and no format file")
+	// errNotRaised fails a Start whose raise answered no incarnation for a
+	// shard it serves (RFC 8 §2.5, step 2).
+	errNotRaised = errors.New("engine: the start raise answered no incarnation for a served shard")
 )
 
-// opened is what start step 1 leaves for Start to publish: the journal, nil
-// when its device was refused; the share table; and the shares refused and
-// the conditions raised.
+// opened is what start steps 1 and 2 leave for Start to publish: the
+// journal, nil when its device was refused; the share table; the shares
+// refused and the conditions raised; and the shards step 2 raised.
 type opened struct {
 	journal Journal
 	table   bindings
 	stats   Stats
+	raised  []entity.ShardID
 }
 
 // openJournal is start step 1 for the one device (RFC 8 §2.5): it reads the
@@ -119,6 +123,55 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 	}
 
 	return o, nil
+}
+
+// raiseAtStart is start step 2 (RFC 8 §2.5): it raises the incarnation of
+// the shard of every share step 1 gave a handle, in the start form, as the
+// restart lost the shards' open state (RFC 16 §3), and puts the incarnation
+// it wrote on each share's binding. It is one store call, which splits the
+// shards into transactions of at most K keys. The table is published only
+// after it returns, so no write answers a verifier before the last of them
+// commits. A failure fails Start, and the next Start raises every shard
+// again, those an earlier attempt raised included. So does an answer that
+// names no incarnation for a served shard: bound at zero, the shard would
+// repeat its verifier and its grace instance.
+func (e *Engine) raiseAtStart(ctx context.Context, o *opened) error {
+	var shards []entity.ShardID
+
+	for _, b := range o.table {
+		if !b.removed {
+			shards = append(shards, b.share.Shard)
+		}
+	}
+
+	incs, err := e.d.Lifecycle.RaiseAtStart(ctx, shards)
+	if err != nil {
+		return fmt.Errorf("engine: start: raise the shards' incarnations: %w", err)
+	}
+
+	for _, b := range o.table {
+		if b.removed {
+			continue
+		}
+
+		inc, ok := incs[b.share.Shard]
+		if !ok {
+			return fmt.Errorf(
+				"engine: start: shard %d of share %v: %w",
+				b.share.Shard,
+				b.share.ID,
+				errNotRaised,
+			)
+		}
+
+		b.incarnation = inc
+	}
+
+	for id := range incs {
+		o.raised = append(o.raised, id)
+	}
+
+	return nil
 }
 
 // refuseDevice answers an Open that failed. A refusal it makes leaves every

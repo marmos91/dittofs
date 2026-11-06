@@ -28,19 +28,23 @@ var allowed = map[string][]string{
 	module + "pkg/openstate":        {"enginetest"},
 	module + "pkg/vfs/vfserr":       {"*"},
 	// The test fixture composes the engine over the real journal, its seam and
-	// profiler, the real store on an in-memory kv.KV, and a test clock.
+	// profiler, the real store on an in-memory kv.KV, and a test clock. The
+	// unit tests' start failure tests put the fault-injecting kv.KV under that
+	// store.
 	module + "pkg/block/journal/journaltest":      {"enginetest"},
 	module + "pkg/block/journal/journaltest/prof": {"enginetest", unitTests},
 	module + "pkg/metadata/kv":                    {"enginetest", unitTests},
 	module + "pkg/metadata/kv/badgerkv":           {"enginetest", unitTests},
+	module + "pkg/metadata/kv/kvtest":             {unitTests},
 	module + "pkg/metadata/kvstore/kvstoretest":   {"enginetest", unitTests},
 	module + "pkg/sim":                            {"enginetest", unitTests},
 }
 
 // unitTests names the engine's external test package, whose unit
 // composition runs the engine over the fake journal, the real store on an
-// in-memory kv.KV, a test clock and the profiler. The engine's own files,
-// tests in its package included, import none of them.
+// in-memory kv.KV, a test clock and the profiler, and whose start failure
+// tests put the fault-injecting kv.KV under that store. The engine's own
+// files, tests in its package included, import none of them.
 const unitTests = "._test"
 
 // TestImportRule walks every package under this directory, test packages

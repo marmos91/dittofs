@@ -19,6 +19,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -45,6 +47,8 @@ type starter struct {
 	opens   []openCall
 	openErr error // what Open answers in place of the journal
 	gate    *gate // holds the next Open at it, once
+	fresh   bool  // each Open after the first answers a new fake journal
+	opened  bool  // Open answered a journal once
 }
 
 // openCall is one call of Deps.Open.
@@ -58,6 +62,8 @@ type openCall struct {
 type starterConfig struct {
 	noRecord bool
 	deps     func(*engine.Deps)
+	store    kvstoretest.Opener
+	fresh    bool
 }
 
 // starterOption is one thing a test asks of newStarter.
@@ -67,6 +73,21 @@ type starterOption func(*starterConfig)
 func noRecord() starterOption {
 	return func(c *starterConfig) {
 		c.noRecord = true
+	}
+}
+
+// withStore builds the starter's store over the kv.KV open returns.
+func withStore(open kvstoretest.Opener) starterOption {
+	return func(c *starterConfig) {
+		c.store = open
+	}
+}
+
+// freshJournals has each Open after the first answer a new fake journal, as
+// a Start run again after one that failed and closed the journal needs.
+func freshJournals() starterOption {
+	return func(c *starterConfig) {
+		c.fresh = true
 	}
 }
 
@@ -91,10 +112,18 @@ func newStarter(t *testing.T, opts ...starterOption) *starter {
 		j: &logJournal{
 			FakeJournal: enginetest.NewFakeJournal(),
 		},
-		logs: newLogRecorder(),
-		id:   journal.JournalID{'A'},
+		logs:  newLogRecorder(),
+		id:    journal.JournalID{'A'},
+		fresh: c.fresh,
 	}
-	s.fs = kvstoretest.NewFS(t, memKV)
+
+	open := kvstoretest.Opener(memKV)
+
+	if c.store != nil {
+		open = c.store
+	}
+
+	s.fs = kvstoretest.NewFS(t, open)
 	s.lc = &startLifecycle{
 		Lifecycle: s.fs.Store.Lifecycle(),
 	}
@@ -149,6 +178,15 @@ func (s *starter) open(_ context.Context, dir string, floor journal.Version, exp
 	s.opens = append(s.opens, openCall{dir, floor, expect})
 	g, err := s.gate, s.openErr
 	s.gate = nil
+
+	if s.fresh && s.opened {
+		s.j = &logJournal{
+			FakeJournal: enginetest.NewFakeJournal(),
+		}
+	}
+
+	s.opened = true
+	j := s.j
 	s.mu.Unlock()
 
 	if g != nil {
@@ -160,11 +198,11 @@ func (s *starter) open(_ context.Context, dir string, floor journal.Version, exp
 		return nil, err
 	}
 
-	if err := s.j.add("open"); err != nil {
+	if err := j.add("open"); err != nil {
 		return nil, err
 	}
 
-	return s.j, nil
+	return j, nil
 }
 
 // openCalls is every Open call so far.
@@ -228,8 +266,12 @@ func (s *starter) seed(t *testing.T, tag journal.ShareTag) {
 // Tags answers, as the removal's steps would record them.
 type startLifecycle struct {
 	engine.Lifecycle
-	fail    map[string]error
-	removed map[entity.ShareID]entity.TagRecord
+	fail      map[string]error
+	removed   map[entity.ShareID]entity.TagRecord
+	raiseGate atomic.Pointer[gate]
+	counts    *kv.Counting            // the store's counts, when the test reads the raise's
+	raises    []kv.UpdateCounts       // the Updates of each RaiseAtStart, when counts is set
+	drop      map[entity.ShardID]bool // shards left out of RaiseAtStart's answer
 }
 
 func (l *startLifecycle) JournalID(
@@ -278,6 +320,63 @@ func (l *startLifecycle) RaiseVersionLimits(ctx context.Context, to map[entity.S
 	}
 
 	return l.Lifecycle.RaiseVersionLimits(ctx, to)
+}
+
+// RaiseAtStart holds the call at the raise gate armed, once. When counts is
+// set, it drops the Updates made before the call and keeps the ones the call
+// made, whether it succeeds or fails, so a test reads the raise's
+// transactions apart from start step 1's. It leaves the shards in drop out of
+// the answer, after the store raised them.
+func (l *startLifecycle) RaiseAtStart(
+	ctx context.Context,
+	shards []entity.ShardID,
+) (map[entity.ShardID]uint64, error) {
+	if g := l.raiseGate.Swap(nil); g != nil {
+		close(g.entered)
+		<-g.release
+	}
+
+	if l.counts != nil {
+		l.counts.TakeUpdates()
+	}
+
+	incs, err := l.Lifecycle.RaiseAtStart(ctx, shards)
+
+	if l.counts != nil {
+		l.raises = append(l.raises, l.counts.TakeUpdates())
+	}
+
+	for id := range l.drop {
+		delete(incs, id)
+	}
+
+	return incs, err
+}
+
+// limitKV is a kv.KV whose transactions hold at most entries keys, so the
+// store built over it computes a small key budget K.
+type limitKV struct {
+	kv.KV
+	entries int
+}
+
+func (l limitKV) Limits() kv.TxnLimits {
+	lim := l.KV.Limits()
+	lim.TxnEntries = l.entries
+
+	return lim
+}
+
+// shardOf reads shard id's record from the starter's store.
+func (s *starter) shardOf(t *testing.T, id entity.ShardID) entity.Shard {
+	t.Helper()
+
+	sh, err := s.fs.Store.Shard(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return sh
 }
 
 // logJournal is the engine's view of a fake journal: it logs each call the
@@ -1170,5 +1269,359 @@ func TestNoWriteBeforeTheVersionLimit(t *testing.T) {
 
 	if err := s.write(t, s.one.ID); err != nil {
 		t.Errorf("a write after Start: %v", err)
+	}
+}
+
+// Start raises the shard of every share step 1 attached, in the start form,
+// and puts the incarnation it wrote on each binding; it raises no shard of a
+// share being removed, nor shard 0, which a removed binding's zero shard
+// would name. A Bind after it keeps the grace instance of a shard Start
+// raised, and opens a new one on any other.
+func TestStartRaisesEveryServedShard(t *testing.T) {
+	s := newStarter(t)
+	gone := enginetest.AddShare(t, s.fs.Store, "gone", 1<<30)
+	s.lc.removed = map[entity.ShareID]entity.TagRecord{
+		gone.ID: {
+			Tag:   uint32(gone.Tag),
+			State: entity.TagOffloaded,
+		},
+	}
+
+	// The store's first share, left out of Start, is on shard 0: a raise or a
+	// record of the removed binding's zero shard shows on it.
+	if s.one.Shard != 0 {
+		t.Fatalf("setup: the store's first share is on shard %d, want 0", s.one.Shard)
+	}
+
+	if err := s.e.Start(t.Context(), []engine.Share{s.two, gone}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	got := s.shardOf(t, s.two.Shard)
+
+	if got.Incarnation != 1 || got.GraceInstance != 1 {
+		t.Errorf("served shard %d after Start: incarnation %d, grace instance %d; want 1 and 1",
+			s.two.Shard, got.Incarnation, got.GraceInstance)
+	}
+
+	if inc := s.e.IncarnationForTest(s.two.ID); inc != got.Incarnation {
+		t.Errorf(
+			"the served share's binding holds incarnation %d, the store %d",
+			inc,
+			got.Incarnation,
+		)
+	}
+
+	for _, id := range []entity.ShardID{gone.Shard, s.one.Shard} {
+		if got := s.shardOf(t, id); got.Incarnation != 0 || got.GraceInstance != 0 {
+			t.Errorf(
+				"unserved shard %d after Start: incarnation %d, grace instance %d; want 0 and 0",
+				id,
+				got.Incarnation,
+				got.GraceInstance,
+			)
+		}
+	}
+
+	for _, c := range []struct {
+		name  string
+		shard entity.ShardID
+		tag   journal.ShareTag
+		want  entity.Shard
+	}{
+		{
+			name:  "a shard Start raised keeps its grace instance",
+			shard: s.two.Shard,
+			tag:   201,
+			want: entity.Shard{
+				Incarnation:   2,
+				GraceInstance: 1,
+			},
+		},
+		{
+			name:  "a removed share's shard opens a new one",
+			shard: gone.Shard,
+			tag:   202,
+			want: entity.Shard{
+				Incarnation:   1,
+				GraceInstance: 1,
+			},
+		},
+		{
+			name:  "shard 0, which Start did not serve, opens a new one",
+			shard: s.one.Shard,
+			tag:   203,
+			want: entity.Shard{
+				Incarnation:   1,
+				GraceInstance: 1,
+			},
+		},
+	} {
+		sh := engine.Share{
+			ID:    entity.NewShareID(),
+			Tag:   c.tag,
+			Shard: c.shard,
+			Limit: 1 << 30,
+			State: engine.Serving,
+		}
+
+		if err := s.e.Bind(t.Context(), sh); err != nil {
+			t.Fatalf("%s: Bind: %v", c.name, err)
+		}
+
+		got := s.shardOf(t, c.shard)
+
+		if got.Incarnation != c.want.Incarnation || got.GraceInstance != c.want.GraceInstance {
+			t.Errorf(
+				"%s: shard %d after the Bind: incarnation %d, grace instance %d; want %d and %d",
+				c.name,
+				c.shard,
+				got.Incarnation,
+				got.GraceInstance,
+				c.want.Incarnation,
+				c.want.GraceInstance,
+			)
+		}
+	}
+}
+
+// No write answers while the start raise has not returned: the shares are
+// published only after it, so a write in the meantime is told to retry and
+// gets no verifier.
+func TestNoVerifierBeforeTheRaiseCommits(t *testing.T) {
+	s := newStarter(t)
+	g := newGate(t)
+	s.lc.raiseGate.Store(g)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- s.start(t)
+	}()
+
+	select {
+	case <-g.entered:
+	case err := <-done:
+		t.Fatalf("Start returned %v before it raised the incarnations", err)
+	}
+
+	if err := s.write(t, s.one.ID); !isDelay(err, vfserr.DelayFrozen) {
+		t.Errorf("a write while the raise is held = %v, want ErrDelay(DelayFrozen)", err)
+	}
+
+	g.open()
+
+	if err := <-done; err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := s.write(t, s.one.ID); err != nil {
+		t.Errorf("a write after Start: %v", err)
+	}
+}
+
+// A start raise that fails between two of its transactions fails Start,
+// which closes what it opened and records no shard as raised; Start run
+// again raises every shard once more, the ones the first attempt raised
+// included, in as many transactions as K takes.
+func TestAFailedStartRaiseIsRedoneWhole(t *testing.T) {
+	const k = 7 // the key budget over limitKV: 12 entries less the 5 a batch's fixed records take
+
+	var (
+		faults *kvtest.FaultKV
+		counts *kv.Counting
+	)
+
+	s := newStarter(t, freshJournals(), withStore(func(tb testing.TB) kv.KV {
+		counts = &kv.Counting{
+			KV: limitKV{
+				KV:      memKV(tb),
+				entries: 12,
+			},
+		}
+		faults = kvtest.NewFaultKV(counts)
+
+		return faults
+	}))
+	s.lc.counts = counts
+	ctx := t.Context()
+
+	shares := []engine.Share{s.one, s.two}
+
+	for i := range 2*k + 1 - len(shares) {
+		sh := enginetest.AddShare(t, s.fs.Store, fmt.Sprintf("share%d", i), 1<<30)
+		shares = append(shares, sh)
+	}
+
+	ids := make([]entity.ShardID, len(shares))
+	before := map[entity.ShardID]entity.Shard{}
+
+	for i, sh := range shares {
+		ids[i] = sh.Shard
+		before[sh.Shard] = s.shardOf(t, sh.Shard)
+	}
+
+	slices.Sort(ids)
+
+	// The store raises the shards in this order, k a transaction: failing
+	// the write of the first shard of the second fails that transaction.
+	sched, err := sim.NewSchedule(1, nil, sim.Rule{
+		Op:    kvtest.OpSet,
+		Key:   fmt.Sprintf("SH‖%d", ids[k]),
+		Count: 1,
+		Action: sim.FaultAction{
+			Err: errInjected,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	faults.SetFault(sched)
+
+	if err := s.e.Start(ctx, shares); !errors.Is(err, errInjected) {
+		t.Fatalf("Start = %v, want the injected failure", err)
+	}
+
+	after := map[entity.ShardID]entity.Shard{}
+
+	for i, id := range ids {
+		got := s.shardOf(t, id)
+		after[id] = got
+		want := before[id]
+
+		if i < k {
+			want.Incarnation++
+			want.GraceInstance = want.Incarnation
+		}
+
+		if got.Incarnation != want.Incarnation || got.GraceInstance != want.GraceInstance {
+			t.Errorf(
+				"shard %d, transaction %d, after the failed Start: "+
+					"incarnation %d, grace instance %d; want %d and %d",
+				id,
+				i/k+1,
+				got.Incarnation,
+				got.GraceInstance,
+				want.Incarnation,
+				want.GraceInstance,
+			)
+		}
+	}
+
+	var closes []string
+
+	for i := len(shares) - 1; i >= 0; i-- {
+		closes = append(closes, fmt.Sprintf("close handle %d", shares[i].Tag))
+	}
+
+	closes = append(closes, "close journal")
+
+	var got []string
+
+	for _, call := range s.j.log() {
+		if strings.HasPrefix(call, "close") {
+			got = append(got, call)
+		}
+	}
+
+	if !slices.Equal(got, closes) {
+		t.Errorf("closes %v, want %v", got, closes)
+	}
+
+	for _, sh := range shares {
+		if err := s.e.BindingOf(sh.ID); !isDelay(err, vfserr.DelayFrozen) {
+			t.Errorf("share %v's binding after a failed Start: %v, want none", sh.ID, err)
+		}
+	}
+
+	for _, id := range ids[:k] {
+		if s.e.RaisedForTest(id) {
+			t.Errorf("shard %d recorded as raised after a failed Start", id)
+		}
+	}
+
+	failed := kv.UpdateCounts{
+		Updates:    2,
+		MostWrites: k,
+	}
+
+	if len(s.lc.raises) != 1 || s.lc.raises[0] != failed {
+		t.Errorf("the failed raise's Updates %v, want one call of %+v", s.lc.raises, failed)
+	}
+
+	if err := s.e.Start(ctx, shares); err != nil {
+		t.Fatalf("Start again: %v", err)
+	}
+
+	for _, id := range ids {
+		got := s.shardOf(t, id)
+		want := after[id].Incarnation + 1
+
+		if got.Incarnation != want || got.GraceInstance != want {
+			t.Errorf(
+				"shard %d after Start ran again: incarnation %d, grace instance %d; want %d and %d",
+				id,
+				got.Incarnation,
+				got.GraceInstance,
+				want,
+				want,
+			)
+		}
+	}
+
+	if len(s.lc.raises) != 2 {
+		t.Fatalf("raise calls %v, want two", s.lc.raises)
+	}
+
+	if r := s.lc.raises[1]; r.Updates != 3 || r.MostWrites > k {
+		t.Errorf("the raise's Updates %+v, want 3, none writing more than %d keys", r, k)
+	}
+}
+
+// A served shard the start raise answers no incarnation for fails Start,
+// naming the shard: bound at incarnation 0, its verifier and grace instance
+// would repeat. Start closes what it opened in reverse and records no shard
+// as raised.
+func TestStartFailsOnAShardTheRaiseDidNotAnswer(t *testing.T) {
+	s := newStarter(t)
+	s.lc.drop = map[entity.ShardID]bool{
+		s.two.Shard: true,
+	}
+
+	err := s.start(t)
+	if !errors.Is(err, engine.ErrNotRaised) {
+		t.Fatalf("Start = %v, want ErrNotRaised", err)
+	}
+
+	if want := fmt.Sprintf("shard %d", s.two.Shard); !strings.Contains(err.Error(), want) {
+		t.Errorf("Start = %v, want it to name %s", err, want)
+	}
+
+	closes := []string{
+		fmt.Sprintf("close handle %d", s.two.Tag),
+		fmt.Sprintf("close handle %d", s.one.Tag),
+		"close journal",
+	}
+
+	var got []string
+
+	for _, call := range s.j.log() {
+		if strings.HasPrefix(call, "close") {
+			got = append(got, call)
+		}
+	}
+
+	if !slices.Equal(got, closes) {
+		t.Errorf("closes %v, want %v", got, closes)
+	}
+
+	for _, sh := range []engine.Share{s.one, s.two} {
+		if err := s.e.BindingOf(sh.ID); !isDelay(err, vfserr.DelayFrozen) {
+			t.Errorf("share %v's binding after a failed Start: %v, want none", sh.ID, err)
+		}
+
+		if s.e.RaisedForTest(sh.Shard) {
+			t.Errorf("shard %d recorded as raised after a failed Start", sh.Shard)
+		}
 	}
 }
