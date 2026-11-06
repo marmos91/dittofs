@@ -72,6 +72,15 @@ type Durability struct {
 	// with segment.ErrStreamStopped wrapping the cause, and nothing more
 	// happens: the stream is refused, not the journal. Withdrawn once the
 	// entry is wired, when a stopped stream must always reach it.
+	//
+	// decision: it is reached only through an EndEvent carrying Stopped, but
+	// the stream also stops without an event in two cases: a failed successor
+	// header write after a failed sync, whose stop travels through later
+	// appends' ErrStreamStopped, and End on an already ended segment with
+	// EROFS. So a stream can stop with readOnly uncalled, for example when
+	// segment 1's sync fails and then the spare's header write fails on the
+	// roll. The stream stack needs a stop notification of its own before this
+	// can claim a stopped stream always reaches it.
 	readOnly func(cause error)
 
 	// mu guards made, started and stopped. It is not held across a stream
@@ -326,6 +335,12 @@ func (d *Durability) Start(streams *segment.Streams) {
 // Append never returned, which reads durable although nothing was written
 // there. Overturn this if a caller can ask about an arbitrary location, which
 // then needs a record of the completed ones to tell the two apart.
+//
+// It also fails open for a failed record once a window holding records is
+// dropped: the record leaves the window and the ledger, and no entry reads as
+// durable. That cannot happen yet, for only empty windows are resolved. The
+// code that resolves a non-empty window must keep failed records out of the
+// "no entry means durable" answer.
 //
 // ponytail: it scans every stream's ledger, O(streams x ledger). Upgrade to a
 // per-segment index when a profile shows the scan.
@@ -584,11 +599,18 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 // the syscall.
 //
 // decision: a target in a pending window answers its *core.SyncError as soon
-// as the window is taken, before the window's records are failed through the
-// index. The answer is never nil whenever it comes (R10), and a pending window
-// never reads durable, so answering early costs only the order of two
-// events. Move it after the records are lost once the code that fails a window
-// owns that step, so that the answer follows the loss.
+// as syncStep stores failed[seg], before the segment's End and before any end
+// event, so before the window exists and before its records are failed through
+// the index. The answer is non-nil today because nothing here re-appends a
+// failed segment's records: the answer then holds for as long as the failure
+// stands. It stops holding once the code that re-appends them lands, for the
+// writes' Sync calls must then wait for the new sync (RFC 1 §5.3), so a
+// failFast answer there would be wrong. The order is not a small cost either:
+// §5.3 raises the loss generation before any Sync it fails returns, and an
+// early answer can return first. Overturn this when the window's records are
+// failed through the index (the window-failing step) or re-appended (the
+// re-append step): the answer must then follow the loss, and wait for a
+// re-append.
 func (st *stream) check(targets []target, failFast bool) (bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()

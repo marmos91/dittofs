@@ -115,7 +115,11 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	// EndEvent cannot tell these from a failed sync, so sync_failures and
 	// LastSyncError can then show a write error. Withdrawn once EndEvent says
 	// whether the cause was a sync, which the stream would have to add, and
-	// only that case is counted.
+	// only that case is counted. The same ceiling covers ErrBadCatalog and
+	// ledger refusals, which end with EndSeal too. So sync_failures counts
+	// seal fsyncs that syncs does not: a sync of an ended segment issues no
+	// fsync yet its seal counts one (Syncs=0, SyncFailures=1), and the two
+	// counters count different sets.
 	var failedAt time.Time
 	var failedMono time.Duration
 	if ev.Cause == segment.EndSeal {
@@ -167,6 +171,12 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 // code that fails a window's records through the index calls resolve. A
 // pending window never reads durable, so nothing is lost by waiting; what is
 // withdrawn is only the window's memory.
+//
+// Resolving a window that holds records would make Durable read true for a
+// failed record, which then has no ledger entry and no window: it fails open.
+// Only empty windows are resolved today, so it cannot. The code that resolves
+// a non-empty window must keep failed records out of Durable's "no entry means
+// durable" answer first.
 func (d *Durability) resolve(st *stream, w *window) {
 	st.mu.Lock()
 	st.windows = slices.DeleteFunc(st.windows, func(o *window) bool { return o == w })
