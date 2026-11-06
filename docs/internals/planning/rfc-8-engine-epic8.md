@@ -260,8 +260,10 @@ Only what the RFC leaves to the code. Ids are stable; D3 and D9 fill RFC gaps an
   first (D2, D4), so phase 1 meets one only when the store changed under a registered extent
   by a path this part lacks. Met anyway, it is logged at `Error` naming both files and the
   clone is retried from its spec with the removal loop's backoff, the destination's guard
-  held across the retries; after five it raises `removal_stalled` for the destination. The
-  capture's skip of a guarded file (epic 5's D1) keeps the journal's other files committing,
+  held across the retries; after five it raises `removal_stalled` for the destination. What
+  keeps the destination's `applied` below *v* across them is RFC 8 §5.1's stop at the clone's
+  operation (§9.1); the guard only spares them conflicts (§6.4). The capture's skip of a
+  guarded file (epic 5's D1) keeps the journal's other files committing,
   so `Unbind`'s join waits only on the clone's own retries, which `Close` cancels (D6). A
   `decision:` marker, withdrawn if the store's check moves to an admission read.
 - **D10, rebuilding the source's registration.** `Deps` holds no view of open records, so on
@@ -292,8 +294,8 @@ Only what the RFC leaves to the code. Ids are stable; D3 and D9 fill RFC gaps an
   holds the source, which the release's holder check still sees.
 - **D15, writes outside the extent during a clone.** One staged on the destination between
   the journal step and phase 1 sits between *v* and `Copied`, kept out of every group commit
-  by the guard; `kvstore`'s `Clone` sets `applied` to the larger of *v* and `Copied`, which
-  would skip it. So `Existence.Clone` takes every pending operation of the destination but
+  by RFC 8 §5.1's stop at the clone's operation (§9.1); `kvstore`'s `Clone` sets `applied`
+  to the larger of *v* and `Copied`, which would skip it. So `Existence.Clone` takes every pending operation of the destination but
   the copies, commits those below *v* before the clone and applies those above *v* in the
   clone's transaction after it. Refusing such writes until phase 1 would hold a whole file's
   writes behind one extent. A `decision:` marker at `kvstore`'s `Clone`.
@@ -425,10 +427,11 @@ regression it names (after "catches").
   source of three held runs and two holes: `Reserve` gets the runs' bytes and buffer count,
   and every `Reservation.WriteAt` version is above the `CloneTarget` version (catches copies
   drawn before the journal step, or through the handle's `WriteAt`); a group commit triggered
-  while the clone is held between its copies and phase 1 captures none of the destination's
-  operations, and the clone then commits (catches the guard released after `CloneTarget`,
-  letting a commit raise `applied` above *v* so `kvstore` skips phase 1 and the destination
-  reads **Lost**); over the real `kvstore`, after phase 1 the source has an open record of the
+  while the clone is held between its copies and phase 1, the guard's skip turned off,
+  leaves the destination's `applied` and every `Settle` of it below *v*, and the clone then
+  commits (catches a capture past the clone's operation, RFC 8 §5.1 and §9.1, letting a
+  commit raise `applied` above *v* so `kvstore` skips phase 1 and the destination reads
+  **Lost**); over the real `kvstore`, after phase 1 the source has an open record of the
   clone kind naming the destination and *v*, and the destination's `Covering` over the extent
   answers `ErrDelay` until done (the consumer of `CloneOp`, rule 5); a source whose middle run
   the fake journal lost after its existence committed: the destination reads **Lost** there
@@ -439,9 +442,11 @@ regression it names (after "catches").
   then nothing (catches a release dropped or answered twice); `Existence.Clone` answering a
   namespace refusal once: the clone is retried, logged once at `Error`, and completes
   (catches a clone failed after its journal step); answering it six times: `removal_stalled`
-  names the destination, a group commit between two attempts captures none of its operations
-  (catches the guard released across the retry), and a write to another file on the same
-  journal commits in that batch (catches a capture blocking on the pinned guard). Over the
+  names the destination, and a write to another file on the same journal commits in a batch
+  between two attempts (catches a capture blocking on the pinned guard); with the guard's
+  skip turned off, a write outside the extent staged between two attempts stays uncommitted,
+  and the destination's `applied` and every `Settle` of it stay below *v*, until phase 1
+  commits (catches a capture past the clone's operation across the retry, RFC 8 §9.1). Over the
   real `kvstore`: a destination with a pending write below *v* outside the extent and copies
   above it reads the source in the extent, the earlier write back, and `applied` at or above
   `Copied` (catches the copies passed to `Existence.Clone`, committed first and the clone then
