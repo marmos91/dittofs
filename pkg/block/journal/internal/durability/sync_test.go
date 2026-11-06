@@ -47,7 +47,7 @@ func mustBlock(t *testing.T, what string, ch <-chan error) {
 	}
 }
 
-// TestGroupCommitSharesSyncsAcrossWaiters pins R4: 16 writers each appending
+// TestGroupCommitSharesSyncsAcrossWaiters covers: 16 writers each appending
 // and syncing 8 times, with every sync parked until all active writers wait,
 // cost far fewer than one sync per Sync call. A sync per waiter would issue
 // 128.
@@ -105,7 +105,7 @@ func TestGroupCommitSharesSyncsAcrossWaiters(t *testing.T) {
 	}
 }
 
-// TestSyncReturnsAfterTheCoveringSync pins R1: a Sync blocks while the sync
+// TestSyncReturnsAfterTheCoveringSync covers: a Sync blocks while the sync
 // that covers its record is held, and a Sync naming nothing unsynced, or an
 // unknown file, issues no sync.
 func TestSyncReturnsAfterTheCoveringSync(t *testing.T) {
@@ -138,7 +138,7 @@ func TestSyncReturnsAfterTheCoveringSync(t *testing.T) {
 	}
 }
 
-// TestRecordCompletedAfterTheSyncBeganIsNotCovered pins D3: a record whose
+// TestRecordCompletedAfterTheSyncBeganIsNotCovered covers: a record whose
 // slot completed after the running sync began is not told it is durable by
 // that sync; its Sync issues a second one.
 func TestRecordCompletedAfterTheSyncBeganIsNotCovered(t *testing.T) {
@@ -170,7 +170,7 @@ func TestRecordCompletedAfterTheSyncBeganIsNotCovered(t *testing.T) {
 	}
 }
 
-// TestWaitDurableNeedsNoSyncCaller pins R88: WaitDurable returns once the
+// TestWaitDurableNeedsNoSyncCaller covers: WaitDurable returns once the
 // record is synced by anyone, and Stop wakes a parked waiter with ErrClosed.
 func TestWaitDurableNeedsNoSyncCaller(t *testing.T) {
 	prof.Watch(t, prof.Options{})
@@ -205,7 +205,7 @@ func TestWaitDurableNeedsNoSyncCaller(t *testing.T) {
 	}
 }
 
-// TestSyncRidesTheSealsSync pins R85: a Sync waiting on a record of a segment
+// TestSyncRidesTheSealsSync covers: a Sync waiting on a record of a segment
 // that a seal is closing returns once the seal's sync reports, not before.
 func TestSyncRidesTheSealsSync(t *testing.T) {
 	prof.Watch(t, prof.Options{})
@@ -231,7 +231,7 @@ func TestSyncRidesTheSealsSync(t *testing.T) {
 	}
 }
 
-// TestSyncNeverSyncsADirectory pins R5: no directory sync, and every sync
+// TestSyncNeverSyncsADirectory covers: no directory sync, and every sync
 // names a segment file.
 func TestSyncNeverSyncsADirectory(t *testing.T) {
 	prof.Watch(t, prof.Options{})
@@ -265,7 +265,7 @@ func (st *stream) ledgerSegForTest() core.SegmentID {
 	return st.lastSeg
 }
 
-// TestCancelledSyncLeavesTheSyncRunning pins R6: a cancelled caller returns
+// TestCancelledSyncLeavesTheSyncRunning covers: a cancelled caller returns
 // the context's error at once while the sync runs on for the other waiters,
 // and a context already done issues no sync.
 func TestCancelledSyncLeavesTheSyncRunning(t *testing.T) {
@@ -303,7 +303,7 @@ func TestCancelledSyncLeavesTheSyncRunning(t *testing.T) {
 	}
 }
 
-// TestFailedSyncFailsEveryWaiterAndIsNotRetried pins R10: every waiter on the
+// TestFailedSyncFailsEveryWaiterAndIsNotRetried covers: every waiter on the
 // failed sync gets a SyncError naming the segment, the failure is counted,
 // and a later Sync of the segment fails at once with no new sync.
 func TestFailedSyncFailsEveryWaiterAndIsNotRetried(t *testing.T) {

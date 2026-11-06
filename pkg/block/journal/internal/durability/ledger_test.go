@@ -10,7 +10,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
-// TestTrackRunsUnderTheFileDomainWithoutDeadlock pins D13: the sink never
+// TestTrackRunsUnderTheFileDomainWithoutDeadlock covers: the sink never
 // takes the file append domain, since the appending goroutine holds it while
 // Track runs and the worker's completion takes it. A completion run on the
 // appender's goroutine would deadlock here.
@@ -30,7 +30,7 @@ func TestTrackRunsUnderTheFileDomainWithoutDeadlock(t *testing.T) {
 	eventually(t, "the completion to drop the entry", func() bool { return r.ledgerLen(0) == 0 })
 }
 
-// TestCompletionWaitsForTheFileDomain pins R87: an entry is dropped only
+// TestCompletionWaitsForTheFileDomain covers: an entry is dropped only
 // under the file's append domain, so a record whose sync landed stays in the
 // ledger while the domain is held and goes once it is released.
 func TestCompletionWaitsForTheFileDomain(t *testing.T) {
@@ -87,7 +87,7 @@ func TestEveryKindIsTrackedBeforeAppendReturns(t *testing.T) {
 	}
 }
 
-// TestDurableFollowsTheSyncThatCoversTheRecord pins R12: false before any
+// TestDurableFollowsTheSyncThatCoversTheRecord covers: false before any
 // sync, true right after one that covered the record, and false for a record
 // appended after the sync began.
 func TestDurableFollowsTheSyncThatCoversTheRecord(t *testing.T) {

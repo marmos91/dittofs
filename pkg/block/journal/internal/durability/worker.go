@@ -39,8 +39,8 @@ func (d *Durability) run(st *stream) {
 // oldest uncovered record is past the bound, the bound's sync, with no lock
 // held.
 // A failure is recorded against the segment the sync was of, as the stream
-// reports it, and is never retried (R10): the segment's tracker froze at the failure and will not
-// report it again.
+// reports it, and is never retried: the segment's tracker froze at the
+// failure and will not report it again.
 //
 // ponytail: a sync covers the whole active segment, so a file that syncs
 // often waits for what another writer appended. The cost is bounded by what
@@ -112,7 +112,7 @@ func bucketOf(d time.Duration) int {
 	return len(SyncDurationBounds)
 }
 
-// complete drops every covered entry from the ledger (R87): each is marked
+// complete drops every covered entry from the ledger: each is marked
 // done under its file's append domain, one domain at a time, so a record whose
 // sync landed is never dropped in the gap between a writer's append and the
 // accounting it does under that same domain. Only the worker compacts and

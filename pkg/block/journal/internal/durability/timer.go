@@ -7,8 +7,8 @@ import (
 )
 
 // The sync bound: a record is synced within core.SyncBound of the worker
-// first seeing it, whether or not anyone calls Sync (R7, R8). One behaviour
-// serves every share, and nothing weakens it (R9).
+// first seeing it, whether or not anyone calls Sync. One behaviour
+// serves every share, and nothing weakens it.
 //
 // ponytail: there is no per-share mode and no setting that weakens the bound.
 // A bulk writer that never syncs pays at most one flush per stream per
@@ -28,8 +28,8 @@ import (
 // the stream is active on, and not of a segment whose sync failed. A sync
 // covers only the active segment, so an older segment's record is covered by
 // its seal or never, and a timer that counted it would fire back to back.
-// Nothing failed is retried either (R10). The ledger
-// is in Track order, so the first match is the oldest. The caller holds mu.
+// Nothing failed is retried either. The ledger is in Track order, so the
+// first match is the oldest. The caller holds mu.
 func (st *stream) oldestLocked() (seen time.Duration, ok bool) {
 	for i := range st.ledger {
 		e := &st.ledger[i]

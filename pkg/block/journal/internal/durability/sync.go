@@ -126,7 +126,7 @@ type entry struct {
 // stream is one stream's state.
 //
 // decision: mu is a leaf mutex, never held across I/O, a sync, the clock, a
-// file domain or another lock (D13), because both sinks run under the
+// file domain or another lock, because both sinks run under the
 // segment's append domain and must not wait on anything.
 type stream struct {
 	d  *Durability
@@ -137,7 +137,7 @@ type stream struct {
 	// ledger holds the entries in Track order.
 	//
 	// ponytail: one entry per unsynced record, bounded by what a stream
-	// accepts within one sync bound (D4). Durable scans it linearly. Upgrade
+	// accepts within one sync bound. Durable scans it linearly. Upgrade
 	// to a per-file index when a profile shows the scan.
 	ledger []entry
 	// synced is the largest offset a sync reported, per segment.
@@ -154,8 +154,6 @@ type stream struct {
 	want    bool
 	syncing bool
 
-	// changed is closed and replaced on every change a waiter cares about.
-	changed chan struct{}
 	// kick wakes the worker; capacity 1, sent without blocking.
 	kick chan struct{}
 
@@ -176,7 +174,6 @@ func newStream(d *Durability, no uint32) *stream {
 		live:    map[core.SegmentID]struct{}{},
 		synced:  map[core.SegmentID]int64{},
 		failed:  map[core.SegmentID]error{},
-		changed: make(chan struct{}),
 		kick:    make(chan struct{}, 1),
 		buckets: make([]uint64, len(SyncDurationBounds)+1),
 	}
@@ -192,8 +189,6 @@ func (st *stream) wake() {
 
 // notifyLocked wakes every waiter. The caller holds mu.
 func (st *stream) notifyLocked() {
-	close(st.changed)
-	st.changed = make(chan struct{})
 	st.d.notifyAll()
 }
 
@@ -360,7 +355,7 @@ func (st *stream) pending(loc segment.Location) bool {
 // returns at once with no sync. The error is a *core.SyncError when a sync
 // covering a record failed, core.ErrClosed once the layer stopped, and
 // ctx.Err() when ctx is done first; a cancelled caller changes no state and
-// the sync it may have led runs on for the other waiters (R6).
+// the sync it may have led runs on for the other waiters.
 //
 // Syncs are issued by the stream's worker, never by the caller's goroutine,
 // so a cancelled caller is not stuck in the syscall.
@@ -451,11 +446,11 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 		wait := d.changes()
 		pending := false
 		for _, w := range ws {
-			ch, err := w.st.check(w.targets, failFast)
+			p, err := w.st.check(w.targets, failFast)
 			if err != nil {
 				return err
 			}
-			pending = pending || ch != nil
+			pending = pending || p
 		}
 		if !pending {
 			return nil
@@ -470,13 +465,12 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 	}
 }
 
-// check looks at one stream's targets. It returns a nil channel when none is
-// pending, the channel to wait on otherwise, and an error for a closed layer
-// or, with failFast, a failed segment. It also leads a sync when the targets
-// need one.
+// check looks at one stream's targets. It reports whether any is pending, and
+// returns an error for a closed layer or, with failFast, a failed segment. It
+// also leads a sync when the targets need one.
 //
-// decision: one sync per stream runs at a time and covers every waiter (D3,
-// R4). The waiter that finds none in flight and none asked for leads: it sets
+// decision: one sync per stream runs at a time and covers every waiter (group
+// commit). The waiter that finds none in flight and none asked for leads: it sets
 // want and the worker issues the sync. A sync per waiter would multiply
 // fsyncs by the waiter count. Joining whatever sync is running would be wrong
 // as well: a record whose slot completed after that sync began would be told
@@ -484,7 +478,7 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 // and a target still uncovered leads the next one. The worker, not the
 // waiter's goroutine, issues the sync so a cancelled waiter is never stuck in
 // the syscall.
-func (st *stream) check(targets []target, failFast bool) (chan struct{}, error) {
+func (st *stream) check(targets []target, failFast bool) (bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	pending, lead := false, false
@@ -508,10 +502,10 @@ func (st *stream) check(targets []target, failFast bool) (chan struct{}, error) 
 		}
 	}
 	if !pending {
-		return nil, nil
+		return false, nil
 	}
 	if st.closed {
-		return nil, core.ErrClosed
+		return false, core.ErrClosed
 	}
 	if failErr != nil {
 		se := &core.SyncError{Segment: failSeg, Err: failErr}
@@ -520,11 +514,11 @@ func (st *stream) check(targets []target, failFast bool) (chan struct{}, error) 
 				se.Files = append(se.Files, t.file)
 			}
 		}
-		return nil, se
+		return false, se
 	}
 	if lead && !st.syncing && !st.want {
 		st.want = true
 		st.wake()
 	}
-	return st.changed, nil
+	return true, nil
 }

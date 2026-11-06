@@ -46,7 +46,7 @@ func (r *rig) quiet(t *testing.T, seg core.SegmentID, want int) {
 	}
 }
 
-// TestBoundSyncsExactlyAtTheDeadline pins R7 and R8: a record nobody syncs is
+// TestBoundSyncsExactlyAtTheDeadline covers: a record nobody syncs is
 // synced when SyncBound has passed since the worker saw it, not a tick sooner.
 func TestBoundSyncsExactlyAtTheDeadline(t *testing.T) {
 	prof.Watch(t, prof.Options{})
@@ -87,7 +87,7 @@ func TestOneTimerSyncCoversEveryRecordBeforeTheFire(t *testing.T) {
 	}
 }
 
-// TestTimerIsPerStreamNotPerShare pins R9: records of two share tags on one
+// TestTimerIsPerStreamNotPerShare covers: records of two share tags on one
 // stream are covered by one timer sync, so no per-share mode exists.
 func TestTimerIsPerStreamNotPerShare(t *testing.T) {
 	prof.Watch(t, prof.Options{})
@@ -137,7 +137,7 @@ func TestFireWithNothingUnsyncedIssuesNoSync(t *testing.T) {
 	}
 }
 
-// TestFailedSegmentIsNotRetriedByTheTimer pins R10 against the timer: the
+// TestFailedSegmentIsNotRetriedByTheTimer covers: the
 // failed segment's records stay uncovered, and a fire must not sync it again
 // every second.
 func TestFailedSegmentIsNotRetriedByTheTimer(t *testing.T) {
