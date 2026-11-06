@@ -604,3 +604,73 @@ func TestGroupCloseSecondCallAnswersNilAfterFailure(t *testing.T) {
 		t.Fatalf("the second Close = %v, want nil", err)
 	}
 }
+
+// TestStreamsCloseRefusesEveryStreamBeforeAnyDrains: stream 0 has an append
+// parked at a seam hold, so its close is waiting on it; stream 1 must already
+// refuse an append and a read with the closed error. It catches a close that
+// marks and drains one stream at a time, leaving the later streams serving
+// while the earlier one drains.
+func TestStreamsCloseRefusesEveryStreamBeforeAnyDrains(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := rollBuild(t, streamCap, segment.Targets{Content: 3}, nil)
+	awaitSpares(t, e.pool, 3)
+	ss := segment.NewStreams(2, streamIdentity, e.set, e.pool, e.cache)
+	t.Cleanup(func() { _ = ss.Close() })
+
+	h0, b0 := streamWriteHeader(streamFileID(1), 0, streamTestBody(64, 0x5a), 7, core.Version{Counter: 1})
+	warm, err := ss.Stream(0).Append(h0, b0)
+	if err != nil {
+		t.Fatalf("the warm Append: %v", err)
+	}
+	h1, b1 := streamWriteHeader(streamFileID(3), 0, streamTestBody(64, 0x5a), 7, core.Version{Counter: 3})
+	placed1, err := ss.Stream(1).Append(h1, b1)
+	if err != nil {
+		t.Fatalf("stream 1's warm Append: %v", err)
+	}
+
+	hold := e.seam.HoldFirst(t, journaltest.OpWrite, streamSegName(warm.Loc.Segment))
+	appended := make(chan error, 1)
+	go func() {
+		hh, body := streamWriteHeader(streamFileID(2), 64, streamTestBody(64, 0xc3), 7, core.Version{Counter: 2})
+		_, err := ss.Stream(0).Append(hh, body)
+		appended <- err
+	}()
+	select {
+	case <-hold.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("stream 0's record write never reached the hold")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- ss.Close() }()
+
+	// Stream 1 is refused while stream 0's append is still parked. The
+	// refusal is polled for, since the close runs on its own goroutine.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		h, body := streamWriteHeader(streamFileID(4), 0, streamTestBody(64, 0x5a), 7, core.Version{Counter: 4})
+		_, aerr := ss.Stream(1).Append(h, body)
+		_, rerr := ss.Stream(1).ReadAt(placed1.Loc.Segment, make([]byte, 16), placed1.Loc.Off)
+		if errors.Is(aerr, core.ErrClosed) && errors.Is(rerr, core.ErrClosed) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stream 1 while stream 0 drains: append = %v, read = %v, want both core.ErrClosed", aerr, rerr)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned %v while stream 0's append was parked, want it waiting", err)
+	default:
+	}
+
+	hold.Release()
+	if err := <-appended; err != nil {
+		t.Fatalf("the parked append failed: %v", err)
+	}
+	if err := <-closed; err != nil {
+		t.Fatalf("Close = %v, want nil", err)
+	}
+}

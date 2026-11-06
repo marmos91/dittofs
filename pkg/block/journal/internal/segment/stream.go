@@ -1360,23 +1360,36 @@ func (s *Stream) ReadAt(seg core.SegmentID, p []byte, off int64) (int, error) {
 // so the cache's Shutdown is never blocked by a ref the stream forgot. A
 // second Close is a no-op.
 func (s *Stream) Close() error {
-	s.appendMu.Lock()
-	if s.closed {
-		s.appendMu.Unlock()
+	ref, began := s.beginClose()
+	if !began {
 		return nil
+	}
+	s.finishClose(ref)
+	return nil
+}
+
+// beginClose marks the stream closed and takes its active ref, so no new
+// append or read is admitted from here on; began is false when it was
+// already closed. The caller owes one finishClose with the ref.
+func (s *Stream) beginClose() (ref Ref, began bool) {
+	s.appendMu.Lock()
+	defer s.appendMu.Unlock()
+	if s.closed {
+		return Ref{}, false
 	}
 	s.closed = true
 	s.readClosed.Store(true)
-	ref := s.ref
+	ref = s.ref
 	s.ref = Ref{}
-	s.appendMu.Unlock()
+	return ref, true
+}
 
-	// The wait runs outside the lock: an append completing right now takes
-	// it, and the take's runner settles its gate under it.
+// finishClose waits for the appends in flight and releases the ref beginClose
+// took. The wait runs outside the lock: an append completing right now takes
+// it, and the take's runner settles its gate under it.
+func (s *Stream) finishClose(ref Ref) {
 	s.inflight.Wait()
-
 	if ref != (Ref{}) {
 		ref.Release()
 	}
-	return nil
 }
