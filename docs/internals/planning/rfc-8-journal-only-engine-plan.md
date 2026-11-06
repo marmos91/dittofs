@@ -211,12 +211,14 @@ with a known file.
   §7.1 the join, existence above `asOf`; §8.2 deallocate; §9.1 clone keeps writes outside
   its extent, overlapping clone, failure leaves the destination, removals of a cloning
   destination, source registration rebuilt, clone never waits, refusals.
-- **RFC 8 §15.2, Group B** (11 rows): §1.1 no cross-share slowdown (the write half); §2.1 one
+- **RFC 8 §15.2, Group B** (14 rows): §1.1 no cross-share slowdown (the write half); §2.1 one
   clock; §2.3 shared journal, unbind and drop; §2.7 version limit under sustained load,
   burst at a stall's start; §5.2 group commit; §8.1 removal wedge (adapted: a removal whose
   batches keep failing raises `removal_stalled` and wedges no other file; the undecodable
-  ref is the second part's, since this part writes none); §10.3 scoped repack; §11.2
-  self-fence threshold, self-fence on an erroring store.
+  ref is the second part's, since this part writes none); §10.3 scoped repack; §11.1
+  `journal_full` at the maximum, `journal_full` on a full device, `journal_sync_failed`
+  (adapted: the journal turned read-only waits for RFC 1 §5.4's read-only state, which no epic of this part owns yet (epic 6's §9 point 8)); §11.2 self-fence threshold, self-fence on an erroring store. §11.1
+  `stranded_export_failed` is the second part's, with the salvage export.
 - **RFC 8 §15.3, Group C** (3 rows): §2.1 declared interfaces, §2.2 no assertions, §2.4
   settings.
 - **Rows of this part's own** (5), which the second part deletes or keeps: a carved run fails
@@ -378,13 +380,13 @@ harness (`journaltest/prof`) wired to the fixture.
 | 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 23 | B | 5, 6, 7, 8 |
 | 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 15.5 | B | 6, 8 |
 | 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 11 | 39.75 | C | 7, 8 |
-| 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 5 | 14.5 | C | 9 |
+| 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 5 | 17.5 | C | 9 |
 | 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 7 | 19.75 | A | 5, 9 |
 | 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over stage 2's fake and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
 | 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 4 | 12.5 | team | the second part |
-| | **Total** | | **64** | **186** | | |
+| | **Total** | | **64** | **189** | | |
 
-**Plan estimate: 64 subtasks, 186 man-days.**
+**Plan estimate: 64 subtasks, 189 man-days.**
 
 RFC 8 is 3,627 lines, which gives N = 8. This part covers about half of it, and its cohesive
 areas are six: the data path, the stability point, removals, the lifecycle, capacity and
@@ -598,7 +600,7 @@ owned: RFC 8 §15.1 to §15.3 for the rows §1.4 lists, and §15's composition r
   (rule 12).
 - T2.5 Group A rows of the data path and the stability point (12): §4.1, §5.1, §7.1, §8.2.
 - T2.6 Group A rows of the lifecycle and clone (14): §2.5, §2.7, §9.1.
-- T2.7 Group B rows (11).
+- T2.7 Group B rows (14).
 - T2.8 Group C rows (3).
 - T2.9 This part's own rows (5).
 
@@ -856,7 +858,7 @@ and stop, §2.7. Counters: none new; conditions named by `Stats` for a refused s
 
 ### Epic 7 — Capacity, self-fence and health
 
-**Epic 7 estimate: 5 subtasks, 14.5 man-days.**
+**Epic 7 estimate: 5 subtasks, 17.5 man-days.**
 
 The breakdown, `rfc-8-engine-epic7.md`, restates this epic and its estimate; the subtask list
 below is the plan's, kept for the history of the split.
@@ -904,8 +906,8 @@ and every write past half the limit would be delayed for nothing.
 
 Sections owned: RFC 8 §10 (the two measures, as far as repack goes), §10.2, §10.3, §11.1
 (the engine's conditions), §11.2, §14 for what this part produces. Conditions:
-`node_fenced`, `removal_stalled` and the group commit's failing file reported through
-`Stats`. Counters: `engine_write_refusals_total`,
+`node_fenced`, `removal_stalled`, `journal_full`, `journal_sync_failed` and the group
+commit's failing file reported through `Stats`. Counters: `engine_write_refusals_total`,
 `engine_self_fences_total{reason="store"}`.
 
 - T7.1 The refusal mapping: the journal's `NoSpaceError` by its limit onto §10.2's rows as
@@ -1216,7 +1218,7 @@ follows the journal's, not this part's (§6 point 7).
 | RFC 8 §9.1 | 8 (adoption and snapshots out) |
 | RFC 8 §10, §10.2, §10.3 | 7 (eviction, pacing, §10.1, §10.2.1, §10.4 out) |
 | RFC 8 §10.5 | out: GC |
-| RFC 8 §11.1, §11.2 | 7 (offload health, remote and copied-image rows out; store lost: RFC 26) |
+| RFC 8 §11.1, §11.2 | 7 (offload health, `stranded_export_failed`, remote and copied-image rows out; store lost: RFC 26) |
 | RFC 8 §11.3 | 4 |
 | RFC 8 §11.4 | out: the second part |
 | RFC 8 §12.1 | 1 (signatures), 3, 4, 5, 6, 8 (behaviour), 9 (the caller) |
