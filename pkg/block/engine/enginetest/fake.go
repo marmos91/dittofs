@@ -12,7 +12,12 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
+
+// fakeStream is the number of the fake's one append stream, not 0 so that a
+// mark that drops its stream shows.
+const fakeStream uint32 = 3
 
 // FakeJournal is an in-memory journal answering the engine's data path:
 // versions, held and missing extents, asOf, removal markers, Since, the loss
@@ -24,6 +29,12 @@ import (
 // engine's: no check of what the journal itself does runs over it. Every
 // operation is synced and durable at once, unless the test loses it with
 // Lose.
+//
+// Its records lie on one append stream: each write and removal appends one,
+// a write of its length and a removal of none, so a sync's marks name where
+// they end. A Sync returns the stream's mark over the newest record of the
+// files it names; SyncMarks is the mark of the stream's last sync, over its
+// every record. Each mark names the stream, fakeStream.
 type FakeJournal struct {
 	mu        sync.Mutex
 	last      uint64 // the counter of the last version issued
@@ -36,6 +47,11 @@ type FakeJournal struct {
 	handles   []*FakeHandle
 	failing   map[journal.FileID]bool // FailSync's files: the next Sync naming one fails its window
 	undurable map[journal.FileID]bool // files a failed window left undurable, until a Sync of theirs succeeds
+	seg       uint64                  // the stream's segment, from 1
+	end       int64                   // the end of the stream's last record in seg
+	seq       uint64                  // the stream's last record's sequence number
+	synced    entity.SyncMark         // the mark of the stream's last sync; zero before one
+	recorded  [][]entity.SyncMark     // what MarksRecorded was handed, in order
 }
 
 // fakeFile is one file: its tag, its held pieces in offset order, and its
@@ -45,6 +61,16 @@ type fakeFile struct {
 	pieces  []piece
 	changes []journal.Change // markers and losses
 	asOf    journal.Version
+	rec     record // its newest record
+}
+
+// record is where a record lies on the stream: its segment, its end there,
+// its length and its sequence number, zero for none.
+type record struct {
+	seg uint64
+	end int64
+	n   int64
+	seq uint64
 }
 
 // piece is a held extent: its bytes from off, and the version and mtime of
@@ -61,7 +87,7 @@ func (p piece) end() int64 { return p.off + int64(len(p.b)) }
 // NewFakeJournal returns an empty fake journal. It issues no version until
 // SetVersionLimit, as the journal does not.
 func NewFakeJournal() *FakeJournal {
-	return &FakeJournal{files: map[journal.FileID]*fakeFile{}, held: map[journal.ShareTag]int64{}}
+	return &FakeJournal{files: map[journal.FileID]*fakeFile{}, held: map[journal.ShareTag]int64{}, seg: 1}
 }
 
 var _ engine.Journal = (*FakeJournal)(nil)
@@ -312,6 +338,7 @@ func (h *FakeHandle) WriteAt(_ context.Context, id journal.FileID, off int64, p 
 		return journal.Version{}, err
 	}
 	j.cut(f, off, off+int64(len(p)))
+	j.appendRecord(f, int64(len(p)))
 	f.pieces = append(f.pieces, piece{off, slices.Clone(p), v, mtime})
 	slices.SortFunc(f.pieces, func(a, b piece) int { return cmp.Compare(a.off, b.off) })
 	j.held[h.tag] += int64(len(p))
@@ -349,14 +376,22 @@ func (h *FakeHandle) ReadAt(_ context.Context, id journal.FileID, off int64, p [
 	return n, missing, held, f.asOf, nil
 }
 
-// Sync answers at once: every operation of the fake is durable on return.
-// The first Sync naming a file FailSync armed answers a SyncError naming
-// those of its files.
-func (h *FakeHandle) Sync(_ context.Context, ids ...journal.FileID) error {
+// appendRecord appends a record of n bytes of f to the stream. j.mu is held.
+func (j *FakeJournal) appendRecord(f *fakeFile, n int64) {
+	j.seq++
+	j.end += n
+	f.rec = record{j.seg, j.end, n, j.seq}
+}
+
+// Sync answers at once: every operation of the fake is durable on return,
+// with the stream's mark over the newest record of the files named, none
+// when none holds a record. The first Sync naming a file FailSync armed
+// answers a SyncError naming those of its files.
+func (h *FakeHandle) Sync(_ context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
 	h.j.mu.Lock()
 	defer h.j.mu.Unlock()
 	if h.closed {
-		return journal.ErrClosed
+		return nil, journal.ErrClosed
 	}
 	var failed []journal.FileID
 	for _, id := range ids {
@@ -366,12 +401,47 @@ func (h *FakeHandle) Sync(_ context.Context, ids ...journal.FileID) error {
 		}
 	}
 	if len(failed) > 0 {
-		return &journal.SyncError{Files: failed, Err: journal.ErrSyncFailed}
+		return nil, &journal.SyncError{Files: failed, Err: journal.ErrSyncFailed}
 	}
+	j := h.j
+	var newest record
 	for _, id := range ids {
-		delete(h.j.undurable, id)
+		delete(j.undurable, id)
+		if f := j.files[id]; f != nil && f.rec.seq > newest.seq {
+			newest = f.rec
+		}
 	}
-	return nil
+	if j.seq > 0 {
+		j.synced = entity.SyncMark{Stream: fakeStream, Segment: j.seg, Through: j.end, Offset: j.end, Sequence: j.seq}
+	}
+	if newest.seq == 0 {
+		return nil, nil
+	}
+	return []entity.SyncMark{{Stream: fakeStream, Segment: newest.seg, Through: j.end, Offset: newest.end, Sequence: newest.seq}}, nil
+}
+
+// SyncMarks is the mark of the stream's last sync, none before one.
+func (j *FakeJournal) SyncMarks() []entity.SyncMark {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.synced.Segment == 0 {
+		return nil
+	}
+	return []entity.SyncMark{j.synced}
+}
+
+// MarksRecorded logs marks.
+func (j *FakeJournal) MarksRecorded(marks []entity.SyncMark) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.recorded = append(j.recorded, slices.Clone(marks))
+}
+
+// Recorded is what MarksRecorded was handed, call by call.
+func (j *FakeJournal) Recorded() [][]entity.SyncMark {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return slices.Clone(j.recorded)
 }
 
 // Durable reports whether file id's writes are durable: false from a
@@ -417,6 +487,7 @@ func (h *FakeHandle) remove(id journal.FileID, k journal.ChangeKind, from, to in
 		return journal.Version{}, err
 	}
 	j.cut(f, from, to)
+	j.appendRecord(f, 0)
 	f.changes = append(f.changes, journal.Change{Kind: k, Extent: journal.Extent{Off: from, Len: to - from}, Version: v})
 	f.asOf = v
 	return v, nil

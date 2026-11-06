@@ -25,6 +25,7 @@ import (
 // measured queueing behind one.
 type groupCommit struct {
 	e *Engine
+	j Journal
 
 	mu       sync.Mutex
 	due      map[entity.FileID]*dueFile
@@ -35,12 +36,25 @@ type groupCommit struct {
 	nextAt   time.Time     // when the loop's timer fires; zero, none is set
 	losses   losses
 	failing  map[entity.FileID]*failure
+	marks    marks
 
 	wake   chan struct{} // a file became due sooner than the timer, or now
 	stop   chan struct{}
 	done   chan struct{}
 	ctx    context.Context // the batches' context, cancelled at stop
 	cancel context.CancelFunc
+}
+
+// marks is what a group commit knows of its journal's sync marks.
+//
+// decision: nothing opens a journal yet, so a group commit records its marks
+// under the zero identity at open generation 0, which a J‖journal‖og never
+// raised matches. Withdraw this when Start opens the journal: it sets both,
+// the generation from Lifecycle.SyncMarks, before the first group commit.
+type marks struct {
+	journal  [16]byte          // the journal's identity
+	gen      kvstore.OpenGen   // the open generation of the journal's current open
+	recorded []entity.SyncMark // what the last committed marks write recorded
 }
 
 // errClosed answers a write after the engine's group commits stopped.
@@ -139,6 +153,7 @@ func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 	}
 	g := &groupCommit{
 		e:        e,
+		j:        j,
 		due:      map[entity.FileID]*dueFile{},
 		returned: make(chan struct{}),
 		wake:     make(chan struct{}, 1),
@@ -226,12 +241,12 @@ func (g *groupCommit) run() {
 			return
 		default:
 		}
-		batch, wait := g.take()
+		batch, last, wait := g.take()
 		if h := g.e.hooks.taken.Load(); h != nil && len(batch) > 0 {
 			(*h)()
 		}
 		if len(batch) > 0 {
-			g.commit(g.ctx, batch)
+			g.commit(g.ctx, batch, last)
 			continue
 		}
 		var timer <-chan struct{}
@@ -258,8 +273,10 @@ func (e *Engine) groupSettings() (age time.Duration, maxFiles int) {
 
 // take removes the next batch's files from the due set: those asked for now,
 // then those whose oldest operation was staged existence_age ago, oldest
-// first, at most group_commit.max_files. When none is due it answers how long
-// until the first is, or -1 when the set holds none that the clock makes due.
+// first, at most group_commit.max_files. last is that no other file is due
+// beside them, so the batch ends its group commit. When none is due it
+// answers how long until the first is, or -1 when the set holds none that the
+// clock makes due.
 //
 // decision: the engine cannot see the journal's timer sync, so a file is due
 // once its oldest uncommitted operation was staged existence_age ago by the
@@ -267,7 +284,7 @@ func (e *Engine) groupSettings() (age time.Duration, maxFiles int) {
 // existence_age. A removal needs no trigger: its first phase commits the
 // file's pending existence itself. Revisit if the journal reports its timer
 // syncs.
-func (g *groupCommit) take() (batch []taken, wait time.Duration) {
+func (g *groupCommit) take() (batch []taken, last bool, wait time.Duration) {
 	age, maxFiles := g.e.groupSettings()
 	now := g.e.d.Clock.Now()
 	g.mu.Lock()
@@ -279,7 +296,7 @@ func (g *groupCommit) take() (batch []taken, wait time.Duration) {
 		}
 	}()
 	if g.inFlight || g.closed || g.halted {
-		return nil, -1
+		return nil, false, -1
 	}
 	type cand struct {
 		f      entity.FileID
@@ -333,7 +350,7 @@ func (g *groupCommit) take() (batch []taken, wait time.Duration) {
 	if len(batch) > 0 {
 		g.inFlight = true
 	}
-	return batch, wait
+	return batch, len(batch) == len(ready), wait
 }
 
 func later(a, b time.Time) time.Time {
@@ -352,8 +369,9 @@ type taken struct {
 // commit runs one batch: it captures each file, syncs the files in the
 // journal, commits their existence, then settles each file's entry. A file
 // whose operations start with one no batch captures, a removal's, goes back
-// on the due set, due again one existence_age later.
-func (g *groupCommit) commit(ctx context.Context, files []taken) {
+// on the due set, due again one existence_age later. The last batch of a
+// group commit also records the journal's sync marks.
+func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 	var batch []captured
 	for _, t := range files {
 		c, ok, held := g.e.capture(t.b, t.f)
@@ -376,7 +394,7 @@ func (g *groupCommit) commit(ctx context.Context, files []taken) {
 	if h := g.e.hooks.captured.Load(); h != nil {
 		(*h)()
 	}
-	failed, alone := g.e.syncAndCommit(ctx, batch)
+	failed, alone := g.e.syncAndCommit(ctx, g, batch, last)
 	var dones []func()
 	for _, c := range batch {
 		retry := g.outcome(c.f, failed[c.f], len(batch) == 1 || alone[c.f])
@@ -485,9 +503,10 @@ func (e *Engine) capture(b *binding, f entity.FileID) (c captured, ok, held bool
 
 // syncAndCommit syncs the batch's files in the journal, one Sync per share,
 // then commits their existence in one Existence.Commit, which splits by the
-// key budget itself. A sync that fails fails the batch: nothing is committed
+// key budget itself, carrying the journal's sync marks, read after the syncs,
+// when withMarks. A sync that fails fails the batch: nothing is committed
 // that the journal did not make recoverable.
-func (e *Engine) syncAndCommit(ctx context.Context, batch []captured) (failed map[entity.FileID]error, alone map[entity.FileID]bool) {
+func (e *Engine) syncAndCommit(ctx context.Context, g *groupCommit, batch []captured, withMarks bool) (failed map[entity.FileID]error, alone map[entity.FileID]bool) {
 	failed, alone = map[entity.FileID]error{}, map[entity.FileID]bool{}
 	if len(batch) == 0 {
 		return failed, alone
@@ -508,10 +527,33 @@ func (e *Engine) syncAndCommit(ctx context.Context, batch []captured) (failed ma
 	for i, c := range batch {
 		pending[i] = e.pending(c)
 	}
+	var mw *kvstore.MarksWrite
+	if withMarks {
+		mw = g.readMarks()
+	}
 	ctx, end := e.d.Tracer(ctx, "engine.existence_commit", slog.Int("files", len(batch)))
-	e.commitSplit(ctx, pending, failed, alone)
+	if e.commitSplit(ctx, pending, mw, failed, alone) {
+		g.recorded(mw)
+	}
 	end(nil)
 	return failed, alone
+}
+
+// readMarks is the journal's sync marks as a marks write of its current
+// open.
+func (g *groupCommit) readMarks() *kvstore.MarksWrite {
+	g.mu.Lock()
+	m := g.marks
+	g.mu.Unlock()
+	return &kvstore.MarksWrite{Journal: m.journal, Gen: m.gen, Marks: g.j.SyncMarks()}
+}
+
+// recorded notes mw's marks as recorded, then hands them to the journal.
+func (g *groupCommit) recorded(mw *kvstore.MarksWrite) {
+	g.mu.Lock()
+	g.marks.recorded = mw.Marks
+	g.mu.Unlock()
+	g.j.MarksRecorded(mw.Marks)
 }
 
 // commitSplit commits pending's existence, recording in failed each file that
@@ -523,13 +565,16 @@ func (e *Engine) syncAndCommit(ctx context.Context, batch []captured) (failed ma
 // keeps retrying is answered as one. A conflict or any other failure of one
 // file therefore fails no other, and no conflict holds the journal's batches.
 //
+// A non-nil mw rides on the first call, which records it when it commits,
+// and the answer is whether it did.
+//
 // ponytail: the split is checked by its table of failure shapes rather than
 // fuzzed: it parses nothing, and its inputs are the store's answers. Fuzz it
 // if the store's failure shapes grow beyond a file in the map and a whole
 // call.
-func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExistence, failed map[entity.FileID]error, alone map[entity.FileID]bool) {
+func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExistence, mw *kvstore.MarksWrite, failed map[entity.FileID]error, alone map[entity.FileID]bool) (recorded bool) {
 	cctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
-	m, err := e.d.Existence.Commit(cctx, pending, nil)
+	m, err := e.d.Existence.Commit(cctx, pending, mw)
 	cancel()
 	if err == nil {
 		for f, ferr := range m {
@@ -538,19 +583,20 @@ func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExist
 				alone[f] = len(pending) == 1
 			}
 		}
-		return
+		return mw != nil
 	}
 	if len(pending) == 1 || ctx.Err() != nil || storeWide(err) {
 		for _, p := range pending {
 			failed[p.File] = err
 			alone[p.File] = len(pending) == 1
 		}
-		return
+		return false
 	}
 	e.splits.Add(1)
 	mid := len(pending) / 2
-	e.commitSplit(ctx, pending[:mid], failed, alone)
-	e.commitSplit(ctx, pending[mid:], failed, alone)
+	e.commitSplit(ctx, pending[:mid], nil, failed, alone)
+	e.commitSplit(ctx, pending[mid:], nil, failed, alone)
+	return false
 }
 
 // storeWide reports that err fails every file alike, so halving the batch

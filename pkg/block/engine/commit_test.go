@@ -180,7 +180,7 @@ type stagingDuringSync struct {
 	f     *armed
 }
 
-func (h stagingDuringSync) Sync(ctx context.Context, ids ...journal.FileID) error {
+func (h stagingDuringSync) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
 	if h.f.f.Load() != nil {
 		h.stage.Do(func() { h.f.run() })
 	}
@@ -274,7 +274,7 @@ type losingSync struct {
 	lose *armed
 }
 
-func (h losingSync) Sync(ctx context.Context, ids ...journal.FileID) error {
+func (h losingSync) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
 	h.lose.run()
 	return h.Handle.Sync(ctx, ids...)
 }

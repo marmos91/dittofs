@@ -86,7 +86,7 @@ func TestTheSplit(t *testing.T) {
 			}
 			e := &Engine{d: Deps{Existence: s}}
 			failed, alone := map[entity.FileID]error{}, map[entity.FileID]bool{}
-			e.commitSplit(context.Background(), pending, failed, alone)
+			e.commitSplit(context.Background(), pending, nil, failed, alone)
 			if !slices.Equal(s.calls, c.calls) {
 				t.Errorf("calls %v, want %v", s.calls, c.calls)
 			}
@@ -116,7 +116,7 @@ func TestTheSplitIsBounded(t *testing.T) {
 		pending = append(pending, kvstore.PendingExistence{File: f})
 	}
 	e := &Engine{d: Deps{Existence: s}}
-	e.commitSplit(context.Background(), pending, map[entity.FileID]error{}, map[entity.FileID]bool{})
+	e.commitSplit(context.Background(), pending, nil, map[entity.FileID]error{}, map[entity.FileID]bool{})
 	if n := len(s.calls); n > 1+2*6 {
 		t.Errorf("%d calls for one failing file of 64, want at most 13", n)
 	}

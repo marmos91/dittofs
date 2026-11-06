@@ -36,6 +36,12 @@ type Journal interface {
 	Forget(ctx context.Context, tag journal.ShareTag) error
 	Strand(tag journal.ShareTag) error
 	Stats() journal.Stats
+	// SyncMarks is the mark of each append stream's last sync, the journal's
+	// Stats.SyncMarks, each naming its stream.
+	SyncMarks() []entity.SyncMark
+	// MarksRecorded hands the journal the marks a committed metadata
+	// transaction recorded.
+	MarksRecorded(marks []entity.SyncMark)
 	Draw() (journal.Version, error)
 	SetVersionLimit(mark journal.Version) error
 	Repack(ctx context.Context, budget int64, scope journal.RepackScope) (freed int64, err error)
@@ -46,7 +52,9 @@ type Journal interface {
 type Handle interface {
 	WriteAt(ctx context.Context, id journal.FileID, off int64, p []byte, mtime int64) (journal.Version, error)
 	ReadAt(ctx context.Context, id journal.FileID, off int64, p []byte) (n int, missing []journal.Extent, held []journal.Held, asOf journal.Version, err error)
-	Sync(ctx context.Context, ids ...journal.FileID) error
+	// Sync returns, per append stream holding a named record outside a
+	// sealed segment, the mark covering the newest of them.
+	Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error)
 	Truncate(ctx context.Context, id journal.FileID, size int64) (journal.Version, error)
 	Deallocate(ctx context.Context, id journal.FileID, e journal.Extent) (journal.Version, error)
 	Delete(ctx context.Context, id journal.FileID) (journal.Version, error)
