@@ -45,6 +45,8 @@ func toFormat(r core.LossReason) format.LossReason {
 		return format.LossStale
 	case core.LossFailedWindow:
 		return format.LossFailedSync
+	case core.LossSuperseded:
+		return format.LossSuperseded
 	case core.LossAcknowledged:
 		return format.LossAcknowledged
 	}

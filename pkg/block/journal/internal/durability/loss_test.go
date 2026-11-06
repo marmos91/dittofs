@@ -87,7 +87,8 @@ func TestLoseMapsEachReasonToItsFormatReason(t *testing.T) {
 		core.LossCorrupt:      1,
 		core.LossStale:        2,
 		core.LossFailedWindow: 3,
-		core.LossAcknowledged: 5,
+		core.LossSuperseded:   format.LossSuperseded,
+		core.LossAcknowledged: format.LossAcknowledged,
 	}
 	seq := core.Seq(1)
 	for reason, fr := range want {
@@ -118,6 +119,8 @@ func TestLoseRaisesTheGenerationAndCountsByReasonAndOffloadedBit(t *testing.T) {
 	}{
 		{"corrupt dirty", core.LossCorrupt, false, 1, 1, 0, 0},
 		{"corrupt offloaded", core.LossCorrupt, true, 0, 0, 1, 0},
+		{"superseded dirty", core.LossSuperseded, false, 0, 0, 0, 0},
+		{"superseded offloaded", core.LossSuperseded, true, 0, 0, 0, 0},
 		{"acknowledged dirty", core.LossAcknowledged, false, 1, 0, 0, 0},
 		{"acknowledged offloaded", core.LossAcknowledged, true, 0, 0, 0, 0},
 		{"stale dirty", core.LossStale, false, 0, 0, 0, 1},

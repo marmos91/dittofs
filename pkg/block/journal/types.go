@@ -29,6 +29,7 @@ const (
 	LossCorrupt      = core.LossCorrupt
 	LossStale        = core.LossStale
 	LossFailedWindow = core.LossFailedWindow
+	LossSuperseded   = core.LossSuperseded
 	LossAcknowledged = core.LossAcknowledged
 )
 
