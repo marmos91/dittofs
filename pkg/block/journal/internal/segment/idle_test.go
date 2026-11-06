@@ -61,7 +61,7 @@ func idleRigOver(t *testing.T, n int, cap int64, threshold int64, admit func() e
 			t.Errorf("the cache's Shutdown: %v", err)
 		}
 	})
-	streams := NewStreams(n, probeIdentity, set, pool, cache)
+	streams := NewStreams(n, probeIdentity, set, pool, cache, func(uint32) Sink { return nopInternalSink() })
 	t.Cleanup(func() { _ = streams.Close() })
 	clock := journaltest.NewStopwatchClock()
 	r := &idleRig{

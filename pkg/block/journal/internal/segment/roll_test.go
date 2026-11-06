@@ -124,7 +124,7 @@ func rollBuildMax(t *testing.T, cap int64, targets segment.Targets, max int64, l
 func (e rollEnv) withStream(t *testing.T, no uint32) rollEnv {
 	t.Helper()
 
-	e.s = segment.NewStream(no, streamIdentity, e.set, e.pool, e.cache)
+	e.s = segment.NewStream(no, streamIdentity, e.set, e.pool, e.cache, nopSink())
 	t.Cleanup(func() { _ = e.s.Close() })
 	return e
 }
@@ -1014,7 +1014,7 @@ func TestRollTwoFilesOnTwoStreamsNeverBlockEachOther(t *testing.T) {
 	e := rollBuild(t, streamCap, segment.Targets{Content: 4}, nil)
 	awaitCounters(t, "the content spares ready", e.pool,
 		func(c segment.PoolCounters) bool { return c.Spares >= 2 })
-	ss := segment.NewStreams(4, streamIdentity, e.set, e.pool, e.cache)
+	ss := segment.NewStreams(4, streamIdentity, e.set, e.pool, e.cache, nopSinkFor)
 	t.Cleanup(func() {
 		if err := ss.Close(); err != nil {
 			t.Errorf("the streams' Close: %v", err)
@@ -1145,7 +1145,7 @@ func TestRollSixteenAppendersOverFourStreamsWithTheRefillUnderRace(t *testing.T)
 	e := rollBuild(t, rollCap, segment.Targets{Content: 4}, nil)
 	awaitCounters(t, "the content spares ready", e.pool,
 		func(c segment.PoolCounters) bool { return c.Spares == 4 })
-	ss := segment.NewStreams(4, streamIdentity, e.set, e.pool, e.cache)
+	ss := segment.NewStreams(4, streamIdentity, e.set, e.pool, e.cache, nopSinkFor)
 	t.Cleanup(func() {
 		if err := ss.Close(); err != nil {
 			t.Errorf("the streams' Close: %v", err)
@@ -1488,7 +1488,7 @@ func TestRollTheConstructorGuardsAndTheBadRollOptions(t *testing.T) {
 				t.Error("NewStream with a nil pool did not panic")
 			}
 		}()
-		segment.NewStream(1, streamIdentity, e.set, nil, e.cache)
+		segment.NewStream(1, streamIdentity, e.set, nil, e.cache, nopSink())
 	}()
 
 	// A pool over another set: the stream's rolls would draw spares a
@@ -1499,7 +1499,7 @@ func TestRollTheConstructorGuardsAndTheBadRollOptions(t *testing.T) {
 				t.Error("NewStream over another ledger's pool did not panic")
 			}
 		}()
-		segment.NewStream(1, streamIdentity, segment.NewSet(streamCap, nil), e.pool, e.cache)
+		segment.NewStream(1, streamIdentity, segment.NewSet(streamCap, nil), e.pool, e.cache, nopSink())
 	}()
 
 	func() {
@@ -1508,8 +1508,33 @@ func TestRollTheConstructorGuardsAndTheBadRollOptions(t *testing.T) {
 				t.Error("NewStreams with a count below one did not panic")
 			}
 		}()
-		segment.NewStreams(0, streamIdentity, e.set, e.pool, e.cache)
+		segment.NewStreams(0, streamIdentity, e.set, e.pool, e.cache, nopSinkFor)
 	}()
+
+	// A sink missing either function is a caller bug: the stream could not
+	// register a record, or report a sync, without it.
+	for name, sink := range map[string]segment.Sink{
+		"no Track":  {Synced: func(core.SegmentID, int64) {}},
+		"no Synced": {Track: func(segment.Written) {}},
+		"neither":   {},
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("NewStream with a sink of %s did not panic", name)
+				}
+			}()
+			segment.NewStream(1, streamIdentity, e.set, e.pool, e.cache, sink)
+		}()
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("NewStreams with a sink of %s did not panic", name)
+				}
+			}()
+			segment.NewStreams(2, streamIdentity, e.set, e.pool, e.cache, func(uint32) segment.Sink { return sink })
+		}()
+	}
 
 	// The bad roll options are refused before anything is reserved.
 	awaitCounters(t, "the content spare ready", e.pool,

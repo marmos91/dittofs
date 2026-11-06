@@ -42,7 +42,7 @@ func TestAppendParkedAtTheLoopTopWaitsARunningSeal(t *testing.T) {
 			t.Errorf("the cache's Shutdown: %v", err)
 		}
 	})
-	s := NewStream(1, probeIdentity, set, pool, cache)
+	s := NewStream(1, probeIdentity, set, pool, cache, nopInternalSink())
 	defer func() { _ = s.Close() }()
 
 	// Park the appended stream's roll: the first Append runs the roll, and

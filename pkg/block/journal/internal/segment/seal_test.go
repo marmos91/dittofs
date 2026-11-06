@@ -1488,7 +1488,7 @@ func TestSealWriteSealTakesEntriesAsData(t *testing.T) {
 			// ahead would have moved.
 			calls := sealCountersOf(e, format.SegmentName(id))
 			counters := set.Counters()
-			if _, err := segment.WriteSeal(set, ref, streamIdentity, id, tc.marker, tc.entries(), false); !errors.Is(err, segment.ErrBadCatalog) {
+			if _, err := segment.WriteSeal(set, ref, streamIdentity, id, tc.marker, tc.entries(), false, nopSynced); !errors.Is(err, segment.ErrBadCatalog) {
 				t.Fatalf("the refused WriteSeal = %v, want ErrBadCatalog", err)
 			}
 			if state, err := set.State(id); err != nil || state != segment.Active {
@@ -1553,7 +1553,7 @@ func TestSealWriteSealTakesEntriesAsData(t *testing.T) {
 
 			calls := sealCountersOf(e, format.SegmentName(id))
 			counters := set.Counters()
-			if _, err := segment.WriteSeal(set, ref, streamIdentity, id, marker, entries, false); !errors.Is(err, segment.ErrWrongState) {
+			if _, err := segment.WriteSeal(set, ref, streamIdentity, id, marker, entries, false, nopSynced); !errors.Is(err, segment.ErrWrongState) {
 				t.Fatalf("the WriteSeal of a %s = %v, want the ledger's ErrWrongState", tc.name, err)
 			}
 			if now := sealCountersOf(e, format.SegmentName(id)); now != calls {
@@ -1628,7 +1628,7 @@ func TestSealWriteSealTakesEntriesAsData(t *testing.T) {
 
 		calls := sealCountersOf(e, format.SegmentName(smallID))
 		counters := set.Counters()
-		if _, err := segment.WriteSeal(set, ref, streamIdentity, 1, above+reclen, cross, false); !errors.Is(err, segment.ErrBadCatalog) {
+		if _, err := segment.WriteSeal(set, ref, streamIdentity, 1, above+reclen, cross, false, nopSynced); !errors.Is(err, segment.ErrBadCatalog) {
 			t.Fatalf("the WriteSeal over the 32-bit column = %v, want ErrBadCatalog: the record header cannot carry the offset %d", err, above)
 		}
 		if state, err := set.State(1); err != nil || state != segment.Active {
@@ -1658,7 +1658,7 @@ func TestSealWriteSealTakesEntriesAsData(t *testing.T) {
 		defer pool.Stop()
 		awaitCounters(t, "a content spare ready for the acceptance", pool,
 			func(c segment.PoolCounters) bool { return c.Spares >= 1 })
-		stream := segment.NewStream(1, streamIdentity, set, pool, cache)
+		stream := segment.NewStream(1, streamIdentity, set, pool, cache, nopSink())
 		defer func() { _ = stream.Close() }()
 		defer func() {
 			if err := cache.Shutdown(); err != nil {
@@ -1697,7 +1697,7 @@ func TestSealWriteSealTakesEntriesAsData(t *testing.T) {
 		}
 		defer ref.Release()
 		mk := pEnd(placed2[len(placed2)-1])
-		res, err := segment.WriteSeal(set, ref, streamIdentity, id, mk, et, true)
+		res, err := segment.WriteSeal(set, ref, streamIdentity, id, mk, et, true, nopSynced)
 		if err != nil {
 			t.Fatalf("the WriteSeal over scanned entries: %v", err)
 		}
@@ -1823,7 +1823,7 @@ func TestSealTheStreamEdges(t *testing.T) {
 		}
 
 		marker := int64(format.SegmentHeaderSize)
-		res, err := segment.WriteSeal(set, ref, streamIdentity, id, marker, nil, true)
+		res, err := segment.WriteSeal(set, ref, streamIdentity, id, marker, nil, true, nopSynced)
 		if err != nil {
 			t.Fatalf("the empty WriteSeal: %v", err)
 		}
@@ -2477,7 +2477,7 @@ func streamOverPool(t *testing.T, e streamEnv) (set *segment.Set, pool *segment.
 	pool.Start()
 	awaitCounters(t, "the round's content spares ready", pool,
 		func(c segment.PoolCounters) bool { return c.Spares >= 4 })
-	stream = segment.NewStream(1, streamIdentity, set, pool, cache)
+	stream = segment.NewStream(1, streamIdentity, set, pool, cache, nopSink())
 	return set, pool, cache, stream
 }
 

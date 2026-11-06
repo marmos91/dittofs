@@ -75,6 +75,13 @@ func (r recordsDurable) Unwrap() error { return r.err }
 // one right after the footer; then, for an early seal alone, the file is
 // truncated past the trailer and that is made durable.
 //
+// synced is called, with no stream lock held, after each sync that succeeds:
+// with the marker after the records' sync, with the trailer's end after the
+// second — the cap for a full seal — and, for an early seal, with the
+// truncated size after the third. A failed sync reports nothing, and a nil
+// synced panics before any I/O. A caller with no stream, recovery, passes the
+// function that records what is durable.
+//
 // decision: no footer is ever written for a segment sealed by a previous
 // process, though the format permits it, because a segment sealed before this
 // process began is scanned instead on the next open — a footer written here
@@ -82,7 +89,11 @@ func (r recordsDurable) Unwrap() error { return r.err }
 // spare. The exemption holds while scanning such a tail is cheap; a time to
 // first read dominated by those scans overturns it.
 func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
-	marker int64, entries []format.CatalogEntry, early bool) (SealResult, error) {
+	marker int64, entries []format.CatalogEntry, early bool, synced func(core.SegmentID, int64)) (SealResult, error) {
+
+	if synced == nil {
+		panic("segment: WriteSeal needs the function that reports its syncs")
+	}
 
 	// The validation, no I/O: a refusal makes no seam call and no ledger
 	// change, so nothing about the segment moved.
@@ -97,6 +108,7 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 		}
 		return SealResult{}, fmt.Errorf("%w: making the records durable: %w", ErrSegmentEnded, err)
 	}
+	synced(id, marker)
 
 	// Step 2: the marker, the footer and the trailer, written then durable.
 	// markerAndFooter holds the marker followed by the entries, the bytes
@@ -108,6 +120,7 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 		markerAndFooter = format.AppendCatalogEntry(markerAndFooter, e)
 	}
 	footer := markerAndFooter[format.SealMarkerSize:]
+	earlyEnd := footerOff + int64(len(footer)) + format.TrailerSize
 
 	if err := writeSealSteps(ref, markerAndFooter, footer, marker, footerOff, early, set.cap); err != nil {
 		if unerr := set.End(id); unerr != nil {
@@ -121,6 +134,13 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 		}
 		return SealResult{}, fmt.Errorf("%w: making the marker, the footer and the trailer durable: %w", ErrSegmentEnded, recordsDurable{err})
 	}
+	// The trailer ends the file at the cap of a full seal and right after the
+	// footer of an early one.
+	trailerEnd := set.cap
+	if early {
+		trailerEnd = earlyEnd
+	}
+	synced(id, trailerEnd)
 
 	// The seal is complete: the segment is sealed in the ledger from here,
 	// and the steps below are already refusals a second seal would answer.
@@ -146,7 +166,6 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 	}
 
 	// Step 3: the free tail, cut and made durable.
-	size := footerOff + int64(len(footer)) + format.TrailerSize
 	//
 	// decision: a failed truncation, or a failed sync of one, returns a nil
 	// error with TailErr set, because "the seal is complete after the second
@@ -158,13 +177,14 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 	// the same rule's ledger half: it runs only once the cut is durable,
 	// and its refusal is a sealed segment's too, not an ended one's.
 	tailErr := func() error {
-		if err := ref.Truncate(size); err != nil {
+		if err := ref.Truncate(earlyEnd); err != nil {
 			return err
 		}
 		if err := ref.Sync(); err != nil {
 			return err
 		}
-		if err := set.Shrink(id, size); err != nil {
+		synced(id, earlyEnd)
+		if err := set.Shrink(id, earlyEnd); err != nil {
 			return fmt.Errorf("%w: %w", ErrLedgerDisagrees, err)
 		}
 		return nil
@@ -172,7 +192,7 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 	if tailErr != nil {
 		return SealResult{Marker: marker, Size: set.cap, TailErr: tailErr}, nil
 	}
-	return SealResult{Marker: marker, Size: size}, nil
+	return SealResult{Marker: marker, Size: earlyEnd}, nil
 }
 
 // checkSeal validates the seal's facts against the ledger and the cap: the

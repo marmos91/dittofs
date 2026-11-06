@@ -555,7 +555,7 @@ func TestEndARecycledSegmentsFailedAppend(t *testing.T) {
 	pool.Start()
 	awaitCounters(t, "the adopted and the made content spares ready", pool,
 		func(c segment.PoolCounters) bool { return c.Spares == 2 })
-	e.s = segment.NewStream(1, streamIdentity, set, pool, cache)
+	e.s = segment.NewStream(1, streamIdentity, set, pool, cache, nopSink())
 	t.Cleanup(func() { _ = e.s.Close() })
 
 	// The first append lands in the adopted spare.
