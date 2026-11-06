@@ -27,14 +27,22 @@ source's pending existence through T4.3's per-file commit before it reads `asOf`
 
 ---
 
-## 1. Scope
+## 1. Goal
 
 Epic 4 builds RFC 8 §4.1's write verifier, §5.1's `Commit` and loss sequence, §5.2's group
-commit per journal, and `Done` on four of §5.1's paths. §3 maps each RFC section to the
-subtask that builds it; this document gives the split, the order, the estimates and the
-tests, and never restates the RFC.
+commit per journal with its sync marks, and `Done` on four of §5.1's paths. §3 numbers each
+obligation the RFC places on the epic and names the subtask that meets it; this document
+gives the split, the order, the estimates and the tests, and cites the RFC rather than
+restating it.
 
-### 1.1 Out of scope
+### 1.1 In scope
+
+§3's requirements, through §6's subtasks; the `kvstore` changes they need (`PendingOp`'s
+modify and change times, `OpLost`, the marks write) and the test components they add to E2's
+(the fake journal's sync marks, `Report`, `FailSync(also)` and `Durable`, the fixture's
+`FailNextSync` and `Stall`, and `newUnitOver`).
+
+### 1.2 Out of scope
 
 - `Truncate`, `Deallocate`, `Delete`, the per-file guard, a removal's phase 1 and its `Done`
   path, and the aborted release's `Done` path: epic 5 (T5.1, T5.4). The group commit's
@@ -57,7 +65,7 @@ tests, and never restates the RFC.
   sequence but leaves the write in the entry, so a group commit commits it as written;
   T4.6 drops it. Until T4.6 lands the sequence is right and the size may not be.
 
-### 1.2 Names used here
+### 1.3 Names used here
 
 - **E1**, epic 1, interfaces: `pkg/block/engine`'s exported surface, `Deps` and its
   interfaces, frozen at S1.
@@ -160,53 +168,98 @@ tests, and never restates the RFC.
 | 11 Exports | all | nothing new is exported from `engine`; the test hooks live in `export_test.go`, the reservation counter in `enginetest`. `kvstore.PendingOp`'s new fields and `OpLost` are `kvstore`'s own, used by its caller |
 | 12 Creates only what it declares | all | the per-file commit lands in T4.3 with its first consumer, `Commit` (T4.2); the sync function lands in T4.5 with its first consumer, the drain; the retrying-owner mark lands in T4.4 with its first setter, the group commit, or its reader, epic 7's T7.2, whichever lands first: epic 4 blocks epic 7, so a dependency of T4.4 on T7.2 would be a cycle, and T7.2 does not depend on T4.4 |
 
-## 3. RFC coverage
+## 3. Requirements and invariants
 
-Which subtask builds each RFC section, step or invariant this epic owns. The RFC is the
-requirement; read it there.
+Every MUST and MUST NOT that RFC 8 and the journal RFCs place on this epic, numbered so that
+subtasks and tests can cite them. Each row names the obligation and cites where the RFC
+states it: the RFC's text is the requirement, so read it there. Numbers are stable: a row
+added later takes the next free number in its group's table, and a withdrawn one keeps its
+row.
 
-| RFC | Subtask |
-| --- | --- |
-| RFC 8 §4.1, the write verifier: its inputs, sampling for `Write`, monotonic generation | T4.1 (the generation's monotonicity is the journal's, RFC 1 §3.8; T4.1's row checks it) |
-| RFC 8 §4.1, sampling for `Commit` | T4.2; after a failed window, T4.6 |
-| RFC 8 §5.1 first rule (`Commit` syncs and waits for overwrites; `Existence.Overwrites`, RFC 6 §10.1), the marks wait, and steps 1–4 | T4.2 |
-| RFC 8 §5.1 "A stability point joins the group commit" | T4.2 (the wait), T4.3 (the join) |
-| RFC 8 §5.1 "Existence is otherwise committed lazily" | T4.3; before a removal's first transaction, epic 5's T5.1 through T4.7's claim |
-| RFC 8 §5.1 "A committed file's journal is settled", the stop at a removal whose phase 1 has not committed among it | T4.3; the stop's test, epic 5's T5.3, where a retried phase 1 first exists |
-| RFC 8 §5.1 "`Done` is called exactly once" | T4.3 (the commit), T4.5 (loss record, device lost whole), T4.6 (failed window), T4.7 (exclusivity, the claim's release) |
-| RFC 8 §5.1 "After a restart nothing is reserved" | none here: epic 6's T6.5 tests it |
-| RFC 8 §5.1 "Every existence commit … MUST `Sync` the file first", E19 | T4.3, through T4.5's sync function |
-| RFC 8 §5.1 "A store that commits nothing", §11.2, E31 | T4.2 |
-| RFC 8 §5.1 "A failed sync window is reported once per file", E35, RFC 1 §5.3 | T4.6 |
-| RFC 8 §5.1 "Each file has a loss sequence" (the drain, a device lost whole, the floor's `ponytail:`), RFC 1 §3.8 | T4.5 |
-| RFC 8 §5.1 "Why an overwrite waits" (a write committed from its loss record) | T4.5 |
-| RFC 8 §5.1 "A commit is reported only once durable", for existence | T4.2, T4.3; offload's half is the second part's |
-| RFC 8 §5.1 "A stability point MUST NOT wait for an offload" | none: nothing in this part offloads; the second part's offload commit carries its test |
-| RFC 8 §5.1 "A failed existence commit is retried" | T4.4 |
-| RFC 8 §5.1 step 5 (the fields written, RFC 7 §9.4's times; serialised commits), E15 | T4.3; the stamp is the second part's |
-| RFC 8 §5.2 first and third rules (batching, `G`, `K`), E40 | T4.3 |
-| RFC 8 §5.2 second rule (the sync marks: one transaction per group commit, `MarksRecorded`), RFC 6 §10.1's `MarksWrite` | T4.3; kept through a split, and `ErrOpenGenMoved` and `ErrSyncMarks`, T4.4 |
-| RFC 8 §5.2 fourth rule (per-file failure, split, backoff, `existence_commit_failing`), E24, §11.1, §11.3 | T4.4 |
-| RFC 8 §4.1 "It changes whenever an acknowledged but unstable write might have been lost", E27 | T4.1, T4.5 |
-| RFC 8 §12.1 `Commit`, `LossSeq`, `WriteOpts.Done` | T4.2, T4.5, T4.3 |
-| RFC 8 §14, this epic's series and spans | rule 3's row in §2.1 |
+**The verifier**
 
-**Test rows** each subtask's tests must pass (RFC 8 §15, by name; the adaptation says what
-this part runs of the row):
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R1 | The verifier is derived from RFC 8 §4.1's five inputs, never from the clock alone | MUST, MUST NOT | RFC 8 §4.1 | T4.1 |
+| R2 | `Write` samples the inputs before it stages; `Commit` after its sync and every wait it makes | MUST | §4.1 | T4.1, T4.2 |
+| R3 | One verifier for every call between two changes of the inputs | MUST | §4.1 | T4.1 |
+| R4 | The loss generation is monotonic for the life of the process, across a reopen in it; the journal guarantees it, the engine reads it | invariant | §4.1, RFC 1 §3.8 | the journal; T4.1's row |
+| R5 | The verifier changes exactly when an acknowledged unstable write may have been lost, and on nothing else | invariant | §4.1, E27 | T4.1, T4.5 |
+| R6 | §4.1 verifier (engine assertions); §4.1 verifier inputs (adapted: the journal reopened in-process only; a shard handed away and back and an offloaded loss are the second part's); §4.1 verifier after a loss | test row | §15.1 | T4.1, T4.6 |
 
-| Row | Adaptation | Subtask |
-| --- | --- | --- |
-| §15.1 §4.1 verifier | engine assertions; `TestRFC8A_Verifier` stays listed naming epic 6 | T4.1 |
-| §15.1 §4.1 verifier inputs | the journal reopened in-process only; a shard handed away and back and an offloaded loss are the second part's | T4.1 |
-| §15.1 §4.1 verifier after a loss | — | T4.6 |
-| §15.1 §5.1 stable write, lazy existence | engine assertions; `TestRFC8A_StableWriteLazyExistence` stays listed naming epic 6 | T4.2 |
-| §15.1 §5.1 overwrite waits for existence | an overwrite of journal-held committed content | T4.2 |
-| §15.1 §5.1, §11.2 stalled store | — | T4.2 |
-| §15.1 §5.1 marks wait, §11.2 stalled store | — | T4.2 |
-| §15.1 §5.1 sync before existence | the write and `Commit` half; the truncate half is T5.5's | T4.3 |
-| §15.2 §5.2 group commit | also one file's removal record undecodable (the existence fence checked for presence, never decoded) | T4.4 |
-| §15.2 §5.2 sync marks ride in one batch | — | T4.4 |
-| §15.1 §5.1 failed window | — | T4.6 |
+**The stability point**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R7 | `Commit` syncs the file over the extent it names and answers as RFC 8 §5.1's first rule and steps 1–4 give | MUST | §5.1 | T4.2 |
+| R8 | The engine keeps no committed size or holes: `Commit` asks `Existence.Overwrites`, one read per call | invariant | §5.1, RFC 6 §10.1 | T4.2 |
+| R9 | What each of `Commit`'s waits covers: the overwrite wait and the marks wait of §5.1 steps 2 and 3 | invariant | §5.1 | T4.2 |
+| R10 | A stability point joins the group commit and never issues its own; points that arrive together share transactions | invariant | §5.1 | T4.2, T4.3 |
+| R11 | Under a store that commits nothing, `Commit` answers as §11.2's one rule gives | MUST | §5.1, §11.2, E31 | T4.2 |
+| R12 | `Commit` answers with the verifier and the loss sequence sampled after its waits | MUST | §5.1 step 4 | T4.2 |
+| R13 | §5.1 stable write, lazy existence (engine assertions); §5.1 overwrite waits for existence (adapted: an overwrite of journal-held committed content); §5.1, §11.2 stalled store; §5.1 marks wait, §11.2 stalled store | test row | §15.1 | T4.2 |
+| R42 | An overwrite staged above a removal whose phase 1 has not committed is covered only once that phase 1 commits; its stability point waits for it, bounded as for a stalled store | invariant | §5.1 | T4.2, T4.3; tested in epic 5's T5.3 |
+
+**The group commit**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R14 | A file's pending existence commits within `existence_age` of the sync that made it recoverable, and before a removal's first transaction (that half is epic 5's T5.1, through T4.7's claim) | MUST | §5.1 | T4.3 |
+| R15 | Due existence of one journal commits together, one transaction per bounded batch, never one per write or per file | MUST | §5.2 first rule | T4.3 |
+| R16 | A batch holds at most `G` files and `K` keys; a file needing more than `K` commits over several transactions in version order, and a stability point on it waits for the last | MUST | §5.2 third rule, E40 | T4.3 |
+| R17 | Every existence commit syncs the file first | MUST | §5.1, E19 | T4.3 |
+| R18 | The commit writes §5.1 step 5's fields from the operations it applies, the times as RFC 7 §9.4 gives, and those operations stay in the entry until it returns | invariant | §5.1 step 5, RFC 7 §9.4, E15 | T4.3 |
+| R19 | A file's existence commits are serialised, a removal's and a clone's phase 1 among them | invariant | §5.1 step 5, RFC 6 §3.4 | T4.3 |
+| R20 | An entry dropped once its operations commit never orphans a write | invariant | §5.1, E15 | T4.3 |
+| R21 | §5.1 sync before existence, the write and `Commit` half (the truncate half is epic 5's T5.5) | test row | §15.1 | T4.3 |
+| R21a | A commit is reported only once durable: no `Commit` that waits on an existence commit answers, and no `Settle` covers a version, before that commit has returned | MUST | §5.1 | T4.2, T4.3 |
+| R21b | A stability point never waits for an offload. Nothing in this part offloads, so it holds by construction; the second part's offload commit carries its test | MUST NOT | §5.1 | none here |
+| R40 | Once a transaction commits a file's pending existence, `Settle(id, v)` at the newest version it committed for the file, never above it | MUST, MUST NOT | §5.1 "A committed file's journal is settled", RFC 1 §3.10 | T4.3 |
+| R41 | A group commit commits a file's operations in version order and stops at a removal, a clone's destination included, whose phase 1 has not committed: neither `applied` nor `Settle` reaches its version | MUST | §5.1, §5.1 step 5, §5.2 first rule | T4.3; tested in epic 5's T5.3 |
+| R48 | Every existence commit passes each write with the runs where it overlaps an earlier pending write of the file, computed from the pending writes the engine holds, never asked of the journal | MUST | §5.1 "A commit carries supersession within itself" | none yet (§9, point 6); the removal's, clone's and recovery's commits are epics 5, 8 and 6's |
+
+**The sync marks**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R43 | One transaction of each group commit records the journal's sync marks, read after the batches' sync and counted against `K`; a group commit with no batch due records them alone | MUST | §5.2 second rule | T4.3 |
+| R44 | Once that transaction commits, the marks it recorded go to the journal's `MarksRecorded` | MUST | §5.2 second rule, RFC 1 §3.1 | T4.3 |
+| R45 | One group commit at a time records a journal's marks, in the order it read them, and a marks write commits only while the tracked `og` still equals the generation of the open whose marks it read | MUST | §5.2 second rule, RFC 6 §10.1 | T4.3 |
+| R46 | When the batch carrying the marks is split, one half keeps them; when its file fails alone, they go in a transaction of their own | MUST | §5.2 second rule | T4.4 |
+| R47 | A marks error, `ErrOpenGenMoved` or `ErrSyncMarks`, never splits a batch or blames a file: existence is retried at once without the marks, then the marks are handled as §5.2 gives (the in-place reopen's cancel of queued retries is epic 6's) | MUST NOT | §5.2 second rule | T4.4 |
+
+**The split and conflicts**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R22 | A conflict or any other per-file failure never fails or delays a file that did not fail: named failing files are retried alone, an unnamed failure halves the batch until each stands alone | MUST NOT | §5.2 fourth rule, E24 | T4.4 |
+| R23 | A file that still fails alone is backed off by itself and raises `existence_commit_failing` naming it; its stability points answer `ErrDelay` meanwhile | MUST | §5.2, §11.1 | T4.4 |
+| R24 | A metadata conflict is retried under the caller's deadline and never reaches a client as an I/O error; unresolved at the deadline, `ErrDelay` with `DelayConflict` | MUST, MUST NOT | §11.3 | T4.4 |
+| R25 | A failed existence commit is retried by the next group commit, and fails a reply only through R11's rule | invariant | §5.1 | T4.4 |
+| R26 | §5.2 group commit (adapted: one file's removal record undecodable too, the existence fence checked for presence, never decoded); §5.2 sync marks ride in one batch | test row | §15.2 | T4.4 |
+
+**Losses**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R27 | Each file has a loss sequence, in memory and monotonic for the life of the process, raised by each loss event that drops an acknowledged, unoffloaded write of the file (the metadata reconcile's raise at start is epic 6's) | MUST | §5.1 "Each file has a loss sequence" | T4.5 |
+| R28 | `Commit` returns the loss sequence read after its sync; `LossSeq` returns it without one | MUST | §5.1, §12.1 | T4.2, T4.5 |
+| R29 | A loss generation above the last one applied drains the loss ring before any existence commit that follows; events the ring missed raise every file of that journal | MUST | §5.1, RFC 1 §3.8 | T4.5 |
+| R30 | A journal device lost whole under the running process raises every attached file's sequence (a start past an acknowledged loss is epic 6's) | MUST | §5.1 | T4.5 |
+| R31 | The sequence is a journal-wide floor plus per-file entries above it; a file's sequence is the larger | bound | §5.1's `ponytail:` | T4.5 |
+| R32 | A synced append or hole fill a loss event drops before its existence commit is committed from its loss event, reading **Lost** and charging nothing | MUST | §5.1, "Why an overwrite waits" | T4.5 |
+| R33 | A failed sync window is reported once per file, to its next `Sync`, waiting or later; a later `Sync` does not wait on the failed window | MUST | §5.1, E35, RFC 1 §5.3 | T4.6 |
+| R34 | A `Commit` that meets a failed window answers the verifier sampled after it and the raised loss sequence, never an I/O error | invariant | §5.1, RFC 17 V25 | T4.6 |
+| R35 | §5.1 failed window | test row | §15.1 | T4.6 |
+
+**`Done`**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R36 | `Done` exactly once for every write `Write` accepted, on this epic's four paths: the existence commit, after it commits; a failed window's drop and a device lost whole, charging nothing; the commit from a loss event, charging nothing | MUST | §5.1, §12.1 | T4.3, T4.5, T4.6, T4.7 |
+| R37 | The paths are exclusive: a write leaves the accepted, uncommitted set under one lock; the commit claims it before its transaction, calls `Done` once it commits and puts it back when it fails and is retried | invariant | §5.1 | T4.7 |
+| R38 | A write a failed window drops leaves the batch that claimed it, which neither commits its size nor calls its `Done` | invariant | §5.1 | T4.6, T4.7 |
+| R39 | After a restart nothing is reserved and nothing waits on a `Done`; nothing in this epic can break it, and epic 6's T6.5 carries its test | invariant | §5.1 | T4.7 |
 
 ## 4. Decisions this epic takes
 
@@ -320,15 +373,16 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
 
 ## 6. Subtasks
 
-Each subtask's acceptance: the named rows pass, and each listed test fails on the
-regression it names (after "catches").
+Each subtask's acceptance: the requirements it covers hold, the named rows pass, and each
+listed test fails on the regression it names (after "catches").
 
 ### T4.1 The verifier
 
 **Subtask T4.1 estimate: 2 man-days.**
 
 - **Track:** B. **Depends on:** S2; epic 3's T3.2, built, whose stand-in it replaces.
-- **Covers:** RFC 8 §4.1, the verifier and its sampling for `Write`; E27 with T4.5.
+- **Covers:** R1, R2 (`Write`), R3, R4's row, R5 (with T4.5), R6 (verifier, inputs).
+  RFC 8 §4.1, the verifier and its sampling for `Write`; E27 with T4.5.
 - **Deliverables:** in `commit.go`, the process instance drawn in `New`; the node, epoch and
   incarnation on the binding, with `export_test.go`'s `SetPrimary` (D1); the engine's `sample`
   field set to D1's derivation with D2's read, in place of `zeroVerifier`.
@@ -345,7 +399,8 @@ regression it names (after "catches").
 **Subtask T4.2 estimate: 3 man-days.**
 
 - **Track:** B. **Depends on:** T4.1, T4.3, T4.5.
-- **Covers:** RFC 8 §5.1's first two rules, the marks wait and steps 1–4, §4.1's sampling for `Commit`,
+- **Covers:** R2 (`Commit`), R7–R13, R21a, R28, R42.
+  RFC 8 §5.1's first two rules, the marks wait and steps 1–4, §4.1's sampling for `Commit`,
   §11.2's stalled store, §12.1's `Commit`; E31.
 - **Deliverables:** in `commit.go`, `Commit(ctx, s, f, off, n)`: D3's version, the sync through
   D9 inside an `engine.sync` span, one `Existence.Overwrites` over the pending writes in the
@@ -372,7 +427,8 @@ regression it names (after "catches").
 **Subtask T4.3 estimate: 5 man-days.**
 
 - **Track:** B. **Depends on:** S2; epic 3's T3.1 and T3.2, built.
-- **Covers:** RFC 8 §5.1's "A stability point joins the group commit", "Existence is
+- **Covers:** R10, R14–R21a, R36 (the commit's path), R40, R41, R42, R43–R45.
+  RFC 8 §5.1's "A stability point joins the group commit", "Existence is
   otherwise committed lazily", "A committed file's journal is settled", the commit's `Done`,
   the sync before every existence commit and step 5 (not the stamp); §5.2's first three rules;
   E15, E19, E40.
@@ -416,7 +472,8 @@ regression it names (after "catches").
 **Subtask T4.4 estimate: 3 man-days.**
 
 - **Track:** B. **Depends on:** T4.2, T4.3.
-- **Covers:** RFC 8 §5.2's fourth rule and the second's marks through a split and on a marks
+- **Covers:** R22–R26, R46, R47.
+  RFC 8 §5.2's fourth rule and the second's marks through a split and on a marks
   error, §5.1's "A failed existence commit is retried", §11.1's
   `existence_commit_failing`, §11.3; E24.
 - **Deliverables:** in `groupcommit.go`: T4.3's marks kept through a split, and
@@ -457,7 +514,8 @@ regression it names (after "catches").
 **Subtask T4.5 estimate: 4 man-days.**
 
 - **Track:** B. **Depends on:** T4.3.
-- **Covers:** RFC 8 §5.1's "Each file has a loss sequence" and "Why an overwrite waits",
+- **Covers:** R5 (with T4.1), R27–R32, R36 (the loss event's and the lost device's paths).
+  RFC 8 §5.1's "Each file has a loss sequence" and "Why an overwrite waits",
   `Done` on the loss record's and the lost device's paths, §12.1's `LossSeq`; E27 with T4.1;
   RFC 1 §3.8.
 - **Deliverables:** in `loss.go`: the sync function (D9), which the group commit then uses;
@@ -498,7 +556,8 @@ regression it names (after "catches").
 **Subtask T4.6 estimate: 3 man-days.**
 
 - **Track:** B. **Depends on:** T4.2, T4.3, T4.5.
-- **Covers:** RFC 8 §5.1's "A failed sync window is reported once per file" and the failed
+- **Covers:** R6 (verifier after a loss), R33–R35, R36 (the failed window's path), R38.
+  RFC 8 §5.1's "A failed sync window is reported once per file" and the failed
   window's `Done`, §4.1's sampling for a `Commit` that meets one; E35; RFC 1 §5.3; RFC 17
   §5.8.
 - **Deliverables:** in `loss.go`, the sync function's `SyncError` case (D9), used by every
@@ -529,7 +588,8 @@ regression it names (after "catches").
 **Subtask T4.7 estimate: 2 man-days.**
 
 - **Track:** B. **Depends on:** T4.6.
-- **Covers:** RFC 8 §5.1's "`Done` is called exactly once": the paths' exclusivity and the
+- **Covers:** R36, R37, R38, R39.
+  RFC 8 §5.1's "`Done` is called exactly once": the paths' exclusivity and the
   claim's release on a failed commit. "After a restart nothing is reserved" has no test
   here: nothing in this epic reserves across a restart, and epic 6's recovery test checks
   that it calls no `Done`.
@@ -550,9 +610,9 @@ regression it names (after "catches").
 
 ```mermaid
 flowchart TD
-  S2(["S2 red suite in CI"]):::sync --> E3(["epic 3: T3.1 entries, T3.2 Write, built"]):::sync
-  E3 --> T4_1["T4.1 Verifier"]
-  E3 --> T4_3["T4.3 Group commit"]
+  S2(["S2 red suite in CI"]):::sync --> epic3(["epic 3: T3.1 entries, T3.2 Write, built"]):::sync
+  epic3 --> T4_1["T4.1 Verifier"]
+  epic3 --> T4_3["T4.3 Group commit"]
   T4_3 --> C1(["after T4.3: per-file commit, epics 5, 6 and 8 can commit existence"]):::sync
   T4_3 --> T4_5["T4.5 Loss sequence"]
   T4_1 & T4_3 & T4_5 --> T4_2["T4.2 Commit"]
@@ -606,3 +666,8 @@ RFC gaps go to the RFC, not here; each is listed until its RFC change merges.
    `WriteAt` and its insert) and, for a gap, from the journal's `Since(id, 0)` loss records.
    It needs a `kvstore` call and an RFC 6 line; #3734 decides whether a **Lost** extent counts
    in `Charged`.
+6. **Planning gap: R48 has no subtask.** RFC 8 §5.1's "A commit carries supersession within
+   itself" came after this breakdown. T4.3's `PendingExistence` build is where the group
+   commit's half lands, with a test over the real `kvstore` that an overwrite of a pending
+   write commits an overwrite record for the runs it supersedes; its estimate is not yet in
+   T4.3's figure.
