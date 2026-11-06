@@ -247,8 +247,9 @@ func TestASealEndAfterTheFailureWasPrunedDoesNotCountItAgain(t *testing.T) {
 		}
 	}()
 	armed.Store(true)
-	// Two failures: the worker's sync and the seal's own fsync.
-	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 2, errors.New("sync boom"))); err != nil {
+	// One failure: the worker's sync. The seal that follows finds the failed
+	// sync and ends the segment without an fsync of its own.
+	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, errors.New("sync boom"))); err != nil {
 		t.Fatal(err)
 	}
 	st.mu.Lock()
