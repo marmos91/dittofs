@@ -26,10 +26,7 @@ type failStamp struct {
 type window struct {
 	seg     core.SegmentID
 	cause   segment.EndCause
-	err     error   // the failure that ended the segment
 	entries []entry // moved from the ledger, in Track order
-	// resolved is set once the window's records are no longer pending.
-	resolved bool
 }
 
 // onEnd is the consumer of every stream's end events (D13). It runs on the
@@ -63,9 +60,11 @@ func (d *Durability) takeWindows(st *stream) {
 
 func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	// A seal's failed sync is a sync failure no worker sync reported, so it is
-	// counted here. The clock is read before the lock. An append's end
-	// counts nothing, and a requested end is the failure the worker counted
-	// when it asked.
+	// counted here, unless the worker already recorded a failure for the
+	// segment: a seal that finds that failure ends with EndSeal too, and the
+	// one fsync failure is counted once. The clock is read before the lock.
+	// An append's end counts nothing, and a requested end is the failure the
+	// worker counted when it asked.
 	var failedAt time.Time
 	var failedMono time.Duration
 	if ev.Cause == segment.EndSeal {
@@ -73,7 +72,7 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	}
 
 	st.mu.Lock()
-	w := &window{seg: ev.Segment, cause: ev.Cause, err: ev.Err}
+	w := &window{seg: ev.Segment, cause: ev.Cause}
 	kept := st.ledger[:0]
 	stamped := 0
 	for i, e := range st.ledger {
@@ -88,12 +87,13 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	}
 	clear(st.ledger[len(kept):]) // drop the references the tail still holds
 	st.ledger, st.stamped = kept, stamped
-	if _, dup := st.failed[ev.Segment]; !dup {
+	_, dup := st.failed[ev.Segment]
+	if !dup {
 		st.failed[ev.Segment] = ev.Err
 	}
 	delete(st.ending, ev.Segment)
 	st.windows = append(st.windows, w)
-	if ev.Cause == segment.EndSeal {
+	if ev.Cause == segment.EndSeal && !dup {
 		st.failures.Add(1)
 		st.lastFail.Store(&failStamp{SyncFailure: SyncFailure{Err: ev.Err, At: failedAt}, mono: failedMono})
 	}
@@ -110,13 +110,10 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 		// Nothing is held from the segment, so there is nothing to fail.
 		d.resolve(st, w)
 	}
-	// The segment that stopped the stream is the second refusal: it hands the
-	// failure over once, whichever later event also finds the stream stopped.
-	if ev.Stopped && !st.refused {
-		st.refused = true
-		if d.readOnly != nil {
-			d.readOnly(ev.Err)
-		}
+	// The segment that stopped the stream is the second refusal. A stopped
+	// stream takes no further segment, so no later event reaches here.
+	if ev.Stopped && d.readOnly != nil {
+		d.readOnly(ev.Err)
 	}
 }
 
@@ -132,7 +129,6 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 // withdrawn is only the window's memory.
 func (d *Durability) resolve(st *stream, w *window) {
 	st.mu.Lock()
-	w.resolved = true
 	st.windows = slices.DeleteFunc(st.windows, func(o *window) bool { return o == w })
 	held := false
 	for i := range st.ledger {

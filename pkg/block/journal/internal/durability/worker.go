@@ -98,7 +98,9 @@ func (d *Durability) syncStep(st *stream, fired bool) {
 		// A failed append or seal ended the segment first: no sync was
 		// issued for it and nothing new failed, so nothing is counted. Its
 		// end event is on its way and takes the window.
-		st.ending[seg] = struct{}{}
+		if _, kept := st.failed[seg]; !kept {
+			st.ending[seg] = struct{}{}
+		}
 		d.log.Debug("journal sync skipped, segment ended", "stream", st.no, "segment", seg)
 	case !issued:
 		// The stream answered without an fsync, as for a sealed segment: no
@@ -225,6 +227,11 @@ func (d *Durability) complete(st *stream) {
 	for seg := range st.failed {
 		if _, ok := live[seg]; !ok && (!st.haveLast || seg != st.lastSeg) {
 			delete(st.failed, seg)
+		}
+	}
+	for seg := range st.ending {
+		if _, ok := live[seg]; !ok {
+			delete(st.ending, seg)
 		}
 	}
 }

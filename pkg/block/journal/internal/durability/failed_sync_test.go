@@ -180,6 +180,12 @@ func TestASyncOfAnEndedSegmentIsNotAFailure(t *testing.T) {
 		return ok
 	})
 	mustBlock(t, "Sync over an ended segment", ch)
+	// The sync bound passes while the event is held back: the timer must not
+	// issue the sync the segment refuses.
+	for range 3 {
+		r.clock.Advance(2 * time.Second)
+		mustBlock(t, "Sync over an ended segment", ch)
+	}
 	if got := r.syncsOf(a.Segment); got != 0 {
 		t.Errorf("the seam saw %d syncs of the ended segment, want 0", got)
 	}

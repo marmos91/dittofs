@@ -318,15 +318,16 @@ func (d *Durability) Start(streams *segment.Streams) {
 }
 
 // Durable reports whether the record at the location is durable: its segment
-// has been synced through the record's end.
+// has been synced through the record's end. A location in a pending window
+// of a failed segment reports false, however far a sync reached.
 //
-// decision: a location with no ledger entry reports true. A caller holding a
-// location Append returned has a record that was tracked and, if it is gone
-// from the ledger, already completed, so true is right for every location the
-// contract lets a caller hold. It fails open for a location Append never
-// returned, which reads durable although nothing was written there. Overturn
-// this if a caller can ask about an arbitrary location, which then needs a
-// record of the completed ones to tell the two apart.
+// decision: a location with no ledger entry and in no window reports true. A
+// caller holding a location Append returned has a record that was tracked and,
+// if it is gone from the ledger, already completed, so true is right for every
+// location the contract lets a caller hold. It fails open for a location
+// Append never returned, which reads durable although nothing was written
+// there. Overturn this if a caller can ask about an arbitrary location, which
+// then needs a record of the completed ones to tell the two apart.
 //
 // ponytail: it scans every stream's ledger, O(streams x ledger). Upgrade to a
 // per-segment index when a profile shows the scan.

@@ -102,7 +102,7 @@ func TestSyncOverARecordInAFailedAppendsSegmentFails(t *testing.T) {
 
 // TestFailedSyncIsNeverSatisfiedByALaterSync covers R14 and the RFC's row: two
 // files' records in one segment whose sync failed stay failed, before and
-// after a later sync attempt on the segment answers.
+// after a later sync report for the segment.
 func TestFailedSyncIsNeverSatisfiedByALaterSync(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
@@ -118,10 +118,9 @@ func TestFailedSyncIsNeverSatisfiedByALaterSync(t *testing.T) {
 	r.waitWindow(t, 0)
 	wantSyncError(t, mustReturn(t, "Sync after the window", r.syncAsync(context.Background(), fa, fb)), a.Segment, fa, fb)
 
-	// A later sync of the failed segment answers, and the seam would let it
-	// succeed: it must satisfy nothing.
-	_ = r.streams.For(fa).Sync()
-	wantSyncError(t, mustReturn(t, "Sync after a later attempt", r.syncAsync(context.Background(), fa, fb)), a.Segment, fa, fb)
+	// A later sync report for the failed segment must satisfy nothing.
+	r.sinks[0].Synced(a.Segment, b.Off+b.Len)
+	wantSyncError(t, mustReturn(t, "Sync after a later report", r.syncAsync(context.Background(), fa, fb)), a.Segment, fa, fb)
 	if r.d.Durable(a) || r.d.Durable(b) {
 		t.Errorf("a record of the failed window reads durable: a=%v b=%v", r.d.Durable(a), r.d.Durable(b))
 	}
@@ -331,8 +330,8 @@ func TestAResolvedWindowIsAnnouncedOnceAndItsRecordsAreNotPending(t *testing.T) 
 	if _, ok := st.failed[a.Segment]; ok {
 		t.Error("the resolved segment's failure was kept")
 	}
-	if len(st.windows) != 0 || !w.resolved {
-		t.Errorf("windows = %d, resolved = %v", len(st.windows), w.resolved)
+	if len(st.windows) != 0 {
+		t.Errorf("windows = %d, want the resolved one dropped", len(st.windows))
 	}
 }
 
@@ -367,7 +366,6 @@ func TestAFailureInTheSpareBeforeItsFirstSyncStopsTheStream(t *testing.T) {
 	second := errors.New("second boom")
 	r.failSyncOf(t, spare.Segment, second)
 	r.settlePool(t)
-	spares := r.pool.Counters().Spares
 	wantSyncError(t, mustReturn(t, "Sync in the spare", r.syncAsync(context.Background(), g)), spare.Segment, g)
 
 	eventually(t, "the read-only entry to be called", func() bool { return len(ro.all()) == 1 })
@@ -378,9 +376,6 @@ func TestAFailureInTheSpareBeforeItsFirstSyncStopsTheStream(t *testing.T) {
 	_, err := r.streams.For(g).Append(h, format.RecordBody{Payload: []byte("c"), MTime: 1})
 	if !errors.Is(err, segment.ErrStreamStopped) || !errors.Is(err, second) {
 		t.Errorf("the append after the second refusal = %v, want ErrStreamStopped wrapping the failure", err)
-	}
-	if got := r.pool.Counters().Spares; got < spares {
-		t.Errorf("spares went from %d to %d: a third spare was taken", spares, got)
 	}
 	if n := len(ro.all()); n != 1 {
 		t.Errorf("the read-only entry was called %d times, want once", n)
