@@ -539,18 +539,21 @@ const (
 func TestGroupCloseJoinsIdleSealerAndPool(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
+	// A worker an earlier test leaked is in the baseline, so only the
+	// workers this test started are counted.
+	idleBase, poolBase := goroutinesIn(idleWorker), goroutinesIn(poolWorker)
 	e := groupBuild(t)
-	if got := goroutinesIn(idleWorker); got == 0 {
-		t.Fatal("the idle sealer's worker is not running before Close")
+	if got := goroutinesIn(idleWorker); got <= idleBase {
+		t.Fatalf("the idle sealer's worker is not running before Close: %d workers, baseline %d", got, idleBase)
 	}
 	if err := e.g.Close(); err != nil {
 		t.Fatalf("Close = %v, want nil", err)
 	}
-	if got := goroutinesIn(idleWorker); got != 0 {
-		t.Fatalf("%d idle sealer workers outlived Close, want none", got)
+	if got := goroutinesIn(idleWorker); got > idleBase {
+		t.Fatalf("%d idle sealer workers outlived Close, want none", got-idleBase)
 	}
-	if got := goroutinesIn(poolWorker); got != 0 {
-		t.Fatalf("%d refill workers outlived Close, want none", got)
+	if got := goroutinesIn(poolWorker); got > poolBase {
+		t.Fatalf("%d refill workers outlived Close, want none", got-poolBase)
 	}
 	if _, err := e.pool.Take(segment.Content); !errors.Is(err, core.ErrClosed) {
 		t.Fatalf("a take after Close = %v, want core.ErrClosed", err)
