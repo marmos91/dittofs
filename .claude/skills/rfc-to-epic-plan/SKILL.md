@@ -25,12 +25,23 @@ form. A bare `4.3` on its own can read as RFC 4's epic 3 or a §4.3, so give it 
 the prefix. The prefix does not make "task" a word for the unit. Progress is tracked by
 mapping pull requests to these ids, whichever form they cite.
 
-**A split epic takes a letter, never a renumbering.** An epic split once its number has been
-cited (in an issue, a label, a document or another plan) becomes epic `7a`, `7b`, …: the
-headings read `### Epic 7a — …`, the estimate lines `**Epic 7a estimate: …**`, the §2 rows
-`E7a`, the labels `rfc-<n>-epic-7a`, and the epic documents `…-epic7a.md`. The parts keep
-epic 7's subtask ids and share one numbering, so a subtask of epic 7a is `T7.<n>`, never
-`T7a.<n>`, and no `T7.<n>` appears in two parts. The checks of both skills accept the letter.
+**A split epic takes a letter, never a renumbering.** An epic split in a revision of the plan
+becomes epic `7a`, `7b`, …: the headings read `### Epic 7a — …`, the estimate lines
+`**Epic 7a estimate: …**`, the §2 rows `E7a`, the labels `rfc-<n>-epic-7a`, and the epic
+documents `…-epic7a.md`. The parts keep epic 7's subtask ids and share one numbering, so a
+subtask of epic 7a is `T7.<n>`, never `T7a.<n>`, and no `T7.<n>` appears in two parts. The
+checks of both skills accept the letter. What a split does to the existing issues is in
+`epic-breakdown` Step 6.6.
+
+So the two skills' templates use two placeholders for an epic. **`<k>` is the epic as
+written, letter included (`7a`)**, and names headings, estimate lines, labels, files and
+issue titles. **`<e>` is its number without the letter (`7`)**, and is the only form inside a
+subtask id: `T<e>.<n>`. For an epic with no letter the two are the same.
+
+**When an id is cited.** An epic or subtask id is *cited* once it appears in a pull request,
+an issue, or any document under `docs/internals/planning/` other than the one being written
+(`rg -n 'T<e>\.<n>\b' docs/internals/planning`): epic documents name each other's subtasks.
+A cited id keeps its number for the same work.
 
 Two other words keep their own meaning because they are not units of work. A **track** (A, B or C) is
 one line of work through the epics. A **synchronisation point** (S1, S2, …) is where the
@@ -48,18 +59,29 @@ RFC's first revision. So a plan holds **only what the RFC does not have**:
   subtasks, the synchronisation points, the blockers and the tracks;
 - **the implementation's own decisions:** the package layout, the choices `D1…Dn` the RFC
   leaves open, and the knowingly simple shortcuts that will carry a `ponytail:` marker;
-- **the criteria of "done", as ids of the RFC's rows** (`V12`, `§9.4 group C`),
+- **the criteria of "done", as ids of the RFC's rows** (`RFC 1 V12`, `RFC 1 §9.4 group C`),
   never with the rows' content rewritten;
 - **the candidate subtasks and the open points.**
 
 Behaviour, formats, invariants, algorithms, error sets, signatures and test scenarios the
 RFC states are **cited by section or row id, never restated** — not even summarised in a
 table, and not paraphrased "for convenience". One clause naming what a cited section is
-about is enough to make the citation readable (`RFC 1 §3.7, the recovery counters`). Where
-the RFC is silent on something the plan needs, the plan decides it as a `D<n>`; where the
-plan must **diverge** from the RFC, or finds it wrong or ambiguous, the RFC is amended **in
-the same pull request**, and the plan cites the amended section. A plan that disagrees with
-its RFC is never the way to record a change of design.
+about is enough to make the citation readable (`RFC 1 §3.7, the recovery counters`). A row
+id always carries its RFC (`RFC 8 E12`, never a bare `E12`, which reads as epic 12); where
+the RFC numbers no rows, cite the section.
+
+Where the RFC is silent on something the plan needs, the plan decides it as a `D<n>`. Where
+the plan would **diverge** from the RFC, or finds it wrong or ambiguous, propose the
+amendment to the user, naming the section and the proposed text; until they agree it is an
+open point in §6, and the plan follows the RFC as written. Once they agree, the RFC is
+amended in the same pull request as the plan, and for an RFC whose status in
+`docs/internals/rfcs/rfc-index.md` is `reviewed` or `frozen`, together with every RFC that
+cites the rule. A plan that silently disagrees with its RFC is never the way to record a
+change of design.
+
+This holds for the plan. An epic document restates the obligations it answers for on
+purpose, as numbered R-rows (`epic-breakdown` Step 2), so a reviewer can check them one by
+one; that is not the duplication this section forbids.
 
 ## Step 0 — Gather the inputs, and stop if any required one is missing
 
@@ -89,7 +111,7 @@ marked as having one, and the plan's header states each default that was used.
 - Read the RFC in full, not just its headings.
 - For each related RFC, read the sections that the in-scope answer from Step 0 covers.
 - If there is a v1, read its package's exported surface and its callers. You need this to
-  write the v1/v2 comparison and to scope the integration epic. You do **not** need it to
+  write §1.1's table of what replaces what and to scope the integration epic. You do **not** need it to
   design v2: v2 ignores v1 (rule 7).
 - Read the existing plans in `docs/internals/planning/` that this RFC touches, and align
   with them. Where you diverge, say so as an open point.
@@ -161,11 +183,12 @@ work. Give it as a number; the detailed breakdown is written when the epic start
 requests" below.
 
 **Subtask order.** Number an epic's candidate subtasks in order of work, so the list reads
-as a path: `T<k>.1 → T<k>.2 → …`, each one depending only on lower numbers, and as far as
-the dependencies allow on the one just before it. Put first what blocks the most: the
-foundation several later subtasks build on, and the subtask another epic waits for. Where
-two subtasks are independent, the riskier one goes first, so it fails fast.
-`epic-breakdown` keeps that order when it details the epic.
+as a path: `T<e>.1 → T<e>.2 → …`, each one depending only on lower numbers. The order
+follows the four rules under "Order" in `epic-breakdown` Step 3 (`.claude/skills/epic-breakdown/SKILL.md`),
+the one copy of them: no dependency on a later subtask, then blockers as early as their
+dependencies allow, then one path at a time, then the riskier subtask first, each rule only
+breaking the ties the ones before it leave. `epic-breakdown` keeps that order when it
+details the epic.
 
 **Man-days.** The plan estimates **epics, not subtasks**. Its subtasks are candidates, and
 the per-subtask estimate belongs to the epic's breakdown, so the plan's figure is a first,
@@ -242,7 +265,9 @@ record that the point was settled.
 
 Use this structure. Section numbers are fixed so plans can be compared. Every section
 follows "What the plan holds, and what it only cites": where a line below says *which*,
-the answer is a list of RFC sections or row ids, not their content.
+the answer is a list of RFC sections or row ids, not their content. A plan written before
+this structure (no §4.2–§4.3, no **Owns:** / **Done when:** lines) is not converted
+wholesale: a revision brings to this structure only the sections it touches.
 
 ```
 # RFC <n> — <component> v2: implementation plan
@@ -279,14 +304,16 @@ Header: scope (the RFC + related RFCs with their in-scope level), tracks (A, B,
 ### 4.1 Directory layout        — a tree, each entry tagged with its epic
 ### 4.2 Decisions               — D1…Dn: what the RFC leaves open, the choice and why, and
                                    the epic that applies it. A choice that changes what the
-                                   RFC says is not a D: amend the RFC in the same pull request
-### 4.3 Knowing simplifications — each shortcut that will carry a `ponytail:` marker: its
+                                   RFC says is not a D: it is an RFC amendment, proposed to
+                                   the user as "What the plan holds" says
+### 4.3 Knowingly simple implementations — each that will carry a `ponytail:` marker: its
                                    ceiling and upgrade path, and the epic that takes it
 ## 5. The epics in detail       — per epic, under `### Epic <n> — <title>`: the epic
                                    estimate line (below); one or two sentences on what the
                                    epic delivers; **Owns:** the RFC sections; **Done when:**
-                                   the RFC's row ids and requirement ids it turns green;
-                                   the candidate subtasks, `T<n>.<k>` id and title, one line
+                                   the RFC's row ids it turns green, each with its RFC
+                                   (`RFC 8 E12`), or sections where the RFC numbers no rows;
+                                   the candidate subtasks, `T<e>.<n>` id and title, one line
                                    each, numbered in order of work (Step 2)
 ## 6. Risks and open points
 ## 7. RFC coverage              — table: RFC section → epic(s); related-RFC sections too
@@ -492,13 +519,14 @@ use `epic-breakdown` in the document they are reading:
 
 - The plan restates nothing the RFC specifies ("What the plan holds, and what it only
   cites"): no behaviour, format, invariant, algorithm, signature or test scenario of the
-  RFC is written out, and every "done" criterion is an RFC row or requirement id. Read the
-  plan for it, section by section. These only show where to look, since a key word can sit
-  in a quote of the RFC's id or in a rule of §1.5 that is the plan's own:
-  `rg -n '\b(MUST|SHALL|MUST NOT)\b' <plan>`, and the fenced blocks other than `mermaid`
-  and §4.1's tree (`` rg -n '^```' <plan> ``). Each passage that rewrites the RFC
-  becomes a citation; each that departs from it becomes an amendment to the RFC in the
-  same pull request, or a `D<n>` in §4.2 if the RFC leaves the point open.
+  RFC is written out, and every "done" criterion is a row id carrying its RFC, or a
+  section. Read the plan for it, section by section. These only show where to look, since
+  a key word can sit in a rule of §1.5 that is the plan's own, and some RFCs write their
+  key words in lower case: `rg -n -i '\b(must|shall|required)\b' <plan>`, and the fenced
+  blocks other than `mermaid` and §4.1's tree (`` rg -n '^```' <plan> ``). Each passage
+  that rewrites the RFC becomes a citation; each that departs from it becomes a proposed
+  RFC amendment (an open point until the user agrees), or a `D<n>` in §4.2 if the RFC
+  leaves the point open.
 - Every epic's candidate subtasks are numbered in order of work: none depends on a higher
   number, and what blocks other subtasks or other epics comes first.
 - Every in-scope RFC section appears in §7, and every middle epic cites sections no other
