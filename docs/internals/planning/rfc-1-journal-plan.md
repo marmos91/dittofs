@@ -253,17 +253,27 @@ run is a failure ([RFC index, test tiers](../rfcs/rfc-index.md)).
 | --- | --- | --- | --- | --- | --- |
 | 1 | **Interfaces** ⛔ | Public package, exported symbols, signatures, storage seam, `Stats`, `Tracer`, errors, stubs | 9 | team | **everything** |
 | 2 | **E2E suite + test foundations** ⛔ | Test clock and fault schedule, crash-simulating seam, reference model, profiler, red conformance suite graded by `dt` from `known.yaml`, system scenario catalogue, traceability matrix | 17 | team | **all testing** in 3–12 |
-| 3 | **On-disk format and platform layer** ⛔ | RFC 28 codecs, golden vectors, CRC32C, `format` file replace, per-OS sync, allocation, direct I/O and CoW checks; declares `internal/format` and `internal/platform`; the conformance tests that need them | 12 | A | 5, 7 |
-| 4 | **Placement index and versions** ⛔ | Per-file B-tree, held, retained and marker sets, precedence, sequence and version counters, version limit, floor buckets, extent bound, drop ranges, per-segment bytes | 11 | B | 7, 8, 9 |
-| 5 | **Segments, streams and accounting** ⛔ | Segment lifecycle, spare pool, append streams, seal, catalog and free tail, recycle and unlink, descriptor cache, storage guard, footprint accounting | 11 | A | 6, 7, 8 |
-| 6 | **Durability and loss** | `Sync`, group commit, the sync-bound timer, failed-sync windows (re-append or fail), loss records, the loss ring and generation, the read-time corruption rule | 8 | A | 7 (loss records), 8 (Sync, corruption on read), 9 (corruption on offer and repack), 11 |
-| 7 | **Recovery and identity** | `Open` with recovery (E8 delivers a minimal `Init` and `Open` of a directory with no segment), `Restamp`, rebuild by catalog and by scan, torn vs corrupt, unproven-tail re-verify, offload-state rebuild, stale rule, spare re-adoption, inspection and verify | 12 | A | 10, 11 |
-| 8 | **Data path and capacity** ⛔ | a minimal `Init` and `Open` for S3, `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 15 | B | 9, 11 |
-| 9 | **Offload, reclamation, holds and tags** | `Offload`, `OffloadMany`, pins, `MarkOffloaded`, `Unmark`, `Release`, auto-retire, `Repack` and drop test, snapshot holds, `Forget`, `Strand` | 13 | B | 11 |
+| 3 | **On-disk format and platform layer** ⛔ | RFC 28 codecs, golden vectors, CRC32C, `format` file replace, per-OS sync, allocation, direct I/O and CoW checks; declares `internal/format` and `internal/platform`; the conformance tests that need them | 12 | A | 5, 7a |
+| 4 | **Placement index and versions** ⛔ | Per-file B-tree, held, retained and marker sets, precedence, sequence and version counters, version limit, floor buckets, extent bound, drop ranges, per-segment bytes | 11 | B | 7a, 8, 9a |
+| 5 | **Segments, streams and accounting** ⛔ | Segment lifecycle, spare pool, append streams, seal, catalog and free tail, recycle and unlink, descriptor cache, storage guard, footprint accounting | 11 | A | 6, 7a, 8 |
+| 6 | **Durability and loss** | `Sync`, group commit, the sync-bound timer, failed-sync windows (re-append or fail), loss records, the loss ring and generation, the read-time corruption rule | 8 | A | 7a (loss records), 8 (Sync, corruption on read), 9a (corruption on repack), 9b (corruption on offer), 11 |
+| 7a | **Recovery and identity: reopening a journal** | `Open` with recovery after a clean exit or a crash (E8 delivers a minimal `Init` and `Open` of a directory with no segment), sync marks, rebuild by catalog and by scan, torn vs corrupt, the unproven tail and its re-append, emptying the segments the open ends, counters, spare re-adoption, offloaded bits, losses and forgets at open, tag conflicts | 15 | A | 9a, 10, 11 |
+| 7b | **Recovery and identity: the rest** | `Restamp`, `RebuildFormat`, `AcknowledgeUnreadable` and `Acknowledge`, unread records held at open, the journal half of the reconcile, inspection's read-out and `Verify`, recovery benchmarks, retained extents from hold records | not broken down | A | 9b (holds) |
+| 8 | **Data path and capacity** ⛔ | a minimal `Init` and `Open` for S3, `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 15 | B | 9a, 9b, 11 |
+| 9a | **Reclamation and tags** | Liveness of records and segments, auto-retire, `Repack` (also scoped to a share), `Inspector.Segments`, `Forget`, `Strand` | 11 | B | 7a (T9.1), 11 |
+| 9b | **Offload, release and holds** | `Offload`, `OffloadMany`, pins, `report`, `MarkOffloaded`, `Unmark` and the stale rule, `Release`, snapshot holds | not broken down | B | 11 |
 | 10 | **Start and initialisation** | Start check and its two refusals, `journal.Init` in the initialisation step and the `J‖journal` writes, wipe of devices left by an interrupted step, device config keys | 5 | A | 11 |
 | 11 | **Engine on the RFC 16 store** 🔀 | Stage 3 of #3119, planned after S4a: engine wiring (`Fill`, `report`, `Release`), per-device registry, version floor and limit, store contracts, error mapping, salvage, exporters and alert rules, API and CLI, system e2e tests | planned after S4a | team | 12 |
 | 12 | **E2E green** 🔀 | Burn down the known-failure list, soak, benchmarks J1–J5 and J8, CI tier registration, profiling baselines | 8 | team | release |
 | | | | **~121 + E11** | | |
+
+Epics 7 and 9 are each split in two. Epics 7a and 9a are what a share needs to restart, after a
+clean exit or a crash, and to get space back without a remote tier; they are what the
+journal-only engine of [the RFC 8 part 1 plan](rfc-8-journal-only-engine-plan.md) calls.
+Their documents are [epic 7a](rfc-1-journal-epic7a.md) and [epic 9a](rfc-1-journal-epic9a.md).
+Epics 7b and 9b are the rest: offload, release, snapshot holds, `Restamp`, inspection and the
+reconcile. §5 keeps each epic's whole scope; each document's §1.2 names what it leaves to its
+"b" half.
 
 ⛔ = blocker: other epics cannot finish until this one has delivered.
 🔀 = synchronisation point: the team converges, and the work that follows depends on
@@ -290,10 +300,10 @@ everything before it.
         ▼                   │
    A: E6 durability ───────►│ (Sync; E6's corruption rule also ──► E8 ReadAt)
         │                   ▼
-   A: E7 recovery ────►B: E9 offload / reclaim / holds   (E6's corruption rule)
+   A: E7a reopen ◄────►B: E9a repack / retire / tags     (T9.1 → T7.6; after T7.11 → E9a crash tests)
         │                   │
         ▼                   │
-   A: E10 start + init      │        S4: core complete (E3–E9)
+   A: E10 start + init      │        S4: core complete (E3–E6, E7a, E8, E9a)
         └─────────┬─────────┘
                   │   ◄──────────── S4a: engine interface agreed with rif (#3119 stage 2)
                   ▼
@@ -301,6 +311,8 @@ everything before it.
                   │
                   ▼
             E12 e2e green
+
+   E7b, E9b: after S4, beside E11; E9b's holds wait for E7b
 ```
 
 ### 3.2 Synchronisation points
@@ -325,8 +337,9 @@ everything before it.
   minimal `Open` and leave the known-failure list, and the entries still red move from failing
   in the fixture to failing on a stub (epic 2, D4). **E8's integration tests are blocked on
   this point.**
-- **S4. Core complete** (E3–E9 done). All component conformance tests are green. Only
-  system e2e tests remain on the known-failure list. E11 cannot finish before this point.
+- **S4. Core complete** (E3–E6, E7a, E8 and E9a done). All component conformance tests are
+  green except the rows epics 7b and 9b own, which stay listed against those epics. Only
+  those and the system e2e tests remain on the known-failure list. E11 cannot finish before this point.
 - **S4a. Engine interface agreed** (with rif, stage 2 of #3119). The filesystem service's
   engine interface is rif's; both sides agree on it before stage 3 starts. E11 is planned
   only once it exists, and its engine wiring, version-limit raise and store contracts
@@ -349,21 +362,26 @@ everything before it.
 ### 3.3 Blockers
 
 - **E1 and E2** block everything. Keep them short and do them together.
-- **E3** blocks E5 (segments are made of E3's records) and E7 (recovery parses E3's
+- **E3** blocks E5 (segments are made of E3's records) and E7a (recovery parses E3's
   bytes).
-- **E4** blocks E7 (rebuild fills the index), E8 and E9. It is pure in-memory code with no
+- **E4** blocks E7a (rebuild fills the index), E8 and E9a. It is pure in-memory code with no
   storage dependency, so it can start at S2.
-- **E5** blocks E6, E7 and E8's integration tests.
+- **E5** blocks E6, E7a and E8's integration tests.
 - **E6's T6.1 to T6.4, T6.7 and T6.9** block S3: E8's `WriteAt` needs `Sync`, the ledger epic 5's
   `Append` fills, the retained-extent drop, the failed-window resolution and the `index.HeldDelta` its mutators return, and its `ReadAt`
   the corruption rule. They need E5's seal (T5.7), headroom (T5.6) and end event (T5.10), so
   those block S3 too.
-- **E6** blocks E7: recovery appends E6's loss records.
-- **E6's read-time corruption rule** blocks E8's `ReadAt` failure path and E9's offer and
-  repack verification, which call it outside recovery. E7 calls the same handler from
-  recovery. It lives in E6, not E7, so that E8 needs nothing from a later milestone.
-- **E8** blocks E9: offload needs written content, and `report`, `Release` and `Repack`
-  need the data path's locking and capacity.
+- **E6** blocks E7a: recovery appends E6's loss records.
+- **E6's read-time corruption rule** blocks E8's `ReadAt` failure path, E9a's repack verification and
+  E9b's offer verification, which call it outside recovery. E7a calls the same handler from
+  recovery. It lives in E6, not E7a, so that E8 needs nothing from a later milestone.
+- **E8** blocks E9a and E9b: offload needs written content, and `report`, `Release` and
+  `Repack` need the data path's locking and capacity.
+- **E7a and E9a** cross once, with no cycle: E7a's T7.6 fills E9a's liveness tracker (T9.1),
+  and E9a's crash tests reopen through E7a's `Open` once it empties what it ends (after
+  T7.11). Track B builds T9.1 first after S3.
+- **E9a** blocks E9b: offers, marks and `Release` run on its liveness tracker.
+- **E7b** blocks E9b's snapshot holds: an E7a open refuses a journal holding a hold record.
 - **E10** blocks E11's start order.
 - **S4a (with rif)** blocks E11: its engine wiring, version-limit raise and store
   contracts cannot start before it.
@@ -393,12 +411,12 @@ owner (for example, epic 1's 1.4 is on track B).
 | 0 | E1: skeleton and import test, observability, storage seam | E1: value types, errors, lifecycle, public API (`Journal`, `Handle`, ops) | review → **S1** |
 | 1 | E2: test clock and fault schedule, crash-simulating seam, profiler, `raw` | E2: reference model, fixture and `dt` registration, conformance test bodies, traceability matrix | → **S2** |
 | 2 | E3, then E5's stream, pool, seal, roll and end event, then E6's T6.1 to T6.4, T6.7 and T6.9 | E4, then E8's storage-independent parts (share registry, capacity counters, version counter), then `WriteAt`, `ReadAt` and the minimal `Init` and `Open` | → **S3** |
-| 3 | E6's remaining subtasks (re-append, read-only state and probe, counted checks), then E7 | E8 remainder, then E9 | → **S4**; S4a with rif |
-| 4 | E10: device config keys, start check, journal side of initialisation | E11 planning, once S4a exists | |
+| 3 | E6's remaining subtasks (re-append, read-only state and probe, counted checks), then E7a | E8 remainder, then E9a, its T9.1 first | → **S4**; S4a with rif |
+| 4 | E10: device config keys, start check, journal side of initialisation; then E7b | E11 planning, once S4a exists; then E9b | |
 | 5 | E11 | E11 | → **S5** |
 | 6 | E12 burn-down of recovery, format and durability failures | E12 burn-down of data-path and reclamation failures | release |
 
-If track B finishes E9 early, it takes E7's inspection and verify subtasks (RFC 1 §4.4),
+If track B finishes E9a early, it takes E7b's inspection and verify (RFC 1 §4.4),
 which read only the index and the segments.
 
 ---
@@ -424,8 +442,8 @@ pkg/block/journal/                package journal — public API (RFC 1 §3)
   internal/index/                 placement index, versions, drop ranges         (E4)
   internal/segment/               segments, streams, spares, descriptors, guard  (E5)
   internal/durability/            sync, group commit, failed windows, losses     (E6)
-  internal/recovery/              open/rebuild/scan/verify                       (E7)
-  internal/reclaim/               repack, retirement                             (E9)
+  internal/recovery/              open/rebuild/scan/verify                       (E7a, E7b)
+  internal/reclaim/               repack, retirement                             (E9a, E9b)
   conformance/                    component e2e: RFC 1 §9.4, RFC 28 §4.2         (E2)
   journaltest/                    crash seam, reference model, profiler, fixtures (E2)
 pkg/sim/                          TestClock, Fault, Schedule; node-wide (RFC 8 §2.1) (E2)
@@ -796,6 +814,10 @@ Epic 6 implements RFC 1 §5 and §3.8.
 
 ### Epic 7 — Recovery and identity (≈12 subtasks, A)
 
+Split in two. [Epic 7a](rfc-1-journal-epic7a.md) reopens a journal after a clean exit or a
+crash, and is the `Open` the journal-only engine calls; epic 7b is the rest, as epic 7a's §1.2
+names. The scope below is the whole epic.
+
 Epic 7 implements RFC 28 §3 and RFC 1's `Init`, `Open` and `Restamp`. Epic 8 delivers a minimal
 `Init` and an `Open` of a directory with no segment before S3 (its T8.15); epic 7 extends `Open`
 with recovery and owns the rules below that need a segment on disk.
@@ -950,6 +972,10 @@ Metrics: `written_bytes`, `filled_bytes`, `fill_refused`, `reservation_refused`,
 `headroom_draws`, `index_refusals`, `TagConflicts`. Spans: `fill`, `reserve_refused`.
 
 ### Epic 9 — Offload, reclamation, holds and tags (≈13 subtasks, B)
+
+Split in two. [Epic 9a](rfc-1-journal-epic9a.md) is retirement, `Repack`, `Forget` and
+`Strand`, which the journal-only engine calls; epic 9b is offload, `Release` and snapshot
+holds, as epic 9a's §1.2 names. The scope below is the whole epic.
 
 Epic 9 implements RFC 1 §3.3, §3.5, §3.11, §7.1–§7.2, and the tag lifecycle of §3.
 
@@ -1167,7 +1193,8 @@ Epic 12 takes the suite from "listed" to "passing". The work:
 - confirm the list is empty for v2-specific tests.
 
 The exit criterion is an empty v2 known-failure list. Any entry that remains must carry an
-explicit, recorded decision.
+explicit, recorded decision. An entry that names epic 7b's or 9b's issue is one: it waits for
+that epic, and epic 12 does not wait for it.
 
 ---
 

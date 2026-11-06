@@ -447,8 +447,8 @@ flowchart TD
 - **S3 🔀 Engine complete over the fake journal** (epics 3 to 8 done). Every method of §1.3
   has its behaviour, unit-tested over the fake journal, and every conformance row whose
   journal call exists is green. Epic 9 starts here.
-- **S4 🔀 The journal's calls built** (external: the journal plan's S4, its epics 3 to 9, and its
-  epic 7's `Open`). The rows still red wait only on it; epic 10 cannot finish before it.
+- **S4 🔀 The journal's calls built** (external: the journal plan's S4, its epics 3 to 6, 7a, 8 and
+  9a; epic 7a is its `Open`). The rows still red wait only on it; epic 10 cannot finish before it.
 
 ### 3.3 Blockers
 
@@ -478,13 +478,13 @@ flowchart TD
   E5's streams under everything; E8's `Share`, `WriteAt`, `ReadAt`, `Draw`,
   `SetVersionLimit`, `Truncate`, `Deallocate`, `Delete`, `CloneTarget`, `Reserve`, `Since`,
   `Settle`, `Files`, the named refusals and `Stats`; E6's `Sync`, loss records, the
-  loss ring and failed windows; E7's `Open` with floor and `expect`; E9's `Repack`,
-  auto-retire, `Forget` and `Strand`, and none of its offload half; E10's `J‖journal`
+  loss ring and failed windows; E7a's `Open` with floor and `expect`; E9a's `Repack`,
+  auto-retire, `Forget` and `Strand`, and none of E9b's offload half; E10's `J‖journal`
   record written by the initialisation step; and what §6 point 8 asks of RFC 1 for T7.1,
   `Repack` scoped to a share sealing the scope's active segments itself and unreclaimed
   bytes per segment; the scope's sync is the handle's `Sync` over its `Files`, which
   `journal` has. The first rows to turn green come with the
-  journal plan's S3 (`WriteAt`, `ReadAt`); files survive a restart from its epic 7's `Open`.
+  journal plan's S3 (`WriteAt`, `ReadAt`); files survive a restart from its epic 7a's `Open`.
 
 ### 3.4 Splitting the work
 
@@ -1097,8 +1097,8 @@ follows the journal's, not this part's (§6 point 7).
 6. **`Share`'s `SyncPolicy`:** `journal.Share` takes a fourth parameter RFC 1 §3 does not
    list. The engine passes the share's `sync.policy`; is an RFC 1 edit owed?
 7. **Order of the journal's work:** the order this part wants is the journal plan's S3, then
-   its epic 6's `Sync` and losses, its epic 8's removals, `Since` and `Files`, its epic 7's
-   `Open`, then its epic 9's `Repack`, auto-retire, `Forget` and `Strand` ahead of the
+   its epic 6's `Sync` and losses, its epic 8's removals, `Since` and `Files`, its epic 7a's
+   `Open`, then its epic 9a's `Repack`, auto-retire, `Forget` and `Strand`, ahead of epic 9b's
    offload half. A journal pull request that turns an `engine-conformance` row green fails
    that suite until the row's `known.yaml` entry goes, so the journal team removes the
    entries their change turns green, in the same change (rule 6). Epics 5, 6, 7 and 10 of
