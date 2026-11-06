@@ -17,7 +17,7 @@ func (f *fixture) cloned(t *testing.T, src, dst FileKey) CloneSource {
 	t.Helper()
 	ex := f.fs.Store.Existence()
 	failed, err := ex.Commit(ctx, []kvstore.PendingExistence{{Share: src.Share, File: src.ID,
-		Ops: []kvstore.PendingOp{{Kind: kvstore.OpWrite, Version: entity.VersionOf(1), Extent: entity.ExtentOf(0, 4096)}}}})
+		Ops: []kvstore.PendingOp{{Kind: kvstore.OpWrite, Version: entity.VersionOf(1), Extent: entity.ExtentOf(0, 4096)}}}}, nil)
 	if err == nil {
 		err = failed[src.ID]
 	}

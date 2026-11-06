@@ -47,7 +47,7 @@ type loggedExistence struct {
 	log *callLog
 }
 
-func (x loggedExistence) Commit(ctx context.Context, p []kvstore.PendingExistence) (map[entity.FileID]error, error) {
+func (x loggedExistence) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
 	var fs []entity.FileID
 	for _, pe := range p {
 		fs = append(fs, pe.File)
@@ -56,7 +56,7 @@ func (x loggedExistence) Commit(ctx context.Context, p []kvstore.PendingExistenc
 	x.log.calls = append(x.log.calls, "commit")
 	x.log.commits = append(x.log.commits, fs)
 	x.log.mu.Unlock()
-	return x.Existence.Commit(ctx, p)
+	return x.Existence.Commit(ctx, p, marks)
 }
 
 // newLoggedUnit is a unit whose share's handle and store log their calls,
@@ -343,7 +343,7 @@ type ctxStall struct {
 	entered chan struct{}
 }
 
-func (x *ctxStall) Commit(ctx context.Context, _ []kvstore.PendingExistence) (map[entity.FileID]error, error) {
+func (x *ctxStall) Commit(ctx context.Context, _ []kvstore.PendingExistence, _ *kvstore.MarksWrite) (map[entity.FileID]error, error) {
 	select {
 	case x.entered <- struct{}{}:
 	default:
@@ -499,12 +499,12 @@ type conflicting struct {
 	calls atomic.Int32 // the commits answered a conflict
 }
 
-func (x *conflicting) Commit(ctx context.Context, p []kvstore.PendingExistence) (map[entity.FileID]error, error) {
+func (x *conflicting) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
 	if x.on.Load() {
 		x.calls.Add(1)
 		return nil, kvstore.ErrConflict
 	}
-	return x.Existence.Commit(ctx, p)
+	return x.Existence.Commit(ctx, p, marks)
 }
 
 // A conflict unresolved at a Commit's deadline is ErrDelay with
@@ -618,14 +618,14 @@ type conflictingFile struct {
 	calls atomic.Int32
 }
 
-func (s *conflictingFile) Commit(ctx context.Context, p []kvstore.PendingExistence) (map[entity.FileID]error, error) {
+func (s *conflictingFile) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
 	for _, pe := range p {
 		if pe.File == s.x {
 			s.calls.Add(1)
 			return nil, errors.Join(kvstore.ErrConflict, context.DeadlineExceeded)
 		}
 	}
-	return s.Existence.Commit(ctx, p)
+	return s.Existence.Commit(ctx, p, marks)
 }
 
 // A file a split left failing alone has already failed alone: it backs off

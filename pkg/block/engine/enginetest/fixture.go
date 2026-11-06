@@ -420,7 +420,7 @@ type fencedExistence struct {
 	stalled *atomic.Bool
 }
 
-func (x fencedExistence) Commit(ctx context.Context, pending []kvstore.PendingExistence) (map[entity.FileID]error, error) {
+func (x fencedExistence) Commit(ctx context.Context, pending []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
 	if x.crashed.Load() {
 		return nil, errCrashed
 	}
@@ -428,7 +428,7 @@ func (x fencedExistence) Commit(ctx context.Context, pending []kvstore.PendingEx
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	return x.Existence.Commit(ctx, pending)
+	return x.Existence.Commit(ctx, pending, marks)
 }
 
 func (x fencedExistence) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {

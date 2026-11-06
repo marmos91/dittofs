@@ -52,6 +52,7 @@ func TestCodesUnique(t *testing.T) {
 			SPj, SUd, SQt, SQx, SVf, SFnc, SVl, SShs, SPr, SRr, SDo},
 		"NS": {NSGc, NSClaim, NSPk, NSKey, NSBk, NSDrain},
 		"gc": {GcLease, GcRecheck, GcHold, GcSuspect, GcForward, GcPause, GcCursor},
+		"J":  {JOg, JSm},
 	} {
 		seen := map[byte]bool{}
 		for _, c := range codes {

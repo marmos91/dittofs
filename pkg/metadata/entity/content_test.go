@@ -88,3 +88,16 @@ func TestBlockRetired(t *testing.T) {
 		t.Error("Retired")
 	}
 }
+
+// A kept mark is matched by its segment: one a marks write left in place for
+// a stream it did not carry, synced far past the offset a newer segment's
+// sync returns, covers nothing there.
+func TestSyncMarkCoversOnlyItsSegment(t *testing.T) {
+	kept := SyncMark{Stream: 1, Segment: 4, Through: 1 << 20}
+	if kept.Covers(SyncMark{Stream: 1, Segment: 9, Offset: 10}) {
+		t.Error("a kept mark covers a newer segment's sync")
+	}
+	if !kept.Covers(SyncMark{Stream: 1, Segment: 4, Offset: 10}) || kept.Covers(SyncMark{Stream: 1, Segment: 4, Offset: 1<<20 + 1}) {
+		t.Error("a mark does not cover exactly what its segment's synced-through offset reaches")
+	}
+}

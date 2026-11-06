@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
 
 func write(v uint64, off, n int64) PendingOp {
@@ -25,7 +27,7 @@ func grow(v uint64, size int64) PendingOp {
 
 func (f *cfix) exist(file entity.FileID, ops ...PendingOp) {
 	f.t.Helper()
-	failed, err := f.s.Existence().Commit(context.Background(), []PendingExistence{{Share: f.share, File: file, Ops: ops}})
+	failed, err := f.s.Existence().Commit(context.Background(), []PendingExistence{{Share: f.share, File: file, Ops: ops}}, nil)
 	if err != nil || len(failed) != 0 {
 		f.t.Fatalf("existence commit: %v %v", failed, err)
 	}
@@ -138,7 +140,7 @@ func TestExistenceCommitPerFileFailure(t *testing.T) {
 		{Share: f.share, File: gone, Ops: []PendingOp{write(1, 0, mib)}},
 		{Share: f.share, File: shrink, Ops: []PendingOp{grow(1, mib)}},
 		{Share: f.share, File: good, Ops: []PendingOp{write(2, 0, mib)}},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +173,7 @@ func TestExistenceCommitUndecodableRecordFailsAlone(t *testing.T) {
 	failed, err := f.s.Existence().Commit(context.Background(), []PendingExistence{
 		{Share: f.share, File: bad, Ops: []PendingOp{write(1, 0, mib)}},
 		{Share: f.share, File: good, Ops: []PendingOp{write(2, 0, mib)}},
-	})
+	}, nil)
 	if err != nil || failed[bad] == nil || failed[good] != nil {
 		t.Fatalf("Commit: %v %v, want only the undecodable file failed", failed, err)
 	}
@@ -216,7 +218,7 @@ func TestExistenceCommitRetriesAConflictOnTheRecord(t *testing.T) {
 	failed, err := f.s.Existence().Commit(context.Background(), []PendingExistence{
 		{Share: f.share, File: a, Ops: []PendingOp{write(1, 0, mib)}},
 		{Share: f.share, File: b, Ops: []PendingOp{write(2, 0, mib)}},
-	})
+	}, nil)
 	if err != nil || len(failed) != 0 {
 		t.Fatalf("Commit: %v %v, want no failure", failed, err)
 	}
@@ -241,7 +243,7 @@ func TestExistenceCommitFailsWholeOnAStoreError(t *testing.T) {
 			failed, err := f.s.Existence().Commit(context.Background(), []PendingExistence{
 				{Share: f.share, File: a, Ops: []PendingOp{write(1, 0, mib)}},
 				{Share: f.share, File: b, Ops: []PendingOp{write(2, 0, mib)}},
-			})
+			}, nil)
 			if !errors.Is(err, storeErr) || failed != nil {
 				t.Fatalf("Commit: %v %v, want nil and the store error", failed, err)
 			}
@@ -268,7 +270,7 @@ func TestExistenceCommitSplitsAtTheBudget(t *testing.T) {
 	failed, err := f.s.Existence().Commit(context.Background(), []PendingExistence{
 		{Share: f.share, File: file, Ops: ops},
 		{Share: f.share, File: other, Ops: []PendingOp{write(1, 0, mib)}},
-	})
+	}, nil)
 	if err != nil || len(failed) != 0 {
 		t.Fatal(failed, err)
 	}
@@ -396,5 +398,190 @@ func TestExistenceCommitLost(t *testing.T) {
 	}
 	if l := f.layout(file); l != "uncarved[0,2)" {
 		t.Errorf("layout %s, want uncarved[0,2)", l)
+	}
+}
+
+// marksOf reads journal j's every stored sync mark, by the stream its key
+// names.
+func (f *cfix) marksOf(j [16]byte) map[uint32]entity.SyncMark {
+	f.t.Helper()
+	out := map[uint32]entity.SyncMark{}
+	pre := syncMarksPrefix(j)
+	if err := f.s.kv.View(context.Background(), func(r kv.Reader) error {
+		for row, err := range r.Scan(pre, nil) {
+			if err != nil {
+				return err
+			}
+			s, _, err := keys.ReadUint64(row.Key[len(pre):])
+			if err != nil {
+				return err
+			}
+			m, err := decodeSyncMark(row.Value)
+			if err != nil {
+				return err
+			}
+			m.Stream = uint32(s)
+			out[m.Stream] = m
+		}
+		return nil
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+	return out
+}
+
+// byStream is marks keyed by the stream each names.
+func byStream(marks ...entity.SyncMark) map[uint32]entity.SyncMark {
+	out := map[uint32]entity.SyncMark{}
+	for _, m := range marks {
+		out[m.Stream] = m
+	}
+	return out
+}
+
+// RFC 6 §10.1: a commit's marks are written beside its files, or alone,
+// each under the stream it names, a stream the write leaves out keeping its
+// stored mark; and only while the journal's open generation is the one they
+// carry, failing the files beside them too when it moved.
+func TestExistenceCommitRecordsSyncMarks(t *testing.T) {
+	f := newContentFix(t, nil)
+	file, j := f.file(0), [16]byte{9}
+	first := []entity.SyncMark{{Stream: 0, Segment: 1, Through: 100, Offset: 90, Sequence: 7}, {Stream: 1, Segment: 2, Through: 50, Offset: 40, Sequence: 3}}
+	if failed, err := f.s.Existence().Commit(context.Background(), []PendingExistence{{Share: f.share, File: file, Ops: []PendingOp{write(1, 0, mib)}}},
+		&MarksWrite{Journal: j, Marks: first}); err != nil || len(failed) != 0 {
+		t.Fatal(failed, err)
+	}
+	if got := f.marksOf(j); !maps.Equal(got, byStream(first...)) {
+		t.Errorf("marks beside a file: %v, want %v", got, first)
+	}
+	alone := entity.SyncMark{Stream: 0, Segment: 1, Through: 200, Offset: 190, Sequence: 9}
+	if _, err := f.s.Existence().Commit(context.Background(), nil, &MarksWrite{Journal: j, Marks: []entity.SyncMark{alone}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := f.marksOf(j), byStream(alone, first[1]); !maps.Equal(got, want) {
+		t.Errorf("marks alone: %v, want %v: stream 0 replaced and stream 1 kept", got, want)
+	}
+
+	if err := f.s.kv.Update(context.Background(), func(tx kv.Txn) error { return tx.Set(openGenKey(j), encodeCounter(1)) }); err != nil {
+		t.Fatal(err)
+	}
+	stale := &MarksWrite{Journal: j, Gen: 0, Marks: []entity.SyncMark{{Segment: 1, Through: 300, Offset: 290, Sequence: 11}}}
+	_, err := f.s.Existence().Commit(context.Background(), []PendingExistence{{Share: f.share, File: file, Ops: []PendingOp{write(2, 0, mib)}}}, stale)
+	if !errors.Is(err, ErrOpenGenMoved) {
+		t.Fatalf("a marks write of an earlier open: %v, want ErrOpenGenMoved", err)
+	}
+	if got, want := f.marksOf(j), byStream(alone, first[1]); !maps.Equal(got, want) {
+		t.Errorf("the refused write left %v, want %v", got, want)
+	}
+	if got := f.get(file).Applied; got != entity.VersionOf(1) {
+		t.Errorf("the file beside the refused marks is applied at %d, want 1", got.Counter())
+	}
+	stale.Gen = 1
+	if _, err := f.s.Existence().Commit(context.Background(), nil, stale); err != nil {
+		t.Errorf("a marks write of the current open: %v", err)
+	}
+}
+
+// A mark is keyed by the stream it names, not its place in the set: two
+// writes whose stream lists differ each land under their own streams, a
+// stream the second leaves out keeps its earlier mark (RFC 16 §4.2: a marks
+// write deletes nothing), and the same streams in another order land where
+// they did.
+func TestSyncMarksAreKeyedByStream(t *testing.T) {
+	f := newContentFix(t, nil)
+	j := [16]byte{7}
+	put := func(marks ...entity.SyncMark) {
+		t.Helper()
+		if _, err := f.s.Existence().Commit(context.Background(), nil, &MarksWrite{Journal: j, Marks: marks}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := entity.SyncMark{Stream: 2, Segment: 20, Through: 100, Offset: 90, Sequence: 5}
+	b := entity.SyncMark{Stream: 5, Segment: 50, Through: 200, Offset: 190, Sequence: 6}
+	c := entity.SyncMark{Stream: 9, Segment: 90, Through: 300, Offset: 290, Sequence: 7}
+	put(a, b)
+	b2 := entity.SyncMark{Stream: 5, Segment: 51, Through: 10, Offset: 5, Sequence: 8}
+	put(c, b2)
+	if got, want := f.marksOf(j), byStream(a, c, b2); !maps.Equal(got, want) {
+		t.Errorf("after a second write of other streams: %v, want %v", got, want)
+	}
+	put(b, c)
+	if got, want := f.marksOf(j), byStream(a, b, c); !maps.Equal(got, want) {
+		t.Errorf("the same streams in another order: %v, want %v", got, want)
+	}
+}
+
+// RFC 8 §5.2: a marks write is charged against K for the keys it sets
+// alone, so streams it leaves out, whose marks it keeps, take none of the
+// budget of the files beside it.
+func TestAMarksWriteChargesOnlyTheKeysItSets(t *testing.T) {
+	cnt := &countingTxns{}
+	f := newContentFix(t, func(db kv.KV) kv.KV { cnt.KV = db; return cnt })
+	f.s.SetKeyBudget(7)
+	file, j := f.file(0), [16]byte{3}
+	var kept []entity.SyncMark
+	for i := range 6 {
+		kept = append(kept, entity.SyncMark{Stream: uint32(i), Segment: uint64(i + 1)})
+	}
+	if _, err := f.s.Existence().Commit(context.Background(), nil, &MarksWrite{Journal: j, Marks: kept}); err != nil {
+		t.Fatal(err)
+	}
+	cnt.n = 0
+	mark := entity.SyncMark{Stream: 6, Segment: 7}
+	ops := []PendingOp{write(1, 0, mib), write(2, mib, mib)}
+	if failed, err := f.s.Existence().Commit(context.Background(), []PendingExistence{{Share: f.share, File: file, Ops: ops}}, &MarksWrite{Journal: j, Marks: []entity.SyncMark{mark}}); err != nil || len(failed) != 0 {
+		t.Fatal(failed, err)
+	}
+	if cnt.n != 1 {
+		t.Errorf("%d transactions for one mark and a file's two writes at K=7, want 1", cnt.n)
+	}
+}
+
+// Marks that take a transaction's whole key budget still leave its first
+// file the progress a fresh transaction makes.
+func TestMarksLeaveTheFirstFileItsProgress(t *testing.T) {
+	f := newContentFix(t, nil)
+	f.s.SetKeyBudget(8)
+	file := f.file(0)
+	mw := &MarksWrite{}
+	for i := range 8 {
+		mw.Marks = append(mw.Marks, entity.SyncMark{Stream: uint32(i)})
+	}
+	if failed, err := f.s.Existence().Commit(context.Background(), []PendingExistence{{Share: f.share, File: file, Ops: []PendingOp{write(1, 0, mib)}}}, mw); err != nil || len(failed) != 0 {
+		t.Fatal(failed, err)
+	}
+	if got := f.get(file).Applied; got != entity.VersionOf(1) {
+		t.Errorf("applied %d, want 1", got.Counter())
+	}
+}
+
+// conflictingKV answers every update, once on, a conflict its context ended
+// on, as the store does once a conflict outlives the call's deadline.
+type conflictingKV struct {
+	kv.KV
+	on *bool
+}
+
+func (c conflictingKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
+	if *c.on {
+		return errors.Join(kv.ErrConflict, context.DeadlineExceeded)
+	}
+	return c.KV.Update(ctx, fn)
+}
+
+// A conflict that outlives a call of marks alone is ErrSyncMarks; beside a
+// file it is the conflict, which the engine splits.
+func TestAConflictOnMarksAloneIsErrSyncMarks(t *testing.T) {
+	var on bool
+	f := newContentFix(t, func(db kv.KV) kv.KV { return conflictingKV{db, &on} })
+	file := f.file(0)
+	on = true
+	mw := &MarksWrite{Marks: []entity.SyncMark{{Segment: 1}}}
+	if _, err := f.s.Existence().Commit(context.Background(), nil, mw); !errors.Is(err, ErrSyncMarks) || !errors.Is(err, ErrConflict) {
+		t.Errorf("marks alone, conflicting: %v, want ErrSyncMarks", err)
+	}
+	_, err := f.s.Existence().Commit(context.Background(), []PendingExistence{{Share: f.share, File: file, Ops: []PendingOp{write(1, 0, mib)}}}, mw)
+	if errors.Is(err, ErrSyncMarks) || !errors.Is(err, ErrConflict) {
+		t.Errorf("marks beside a file, conflicting: %v, want the conflict alone", err)
 	}
 }

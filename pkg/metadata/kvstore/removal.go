@@ -193,7 +193,7 @@ func (e Existence) Remove(ctx context.Context, share entity.ShareID, file entity
 		return merrs.NewInvalidArgumentError("Remove takes a truncate, a deallocate or a release")
 	}
 	if len(pending) > 0 {
-		failed, err := e.Commit(ctx, []PendingExistence{{Share: share, File: file, Epoch: epoch, Ops: pending}})
+		failed, err := e.Commit(ctx, []PendingExistence{{Share: share, File: file, Epoch: epoch, Ops: pending}}, nil)
 		if err != nil {
 			return err
 		}

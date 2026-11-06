@@ -164,7 +164,7 @@ func testCloneHold(t *testing.T, kvo Opener) {
 	_, dst := f.create(f.admin, f.root, "dst", regular(0o644))
 	ex := f.s.Existence()
 	failed, err := ex.Commit(ctx, []kvstore.PendingExistence{{Share: f.share.ID, File: src.ID,
-		Ops: []kvstore.PendingOp{{Kind: kvstore.OpWrite, Version: entity.VersionOf(1), Extent: entity.ExtentOf(0, 4096)}}}})
+		Ops: []kvstore.PendingOp{{Kind: kvstore.OpWrite, Version: entity.VersionOf(1), Extent: entity.ExtentOf(0, 4096)}}}}, nil)
 	must(t, err)
 	must(t, failed[src.ID])
 	op := kvstore.CloneOp{Share: f.share.ID, File: dst.ID, Version: entity.VersionOf(5),
