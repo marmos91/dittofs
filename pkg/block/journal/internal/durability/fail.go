@@ -2,7 +2,6 @@ package durability
 
 import (
 	"context"
-	"errors"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -174,22 +173,16 @@ func (d *Durability) loseRecord(w *window, e entry, dropped []index.Piece) {
 		}
 		named = true
 		l.Extent, l.Offloaded = p.Extent, p.Offloaded
-		d.lose(w, l)
+		d.lose(l)
 	}
 	if !named {
-		d.lose(w, l)
+		d.lose(l)
 	}
 }
 
 // lose hands the loss to Lose. An error leaves the drop in place: Lose
-// publishes the event and lists the record as owed whatever it could not
-// append.
-func (d *Durability) lose(w *window, l Loss) {
-	if _, err := d.Lose(context.Background(), l); err != nil {
-		if errors.Is(err, core.ErrNoSpace) || errors.Is(err, core.ErrClosed) || errors.Is(err, segment.ErrStreamStopped) {
-			d.log.Debug("a failed window's loss was not recorded", "window", w.id, "file", l.File, "err", err)
-			return
-		}
-		d.log.Error("a failed window's loss was not recorded", "window", w.id, "file", l.File, "err", err)
-	}
+// publishes the event, lists the record as owed whatever it could not append,
+// and logs the failure, so the error is dropped here.
+func (d *Durability) lose(l Loss) {
+	_, _ = d.Lose(context.Background(), l)
 }

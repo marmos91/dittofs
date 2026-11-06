@@ -2,7 +2,9 @@ package durability
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -329,6 +331,11 @@ type stream struct {
 	lost map[segment.Location]error
 	// marks are the failures no Sync has reported yet, per file, oldest
 	// first; told holds, per pending window, the files already told of it.
+	//
+	// ponytail: a file that lost a record and is never named by a Sync again
+	// keeps its mark for the life of the stream, so marks follow the number of
+	// such files. Upgrade to dropping a file's marks when the file is removed,
+	// when a stream with many abandoned files shows up in a heap profile.
 	marks map[core.FileID][]mark
 	told  map[uint64]map[core.FileID]struct{}
 	// lastSeg is the newest segment the stream is known to have reached: the
@@ -626,6 +633,17 @@ func (st *stream) inWindowLocked(loc segment.Location) bool {
 // ctx.Err() when ctx is done first; a cancelled caller changes no state and
 // the sync it may have led runs on for the other waiters.
 //
+// A failed window is reported once per file: the first Sync naming a file
+// that lost a record in it returns the *core.SyncError and clears the file's
+// mark, and a Sync that was waiting on the lost record when another took that
+// report returns nil, though its record is lost and not durable.
+//
+// A covered record counts as synced only once the worker has lifted what it
+// superseded, which it does under the file's append domain, so the caller
+// holds the append domain of none of the files it names: it would wait on the
+// worker while the worker waits on it, and every other file of the stream
+// would stop completing too.
+//
 // Syncs are issued by the stream's worker, never by the caller's goroutine,
 // so a cancelled caller is not stuck in the syscall.
 func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) error {
@@ -652,7 +670,8 @@ func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) error {
 // returns a *core.SyncError: a record of a segment whose sync failed keeps
 // waiting until Stop, since following a re-append and the read-only wake are
 // not part of this layer yet. It consults and clears no marks, which belong to
-// the Sync that names the file. A record with no sync running for it gets one, as a Sync would.
+// the Sync that names the file. A record with no sync running for it gets one,
+// as a Sync would. The caller holds no file's append domain, as for Sync.
 func (d *Durability) WaitDurable(at segment.Location) error {
 	var ws []work
 	for _, st := range d.snapshot() {
@@ -677,11 +696,14 @@ func (d *Durability) snapshot() []*stream {
 }
 
 // targetsOf returns, for each id, the last record of that file in each
-// segment of the ledger that no sync covers, and in each pending window. A sync covers a prefix of one
-// segment, so covering a file's last record says nothing of its records in an
-// older segment; each segment gets its own target and waits for its seal or
-// fails through the failed map. Compaction removes only covered entries, so a
-// target stays in the ledger until a sync covers it.
+// segment of the ledger that is not completed, and in each pending window. A
+// record a sync covers stays a target until the worker has lifted what it
+// superseded, so a Sync issued in between waits for the lift too. A sync
+// covers a prefix of one segment, so covering a file's last record says
+// nothing of its records in an older segment; each segment gets its own target
+// and waits for its seal or fails through the failed map. Compaction removes
+// only completed entries, so a target stays in the ledger until the worker is
+// done with it.
 func (st *stream) targetsOf(ids []core.FileID) []target {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -701,12 +723,13 @@ func (st *stream) targetsOf(ids []core.FileID) []target {
 		}
 	}
 	for i := len(st.ledger) - 1; i >= 0; i-- {
-		if e := &st.ledger[i]; !e.done && !st.covered(e.w.Loc) {
+		if e := &st.ledger[i]; !e.done {
 			consider(e)
 		}
 	}
 	// A pending window's records are targets whatever the segment's synced
-	// offset; the segment is failed, so the waiter gets its SyncError.
+	// offset. A content record is answered from the mark its failure leaves; a
+	// header-only one, which no failure takes, gets the SyncError at once.
 	for j := len(st.windows) - 1; j >= 0; j-- {
 		w := st.windows[j]
 		for i := len(w.entries) - 1; i >= 0; i-- {
@@ -724,12 +747,25 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 		// shared by every stream so a change on any of them wakes the caller.
 		wait := d.changes()
 		pending := false
+		var told *core.SyncError
 		for _, w := range ws {
 			p, err := w.st.check(w.ids, w.targets, failFast)
+			var se *core.SyncError
+			if failFast && errors.As(err, &se) {
+				// A failure ends the wait, but every stream owes the call its
+				// marks, and a mark left on one stream would be told to the
+				// file's next Sync again: the rest are taken before returning,
+				// each under its own stream's mutex, and one error names them.
+				told = mergeSyncErrors(told, se)
+				continue
+			}
 			if err != nil {
 				return err
 			}
 			pending = pending || p
+		}
+		if told != nil {
+			return told
 		}
 		if !pending {
 			return nil
@@ -744,8 +780,23 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 	}
 }
 
+// mergeSyncErrors joins two failures of one Sync: the first's segment and
+// error, the files of both.
+func mergeSyncErrors(into, from *core.SyncError) *core.SyncError {
+	if into == nil {
+		return from
+	}
+	for _, f := range from.Files {
+		if !slices.Contains(into.Files, f) {
+			into.Files = append(into.Files, f)
+		}
+	}
+	return into
+}
+
 // contentLocked reports whether the record at loc is a content record, one a
-// failed window fails. A record the stream holds nowhere counts as content. The
+// failed window fails. A record the stream holds in neither the ledger nor a
+// window is reported as content; the callers only ask about a held one. The
 // caller holds mu.
 func (st *stream) contentLocked(loc segment.Location) bool {
 	for i := len(st.ledger) - 1; i >= 0; i-- {
@@ -803,26 +854,23 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (boo
 	var failSeg core.SegmentID
 	var failErr error
 	for _, t := range targets {
-		_, lost := st.lost[t.loc]
-		if lost && failFast {
-			// Failed and gone from its window: the mark told the file.
+		if _, lost := st.lost[t.loc]; lost {
+			// Failed and gone from its window: the mark told the file, so a
+			// Sync has nothing more to wait for, and a durability wait keeps
+			// waiting, as the record is never durable.
+			pending = pending || !failFast
 			continue
 		}
 		if !st.pending(t.loc) {
 			continue
 		}
 		pending = true
-		if !lost && st.covered(t.loc) && !st.inWindowLocked(t.loc) {
+		if st.covered(t.loc) && !st.inWindowLocked(t.loc) {
 			// A sync covers it and the worker is lifting what it superseded:
 			// the wait is for that, which another sync does not hasten.
 			continue
 		}
-		err, bad := st.failed[t.loc.Segment]
-		if lost {
-			// Only a durability wait is here: it keeps waiting.
-			bad = true
-		}
-		if bad {
+		if err, bad := st.failed[t.loc.Segment]; bad {
 			if failFast && failErr == nil && !st.contentLocked(t.loc) {
 				failSeg, failErr = t.loc.Segment, err
 			}
