@@ -634,7 +634,13 @@ func (p *Pool) refill() bool {
 		// the pool is short by more than one, and so does a queued segment
 		// whose claim another path holds, for as long as that claim lasts, a
 		// queued segment held by a read-only interval, and one whose
-		// retirement keeps failing and is requeued.
+		// retirement keeps failing and is requeued. The longest stall is
+		// the queue's order: it drains in order, so a full segment queued
+		// behind N early-sealed ones (each an unlink with a directory sync),
+		// or held by a reader through the cache's Close, stops every make
+		// until the worker reaches it, and each unlink's kick finds the full
+		// set non-empty and returns; after a large repack N can be hundreds.
+		// Upgrade: queue the full ids ahead of the early ones.
 		// Withdrawn when spare refusals show rolls refused while a queued
 		// recycle stays stuck.
 		if p.retiredToHand() {
