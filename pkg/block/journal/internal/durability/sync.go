@@ -68,6 +68,13 @@ type Durability struct {
 	// cmu guards change, a layer-wide channel closed and replaced on every
 	// stream change, so a waiter on several streams wakes on any of them. It
 	// is a leaf lock, taken under a stream's mu.
+	//
+	// ponytail: one channel serves every stream, so a report on any stream
+	// wakes every waiter of every stream and each re-scans its ledger targets.
+	// The cost grows with waiters times reports, and is paid whether or not
+	// the waiter's stream changed. Upgrade to a channel per stream, which a
+	// waiter on several streams then selects over, when a profile of many
+	// concurrent Sync callers shows the wake-ups.
 	cmu    sync.Mutex
 	change chan struct{}
 
@@ -272,8 +279,15 @@ func (d *Durability) Start(streams *segment.Streams) {
 }
 
 // Durable reports whether the record at the location is durable: its segment
-// has been synced through the record's end. A location with no ledger entry
-// reports true, for the record was completed or never tracked.
+// has been synced through the record's end.
+//
+// decision: a location with no ledger entry reports true. A caller holding a
+// location Append returned has a record that was tracked and, if it is gone
+// from the ledger, already completed, so true is right for every location the
+// contract lets a caller hold. It fails open for a location Append never
+// returned, which reads durable although nothing was written there. Overturn
+// this if a caller can ask about an arbitrary location, which then needs a
+// record of the completed ones to tell the two apart.
 //
 // ponytail: it scans every stream's ledger, O(streams x ledger). Upgrade to a
 // per-segment index when a profile shows the scan.

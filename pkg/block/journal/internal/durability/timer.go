@@ -19,9 +19,13 @@ import (
 // decision: the bound is measured from when the worker first observes the
 // record, not from inside Track, because Track runs under the segment's
 // append domain and may not read the clock, which takes the clock's own
-// mutex. The observation follows Track by one kick, so the bound errs late
-// only by the worker's scheduling latency. Overturn this if a profile shows
-// worker lag comparable to the bound.
+// mutex. The observation follows Track by one kick, and the worker takes it
+// only between its other steps, so the bound errs late by the worker's
+// scheduling latency, by the duration of a sync in flight on the stream, and
+// by any file's append domain that a completion is waiting on, which delays
+// the whole stream's group commit. Overturn this if a profile shows a record
+// waiting past the bound by about as long as a sync or a held domain, in
+// which case stamp from Track through a clock read that takes no lock.
 
 // oldestLocked returns when the worker first saw the oldest record that a
 // timer sync could still cover: not completed, not covered, in the segment
