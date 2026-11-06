@@ -15,6 +15,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 )
 
@@ -785,5 +786,250 @@ func TestARemovedNameSucceedsWhateverItsReleaseAnswers(t *testing.T) {
 		if !g.released(f.ID, 11*time.Second) {
 			t.Errorf("file %v's release that failed at its name's removal never ran after a restart", f.ID)
 		}
+	}
+}
+
+// pendingRelease is n with the fake engine leaving the first release pending
+// on the channel it answers and committing every later one, a recording mark
+// in place of open state's, and a stored file unlinked, so that its release
+// is that first one. The unlink answers success with its release pending.
+func pendingRelease(t *testing.T) (*names, *failMark, chan error, entity.FileID) {
+	t.Helper()
+	n := newNames(t)
+	retry := make(chan error, 1)
+	var first sync.Once
+	n.engine.pending = func() <-chan error {
+		var r <-chan error
+		first.Do(func() { r = retry })
+		return r
+	}
+	m := &failMark{}
+	n.marks = m
+	f := n.create(t, n.admin, n.fs.Root, "f", vfs.CreateRegular).File
+	n.stored(t, f.ID)
+	if _, err := n.Unlink(t.Context(), n.admin, vfs.Target{H: n.fs.Root}, []byte("f")); err != nil {
+		t.Fatalf("an unlink whose release is pending: %v, want success", err)
+	}
+	return n, m, retry, f.ID
+}
+
+// ended is the outcomes m's done was called with, once they number want or a
+// second has passed.
+func (m *failMark) ended(want int) []bool {
+	for range 100 {
+		m.mu.Lock()
+		got := slices.Clone(m.got)
+		m.mu.Unlock()
+		if len(got) >= want {
+			return got
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.got)
+}
+
+// RFC 17 §5.3: a pending release keeps its mark until its outcome, which
+// goes to the mark's done when the release committed or a holder aborted
+// it; a clone's delay ends the mark and runs the release again, marked anew;
+// any other outcome keeps the mark for the next start's recovery.
+func TestAPendingReleasesOutcomeDecidesItsMark(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		outcome error
+		marks   []bool // the done calls, in order
+		deletes int
+	}{
+		{"committed", nil, []bool{true}, 1},
+		{"aborted by a holder", vfserr.ErrFileOpen, []bool{false}, 1},
+		{"held by a clone", &vfs.Delay{Cause: vfs.DelayClone}, []bool{false, true}, 2},
+		{"delayed by a commit", &vfs.Delay{Cause: vfs.DelayCommit}, nil, 1},
+		{"ended by the engine", vfs.ErrUnavailable, nil, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, m, retry, f := pendingRelease(t)
+			if got := m.ended(0); len(got) != 0 {
+				t.Fatalf("the mark ended %v while its release is pending, want kept", got)
+			}
+			retry <- tc.outcome
+			got := m.ended(len(tc.marks))
+			if len(tc.marks) == 0 {
+				time.Sleep(50 * time.Millisecond)
+				got = m.ended(0)
+			}
+			if !slices.Equal(got, tc.marks) {
+				t.Errorf("the mark ended %v, want %v", got, tc.marks)
+			}
+			if d := n.engine.deleted(); d != tc.deletes {
+				t.Errorf("%d Deletes, want %d", d, tc.deletes)
+			}
+			if tc.deletes == 2 && n.held(f) {
+				t.Error("the release run again after a clone's delay left the content held")
+			}
+		})
+	}
+}
+
+// RFC 17 §5.3: a release that fails within its call keeps its mark unless a
+// holder aborted it, and the name's removal succeeds either way.
+func TestAReleaseFailingWithinItsCallKeepsItsMark(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		err   error
+		marks []bool
+	}{
+		{"aborted by a holder", vfserr.ErrFileOpen, []bool{false}},
+		{"failed", errors.New("the journal is read-only"), nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := newNames(t)
+			m := &failMark{}
+			n.marks = m
+			n.create(t, n.admin, n.fs.Root, "f", vfs.CreateRegular)
+			n.engine.mu.Lock()
+			n.engine.deleteErr = tc.err
+			n.engine.mu.Unlock()
+			if _, err := n.Unlink(t.Context(), n.admin, vfs.Target{H: n.fs.Root}, []byte("f")); err != nil {
+				t.Fatalf("an unlink whose release failed: %v, want success", err)
+			}
+			if got := m.ended(0); !slices.Equal(got, tc.marks) {
+				t.Errorf("the mark ended %v, want %v", got, tc.marks)
+			}
+		})
+	}
+}
+
+// RFC 17 §2.5: from Drain on no release is run again, and Stop ends the wait
+// on one still pending without its done, leaving it to the next start, with
+// no goroutine of the filesystem's left.
+func TestADrainedFilesystemRunsNoReleaseAgain(t *testing.T) {
+	n, m, retry, _ := pendingRelease(t)
+	n.must(t, n.Drain(t.Context()))
+	retry <- &vfs.Delay{Cause: vfs.DelayClone}
+	if got := m.ended(1); !slices.Equal(got, []bool{false}) {
+		t.Errorf("the mark ended %v after a clone's delay, want [false]", got)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if d := n.engine.deleted(); d != 1 {
+		t.Errorf("%d Deletes after Drain, want the release not run again", d)
+	}
+}
+
+// RFC 17 §2.5: a release run again after a clone's delay is a call the
+// filesystem admits, so Drain joins it rather than returning while it waits
+// for the file's admission lock and only then reaches the engine.
+func TestDrainJoinsAReleaseRunAgain(t *testing.T) {
+	n, m, retry, f := pendingRelease(t)
+	unlock := n.Admission(f)
+	retry <- &vfs.Delay{Cause: vfs.DelayClone}
+	if got := m.ended(1); !slices.Equal(got, []bool{false}) {
+		t.Fatalf("the mark ended %v after a clone's delay, want [false]", got)
+	}
+	time.Sleep(50 * time.Millisecond) // the re-run reaches the admission lock
+	drained := make(chan int, 1)
+	go func() {
+		n.must(t, n.Drain(t.Context()))
+		drained <- n.engine.deleted()
+	}()
+	time.Sleep(50 * time.Millisecond)
+	unlock()
+	atDrain := <-drained
+	time.Sleep(50 * time.Millisecond)
+	if d := n.engine.deleted(); d != atDrain {
+		t.Errorf("%d Deletes when Drain returned, %d after, want none after", atDrain, d)
+	}
+}
+
+// gateMark is a mark whose done closes entered and then waits for gate.
+type gateMark struct{ entered, gate chan struct{} }
+
+func (m *gateMark) Releasing(context.Context, openstate.FileKey) (func(bool), bool, error) {
+	return func(bool) { close(m.entered); <-m.gate }, false, nil
+}
+
+// RFC 17 §2.5: Stop joins a wait on a release's outcome that is still
+// running, so no waiter outlives it.
+func TestStopJoinsTheWaitOnAPendingRelease(t *testing.T) {
+	n := newNames(t)
+	retry := make(chan error, 1)
+	var first sync.Once
+	n.engine.pending = func() <-chan error {
+		var r <-chan error
+		first.Do(func() { r = retry })
+		return r
+	}
+	m := &gateMark{entered: make(chan struct{}), gate: make(chan struct{})}
+	n.marks = m
+	f := n.create(t, n.admin, n.fs.Root, "f", vfs.CreateRegular).File
+	n.stored(t, f.ID)
+	if _, err := n.Unlink(t.Context(), n.admin, vfs.Target{H: n.fs.Root}, []byte("f")); err != nil {
+		t.Fatal(err)
+	}
+	retry <- nil
+	<-m.entered
+	n.must(t, n.Drain(t.Context()))
+	stopped := make(chan error, 1)
+	go func() { stopped <- n.Stop() }()
+	select {
+	case err := <-stopped:
+		close(m.gate)
+		t.Fatalf("Stop returned (%v) while the wait on a release's outcome still ran", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(m.gate)
+	n.must(t, <-stopped)
+}
+
+func TestStopEndsTheWaitOnAPendingRelease(t *testing.T) {
+	n, m, _, _ := pendingRelease(t)
+	n.must(t, n.Drain(t.Context()))
+	stopped := make(chan error, 1)
+	go func() { stopped <- n.Stop() }()
+	select {
+	case err := <-stopped:
+		n.must(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop still waits on a pending release after 5s")
+	}
+	if !settles(0) {
+		t.Errorf("%d of the filesystem's goroutines run after Stop", filesystemGoroutines())
+	}
+	if got := m.ended(0); len(got) != 0 {
+		t.Errorf("the mark ended %v at Stop, want no done", got)
+	}
+}
+
+// RFC 17 §5.3: the release after a name's removal runs within the call's
+// deadline. An unlink whose release stalls returns by its deadline, the
+// unlink done and the release left pending, its mark kept.
+func TestARemovedNamesReleaseEndsAtItsCallsDeadline(t *testing.T) {
+	n := newNames(t)
+	m := &failMark{}
+	n.marks = m
+	f := n.create(t, n.admin, n.fs.Root, "f", vfs.CreateRegular).File
+	n.stored(t, f.ID)
+	free := make(chan struct{})
+	n.engine.mu.Lock()
+	n.engine.stall = free
+	n.engine.mu.Unlock()
+	call, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := n.Unlink(call, n.admin, vfs.Target{H: n.fs.Root}, []byte("f"))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("an unlink whose release stalled: %v, want success", err)
+		}
+	case <-time.After(5 * time.Second):
+		close(free)
+		t.Fatalf("an unlink still ran 5s past its deadline behind a stalled release (it then answered %v)", <-done)
+	}
+	if got := m.ended(0); len(got) != 0 {
+		t.Errorf("the mark ended %v, want kept for the next start", got)
 	}
 }

@@ -73,8 +73,18 @@ type Content interface {
 	Read(ctx context.Context, s entity.ShareID, f entity.FileID, off int64, dst []byte) (int, error)
 	Truncate(ctx context.Context, s entity.ShareID, f entity.FileID, size int64) error
 	Deallocate(ctx context.Context, s entity.ShareID, f entity.FileID, off, n int64) error
-	// Delete is the file's release; never the journal's eviction.
-	Delete(ctx context.Context, s entity.ShareID, f entity.FileID) error
+	// Delete is the file's release; never the journal's eviction. A release
+	// that cannot finish within the call answers a retry channel and no
+	// error (RFC 8 §8.1): it yields the outcome once, nil when the release
+	// committed, vfserr.ErrFileOpen when a holder aborted it, a Delay with
+	// DelayClone once the clone it waited behind is done, for the release to
+	// be run again, or ErrUnavailable when the engine's Close or Drop ends it
+	// or a journal turned read-only undoes its Delete.
+	// An error within the call is vfserr.ErrFileOpen for an abort. The
+	// engine's send on the channel never blocks: it has capacity 1, as its
+	// receiver may stop listening, abandoned at the filesystem's Stop, which
+	// precedes the engine's Close (RFC 17 §2.5).
+	Delete(ctx context.Context, s entity.ShareID, f entity.FileID) (retry <-chan error, err error)
 	// Clone is atomic; Copy copies xs in order and may be short. Each file
 	// is named with its own share, as on one node a clone between two
 	// shares of one namespace reaches the engine.

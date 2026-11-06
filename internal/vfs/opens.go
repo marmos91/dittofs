@@ -12,6 +12,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // Opens and closes, and the release of a file nothing holds. An open
@@ -677,26 +678,72 @@ func (m openMark) Releasing(ctx context.Context, f openstate.FileKey) (func(bool
 // release runs the release of the file key names, holding its admission
 // lock: marked as being released, then the engine's Delete, whose
 // transaction re-checks the holders. A file found held is left to the close
-// or release holding it.
+// or release holding it. The release's outcome goes to the mark's done as
+// RFC 17 §5.3 says: committed or aborted, it ends the mark; any other
+// failure within the call keeps it, calling no done (RFC 8 §8.1, step 1),
+// and the release is left to the next start's recovery. A release that
+// cannot finish within the call answers a retry channel, waited on by
+// awaitRelease, and release answers as if it were done.
 //
 // ponytail: the pending releases a release writes for the file's named
 // streams are run by the next start's recovery, not after it, as Delete
 // reports none. Run each here once the engine's Delete reports them.
-//
-// decision: every failed Delete ends the mark, as an aborted release does,
-// though one failing before phase 1 because the journal turned read-only
-// should keep it until the process ends, so no open lands that a later run
-// of the release could abort on: Delete answers a bare error, so the two
-// are not told apart. Keep the mark on that failure once Delete reports
-// which it was.
 func (fs *Filesystem) release(ctx context.Context, key openstate.FileKey) error {
 	done, held, err := fs.marks.Releasing(ctx, key)
 	if err != nil || held {
 		return openErr(err)
 	}
-	err = fs.engine.Delete(ctx, key.Share, key.ID)
-	done(err == nil)
+	retry, err := fs.engine.Delete(ctx, key.Share, key.ID)
+	switch {
+	case retry != nil:
+		fs.awaitRelease(key, done, retry)
+		return nil
+	case err == nil:
+		done(true)
+		return nil
+	case errors.Is(err, vfserr.ErrFileOpen):
+		done(false)
+		return nil
+	}
 	return storeErr(err)
+}
+
+// awaitRelease waits, in the background and never inside Sink.Closed, on the
+// retry channel of key's pending release, which keeps its mark meanwhile
+// (RFC 17 §5.3): committed or aborted, the outcome goes to done; a clone's
+// delay goes to done(false) and the release is run again, marked anew, as a
+// call the filesystem admits, so a drain refuses it or joins it and its
+// deadline ends it; any other outcome is logged and keeps the mark, leaving
+// the release to the next start's recovery. From Drain on no release is run
+// again, and the wait ends at Stop without its done (RFC 17 §2.5).
+func (fs *Filesystem) awaitRelease(key openstate.FileKey, done func(bool), retry <-chan error) {
+	fs.background(func(ctx context.Context) {
+		var out error
+		select {
+		case out = <-retry:
+		case <-ctx.Done():
+			return
+		}
+		var d *vfs.Delay
+		switch {
+		case out == nil:
+			done(true)
+		case errors.Is(out, vfserr.ErrFileOpen):
+			done(false)
+		case errors.As(out, &d) && d.Cause == vfs.DelayClone:
+			done(false)
+			ctx, end, err := fs.enter(ctx)
+			if err != nil {
+				return
+			}
+			defer end()
+			if err := fs.releaseAlone(ctx, key.Share, key.ID); err != nil {
+				fs.log.Warn("vfs: a release run again after a clone failed", "file", key.ID, "err", err)
+			}
+		default:
+			fs.log.Warn("vfs: a pending release did not finish", "file", key.ID, "err", out)
+		}
+	})
 }
 
 // releaseAlone is release of file f of share, by a caller holding none of

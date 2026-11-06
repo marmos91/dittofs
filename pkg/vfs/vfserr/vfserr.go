@@ -48,6 +48,19 @@ var (
 	ErrPastEnd = errors.New("vfs: offset at or past the end of the file")
 )
 
+// ErrFileOpen is a release a holder aborted in its phase 1, reached only by a
+// durable open no table of this primary admitted, as the mark keeps every
+// other open out. The file stays, but the journal's Delete has already
+// dropped its held extents, so its bytes not offloaded read Lost, reported
+// as data loss naming the file (RFC 8 §2.5, step 3).
+//
+// decision: ErrFileOpen passes only between the engine and the filesystem,
+// which answers an unlink or a rename before a pending release's outcome is
+// known (RFC 17 §5.3), so no adapter ever sees it. It is therefore not one of
+// the values vfs.Errors lists for adapters' tables to cover. Overturned if a
+// call ever answers an adapter with a release's outcome.
+var ErrFileOpen = errors.New("vfs: release aborted by a holder")
+
 // AccessError is an ErrAccess with its cause.
 type AccessError struct{ Cause AccessCause }
 
