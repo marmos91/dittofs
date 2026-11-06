@@ -38,8 +38,7 @@
 //
 // Run:
 //
-//	cd test/e2e && DITTOFS_E2E_NIGHTLY=1 sudo ./run-e2e.sh \
-//	    --s3 --test TestDedupRace_NFSv4_ConcurrentIdenticalWrites
+//	DITTOFS_E2E_NIGHTLY=1 test/harness/bin/dt run e2e TestDedupRace_NFSv4_ConcurrentIdenticalWrites
 package e2e
 
 import (
@@ -85,7 +84,7 @@ func TestDedupRace_NFSv4_ConcurrentIdenticalWrites(t *testing.T) {
 	}
 
 	if !framework.CheckLocalstackAvailable(t) {
-		t.Skip("Skipping: Localstack (S3) not available — run via run-e2e.sh --s3")
+		t.Skip("Skipping: Localstack (S3) not available: start it with dt services up localstack")
 	}
 
 	lsHelper := framework.NewLocalstackHelper(t)

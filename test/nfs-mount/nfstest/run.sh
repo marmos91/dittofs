@@ -5,8 +5,8 @@
 # Usage:
 #   sudo ./run.sh --variant v4.1 [--modules posix,lock]
 #
-# Expects a provisioned server (the suite's setup step,
-# test/posix/setup-posix.sh --no-mount). nfstest mounts and unmounts the
+# Expects a provisioned server: baseline-knfsd.sh, its only caller, sets up knfsd.
+# nfstest mounts and unmounts the
 # export itself for every module, with the option set under test.
 #
 # The client is a network namespace of its own (see ../netns.sh), and nfstest

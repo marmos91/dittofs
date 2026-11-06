@@ -491,7 +491,6 @@ suites:
         done | xargs -0 shellcheck --severity=warning
 
   unit:
-    job: Unit Tests (1.26.x)            # the name the ruleset requires, until it requires the gate (§4.8)
     format: go-json
     cmd: go test -race {args} -timeout=25m -coverprofile={out}/coverage.txt ./pkg/... ./internal/... ./cmd/... ./test/...   # the profile Codecov gets (§4.8)
     args: { pr: "-short" }              # pull requests run the short suite, as today
@@ -505,7 +504,6 @@ suites:
         cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
         tier: nightly                   # blocking there: a tripped gate posts (§4.10)
   integration:
-    job: Integration Tests (1.26.x)
     format: go-json
     cmd: go test -tags=integration -p 1 -timeout=20m {packages}
     packages: { tag: integration }      # the packages whose tests the tag changes, from `go list`
@@ -766,7 +764,7 @@ suites:
 | `names` | What `{names}` holds when a run names no tests, for a tool that finds its own tests and takes their names as arguments, as pynfs takes `all` or test codes | none |
 | `known` | The suite's known failures and expected skips (§4.7) | none |
 | `shards` | Split `tests` over this many CI jobs | `1` |
-| `job` | Run in a CI job of this fixed name, outside the matrix: for checks the branch ruleset requires by name. `unit` and `integration` keep theirs only until the ruleset requires the gate (§4.8) | none: a matrix cell |
+| `job` | Run in a CI job of this fixed name, outside the matrix: for checks the branch ruleset requires by name | none: a matrix cell |
 | `parallel` | `true`: under `--parallel`, the suite's cells may run beside others (§4.4), set once someone has checked that they hold nothing else of the host's ([testing-parallel.md](../testing-parallel.md)) | `false`: they run alone |
 
 **Placeholders.** `dt` fills them once per cell, before the first test, and `{test}` again for
@@ -996,8 +994,8 @@ A failed fixture step is never retried (§9): DittoFS starts inside the fixture,
 hide its flakiness. The cell is reported as not run, and someone re-runs it by hand. A test is
 never retried on a pull request (§4.7).
 
-`dt` stops only the processes it started. Today `teardown-posix.sh` kills every `dfs start` on the
-machine, a developer's own server included. A server started under `sudo` (port 445) outlives a
+`dt` stops only the processes it started. `teardown-posix.sh`, which it replaced, killed every
+`dfs start` on the machine, a developer's own server included. A server started under `sudo` (port 445) outlives a
 `dt` that is killed, since the signal that ends a child with its parent doesn't cross `sudo`; it
 holds the port until it is stopped by hand. Each cell's results go to its `{out}`, the same layout
 for every suite, where today five workflow steps look for the newest directory with `ls -td`, and
@@ -1716,8 +1714,7 @@ One workflow, `tests.yml`, runs every registered suite:
     into one report: its job summary is each blocking cell's `report.md`, one after another, from
     the cell's latest attempt. It
     fails unless `plan` passed and every other job it needs passed or was skipped: a `run` job
-    passes only when its cell exited 0, and a fixed job (below) is skipped when the plan has no
-    cell of its suite.
+    passes only when its cell exited 0.
   - Non-blocking cells run in a second matrix the gate doesn't wait for, so a slow non-blocking
     cell, such as the Windows unit run, doesn't lengthen the PR. Their new failures are annotated,
     and a failed job still shows on the PR. It is the job `non-blocking`, and its artifacts
@@ -1733,10 +1730,8 @@ One workflow, `tests.yml`, runs every registered suite:
     concurrency group of its own that cancels nothing, so posts run one at a time and a merge run's
     and a nightly run's never overwrite each other's. Non-blocking cells don't post: they never
     fail the gate, so they never make develop red.
-- **Moving in:** while the suites move into `tests.yml` (§8 step 3), `plan` keeps only the cells
-  of the suites that have moved, pynfs first. A suite joins by being added to that filter, less
-  the options that move later, with any step its cells need that `run` doesn't give yet, such as
-  a service or a package; the filter goes once every suite runs there.
+- **Moving in:** every suite runs in `tests.yml` (§8 step 3): `plan` keeps every cell but the
+  dedicated host's, which that host runs itself and reports as its own commit status.
 - **Concurrency:** as the other workflows: a newer run of a pull request cancels the older, and
   a scheduled run has a group of its own, so it and a push never replace each other. A push waits
   for the run in progress, and a newer push replaces it while it waits: pushes that land faster
@@ -1750,15 +1745,11 @@ One workflow, `tests.yml`, runs every registered suite:
   develop ruleset's required checks don't change. They don't wait for `plan`, so a docs-only
   change, which plans no cell, still has its commits and the suite tables checked. `Go Checks`
   also vets every build-tagged test, as #3002 added, and runs `go mod verify`, as the unit jobs
-  did. `unit` and `integration` run the same way, as `Unit Tests (1.26.x)` and
-  `Integration Tests (1.26.x)`, until the ruleset requires the gate, except that each waits for
-  `plan` and is skipped when the plan has no cell of its suite, which passes the required check.
-  When `plan` fails they run, so a required check never passes on a plan that wasn't made.
-  `Integration Tests (1.26.x)` starts its services with `dt services up postgres kmip`, and runs
-  `integration`'s Kerberos and portmap options as steps after the suite, each even when one
-  before it failed, as the old job ran them, rather than as `run` cells, which only `gate` waits
-  for. `Unit Tests (1.26.x)` uploads the coverage profile `unit` writes to its `{out}` to Codecov, as
-  the unit job did, unless a retry rewrote it with the retried tests' alone. Codecov's project
+  did. `unit`, `integration` and its Kerberos and portmap options are cells of the plan like the
+  rest. The `run` job starts the services a cell's needs name (`dt services up postgres kmip` for
+  `integration`) and rpcbind for a cell that needs it running (`integration/portmap`), and for the
+  `unit` cell uploads the coverage profile `unit` writes to its `{out}` to Codecov, as the unit job
+  did, unless a retry rewrote it with the retried tests' alone. Codecov's project
   check, set in `codecov.yml`, fails only on a drop of more than 0.5% in total coverage, since the
   profile moves by up to about 0.1% between runs of the same code. A fixed job's
   artifact is `dt-run-SUITE-ATTEMPT`, and `gate` needs every fixed job, so its report has theirs
@@ -1772,19 +1763,19 @@ One workflow, `tests.yml`, runs every registered suite:
   cell whose every command is skipped this way passes.
 - **Docs-only PRs:** given `--base` (the PR's base), `dt plan` compares the branch with it, and when every changed path is documentation (`docs/**`, `*.md`, images, `LICENSE`, `.gitignore`, the paths the workflows ignore today) it returns no cells, and `gate` passes.
 
-**Merging.** Since 2026-10-08:
-- develop requires `Unit Tests (1.26.x)` and `Integration Tests (1.26.x)` beside the lint and
-  security checks, with their path filters moved inside the jobs so they always report (#2972);
+**Merging.**
+- develop requires `gate`, the Tests workflow's job, beside the lint and security checks (`Go Checks`, `Repo Checks`,
+  `ShellCheck`, `gitleaks`, `Analyze (go)`);
 - it requires one approving review and up-to-date branches;
 - auto-merge is enabled for the repository, so a PR that turns it on merges once it's green,
   approved and up to date.
 
-`Tests / gate` replaces the per-workflow test checks as the required one, once the `pr` tier has
-been green for two weeks (§9). The PR that makes it required also drops `Unit Tests (1.26.x)` and
-`Integration Tests (1.26.x)` from the ruleset and their `job` names from the registry, in one
-change, so no PR waits for a check that no longer reports, and `integration`'s Kerberos and portmap
-options go back to being cells of the plan. A single gate that always runs avoids
-GitHub's path-filter trap by construction.
+From 2026-10-08 until the `pr` tier had been green for two weeks (§9), develop required
+`Unit Tests (1.26.x)` and `Integration Tests (1.26.x)` instead, with their path filters moved
+inside the jobs so they always reported (#2972). The change that made `gate` required
+dropped both from the ruleset and their `job` names from the registry, so no PR waited for a check
+that no longer reports, and `integration`'s Kerberos and portmap options became cells of the plan
+again. A single gate that always runs avoids GitHub's path-filter trap by construction.
 
 GitHub's merge queue is "available in any public repository owned by an organization". This
 repository is owned by a user account, so it can't be enabled here; up-to-date branches stand in
@@ -2214,7 +2205,7 @@ assumption was wrong, the design follows what was found. It records how the desi
 | Develop-red alerting was removed after floods | True: added in #1170 (e-mail and issue), removed in #1705 after flaky smbtorture subtests | `684f97f4`, `ci-health.yml:3-5` |
 | `ci-health` watches develop | Three workflows only. AD-DC failed on every develop run from #2914 (`77062d90`) to `0d8dbdd8`, 7 runs, with no signal; fixed in #2980 | `ci-health.yml:22-30`, Actions history |
 | The nightly conformance run is green | It has failed every night since at least 2026-09-10: the baseline job's push to develop is refused ("Changes must be made through a pull request"), and the summary job, which doesn't need it, stays green (#2997) | `conformance.yml:521-562` |
-| Only lint and security gate merges | Until 2026-10-08. `Unit Tests` and `Integration Tests` are required since then, with their path filters moved inside the jobs by #2972; develop also needs one approval, and auto-merge is enabled | ruleset `Protect develop` |
+| Only lint and security gate merges | Until 2026-10-08. `Unit Tests` and `Integration Tests` were required from then, with their path filters moved inside the jobs by #2972, until `gate` replaced them (§4.8); develop also needs one approval, and auto-merge is enabled | ruleset `Protect develop` |
 | Enable the merge queue | Not available on a user-owned repository; up-to-date branches are required instead | GitHub docs, ruleset |
 | `smb-client-compat` tests the Windows client | Mostly not: its `net use` step skips because port 445 is owned by the runner's kernel, and the job passes, on most runs since mid-September (#2994). Its Linux job mounts SMB 2.1 while its summary says 3.1.1. The hosted Windows runner is Windows Server 2025, whose SMB client supports `net use /TCPPORT` | `smb-client-compat.yml:104, 114, 149-164` |
 | Tool versions are pinned once | Go is pinned four different ways; pjdfstest and pynfs revisions are copied from `flake.lock` | `go.mod:3`, `lint.yml:56`, `dev.Dockerfile:12, 24, 54` |

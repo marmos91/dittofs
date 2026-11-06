@@ -2683,12 +2683,12 @@ type Blocks interface {
 }
 
 // MarksWrite is one group commit's sync marks (RFC 8 §5.2): each replaces the
-// stored mark of its stream unconditionally, and the write commits only while
-// J‖journal‖og, read tracked, still equals Gen (RFC 16 §6.3).
+// stored mark of its Stream unconditionally, no other stream's mark is deleted,
+// and the write commits only while J‖journal‖og, read tracked, still equals Gen (RFC 16 §6.3).
 type MarksWrite struct {
     Journal JournalID
     Gen     OpenGen    // the open generation Lifecycle.SyncMarks wrote for the open whose marks these are
-    Marks   []SyncMark // RFC 1 §3, one per append stream
+    Marks   []SyncMark // RFC 1 §3, one per append stream, each keyed by its Stream
 }
 
 // VersionRun is one run of Versions: the highest version metadata records over it.
@@ -2699,7 +2699,7 @@ type VersionRun struct {
 
 var (
     ErrOpenGenMoved = errors.New("blockmeta: open generation moved")   // Commit: og is no longer Gen; the write is dropped, and marks stop only if og passed the current open's (RFC 8 §5.2)
-    ErrSyncMarks    = errors.New("blockmeta: sync marks not written") // Commit: the marks keys still conflicting at the deadline (RFC 8 §5.2)
+    ErrSyncMarks    = errors.New("blockmeta: sync marks not written") // Commit: the marks keys still conflicting at the deadline; only where the store knows they conflicted: always with marks alone, beside files only where it names the keys, else the conflict is the files' (RFC 8 §5.2)
     ErrReferenced   = errors.New("blockmeta: retired block referenced") // MarkDeleted refused, block resurrected
     ErrChunkDeleted = errors.New("blockmeta: adopted chunk deleted")   // §7.2
     ErrNoIntent     = errors.New("blockmeta: put intent absent")       // §7.6

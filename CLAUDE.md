@@ -74,10 +74,10 @@ go build -o dfsctl cmd/dfsctl/main.go
 go test ./...
 go test -race ./...
 
-# E2E (requires sudo + kernel NFS client)
-cd test/e2e && sudo ./run-e2e.sh           # all configs
-sudo ./run-e2e.sh --s3                      # include S3 via Localstack
-sudo ./run-e2e.sh --test TestNFSv4BasicOperations
+# E2E (Linux, a kernel NFS client and passwordless sudo; dt runs it as root)
+test/harness/bin/dt services up localstack           # the S3 the store matrix needs
+test/harness/bin/dt run e2e                          # every test
+test/harness/bin/dt run e2e TestNFSv4BasicOperations
 
 # Lint
 go fmt ./...

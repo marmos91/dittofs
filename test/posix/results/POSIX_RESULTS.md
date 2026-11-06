@@ -36,20 +36,14 @@ See `test/posix/known.yaml` for the complete list of known limitations.
 ## Running Tests
 
 ```bash
-# Enter development shell
-nix develop
+# The S3 the badger-s3 profile keeps its blocks in
+test/harness/bin/dt services up localstack
 
-# Build and start DittoFS with a store profile and mount the share at
-# /tmp/dittofs-test. Profiles: memory (default), badger, memory-content,
-# cache-s3, badger-s3 (the S3 profiles require Localstack)
-sudo ./test/posix/setup-posix.sh <profile>
-
-# Run the tests, then unmount and stop the server
-dfs-posix
-sudo ./test/posix/teardown-posix.sh
+# Start the server, mount it, run every test file and grade it against known.yaml
+test/harness/bin/dt run pjdfstest/badger-s3/3
 ```
 
-See `test/posix/README.md` for the full set of options.
+See `test/posix/README.md` for the NFS versions and running one test file.
 
 ## Key Fixes Applied
 

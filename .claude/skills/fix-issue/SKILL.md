@@ -245,7 +245,7 @@ test/harness/bin/dt run pjdfstest       # pjdfstest: the real NFS-side FS-semant
 
 `dt` runs a suite against a server it sets up itself, on Linux or in its container,
 `test/harness/bin/dtc`; `dt doctor` says what the machine lacks. `test/e2e/` needs sudo and a kernel NFS client:
-`cd test/e2e && sudo ./run-e2e.sh`. **Never run two suites concurrently** — they
+`test/harness/bin/dt run e2e`. **Never run two suites concurrently**: they
 collide on ports and mounts.
 
 If the change is about crash behaviour, device loss, real kernel-client

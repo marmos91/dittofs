@@ -34,7 +34,7 @@ const (
 	qcow2BaseSHA256 = "<freeze-at-first-run>"
 
 	// qcow2BaseCachePath is relative to the test working directory
-	// (test/e2e when run via run-e2e.sh). Gitignored — see
+	// (test/e2e, the package's directory under go test). Gitignored; see
 	// fixtures/qcow2/.gitignore.
 	qcow2BaseCachePath = "fixtures/qcow2/base.qcow2"
 
