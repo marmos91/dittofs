@@ -74,9 +74,9 @@ func (f *file) lose(e core.Extent, v core.Version) error {
 // ceiling; the commit's delta keeps the count exact, and the next admitted
 // operation sees it. Withdraw this if the bound must hold against a burst
 // of losses.
-func (fs *files) lose(id core.FileID, e core.Extent, v core.Version) error {
+func (fs *files) lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta, error) {
 	if e.Len == 0 {
-		return core.ErrZeroLength
+		return HeldDelta{}, core.ErrZeroLength
 	}
 	return fs.update(id, func(f *file) error { return f.lose(e, v) })
 }
