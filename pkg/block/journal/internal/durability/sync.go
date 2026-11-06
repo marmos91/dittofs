@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
@@ -28,6 +29,16 @@ type Config struct {
 	// (R19): no record of it is pending any more. It runs on the stream's
 	// worker with no lock held, so it must not wait on a Sync.
 	Resolved func(stream uint32, seg core.SegmentID)
+
+	// Dir is the journal's directory, the key of its per-process loss state.
+	Dir string
+
+	// Counters issue the loss record's sequence number. It is required.
+	Counters *index.Counters
+
+	// MarkLoss leaves the index's loss marker for a synced loss. It is
+	// required.
+	MarkLoss func(core.FileID, core.Extent, core.Version) error
 }
 
 // SyncDurationBounds are the upper bounds of the sync duration histogram's
@@ -52,6 +63,15 @@ type Part struct {
 	// LastSyncError is the most recent sync failure across the streams, nil
 	// when none has failed.
 	LastSyncError *SyncFailure
+
+	// Losses are the events in the ring, oldest first.
+	Losses []core.LossEvent
+
+	LossGeneration uint64
+
+	CorruptDataLoss   uint64
+	CorruptRepairable uint64
+	StaleExtents      uint64
 }
 
 // Durability is the ledger and the workers of every stream.
@@ -60,6 +80,58 @@ type Durability struct {
 	domains Domains
 	tracer  core.Tracer
 	log     *slog.Logger
+
+	dir      *dirState
+	counters *index.Counters
+	markLoss func(core.FileID, core.Extent, core.Version) error
+
+	// streams are the append streams a loss record is written through, bound
+	// by Start. It is nil before Start, which Lose reports as an error.
+	streams atomic.Pointer[segment.Streams]
+
+	// refuse reports why the journal takes no append, or nil. It is nil-free:
+	// New installs one that never refuses, and the read-only state replaces
+	// it.
+	refuse func() error
+
+	// afterAppend, beforePublish and beforeSync are test hooks, nil in
+	// production.
+	afterAppend   func()
+	beforePublish func()
+	beforeSync    func()
+
+	// lmu guards the loss ring, the counters, pieces and named.
+	//
+	// decision: lmu is a leaf mutex over the ring, the counters and the named
+	// set. It is never held across an Append, a Sync or a MarkLoss, which take
+	// locks of other domains, so it adds no edge to the journal's lock order.
+	lmu               sync.Mutex
+	ring              [core.LossRingSize]core.LossEvent
+	head              int // index of the oldest event
+	count             int
+	nextEvent         uint64
+	corruptDataLoss   uint64
+	corruptRepairable uint64
+	stale             uint64
+
+	// pieces holds every (dropped seq, extent) a Lose or a Place has taken,
+	// so one piece of a dropped record is reported once, while another piece
+	// of the same record, which a reconcile can drop alone, is reported on
+	// its own.
+	//
+	// ponytail: it grows by one entry per piece lost for the life of the
+	// Durability and is never pruned, so it follows the number of loss
+	// records the journal holds, not the ring. Upgrade to dropping an entry
+	// once no copy of its dropped record remains to be reported again, when
+	// a journal with a long loss history shows up in a heap profile.
+	pieces map[piece]struct{}
+
+	// named holds the dropped seqs a loss record already names, written by
+	// a Lose, owed by a deferred Lose or found by a Place. A record names
+	// the whole dropped record, so a later piece of that seq appends none; a
+	// superseded one excludes its record only over its own extent and is
+	// never held here. It is as unbounded as pieces, and shares its upgrade.
+	named map[core.Seq]struct{}
 
 	// resolved is Config.Resolved: the announcement of a resolved window.
 	resolved func(stream uint32, seg core.SegmentID)
@@ -114,13 +186,21 @@ type Durability struct {
 	wg   sync.WaitGroup
 }
 
-// New returns a Durability. A nil Clock or Domains is a caller bug and panics.
-func New(cfg Config) *Durability {
+// New returns a Durability. A nil Clock, Domains, Counters or MarkLoss is a
+// caller bug and panics; the error is that of resolving Dir.
+func New(cfg Config) (*Durability, error) {
 	if cfg.Clock == nil {
 		panic("durability: the layer needs its clock")
 	}
 	if cfg.Domains == nil {
 		panic("durability: the layer needs the file append domains")
+	}
+	if cfg.Counters == nil || cfg.MarkLoss == nil {
+		panic("durability: the layer needs its counters and loss marker")
+	}
+	dir, err := stateFor(cfg.Dir)
+	if err != nil {
+		return nil, err
 	}
 	log := cfg.Log
 	if log == nil {
@@ -135,7 +215,14 @@ func New(cfg Config) *Durability {
 		made:     map[uint32]*stream{},
 		done:     make(chan struct{}),
 		change:   make(chan struct{}),
-	}
+
+		dir:      dir,
+		counters: cfg.Counters,
+		markLoss: cfg.MarkLoss,
+		refuse:   func() error { return nil },
+		pieces:   map[piece]struct{}{},
+		named:    map[core.Seq]struct{}{},
+	}, nil
 }
 
 // changes returns the channel the next stream change closes.
@@ -328,6 +415,7 @@ func (d *Durability) Start(streams *segment.Streams) {
 		started[i] = st
 	}
 	d.started = true
+	d.streams.Store(streams)
 	streams.OnEnd(d.onEnd)
 	for _, st := range started {
 		d.wg.Add(1)
@@ -406,6 +494,21 @@ func (d *Durability) Stats() Part {
 		sf := last.SyncFailure
 		p.LastSyncError = &sf
 	}
+
+	d.lmu.Lock()
+	p.Losses = make([]core.LossEvent, d.count)
+	for i := range p.Losses {
+		p.Losses[i] = d.ring[(d.head+i)%core.LossRingSize]
+	}
+	p.CorruptDataLoss = d.corruptDataLoss
+	p.CorruptRepairable = d.corruptRepairable
+	p.StaleExtents = d.stale
+	d.lmu.Unlock()
+
+	// The generation is read after the ring is copied: Lose raises it before
+	// it publishes, so every event in the copy has already raised it and a
+	// load made afterwards includes that raise.
+	p.LossGeneration = d.dir.load()
 	return p
 }
 

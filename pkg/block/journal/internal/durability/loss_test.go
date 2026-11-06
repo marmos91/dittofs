@@ -1013,3 +1013,22 @@ func TestLoseWithRaisedLeavesTheGenerationAlone(t *testing.T) {
 		}
 	})
 }
+
+// TestLoseBeforeStartReturnsAnError pins that a loss asked of a layer that has
+// no streams yet is refused, not a panic, and takes nothing: the same loss
+// goes through once the layer is started.
+func TestLoseBeforeStartReturnsAnError(t *testing.T) {
+	e := newEnv(t)
+	d := e.newDurabilityAt(t.TempDir())
+
+	if _, err := d.Lose(context.Background(), loss(3)); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("Lose before Start = %v, want core.ErrClosed", err)
+	}
+	if got := d.Stats().Losses; len(got) != 0 {
+		t.Fatalf("a refused Lose published %+v", got)
+	}
+	d.BindStreams(e.streams)
+	if _, err := d.Lose(context.Background(), loss(3)); err != nil {
+		t.Fatalf("Lose once bound: %v", err)
+	}
+}

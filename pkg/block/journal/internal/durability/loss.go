@@ -77,14 +77,20 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 		return core.LossEvent{}, err
 	}
 
+	// A Lose before Start has no stream to append through. It is refused
+	// before the piece is taken, so the loss can be raised again once started.
+	if d.streams.Load() == nil {
+		return core.LossEvent{}, fmt.Errorf("durability: the layer is not started: %w", core.ErrClosed)
+	}
+
 	// A reason that names none is a caller bug refused here, before the seq
 	// is named, so every path refuses it alike.
 	toFormat(l.Reason)
 
-	d.mu.Lock()
+	d.lmu.Lock()
 	k := piece{l.Seq, l.Extent}
 	if _, ok := d.pieces[k]; ok {
-		d.mu.Unlock()
+		d.lmu.Unlock()
 		return core.LossEvent{}, nil
 	}
 	d.pieces[k] = struct{}{}
@@ -92,12 +98,12 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	if l.Reason != core.LossSuperseded {
 		d.named[l.Seq] = struct{}{}
 	}
-	d.mu.Unlock()
+	d.lmu.Unlock()
 
 	var recErr error
 	refused := false
 	if !l.Deferred && (!alreadyNamed || l.Reason == core.LossSuperseded) {
-		if recErr = d.readOnly(); recErr != nil {
+		if recErr = d.refuse(); recErr != nil {
 			refused = true
 		} else {
 			recErr = d.appendRecord(l)
@@ -127,7 +133,7 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 		d.dir.raise()
 	}
 
-	d.mu.Lock()
+	d.lmu.Lock()
 	switch {
 	case l.Reason == core.LossCorrupt && !l.Offloaded:
 		d.corruptDataLoss++
@@ -136,13 +142,13 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	case l.Reason == core.LossStale:
 		d.stale++
 	}
-	d.mu.Unlock()
+	d.lmu.Unlock()
 
 	if d.beforePublish != nil {
 		d.beforePublish()
 	}
 
-	d.mu.Lock()
+	d.lmu.Lock()
 	ev := d.pushLocked(core.LossEvent{
 		Share:     l.Share,
 		File:      l.File,
@@ -153,7 +159,7 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 		AtOpen:    l.AtOpen,
 		Deferred:  l.Deferred,
 	})
-	d.mu.Unlock()
+	d.lmu.Unlock()
 
 	// decision: a drop whose record could not be appended is never undone.
 	// The journal stops holding what it cannot produce, and a loss only errs
@@ -199,7 +205,11 @@ func (d *Durability) appendRecord(l Loss) error {
 		Offloaded: l.Offloaded,
 		Reason:    toFormat(l.Reason),
 	}}
-	s := d.streams.For(l.File)
+	streams := d.streams.Load()
+	if streams == nil {
+		return fmt.Errorf("durability: the layer is not started: %w", core.ErrClosed)
+	}
+	s := streams.For(l.File)
 	placed, err := s.Append(h, body)
 	if err != nil {
 		return err
