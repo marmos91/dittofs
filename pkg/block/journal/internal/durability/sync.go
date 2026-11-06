@@ -74,12 +74,13 @@ type Durability struct {
 	// entry is wired, when a stopped stream must always reach it.
 	//
 	// decision: it is reached only through an EndEvent carrying Stopped, but
-	// the stream also stops without an event in two cases: a failed successor
-	// header write after a failed sync, whose stop travels through later
-	// appends' ErrStreamStopped, and End on an already ended segment with
-	// EROFS. So a stream can stop with readOnly uncalled, for example when
-	// segment 1's sync fails and then the spare's header write fails on the
-	// roll. The stream stack needs a stop notification of its own before this
+	// the stream also stops without an event, for example on a failed
+	// successor header write after a failed sync (or one carrying EROFS on
+	// any roll), whose stop travels through later appends' ErrStreamStopped;
+	// on End of an already ended segment with EROFS; and on a straggler
+	// write's EROFS after the segment's event was handed over. So a stream
+	// can stop with readOnly uncalled, as when segment 1's sync fails and
+	// then the spare's header write fails on the roll. The stream stack needs a stop notification of its own before this
 	// can claim a stopped stream always reaches it.
 	readOnly func(cause error)
 
@@ -192,7 +193,8 @@ type stream struct {
 
 	// counted holds the segments whose failed sync the worker counted and
 	// whose end event has not been taken yet. failed alone cannot say so: the
-	// completion pass or a resolved window drops a failure nothing names, and
+	// completion pass drops a failure nothing names (a segment's only window
+	// comes from its end event, so no resolved window can precede it), and
 	// a seal's EndSeal for that segment arriving after would count the one
 	// fsync again. takeWindow removes the mark with the event, the one every
 	// ended segment gets.
@@ -607,10 +609,11 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 // waiter's goroutine, issues the sync so a cancelled waiter is never stuck in
 // the syscall.
 //
-// decision: a target in a pending window answers its *core.SyncError as soon
-// as syncStep stores failed[seg], before the segment's End and before any end
-// event, so before the window exists and before its records are failed through
-// the index. The answer is non-nil today because nothing here re-appends a
+// decision: a target of a failed segment answers its *core.SyncError as soon
+// as failed[seg] is stored. For the worker's own failed sync that is syncStep,
+// before the segment's End and before any end event, so before the window
+// exists; for a seal or append failure it is takeWindow, with the window. Either
+// way it is before the window's records are failed through the index. The answer is non-nil today because nothing here re-appends a
 // failed segment's records: the answer then holds for as long as the failure
 // stands. It stops holding once the code that re-appends them lands, for the
 // writes' Sync calls must then wait for the new sync (RFC 1 §5.3), so a

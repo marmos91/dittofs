@@ -120,6 +120,9 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	// seal fsyncs that syncs does not: a sync of an ended segment issues no
 	// fsync yet its seal counts one (Syncs=0, SyncFailures=1), and the two
 	// counters count different sets.
+	// sync_failures also differs from RFC 1's "syncs issued, and failed" row:
+	// it counts a seal's failure the worker never issued. The RFC row should
+	// say the same; that is a follow-up for the RFC, not for this code.
 	var failedAt time.Time
 	var failedMono time.Duration
 	if ev.Cause == segment.EndSeal {
