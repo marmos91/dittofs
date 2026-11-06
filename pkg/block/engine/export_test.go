@@ -108,3 +108,30 @@ func (e *Engine) Pending(f entity.FileID) []PendingView {
 	}
 	return out
 }
+
+// AddOp adds a pending deallocate of [off, off+n), or with truncate a pending
+// truncate to off, to f's entry at version v, as those calls will once built.
+func (e *Engine) AddOp(f entity.FileID, v uint64, truncate bool, off, n int64) {
+	op := pendingOp{version: journal.Version{Counter: v}, kind: opDeallocate, extent: journal.Extent{Off: off, Len: n}}
+	if truncate {
+		op.kind, op.extent.Len = opTruncate, 0
+	}
+	fe := e.files.lockFor(f)
+	fe.insert(op)
+	e.files.unlock(f, fe)
+}
+
+// AddWriteOp adds a pending write of [off, off+n) to f's entry at version v.
+func (e *Engine) AddWriteOp(f entity.FileID, v uint64, off, n int64) {
+	fe := e.files.lockFor(f)
+	fe.insert(pendingOp{version: journal.Version{Counter: v}, kind: opWrite, extent: journal.Extent{Off: off, Len: n}})
+	e.files.unlock(f, fe)
+}
+
+// ClearOps drops f's pending operations, as a commit of their existence does.
+func (e *Engine) ClearOps(f entity.FileID) {
+	fe := e.files.lockFor(f)
+	fe.ops = nil
+	e.files.removals.Add(1)
+	e.files.unlock(f, fe)
+}

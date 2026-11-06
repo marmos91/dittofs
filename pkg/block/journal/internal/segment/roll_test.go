@@ -66,7 +66,7 @@ func rollTargetsMax(cap int64, targets segment.Targets) int64 {
 func rollBuild(t *testing.T, cap int64, targets segment.Targets, setup func(e rollEnv)) rollEnv {
 	t.Helper()
 
-	return rollBuildMax(t, cap, targets, rollMax, setup)
+	return rollBuildMax(t, cap, targets, rollMax, 0, setup)
 }
 
 // rollPin builds over the maximum that leaves every class's make standing:
@@ -78,12 +78,15 @@ func rollBuild(t *testing.T, cap int64, targets segment.Targets, setup func(e ro
 func rollPin(t *testing.T, cap int64, targets segment.Targets, setup func(e rollEnv)) rollEnv {
 	t.Helper()
 
-	return rollBuildMax(t, cap, targets, rollTargetsMax(cap, targets), setup)
+	return rollBuildMax(t, cap, targets, rollTargetsMax(cap, targets), 0, setup)
 }
 
 // rollBuildMax builds one rolling environment over a fresh seam and ledger,
-// with the maker's maximum named by the caller.
-func rollBuildMax(t *testing.T, cap int64, targets segment.Targets, max int64, setup func(e rollEnv)) rollEnv {
+// with the maker's maximum named by the caller and its first id drawn above
+// last. A setup that adopts spares passes the highest id it adopts as last,
+// as open seeds the maker above every name the directory holds: a maker
+// seeded below an adopted id draws that id again for its next spare.
+func rollBuildMax(t *testing.T, cap int64, targets segment.Targets, max int64, last core.SegmentID, setup func(e rollEnv)) rollEnv {
 	t.Helper()
 
 	seam, err := journaltest.NewSeam(t.TempDir())
@@ -91,7 +94,7 @@ func rollBuildMax(t *testing.T, cap int64, targets segment.Targets, max int64, s
 		t.Fatalf("the seam could not be made: %v", err)
 	}
 	set := segment.NewSet(cap, nil)
-	maker := segment.NewMaker(seam.FS(), set, max, 0, nil)
+	maker := segment.NewMaker(seam.FS(), set, max, last, nil)
 	budget := core.NewDescriptorBudget(64)
 	cache := segment.NewDescriptors(seam.FS(), format.SegmentName, budget)
 	pool := segment.NewPool(maker, targets, nil)
@@ -644,13 +647,19 @@ func TestRollAHeadroomTakeTheLedgerRefusedIsNotAnsweredAsHeadroom(t *testing.T) 
 	prof.Watch(t, prof.Options{})
 
 	// The content class has no target, and the one headroom spare is the
-	// pool's by adoption — its make final under the pinned maximum, since the
-	// adoption already spent the cap the maximum holds. The spare is pulled
-	// out of the ledger behind the pool's back, so the header-only roll's
-	// fallback pops it and the ledger refuses it: the take must answer the
-	// refusal itself, not relabel it.
-	e := rollPin(t, streamCap, segment.Targets{Content: 0, Headroom: 1}, func(e rollEnv) {
-		id := core.SegmentID(1)
+	// pool's by adoption. The spare is pulled out of the ledger behind the
+	// pool's back, so the header-only roll's fallback pops it and the ledger
+	// refuses it: the take must answer the refusal itself, not relabel it.
+	//
+	// The drop hands the adoption's cap back, so the refill a take kicks can
+	// make a headroom spare under the pinned maximum while the roll's take
+	// runs. The maker is seeded above the adopted id, as open seeds it above
+	// every name the directory holds, so that spare is never the adopted id
+	// drawn again — which the ledger would hand the roll's take of it.
+	adopted := core.SegmentID(1)
+	targets := segment.Targets{Content: 0, Headroom: 1}
+	e := rollBuildMax(t, streamCap, targets, rollTargetsMax(streamCap, targets), adopted, func(e rollEnv) {
+		id := adopted
 		if err := e.pool.Adopt(id, segment.Headroom); err != nil {
 			t.Fatalf("adopting the spare into the headroom class, accounted in the ledger: %v", err)
 		}

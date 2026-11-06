@@ -236,3 +236,30 @@ func TestDrawIsTheJournalsNextVersion(t *testing.T) {
 		t.Errorf("a draw at the version limit: %v, want ErrDelay(DelayCommit) with no journal type", err)
 	}
 }
+
+// Overlay reads the file's entry alone: with every store call failing, it
+// reflects an unstable write, its time and its size, and a file with nothing
+// pending answers pending false and the zero overlay without allocating.
+func TestOverlayReadsTheEntryAlone(t *testing.T) {
+	u := newUnit(t, func(d *engine.Deps) { d.Existence, d.Content = noStore{}, noStore{} })
+	f := entity.NewFileID()
+	at := u.clock.Now()
+	if _, err := u.e.Write(t.Context(), u.share.ID, f, 10, []byte("abcd"), engine.WriteOpts{Done: func() {}}); err != nil {
+		t.Fatal(err)
+	}
+	u.clock.Advance(time.Second)
+	if _, err := u.e.Write(t.Context(), u.share.ID, f, 0, []byte("x"), engine.WriteOpts{Done: func() {}, Suspend: entity.TimeModify}); err != nil {
+		t.Fatal(err)
+	}
+	o, pending, err := u.e.Overlay(t.Context(), u.share.ID, f)
+	if err != nil || !pending || o.Size != 14 || o.SizeSet || !o.Mtime.Equal(at) || !o.Ctime.Equal(at.Add(time.Second)) {
+		t.Errorf("overlay %+v pending %v, %v; want size 14, mtime %v, ctime a second later", o, pending, err, at)
+	}
+	g := entity.NewFileID()
+	if n := testing.AllocsPerRun(100, func() { _, _, _ = u.e.Overlay(t.Context(), u.share.ID, g) }); n != 0 {
+		t.Errorf("an overlay of a file with nothing pending allocates %v times", n)
+	}
+	if o, pending, err := u.e.Overlay(t.Context(), u.share.ID, g); err != nil || pending || o != (engine.Overlay{}) || u.e.HasEntry(g) {
+		t.Errorf("a file with nothing pending: %+v, %v, %v, entry %v; want the zero overlay, not pending, no entry", o, pending, err, u.e.HasEntry(g))
+	}
+}
