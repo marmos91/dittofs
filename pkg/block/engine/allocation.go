@@ -158,6 +158,10 @@ func opEnd(x journal.Extent) int64 {
 }
 
 // paint makes [o, e) all of one class.
+//
+// ponytail: a run paint splits keeps its store span whole, Extent and Ref
+// unclipped, which nothing reads while a carved run answers unavailable. Clip
+// the span and its Ref to the piece once the fetch reads a carved run's Ref.
 func (a *allocation) paint(o, e int64, hole bool) {
 	if o >= e {
 		return

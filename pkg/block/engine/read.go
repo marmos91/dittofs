@@ -30,6 +30,10 @@ func (e *Engine) Read(ctx context.Context, s entity.ShareID, f entity.FileID, of
 	if err != nil {
 		return 0, err
 	}
+	// decision: a read refused before it starts, out of range or of an
+	// unbound share, is counted in neither series: it reached no content, so
+	// it has no class among engine_reads_total's, and its time is no read's
+	// latency. Count it once RFC 8 §14 names a series for refusals.
 	start := e.d.Clock.Elapsed()
 	r := reader{e: e, b: b, s: s, f: f}
 	n, err := r.window(ctx, off, dst)
@@ -122,6 +126,15 @@ func (r *reader) pass(ctx context.Context, off int64, dst []byte) (n int, again 
 
 // opsAt is f's pending operations at or below asOf, the ones the journal had
 // answered for, copied out under the entry's lock.
+//
+// decision: every operation at or below the journal's answer is taken to be
+// in the entry already. A write is inserted after its journal step, which is
+// harmless: a read between the two misses it and reads the older state. A
+// removal stops the journal holding its extent at once, so a read between its
+// journal step and its insert finds the extent missing with no pending
+// removal over it and reads it lost: a truncate's or a deallocate's operation
+// must be in the entry before, or atomically with, its journal step.
+// Withdraw it if a read ever asks again while a removal is being staged.
 func (fs *files) opsAt(f entity.FileID, asOf journal.Version) []pendingOp {
 	fe := fs.lockOf(f)
 	if fe == nil {
@@ -193,6 +206,14 @@ func (e *Engine) resolve(ctx context.Context, s entity.ShareID, f entity.FileID,
 		if !sg.hole && sp.Class == 0 {
 			// A pending write's run: uncarved, under the newest overwrite
 			// version the store holds over it.
+			//
+			// decision: the class of a committed run a pending write is
+			// painted over is dropped, so a carved run whose write is still
+			// in the entry reads as uncarved, and lost if its applied is at
+			// or below asOf. Safe while an operation leaves the entry before
+			// its extent can be offloaded and released. Withdraw it if a
+			// carve can ever run ahead of the commit that drops the write's
+			// operation.
 			sp = entity.Span{Class: entity.Uncarved, Applied: applied}
 			for _, c := range spans {
 				if c.Offset < hi && lo < c.End() {
@@ -271,6 +292,10 @@ func (r *reader) class(err error) readClass {
 
 // readSeries is engine_reads_total by class and engine_read_seconds, its
 // count and sum.
+//
+// ponytail: engine_read_seconds is a count and a sum, not the histogram RFC 8
+// §14 names, so no latency quantile can be read from it. Make it a histogram
+// once the metrics registry exists.
 type readSeries struct {
 	byClass [readClasses]atomic.Int64
 	count   atomic.Int64
