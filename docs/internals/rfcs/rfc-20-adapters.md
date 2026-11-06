@@ -867,9 +867,10 @@ type Deps struct {
 	Tracer  trace.Tracer // RFC 25 §8.1: spans; the no-op tracer when tracing is off
 	Logger  *slog.Logger
 	// Watch registers a loop with the node's liveness watchdog (RFC 25 §3.5):
-	// turn reports a pass, stop unregisters it at unbind. The node adapts its
-	// watchdog to this; nil watches nothing, as in a test.
-	Watch func(loop string) (turn, stop func())
+	// turn reports a pass, idle a wait with nothing to do (an accept loop at
+	// its accept deadline), stop unregisters it at unbind. The node adapts
+	// health.Loop's Turn, Idle and Close to this; nil watches nothing, as in a test.
+	Watch func(loop string) (turn, idle, stop func())
 	// Dial opens an outbound connection from a given local address: NLM's
 	// callbacks to a host, from the floating address it used (§3.3). A test
 	// supplies one returning a pipe.
@@ -1457,7 +1458,9 @@ it holds — the service counts nothing about holds:
   slots moving ([RFC 21 §9.3](rfc-21-nfs.md#9.3%20NFSv4.2%20operations)); for
   SMB, what is left of the request's hold;
 - **SMB counts per connection, with a floor.** Requests held — waiting in the
-  service under `WithHold`, or between re-drives — are counted per connection
+  service under `WithHold`, or between re-drives, but not a parked waiting lock
+  or change notification (§4.7's `Park`), which holds no data and no worker —
+  are counted per connection
   against a floor of 256 requests and 32 MiB of write data, and past it against
   the node's hold pool
   ([RFC 24 §4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go));
@@ -1524,12 +1527,12 @@ type Stages struct {
 }
 
 type HeaderCodec interface {
-	Decode(rec *Buf) (Header, error)           // the header at the record's current offset
+	Decode(rec *Buf, off int) (Header, error)  // the header at off in the record: 0, then each member's Next
 	Encode(h Header, s Status, out *Buf) error
 	Chain(out *Buf, prev int) error            // points the reply at prev to the one appended after it (SMB2's NextCommand, padded to 8); nil-op where nothing chains
 }
 type Router interface {
-	Route(h Header) (*OpTable, *Request, error)
+	Route(h Header, prev *Request) (*OpTable, *Request, error) // prev: the member before a related one, else nil
 }
 type Security interface {
 	Unwrap(h Header, rec *Buf) (Header, error) // decrypt or verify; an encrypted SMB message yields its inner header
@@ -1587,7 +1590,7 @@ type Op struct {
 	Versions  Range // first and last version or dialect served
 	Needs     Needs // nothing < negotiated < session < tree; plus a current filehandle
 	Cacheable bool
-	EndsState bool  // a break acknowledgement, CLOSE, an unlock: still served while draining (§3.1)
+	EndsState bool  // always ends state (a break acknowledgement, CLOSE): served while draining (§3.1); per request: Invocation.EndsState
 	Decode    func(body []byte, v Version) (Invocation, error)
 }
 
@@ -1599,6 +1602,10 @@ type Invocation struct {
 	Resolve func(r *Request) error                     // wire IDs to service values
 	Call    func(ctx context.Context, r *Request) error // the handler
 	Encode  func(out *Buf, v Version) error
+	// EndsState, after Resolve, says whether this request ends state the
+	// service waits on: an SMB LOCK whose elements unlock, a WRITE to an open
+	// under a break. nil: Op.EndsState decides alone.
+	EndsState func(r *Request) bool
 }
 
 // Bind joins a row's codec pair and handler, type-checked against each other,
@@ -1607,9 +1614,45 @@ func Bind[Req, Rep any](
 	dec func(b []byte, v Version, req *Req) error,
 	bound func(req *Req) int,
 	resolve func(r *Request, req *Req) error, // nil: the operation names no wire ID
+	ends func(r *Request, req *Req) bool,     // nil: Op.EndsState decides alone
 	h Handler[Req, Rep],
 	enc func(rep *Rep, v Version, out *Buf) error,
 ) func([]byte, Version) (Invocation, error)
+
+// NewOpTable builds a table and checks it: codes unique, ranges well formed.
+func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable
+
+// Version is a protocol's version, minor version or dialect; Range a closed
+// span of them.
+type Version uint32
+type Range struct{ First, Last Version }
+
+// Needs is §4.2's ordered precondition, plus a flag for a current filehandle.
+type Needs uint8
+
+const (
+	NeedsNothing Needs = iota
+	NeedsNegotiated
+	NeedsSession
+	NeedsTree
+	NeedsFH Needs = 1 << 7 // or-ed with one of the above
+)
+
+// Status is a protocol's wire status: an NFS stat, an RPC accept or reject
+// state, an NTSTATUS.
+type Status uint32
+
+// ErrorTable maps a service error to a Status (§4.5).
+type ErrorTable struct{ /* unexported */ }
+type ErrorRow struct {
+	Err      error          // matched with errors.Is
+	Cause    vfs.DelayCause // for ErrDelay rows; the zero cause matches any
+	Op       uint32         // 0: every operation
+	Versions Range          // the zero Range: every version
+	Status   Status
+}
+func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable
+func (t *ErrorTable) Map(err error, op *Op, v Version) Status
 ```
 
 A table is built beside its handlers, one line per operation:
@@ -1618,7 +1661,7 @@ A table is built beside its handlers, one line per operation:
 func (h *Handlers) OpTable() *core.OpTable {
 	return core.NewOpTable(errorTable, false,
 		&core.Op{Name: "WRITE", Code: proc3Write,
-			Decode: core.Bind(xdr.DecodeWRITE3args, writeBound, nil, h.Write, xdr.EncodeWRITE3res)},
+			Decode: core.Bind(xdr.DecodeWRITE3args, writeBound, nil, nil, h.Write, xdr.EncodeWRITE3res)},
 		// … one row per procedure
 	)
 }
@@ -1628,16 +1671,18 @@ func (h *Handlers) OpTable() *core.OpTable {
 elided — each `err` is answered as §4.1's table says:
 
 ```go
-h, err := stages.Header.Decode(rec)
+h, err := stages.Header.Decode(rec, off)  // off: 0, then each chain member's h.Next()
 h, err = stages.Security.Unwrap(h, rec)
+if key, ok := stages.Hold.Cancels(h); ok { endHold(key); return } // only once verified; no reply
 release, err := stages.Flow.Admit(ctx, h); defer release()
 if cached, err := stages.Replay.Lookup(h); cached != nil { conn.Send(cached); return }
-tbl, r, err := stages.Router.Route(h)
+tbl, r, err := stages.Router.Route(h, prev) // prev: the member before a related one
 op := tbl.Ops[h.Op()]               // absent: not supported
 err = check(op, h, r)               // Versions, Needs (§4.2)
 inv, err := op.Decode(body(rec), h.Version())
 err = reserveReply(ctx, inv.Bound()) // RFC 24 §3.3
 err = inv.Resolve(r)
+if draining && !endsState(op, inv, r) { answer(moveSignal); return } // §3.1
 if err == nil { err = chain(inv.Call)(ctx, r) } // middleware; held and re-driven from Resolve when tbl.Holds
 reply := encode(stages.Header, h, tbl.Errors.Map(err, op, h.Version()), inv)
 err = stages.Security.Wrap(h, reply)
@@ -1647,13 +1692,20 @@ conn.Send(reply)
 
 For NFSv4 the RPC procedure is `COMPOUND`, whose row hands the operations to
 the compound runner with the minor version's operation table; an SMB chain
-reaches the same runner from one record, each member with its own header
-(`Header.Next`). The runner repeats the steps from `check` to `encode` per
-operation, carrying the compound state in the `Request`; for an SMB chain it
-also repeats `Header.Decode`, `Unwrap`, `Admit` and `Lookup` per member, since
-each is signed and charged credits on its own, and joins the replies with
-`HeaderCodec.Chain`. A member that goes pending gets its interim reply in the
-chain's place and its final reply alone (§4.6).
+reaches the same runner from one record, each member with its own header at
+its own offset (`Decode(rec, off)`, `Header.Next`). The runner repeats the
+steps from `check` to `encode` per operation, carrying the compound state in
+the `Request`; for an SMB chain it also repeats `Decode`, `Unwrap`, `Admit` and
+`Lookup` per member, since each is signed over its own bytes and charged
+credits on its own, hands `Route` the member before a related one so its
+handles carry over, and joins the replies with `HeaderCodec.Chain`. Only the
+last member of a chain goes pending: one before it that is held waits for its
+answer inline, within its hold bound and with no interim, and the members
+after it run once it has answered, so every reply but the last's goes out
+together in the chain. A member before the last that would park is answered
+as its table maps `ErrParked`, and the chain goes on. This is the runner's
+rule; the status RFC 22 gives that mapping, and its check against Windows, are
+RFC 22's.
 
 **Cross-cutting work is a middleware chain**, built once by `core` in one
 fixed order — recovery, trace span, metrics, deadline — that a test pins:
@@ -1677,12 +1729,28 @@ type Header interface {
 	Related() bool    // takes its handles from the member before it (SMB's related flag)
 }
 
-// Request is one message as the router built it. Beside the identity and
-// handles the router and Resolve put in it (§4.4), core reads Level.
+// Request is one message as the router built it. A handler reads Call and
+// its protocol's State; core reads Level and the rest.
 type Request struct {
-	Level Needs // what this message's session and tree reached; Op.Needs is checked against it
-	// unexported: the connection, the compound state, the hold
+	Call    vfs.Call // built by the Router (§4.4); the handler passes it to every service call
+	Version Version  // the version or dialect the router chose
+	Level   Needs    // what this message's session and tree reached; Op.Needs is checked against it
+	Conn    *Conn    // what a handler keeps state on (Keep) and the stages send callbacks on
+	// State is the protocol's own: SMB's session, tree, Caps and FileId table
+	// and the chain's current open; NFS's session and current filehandle. The
+	// Router sets it, from prev for a related member; core carries it and
+	// never reads it.
+	State any
+	// unexported: the compound state core checks, the hold, the deadline
 }
+
+// Conn is one accepted connection. Its reader, writer and pipeline are
+// core's; a protocol reaches it through these methods only.
+type Conn struct{ /* unexported */ }
+
+// Send queues a message on the writer: a callback, or an interim reply. A
+// non-zero before queues it ahead of that request's reply (§6.2).
+func (c *Conn) Send(msg *Buf, before uint64) error
 
 // Established ends the handshake deadline (§6.4): SMB at its first
 // authenticated session, NFS at its first routed call.
@@ -1694,7 +1762,9 @@ func (c *Conn) Established()
 func (c *Conn) Keep() (release func())
 
 // HoldCodec is the stage a table that Holds needs (§4.6). The key doubles as
-// the async ID the interim and final replies carry.
+// the async ID the interim and final replies carry. The interim, like every
+// reply, passes Security.Wrap, so an encrypting session sends nothing in clear.
+// Cancels is asked after Unwrap, so an unverified cancel ends no hold.
 type HoldCodec interface {
 	Key(h Header) uint64
 	Interim(h Header, out *Buf) error       // STATUS_PENDING; grants the request's credits
@@ -1707,18 +1777,28 @@ type HoldCodec interface {
 // fills the reply value before calling done.
 var ErrParked = errors.New("core: parked")
 
-// Park holds the request until done. core sends the interim reply at once,
-// counts the request against the connection's hold floor (§4.6), and on done
-// encodes the reply, wraps it and sends it under Final's header. A CANCEL or
-// a closed connection calls cancel first; done is still called once, with
-// what the cancel left (§6.5).
+// Park holds the request until done. core sends the interim reply at once and
+// releases the receive reservation; a parked request holds no worker and no
+// data and is not counted against the hold floor (§4.6; RFC 22 §3.3). On done
+// core encodes the reply, wraps it and sends it under Final's header. A
+// cancel calls cancel first, and done's reply goes out (§6.5); a closed
+// connection calls cancel, and done's reply is dropped.
 func (r *Request) Park(cancel func()) (done func(err error))
 
 // Dispatcher is what a connection hands each framed record to. The pipeline
 // is the one implementation; a connection's own tests supply a stub.
 type Dispatcher interface {
 	Dispatch(ctx context.Context, c *Conn, rec *Buf)
-	Drain() // from now on only EndsState operations run (§3.1)
+	Drain() // from now on only requests that end state run (§3.1)
+}
+
+// NewServer returns the adapter New hands back: one listener per entry,
+// bound all or none at Start (§3.1).
+func NewServer(d adapter.Deps, s config.Adapter, ls ...Listener) (*Server, error)
+
+type Listener struct {
+	Network, Addr string // "tcp" or "udp", and the address to bind
+	Protocol      Protocol
 }
 ```
 
@@ -1820,7 +1900,7 @@ type Caps struct {
 }
 ```
 
-A handler asks `r.Caps.Leases`, not `dialect >= 0x0300`. Adding a dialect is
+A handler asks its session's `Caps.Leases`, reached through `r.State` (§4.7), not `dialect >= 0x0300`. Adding a dialect is
 then one function from dialect and negotiate contexts to `Caps`, tested on its
 own, and no handler changes. NFSv4 does the same for what a minor version adds:
 sessions (4.1) are a `Flow` and `Replay` stage, not a check in each handler.
