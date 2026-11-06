@@ -174,9 +174,12 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 
 // appendRecord appends the loss record to the file's stream and syncs it.
 //
-// ponytail: the sync is the stream's own, one per loss, outside the group
-// commit. A loss is rare and never on the read path. Upgrade to the group
-// commit leader when a burst of losses shows up in a profile.
+// ponytail: the sync is the segment's own, one per loss, outside the group
+// commit, and a failure here can consume the segment's write error before the
+// window's owner sees it, so the segment's no-further-append rule after a
+// failed sync rests on this error alone. Upgrade by moving the sync to the
+// group commit's Durable and WaitDurable, with the failed-window handling,
+// once those land.
 func (d *Durability) appendRecord(l Loss) error {
 	seq, err := d.counters.NextSeq()
 	if err != nil {
