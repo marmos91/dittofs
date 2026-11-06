@@ -9,23 +9,53 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// noStore is a store view any call of which panics, its views nil: a call
-// that reaches the store fails the test.
+// noStore is a store view that forwards to the real views until armed, and
+// then panics on any call, its views nil: a call that reaches the store once
+// armed fails the test.
 type noStore struct {
 	engine.Existence
 	engine.Content
 }
 
+// arm makes every later call panic.
+func (s *noStore) arm() {
+	s.Existence = nil
+	s.Content = nil
+}
+
 // A write waits for no store: with every existence and content call
-// panicking, it still answers.
+// panicking once the share is bound, it still answers. The panic is the
+// assertion: it fails the test at the very call that reached the store.
 func TestAWriteMakesNoStoreCall(t *testing.T) {
-	u := newUnit(t, func(d *engine.Deps) { d.Existence, d.Content = noStore{}, noStore{} })
-	if _, err := u.e.Write(t.Context(), u.share.ID, entity.NewFileID(), 0, []byte("abc"), engine.WriteOpts{Done: func() {}}); err != nil {
+	ns := &noStore{}
+	u := newUnit(t, func(d *engine.Deps) {
+		ns.Existence = d.Existence
+		ns.Content = d.Content
+		d.Existence = ns
+		d.Content = ns
+	})
+
+	if err := u.e.BindingOf(u.share.ID); err != nil {
+		t.Fatalf("the share is not bound before the store is armed: %v", err)
+	}
+
+	ns.arm()
+
+	_, err := u.e.Write(
+		t.Context(),
+		u.share.ID,
+		entity.NewFileID(),
+		0,
+		[]byte("abc"),
+		engine.WriteOpts{Done: func() {}},
+	)
+	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -82,8 +112,11 @@ func (h ctxHandle) WriteAt(ctx context.Context, _ journal.FileID, _ int64, _ []b
 // A WriteAt that answers the context's error is answered with that error
 // itself, not as an unavailable journal, and leaves nothing pending.
 func TestAWriteCutShortAnswersTheContextsError(t *testing.T) {
-	u := newUnit(t)
-	u.e.BindForTest(u.share, u.j, ctxHandle{u.h})
+	u := newUnitWith(t, unitConfig{
+		wrap: func(h engine.Handle) engine.Handle {
+			return ctxHandle{h}
+		},
+	})
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	f := entity.NewFileID()
@@ -98,9 +131,14 @@ func TestAWriteCutShortAnswersTheContextsError(t *testing.T) {
 
 // A write samples its verifier once, before it is staged, and answers it.
 func TestAWriteSamplesItsVerifierFirst(t *testing.T) {
-	u := newUnit(t)
-	h := &countingHandle{Handle: u.h}
-	u.e.BindForTest(u.share, u.j, h)
+	var h *countingHandle
+	u := newUnitWith(t, unitConfig{
+		wrap: func(x engine.Handle) engine.Handle {
+			h = &countingHandle{Handle: x}
+
+			return h
+		},
+	})
 	var staged int64 = -1
 	sampled := 0
 	want := vfserr.Verifier{7, 1, 2}
@@ -122,15 +160,18 @@ func TestAWriteSamplesItsVerifierFirst(t *testing.T) {
 // another share holds is ErrCorrupt.
 func TestARefusedWriteLeavesNothing(t *testing.T) {
 	u := newUnit(t)
-	small := engine.Share{ID: entity.NewShareID(), Tag: 2, Limit: 2, State: engine.Serving}
-	h, err := u.j.Share(small.Tag, small.Limit, journal.Version{}, small.SyncPolicy)
-	if err != nil {
+	small := enginetest.AddShare(t, u.fs.Store, "small", 2)
+
+	if err := u.e.Bind(t.Context(), small); err != nil {
 		t.Fatal(err)
 	}
-	u.e.BindForTest(small, u.j, h)
+
 	f := entity.NewFileID()
 	called := false
-	_, err = u.e.Write(t.Context(), small.ID, f, 0, []byte("abc"), engine.WriteOpts{Done: func() { called = true }})
+	done := func() {
+		called = true
+	}
+	_, err := u.e.Write(t.Context(), small.ID, f, 0, []byte("abc"), engine.WriteOpts{Done: done})
 	var d *vfserr.Delay
 	if !errors.As(err, &d) || d.Cause != vfserr.DelayCapacity {
 		t.Errorf("a write past the share's limit: %v, want ErrDelay(DelayCapacity)", err)
@@ -156,9 +197,14 @@ func TestARefusedWriteLeavesNothing(t *testing.T) {
 // is ErrInvalid; a write of an unbound share is ErrDelay with DelayFrozen and
 // calls no Done.
 func TestAWriteOfNothing(t *testing.T) {
-	u := newUnit(t)
-	h := &countingHandle{Handle: u.h}
-	u.e.BindForTest(u.share, u.j, h)
+	var h *countingHandle
+	u := newUnitWith(t, unitConfig{
+		wrap: func(x engine.Handle) engine.Handle {
+			h = &countingHandle{Handle: x}
+
+			return h
+		},
+	})
 	f := entity.NewFileID()
 	n := 0
 	if _, err := u.e.Write(t.Context(), u.share.ID, f, 7, nil, engine.WriteOpts{Done: func() { n++ }}); err != nil {
@@ -241,7 +287,14 @@ func TestDrawIsTheJournalsNextVersion(t *testing.T) {
 // reflects an unstable write, its time and its size, and a file with nothing
 // pending answers pending false and the zero overlay without allocating.
 func TestOverlayReadsTheEntryAlone(t *testing.T) {
-	u := newUnit(t, func(d *engine.Deps) { d.Existence, d.Content = noStore{}, noStore{} })
+	ns := &noStore{}
+	u := newUnit(t, func(d *engine.Deps) {
+		ns.Existence = d.Existence
+		ns.Content = d.Content
+		d.Existence = ns
+		d.Content = ns
+	})
+	ns.arm()
 	f := entity.NewFileID()
 	at := u.clock.Now()
 	if _, err := u.e.Write(t.Context(), u.share.ID, f, 10, []byte("abcd"), engine.WriteOpts{Done: func() {}}); err != nil {

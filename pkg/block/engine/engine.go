@@ -9,6 +9,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -31,6 +32,14 @@ type Engine struct {
 	shares   atomic.Pointer[bindings] // the share table; swapped whole, read without a lock
 	files    *files                   // per-file state
 	sample   func() vfserr.Verifier   // samples a write's verifier, before it is staged
+
+	// mu is the lifecycle mutex: Bind takes it only to read and swap the
+	// share table and the fields below, never across I/O, and no content call
+	// takes it.
+	mu       sync.Mutex
+	journals []Journal                   // the journals open, one per device; Start opens them
+	busy     map[entity.ShareID]struct{} // the shares with a lifecycle call in progress
+	raised   map[entity.ShardID]struct{} // the shards whose incarnation this process raised
 }
 
 // New checks d and builds the engine. It takes no settings, opens nothing and
@@ -57,7 +66,14 @@ func New(d Deps) (*Engine, error) {
 		}
 	}
 	d.Logger = d.Logger.With("component", "engine")
-	return &Engine{d: d, files: newFiles(d.Clock), sample: zeroVerifier}, nil
+
+	return &Engine{
+		d:      d,
+		files:  newFiles(d.Clock),
+		sample: zeroVerifier,
+		busy:   map[entity.ShareID]struct{}{},
+		raised: map[entity.ShardID]struct{}{},
+	}, nil
 }
 
 // Apply hands the engine its node-level settings: first before Start, then on
@@ -80,10 +96,6 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error { return errUn
 
 // Close stops the engine and closes what it opened, in reverse.
 func (e *Engine) Close(ctx context.Context) error { return errUnbuilt }
-
-// Bind attaches a new share above the floor, or applies a change to one
-// already bound.
-func (e *Engine) Bind(ctx context.Context, s Share) error { return errUnbuilt }
 
 // Unbind admits nothing new for the share and joins what it has in flight.
 func (e *Engine) Unbind(ctx context.Context, id entity.ShareID, keepHolds bool) error {
