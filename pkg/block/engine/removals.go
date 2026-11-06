@@ -167,9 +167,14 @@ func (l *removalLoop) step(it *loopItem) {
 	}
 }
 
-// close stops the loop, joins its goroutine and ends every item left.
+// close stops the loop, joins its goroutine and ends every item left. A
+// second close does nothing.
 func (l *removalLoop) close() {
 	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return
+	}
 	l.closed = true
 	items := l.items
 	l.items = nil
@@ -276,6 +281,15 @@ func (e *Engine) finish(r *removal) {
 // journal's loop, which retries it keeping the guard and the in-flight mark
 // until it commits, or until the file is found gone. outcome, when not nil,
 // is told once how it ended: nil once it commits.
+//
+// decision: a phase 1 its loop's end cuts short, as Close's stop of the work
+// queue does, leaves its file as it is: every pending operation, the
+// removal's own included, stays in the entry and the guard stays held, so no
+// group commit after it, Close's last included, commits any of them, and the
+// journal's unsettled marker leaves the removal to the next start's recovery
+// (RFC 8 §2.5 step 2). A caller waiting on the guard waits to its own
+// deadline. Withdraw it if the loop can ever end while the engine still
+// serves the file.
 func (e *Engine) retryLater(r *removal, op kvstore.RemoveOp, outcome func(error)) {
 	tell := func(err error) {
 		if outcome != nil {
@@ -302,10 +316,7 @@ func (e *Engine) retryLater(r *removal, op kvstore.RemoveOp, outcome func(error)
 			}
 			return itemRetry
 		},
-		end: func() {
-			e.unstage(r, nil)
-			tell(errLoopEnded)
-		},
+		end: func() { tell(errLoopEnded) },
 	})
 }
 

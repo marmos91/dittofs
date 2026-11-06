@@ -387,3 +387,18 @@ func (e *Engine) RemovalsPending() int {
 // NoGuardSkip has every capture take a file whose guard a removal holds,
 // as one would with the guard's skip removed.
 func (e *Engine) NoGuardSkip() { e.noGuardSkip.Store(true) }
+
+// StopRemovalLoops ends every journal's removal loop, as Close's stop of
+// the work queue does before its last group commit, and leaves the group
+// commits running.
+func (e *Engine) StopRemovalLoops() {
+	e.gcMu.Lock()
+	gs := make([]*groupCommit, 0, len(e.gcs))
+	for _, g := range e.gcs {
+		gs = append(gs, g)
+	}
+	e.gcMu.Unlock()
+	for _, g := range gs {
+		g.removals.close()
+	}
+}
