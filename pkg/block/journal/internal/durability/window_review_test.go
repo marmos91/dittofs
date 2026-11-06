@@ -3,11 +3,11 @@ package durability
 import (
 	"context"
 	"errors"
-	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
