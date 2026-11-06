@@ -14,7 +14,7 @@ import (
 // written or filled. The record lets the caller read a write's mtime from its
 // header, which the index does not keep.
 type Change struct {
-	Kind    core.ChangeKind // ChangeWrite for a held extent, else the removal that left the marker
+	Kind    core.ChangeKind // ChangeWrite for a held extent, else the removal or synced loss that left the marker
 	Extent  core.Extent     // a held extent, or the extent a marker covers
 	Version core.Version
 	Record  RecordAt        // a held extent's record; zero for a marker
@@ -36,8 +36,8 @@ type Change struct {
 // file does, copying only the items it yields, and sorts after releasing the
 // lock, in O(n log n) for the n items yielded. The walk is O(N) for the N
 // pieces held, since nothing orders them by version. The result is a copy,
-// so working through it holds no lock. Loss records are the journal's side,
-// not the index's.
+// so working through it holds no lock. A synced loss's marker is yielded as
+// ChangeLoss; a loss record itself is the journal's side, not the index's.
 func (fs *files) since(id core.FileID, from core.Version, out []Change) []Change {
 	first := len(out)
 	fs.view(id, func(f *file) {

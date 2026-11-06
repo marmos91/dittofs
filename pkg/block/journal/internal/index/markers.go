@@ -48,6 +48,35 @@ func (f *file) deallocate(e core.Extent, v core.Version) error {
 	return nil
 }
 
+// lose stops holding e below v and leaves a marker over it, for a synced
+// write the journal lost. As a release record does, a synced loss outranks
+// every record of the extent below its version, so a read of the extent
+// finds nothing older there and a fill resolved below v is masked, until the
+// caller settles the marker. A zero-length e is refused with ErrZeroLength
+// and changes nothing.
+func (f *file) lose(e core.Extent, v core.Version) error {
+	if e.Len == 0 {
+		return core.ErrZeroLength
+	}
+	f.remove(marker{extent: e, version: v, kind: core.ChangeLoss})
+	return nil
+}
+
+// lose applies a synced loss of e at v to id as a deallocate is applied: the
+// admission reserves the entries the split and the marker may add, and the
+// commit applies the marker under the file's lock. A zero-length e is refused
+// before anything is reserved.
+func (fs *files) lose(id core.FileID, e core.Extent, v core.Version) error {
+	if e.Len == 0 {
+		return core.ErrZeroLength
+	}
+	adm, err := fs.admitRemoval(id, e, 2)
+	if err != nil {
+		return err
+	}
+	return fs.commit(id, adm, func(f *file) error { return f.lose(e, v) })
+}
+
 // delete stops holding every extent of the file below v and leaves a marker
 // over the whole file.
 func (f *file) delete(v core.Version) {

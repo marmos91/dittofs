@@ -20,6 +20,16 @@ type (
 	SegmentID      = core.SegmentID
 	CloneSpec      = core.CloneSpec
 	ChangeKind     = core.ChangeKind
+	LossEvent      = core.LossEvent
+	LossReason     = core.LossReason
+)
+
+// The loss reasons; see LossReason.
+const (
+	LossCorrupt      = core.LossCorrupt
+	LossStale        = core.LossStale
+	LossFailedWindow = core.LossFailedWindow
+	LossAcknowledged = core.LossAcknowledged
 )
 
 // NewFileID returns the FileID of the file whose identifier is id. It is the
