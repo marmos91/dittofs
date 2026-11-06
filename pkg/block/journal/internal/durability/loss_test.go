@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 
@@ -858,30 +859,111 @@ func piece(seq core.Seq, off, n int64) durability.Loss {
 	return l
 }
 
-// TestLoseOfTwoPiecesOfOneRecordReportsEachAndAppendsOneRecord catches a
-// dedup keyed on the dropped seq alone, which loses the second piece's
-// event, marker and raise.
-func TestLoseOfTwoPiecesOfOneRecordReportsEachAndAppendsOneRecord(t *testing.T) {
-	e := newEnv(t)
-	for _, x := range [][2]int64{{0, 3}, {5, 3}} {
-		l := piece(9, x[0], x[1])
-		l.Synced = true
-		ev, err := e.d.Lose(context.Background(), l)
-		if err != nil || ev == (core.LossEvent{}) {
-			t.Fatalf("Lose of [%d,+%d) = %+v, %v, want a published event", x[0], x[1], ev, err)
+// TestLoseOfTwoPiecesOfOneRecordReportsEachAndAppendsARecordForEach catches a
+// dedup keyed on the dropped seq alone, which loses the second piece's event,
+// marker, raise and record: the record's extent is what outranks older
+// records after a crash, so a piece with none leaves its extent served from
+// an older synced write.
+func TestLoseOfTwoPiecesOfOneRecordReportsEachAndAppendsARecordForEach(t *testing.T) {
+	for _, synced := range []bool{true, false} {
+		name := "unsynced"
+		if synced {
+			name = "synced"
 		}
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			for _, x := range [][2]int64{{0, 3}, {5, 3}} {
+				l := piece(9, x[0], x[1])
+				l.Synced = synced
+				ev, err := e.d.Lose(context.Background(), l)
+				if err != nil || ev == (core.LossEvent{}) {
+					t.Fatalf("Lose of [%d,+%d) = %+v, %v, want a published event", x[0], x[1], ev, err)
+				}
+			}
+			if got := len(e.d.Stats().Losses); got != 2 {
+				t.Errorf("%d events, want 2, one per piece", got)
+			}
+			wantMarks := 0
+			if synced {
+				wantMarks = 2
+			}
+			if got := len(e.marked()); got != wantMarks {
+				t.Errorf("MarkLoss called %d times, want %d", got, wantMarks)
+			}
+			if got := e.d.Generation(); got != 2 {
+				t.Errorf("generation = %d, want 2", got)
+			}
+			lh, lb := e.lossRecords()
+			if len(lh) != 2 {
+				t.Fatalf("%d loss records, want 2: one per piece", len(lh))
+			}
+			if lh[0].Extent != (core.Extent{Off: 0, Len: 3}) || lh[1].Extent != (core.Extent{Off: 5, Len: 3}) {
+				t.Errorf("records name %+v and %+v, want [0,+3) and [5,+3)", lh[0].Extent, lh[1].Extent)
+			}
+			for i, b := range lb {
+				if b.Dropped != 9 || b.Synced != synced {
+					t.Errorf("record %d = %+v, want dropped 9, synced %v", i, b, synced)
+				}
+			}
+		})
 	}
-	if got := len(e.d.Stats().Losses); got != 2 {
-		t.Errorf("%d events, want 2, one per piece", got)
+}
+
+// TestLoseOfARepeatedPieceAppendsOneRecord catches the same (seq, extent)
+// reported twice appending a second record.
+func TestLoseOfARepeatedPieceAppendsOneRecord(t *testing.T) {
+	e := newEnv(t)
+	l := piece(9, 0, 3)
+	l.Synced = true
+	for i := 0; i < 2; i++ {
+		_, _ = e.d.Lose(context.Background(), l)
 	}
-	if got := len(e.marked()); got != 2 {
-		t.Errorf("MarkLoss called %d times, want 2", got)
+	assertOneLoss(t, e)
+}
+
+// TestLoseOfASecondPieceWaitsForItsOwnRecordWhenTheFirstFailed catches a
+// second piece of a seq publishing its event on the strength of the first
+// piece's record, which here was never appended: its own record must be on
+// disk before its event is visible.
+func TestLoseOfASecondPieceWaitsForItsOwnRecordWhenTheFirstFailed(t *testing.T) {
+	e := newEnv(t)
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, "*.seg", 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
 	}
-	if got := e.d.Generation(); got != 2 {
-		t.Errorf("generation = %d, want 2", got)
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	var first atomic.Bool
+	e.d.SetAfterAppend(func() {
+		if first.CompareAndSwap(false, true) {
+			close(reached)
+			<-release
+		}
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.d.Lose(context.Background(), piece(9, 0, 3))
+		done <- err
+	}()
+	<-reached
+
+	ev, err := e.d.Lose(context.Background(), piece(9, 5, 3))
+	if err != nil || ev == (core.LossEvent{}) {
+		t.Fatalf("Lose of the second piece = %+v, %v, want a published event", ev, err)
 	}
-	if lh, _ := e.lossRecords(); len(lh) != 1 {
-		t.Errorf("%d loss records, want 1: the first names the whole dropped record", len(lh))
+	if lh, _ := e.lossRecords(); len(lh) != 1 || lh[0].Extent != (core.Extent{Off: 5, Len: 3}) {
+		t.Errorf("loss records %+v, want exactly the second piece's own by the time its event is published", lh)
+	}
+	if got := len(e.d.Stats().Losses); got != 1 {
+		t.Errorf("%d events, want only the second piece's: the first has not published", got)
+	}
+
+	close(release)
+	if err := <-done; !errors.Is(err, syscall.EIO) {
+		t.Errorf("Lose of the first piece = %v, want EIO", err)
+	}
+	if got := e.d.Failed(); !slices.Equal(got, []core.Seq{9}) {
+		t.Errorf("Failed() = %v, want [9]", got)
 	}
 }
 
@@ -969,9 +1051,10 @@ func TestPlaceKeysOnTheDroppedSeqAndTheExtent(t *testing.T) {
 	}
 }
 
-// TestLoseOfAPieceAfterAPlacedRecordAppendsNothing pins that a record on disk
-// already names the seq, while the piece still publishes.
-func TestLoseOfAPieceAfterAPlacedRecordAppendsNothing(t *testing.T) {
+// TestLoseOfAnotherPieceAfterAPlacedRecordAppendsItsOwn pins that a record
+// found at open covers only its own extent, so another piece of the seq still
+// owes a record while it publishes.
+func TestLoseOfAnotherPieceAfterAPlacedRecordAppendsItsOwn(t *testing.T) {
 	e := newEnv(t)
 	e.d.Place(core.LossEvent{Reason: core.LossCorrupt, Extent: core.Extent{Off: 0, Len: 3}}, 9)
 	if _, err := e.d.Lose(context.Background(), piece(9, 5, 3)); err != nil {
@@ -980,8 +1063,8 @@ func TestLoseOfAPieceAfterAPlacedRecordAppendsNothing(t *testing.T) {
 	if got := len(e.d.Stats().Losses); got != 2 {
 		t.Errorf("%d events, want 2", got)
 	}
-	if lh, _ := e.lossRecords(); len(lh) != 0 {
-		t.Errorf("%d loss records appended, want 0", len(lh))
+	if lh, _ := e.lossRecords(); len(lh) != 1 || lh[0].Extent != (core.Extent{Off: 5, Len: 3}) {
+		t.Errorf("loss records %+v, want the one for [5,+3)", lh)
 	}
 }
 

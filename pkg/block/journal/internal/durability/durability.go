@@ -31,7 +31,7 @@ type Config struct {
 // Durability is the journal's loss state: the loss ring, the counters and the
 // directory's generation.
 //
-// decision: mu is a leaf mutex over the ring, the counters and the named set.
+// decision: mu is a leaf mutex over the ring, the counters and the pieces set.
 // It is never held across an Append, a Sync or a MarkLoss, which take locks
 // of other domains, so it adds no edge to the journal's lock order.
 type Durability struct {
@@ -70,13 +70,6 @@ type Durability struct {
 	// once no copy of its dropped record remains to be reported again, when
 	// a journal with a long loss history shows up in a heap profile.
 	pieces map[piece]struct{}
-
-	// named holds the dropped seqs a loss record already names, written by
-	// a Lose, owed by a deferred Lose or found by a Place. A record names
-	// the whole dropped record, so a later piece of that seq appends none; a
-	// superseded one excludes its record only over its own extent and is
-	// never held here. It is as unbounded as pieces, and shares its upgrade.
-	named map[core.Seq]struct{}
 }
 
 // piece is one extent of one dropped record.
@@ -107,7 +100,6 @@ func New(cfg Config) (*Durability, error) {
 		log:      log,
 		readOnly: func() error { return nil },
 		pieces:   map[piece]struct{}{},
-		named:    map[core.Seq]struct{}{},
 	}, nil
 }
 
@@ -187,9 +179,6 @@ func (d *Durability) Place(ev core.LossEvent, dropped core.Seq) {
 		return
 	}
 	d.pieces[k] = struct{}{}
-	if ev.Reason != core.LossSuperseded {
-		d.named[dropped] = struct{}{}
-	}
 	ev.AtOpen = true
 	d.pushLocked(ev)
 }

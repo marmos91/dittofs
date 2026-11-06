@@ -14,8 +14,8 @@ import (
 // Extent is the piece lost, not necessarily the whole dropped record: a
 // reconcile can drop one piece of a record and keep the rest under the same
 // Seq. A caller hands Lose each piece it drops, and each piece is reported
-// on its own; the loss record, which names the whole dropped record, is
-// appended once per Seq unless the reason is superseded.
+// on its own and appends a loss record of its own over its own extent: that
+// extent is what outranks the older records below it after a crash.
 type Loss struct {
 	Share   core.ShareTag
 	File    core.FileID
@@ -69,9 +69,9 @@ func toFormat(r core.LossReason) format.LossReason {
 // rule, counts the loss, and publishes its event, in that order. The event
 // is published last, so a reader that sees it is already owed the record.
 // A piece (Seq and Extent) already taken by an earlier Lose or Place does
-// nothing and returns the zero event. Another piece of a Seq a loss record
-// already names is reported and marked, and appends no record of its own,
-// unless its reason is superseded, whose record excludes only its own extent.
+// nothing and returns the zero event. Every other piece, of a Seq already
+// reported or not, goes through all of it, so no event precedes its own
+// record.
 func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return core.LossEvent{}, err
@@ -88,15 +88,11 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 		return core.LossEvent{}, nil
 	}
 	d.pieces[k] = struct{}{}
-	_, alreadyNamed := d.named[l.Seq]
-	if l.Reason != core.LossSuperseded {
-		d.named[l.Seq] = struct{}{}
-	}
 	d.mu.Unlock()
 
 	var recErr error
 	refused := false
-	if !l.Deferred && (!alreadyNamed || l.Reason == core.LossSuperseded) {
+	if !l.Deferred {
 		if recErr = d.readOnly(); recErr != nil {
 			refused = true
 		} else {
