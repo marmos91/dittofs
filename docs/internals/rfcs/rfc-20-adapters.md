@@ -1773,7 +1773,9 @@ What follows from the service owning it:
   a handle or an open is admitted ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)).
   So a handle presented through any entry path meets the same checks — share
   state, the proof and protection minimums, client rules, squashing — including the operations that
-  build no other context (`LOCK`, `LOCKT`, `LOCKU`). The adapter's job at entry
+  build no other context (`LOCK`, `LOCKT`, `LOCKU`), but for the client rules'
+  refusal, which a call that only releases state, `LOCKU` or `CLOSE`, does not
+  meet. The adapter's job at entry
   is to make the call and map its error.
 - **`PUTFH` makes no call.** It sets the current filehandle; the next
   operation's call admits it. A stale or refused handle is reported on that
