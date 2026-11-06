@@ -139,7 +139,9 @@ func (d *Durability) failFile(st *stream, w *window, f core.FileID, entries []en
 func (d *Durability) hasEntry(st *stream, file core.FileID, v core.Version) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	match := func(e entry) bool { return e.w.File == file && e.w.Version == v }
+	// Only content covers: a loss record's header carries the dropped
+	// record's version and is not a cover.
+	match := func(e entry) bool { return isContent(e.w) && e.w.File == file && e.w.Version == v }
 	if slices.ContainsFunc(st.ledger, match) {
 		return true
 	}

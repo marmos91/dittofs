@@ -183,7 +183,11 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 // appendRecord appends the loss record to the file's stream and syncs it.
 //
 // ponytail: the sync is the segment's own, one per loss, outside the group
-// commit, and a failure here consumes the segment's write error before the
+// commit. A failed window of N content records therefore costs N serial
+// append-and-fsync rounds on the stream's worker, and no other file's Sync on
+// the stream returns meanwhile. Upgrade to appending the window's loss records
+// and one SyncAt of the last when a failed window's stall shows up in a
+// sync-latency reading. A failure here also consumes the segment's write error before the
 // stream's worker sees it, so this call ends the segment itself, as the worker
 // does for its own failed sync, and the failed window is taken from the end
 // event. That sync failure is not counted in the layer's sync counters, which

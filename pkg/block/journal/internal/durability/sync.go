@@ -79,11 +79,18 @@ type Part struct {
 	// Losses are the events in the ring, oldest first.
 	Losses []core.LossEvent
 
+	// LossGeneration is the directory's loss generation, read after the ring
+	// is copied so it includes the raise of every event in Losses.
 	LossGeneration uint64
 
-	CorruptDataLoss   uint64
+	// CorruptDataLoss counts the corrupt-record losses whose data was not
+	// offloaded, so nothing remains to repair from.
+	CorruptDataLoss uint64
+	// CorruptRepairable counts the corrupt-record losses whose data was
+	// offloaded.
 	CorruptRepairable uint64
-	StaleExtents      uint64
+	// StaleExtents counts the losses of the stale reason.
+	StaleExtents uint64
 }
 
 // Durability is the ledger and the workers of every stream.

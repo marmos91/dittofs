@@ -48,8 +48,9 @@ func (r *rig) quietAfterFailures() func() {
 //   - nil only if every earlier record of the file is Durable, bar the ones a
 //     SyncError already reported lost;
 //   - a SyncError only if a failure was scheduled while one of the file's
-//     records was unsynced, or on a segment a failure was scheduled for, and
-//     the file was not told of it by an earlier one;
+//     records was unsynced, or on a segment a failure was scheduled for. A
+//     repeat SyncError for a file already told is accepted, not checked: the
+//     deterministic marks tests pin that a failure is reported once;
 //   - the context's error only for the cancelled call.
 func FuzzSyncInterleaving(f *testing.F) {
 	f.Add([]byte{0, 1})
@@ -158,7 +159,8 @@ func FuzzSyncInterleaving(f *testing.F) {
 // and scheduled sync and write failures, and checks R14: a Sync that returns
 // nil never covers a record of a segment whose sync or append failed while the
 // record was unsynced, no Sync hangs, and a file whose record a failure took
-// hears of it from exactly one SyncError.
+// hears of it from a SyncError (that it hears once is pinned by the marks
+// tests, not by this oracle).
 //
 // The model dooms a record when a failure is certain to meet it: it was
 // unsynced when a sync failure was scheduled on its segment, was written to a

@@ -216,6 +216,26 @@ func TestTwoFailedWindowsOfOneFileAreReportedByOneError(t *testing.T) {
 	fr.wantNilSync(t, f)
 }
 
+// TestASyncOfTwoFilesNamesTheOldestWindowAcrossThem covers the choice of the
+// window a SyncError names when the files of one call lost records in
+// different windows: the older one's segment, whichever file is listed first.
+func TestASyncOfTwoFilesNamesTheOldestWindowAcrossThem(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	fr := newFailRig(t, nil)
+	f, g := file(1), file(2)
+	a, _ := fr.publish(t, g, 0, "gggg")
+	fr.failByTimer(t, a.Segment)
+	fr.awaitResolved(t)
+	b, _ := fr.publish(t, f, 0, "ffff")
+	fr.failByTimer(t, b.Segment)
+	fr.awaitResolved(t)
+	if a.Segment == b.Segment {
+		t.Fatal("both writes landed in one segment")
+	}
+
+	wantSyncError(t, mustReturn(t, "Sync", fr.syncAsync(context.Background(), f, g)), a.Segment, f, g)
+}
+
 // TestWaitDurableNeverConsultsTheMarks pins that the durability wait neither
 // reports a failed window nor takes the report a Sync is owed.
 func TestWaitDurableNeverConsultsTheMarks(t *testing.T) {

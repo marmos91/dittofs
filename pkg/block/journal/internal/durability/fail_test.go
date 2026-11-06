@@ -61,9 +61,10 @@ func (fr *failRig) failSegmentOf(t *testing.T, seg core.SegmentID, f core.FileID
 	}
 }
 
-// releaser returns a channel and the function that closes it once; the close
-// also runs at cleanup, ahead of the layer's stop, so a test that fails while a
-// hook waits on the channel does not leave the worker stuck.
+// releaser returns a channel and the function that closes it once. It
+// registers no cleanup: a caller whose hook waits on the channel passes the
+// function to t.Cleanup itself, so a test that fails while the hook waits does
+// not leave the worker stuck.
 func releaser(t *testing.T) (<-chan struct{}, func()) {
 	t.Helper()
 	ch := make(chan struct{})
@@ -159,6 +160,45 @@ func TestAFailedWindowServesTheLastSyncedWriteAndNamesTheLostOne(t *testing.T) {
 	recs := fr.lossRecordsOnDisk(t)
 	if len(recs) != 1 || recs[0].Dropped != seq2 || recs[0].Synced || recs[0].Reason != format.LossFailedSync {
 		t.Fatalf("durable loss records = %+v, want one naming seq %d, unsynced", recs, seq2)
+	}
+}
+
+// TestALossEventNamesTheExtentOfThePieceTheFailureDropped pins that the event
+// carries the piece the window's record still held, not the record's header
+// extent: a newer synced record covers the first half, so the loss is [4,8).
+func TestALossEventNamesTheExtentOfThePieceTheFailureDropped(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	fr := newFailRig(t, nil)
+	f := file(1)
+	_, _ = fr.publish(t, f, 0, "aaaaaaaa")
+	if err := fr.d.Sync(context.Background(), f); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	loc, v10 := fr.publish(t, f, 0, "bbbbbbbb")
+	v12, err := fr.d.counters.Draw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq, err := fr.d.counters.NextSeq()
+	if err != nil {
+		t.Fatal(err)
+	}
+	placed := index.Placed{Extent: core.Extent{Off: 0, Len: 4}, Record: index.RecordAt{Segment: 99, Offset: 64}, Version: v12}
+	unlock := fr.domains.Lock(f)
+	if _, err := fr.ix.WriteRetain(1, f, placed, seq); err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+
+	fr.failSegmentOf(t, loc.Segment, f)
+	fr.awaitResolved(t)
+
+	evs := fr.events()
+	if len(evs) != 1 {
+		t.Fatalf("%d loss events, want 1: %+v", len(evs), evs)
+	}
+	if ev := evs[0]; ev.Version != v10 || ev.Extent != (core.Extent{Off: 4, Len: 4}) {
+		t.Fatalf("event = %+v, want v10's surviving piece [4,8), not its header extent [0,8)", ev)
 	}
 }
 
