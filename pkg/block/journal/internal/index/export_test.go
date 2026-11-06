@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"maps"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -33,12 +34,18 @@ type ModelIndex struct {
 	recs  map[RecordAt]ModelRecord
 	slots uint32         // records placed so far
 	last  core.SegmentID // highest segment placed
+
+	// sum is the running sum of every delta an update returned, and
+	// dirtyFiles the files the Dirty transitions say are on the dirty-file
+	// list: what CheckDeltas compares with the read-out.
+	sum        heldTotals
+	dirtyFiles map[core.FileID]bool
 }
 
 // NewModelIndex returns an empty index-backed harness: no extent bound, no
 // bound on versions, as the fuzz never reaches either.
 func NewModelIndex() *ModelIndex {
-	m := &ModelIndex{fs: &files{}, recs: map[RecordAt]ModelRecord{}}
+	m := &ModelIndex{fs: &files{}, recs: map[RecordAt]ModelRecord{}, dirtyFiles: map[core.FileID]bool{}}
 	m.fs.setExtentLimit(1 << 40)
 	_ = m.ctr.SetVersionLimit(core.Version{Counter: 1 << 40})
 	return m
@@ -100,7 +107,7 @@ func (m *ModelIndex) Write(tag core.ShareTag, id core.FileID, off int64, data []
 	}
 	r, n := m.place(v)
 	m.recs[r] = ModelRecord{Data: slices.Clone(data), Mtime: mtime}
-	_, err = m.fs.commit(id, adm, func(f *file) error {
+	d, err := m.fs.commit(id, adm, func(f *file) error {
 		if err := f.recorded(r.Segment, e, n, tag, id); err != nil {
 			return err
 		}
@@ -112,6 +119,7 @@ func (m *ModelIndex) Write(tag core.ShareTag, id core.FileID, off int64, data []
 		}
 		return nil
 	})
+	m.note(d)
 	return v, err
 }
 
@@ -135,12 +143,15 @@ func (m *ModelIndex) Fill(tag core.ShareTag, id core.FileID, off int64, data []b
 	r, n := m.place(v)
 	e := core.Extent{Off: off, Len: int64(len(data))}
 	m.recs[r] = ModelRecord{Data: slices.Clone(data)}
-	if _, err := m.fs.fill(id, Placed{Extent: e, Record: r, Version: v}, asOf); err != nil {
+	d, err := m.fs.fill(id, Placed{Extent: e, Record: r, Version: v}, asOf)
+	m.note(d)
+	if err != nil {
 		return err
 	}
-	_, err := m.fs.update(id, func(f *file) error {
+	d, err = m.fs.update(id, func(f *file) error {
 		return f.recorded(r.Segment, e, n, tag, id)
 	})
+	m.note(d)
 	return err
 }
 
@@ -151,10 +162,11 @@ func (m *ModelIndex) Mark(tag core.ShareTag, id core.FileID, e core.Extent, olde
 		return err
 	}
 	r, n := m.place(newest)
-	_, err := m.fs.update(id, func(f *file) error {
+	d, err := m.fs.update(id, func(f *file) error {
 		f.held.markOffloaded(e, oldest, newest)
 		return f.recorded(r.Segment, e, n, tag, id)
 	})
+	m.note(d)
 	return err
 }
 
@@ -169,7 +181,7 @@ func (m *ModelIndex) Release(tag core.ShareTag, id core.FileID, e core.Extent) (
 		return nil, err
 	}
 	var out []core.Held
-	_, err = m.fs.commit(id, adm, func(f *file) error {
+	d, err := m.fs.commit(id, adm, func(f *file) error {
 		o, err := f.held.release(e, nil)
 		if err != nil {
 			return err
@@ -189,6 +201,7 @@ func (m *ModelIndex) Release(tag core.ShareTag, id core.FileID, e core.Extent) (
 		}
 		return nil
 	})
+	m.note(d)
 	if errors.Is(err, ErrNotOffloaded) {
 		return out, &core.NotOffloadedError{File: id, Extents: []core.Extent{e}}
 	}
@@ -206,7 +219,7 @@ func (m *ModelIndex) Truncate(tag core.ShareTag, id core.FileID, size int64) (co
 		return core.Version{}, err
 	}
 	r, n := m.place(v)
-	_, err = m.fs.update(id, func(f *file) error {
+	d, err := m.fs.update(id, func(f *file) error {
 		e := toEnd(size)
 		if err := f.recorded(r.Segment, e, n, tag, id); err != nil {
 			return err
@@ -214,6 +227,7 @@ func (m *ModelIndex) Truncate(tag core.ShareTag, id core.FileID, size int64) (co
 		f.truncate(size, v)
 		return nil
 	})
+	m.note(d)
 	return v, err
 }
 
@@ -235,12 +249,13 @@ func (m *ModelIndex) Deallocate(tag core.ShareTag, id core.FileID, e core.Extent
 		return v, err
 	}
 	r, n := m.place(v)
-	_, err = m.fs.commit(id, adm, func(f *file) error {
+	d, err := m.fs.commit(id, adm, func(f *file) error {
 		if err := f.recorded(r.Segment, e, n, tag, id); err != nil {
 			return err
 		}
 		return f.deallocate(e, v)
 	})
+	m.note(d)
 	return v, err
 }
 
@@ -255,20 +270,21 @@ func (m *ModelIndex) Delete(tag core.ShareTag, id core.FileID) (core.Version, er
 		return core.Version{}, err
 	}
 	r, n := m.place(v)
-	_, err = m.fs.update(id, func(f *file) error {
+	d, err := m.fs.update(id, func(f *file) error {
 		if err := f.recorded(r.Segment, toEnd(0), n, tag, id); err != nil {
 			return err
 		}
 		f.delete(v)
 		return nil
 	})
+	m.note(d)
 	return v, err
 }
 
 // Settle settles id's removals at or below v, as the journal's Settle does.
 func (m *ModelIndex) Settle(tag core.ShareTag, id core.FileID, v core.Version) {
 	if m.Check(tag, id) == nil {
-		m.fs.settleRemovals(id, v)
+		m.note(m.fs.settleRemovals(id, v))
 	}
 }
 
@@ -338,6 +354,80 @@ func (m *ModelIndex) CheckAccounting() error {
 		if got := m.fs.segmentBytes(seg); got != want {
 			return fmt.Errorf("index: segment %d counts %+v, the read-out says %+v", seg, got, want)
 		}
+	}
+	return nil
+}
+
+// note adds one update's delta to the running sums, and moves its file on or
+// off the dirty-file list as the delta's transition says. A transition that
+// contradicts the list, a file made dirty that is on it or made clean that is
+// not, is kept as a figure no read-out can match: the sum is skewed by it.
+func (m *ModelIndex) note(d HeldDelta) {
+	m.sum.held += d.HeldBytes
+	m.sum.dirty += d.DirtyBytes
+	m.sum.retained += d.RetainedBytes
+	switch d.Dirty {
+	case BecameDirty:
+		if m.dirtyFiles[d.File] {
+			m.sum.held += 1 << 50 // a second BecameDirty: never equals a read-out
+		}
+		m.dirtyFiles[d.File] = true
+	case BecameClean:
+		if !m.dirtyFiles[d.File] {
+			m.sum.held += 1 << 50
+		}
+		delete(m.dirtyFiles, d.File)
+	}
+}
+
+// CheckDeltas compares the running sums of the deltas the harness's updates
+// returned with the read-out: held and retained bytes against the per-segment
+// counters and against the entries, dirty bytes against the entries whose
+// offloaded bit is unset, and the dirty-file list against the files holding
+// such an entry, held or retained. It returns the first way they disagree.
+func (m *ModelIndex) CheckDeltas() error {
+	return checkDeltaSums(m.fs, m.last, m.sum, m.dirtyFiles)
+}
+
+// checkDeltaSums is CheckDeltas over any index whose records sit in segments
+// 1 through last.
+func checkDeltaSums(fs *files, last core.SegmentID, sum heldTotals, dirtyFiles map[core.FileID]bool) error {
+	var held, dirty, retained int64
+	onList := map[core.FileID]bool{}
+	for id, es := range fs.inspectAll() {
+		for _, e := range es {
+			switch e.Kind {
+			case EntryHeld:
+				held += e.Extent.Len
+				if !e.Offloaded {
+					dirty += e.Extent.Len
+					onList[id] = true
+				}
+			case EntryRetained:
+				retained += e.Extent.Len
+				if !e.Offloaded {
+					onList[id] = true
+				}
+			}
+		}
+	}
+	var segHeld, segRetained int64
+	for seg := core.SegmentID(1); seg <= last; seg++ {
+		b := fs.segmentBytes(seg)
+		segHeld += b.Held
+		segRetained += b.Retained
+	}
+	if sum.held != held || sum.held != segHeld {
+		return fmt.Errorf("index: deltas sum %d held bytes, the read-out has %d, the segment counters %d", sum.held, held, segHeld)
+	}
+	if sum.retained != retained || sum.retained != segRetained {
+		return fmt.Errorf("index: deltas sum %d retained bytes, the read-out has %d, the segment counters %d", sum.retained, retained, segRetained)
+	}
+	if sum.dirty != dirty {
+		return fmt.Errorf("index: deltas sum %d dirty bytes, the read-out has %d", sum.dirty, dirty)
+	}
+	if !maps.Equal(dirtyFiles, onList) {
+		return fmt.Errorf("index: the deltas' dirty-file list is %v, the read-out's is %v", dirtyFiles, onList)
 	}
 	return nil
 }

@@ -196,13 +196,15 @@ func (f *file) settleRemovals(v core.Version) {
 // settleRemovals settles id's markers at or below v. It claims nothing, and
 // a file with no entry is left alone rather than given one to drop: Settle
 // follows every metadata commit of a removal. A file that gains an entry
-// between the two steps is settled under its lock like any other.
-func (fs *files) settleRemovals(id core.FileID, v core.Version) {
+// between the two steps is settled under its lock like any other. It returns
+// the update's delta, which holds no byte: markers carry none.
+func (fs *files) settleRemovals(id core.FileID, v core.Version) HeldDelta {
 	if !fs.view(id, func(*file) {}) {
-		return
+		return HeldDelta{}
 	}
-	_, _ = fs.update(id, func(f *file) error {
+	d, _ := fs.update(id, func(f *file) error {
 		f.settleRemovals(v)
 		return nil
 	})
+	return d
 }

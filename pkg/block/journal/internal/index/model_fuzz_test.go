@@ -285,6 +285,9 @@ func runModelFuzz(data []byte) ([]string, error) {
 		if err := d.mi.CheckAccounting(); err != nil {
 			return d.log, err
 		}
+		if err := d.mi.CheckDeltas(); err != nil {
+			return d.log, err
+		}
 	}
 	return d.log, nil
 }
