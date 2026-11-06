@@ -32,8 +32,9 @@ type EndEvent struct {
 	// Err is the failure that ended the segment: the write's error, the
 	// seal's, End's cause.
 	Err error
-	// Stopped says the stream stopped with this end and will take no
-	// further spare.
+	// Stopped says the stream had stopped by the time the event was handed
+	// over, by this end or by a failure that met the segment after it was
+	// ended, and will take no further spare.
 	Stopped bool
 }
 
@@ -186,7 +187,10 @@ func (s *Stream) notifyEnd() {
 		Segment: rec.id,
 		Cause:   rec.cause,
 		Err:     rec.err,
-		Stopped: rec.stopped,
+		// The stop the end itself made, or one a straggler's EROFS made
+		// while the event waited for it: the event says whether the stream
+		// has stopped by the time it is handed over.
+		Stopped: rec.stopped || s.stopped != nil,
 		// No write of the segment failed — a sync's failure, a requested
 		// end — so the end is the end of every reservation the segment
 		// held: the record's own next.

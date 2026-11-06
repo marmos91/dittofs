@@ -899,6 +899,15 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 				s.failedAt = off
 			}
 			s.noteFailure(werr)
+			// An EROFS stops the stream wherever it lands, a segment already
+			// ended included: the device is read-only whichever write met
+			// it first, and endLocked below reads only the failure that
+			// ends the segment. A straggler's other failure is no stop of
+			// its own — the segment is the one the first failure ended,
+			// not a second refusal.
+			if errors.Is(werr, syscall.EROFS) {
+				s.stopLocked(werr)
+			}
 			if s.id == id && s.sealState == sealOpen {
 				if endID, notify := s.endLocked(EndAppend, werr); notify {
 					s.appendMu.Unlock()
