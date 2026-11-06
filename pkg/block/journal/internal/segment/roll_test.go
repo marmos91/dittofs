@@ -97,7 +97,7 @@ func rollBuildMax(t *testing.T, cap int64, targets segment.Targets, max int64, l
 	maker := segment.NewMaker(seam.FS(), set, max, last, nil)
 	budget := core.NewDescriptorBudget(64)
 	cache := segment.NewDescriptors(seam.FS(), format.SegmentName, budget)
-	pool := segment.NewPool(maker, targets, nil)
+	pool := segment.NewPool(maker, targets, nil, nil)
 
 	e := rollEnv{seam: seam, set: set, maker: maker, cache: cache, pool: pool, budget: budget}
 	if setup != nil {

@@ -89,7 +89,7 @@ func streamOver(t *testing.T, cap int64, setup func(e streamEnv)) streamEnv {
 	maker := segment.NewMaker(seam.FS(), set, 2*cap, 0, nil)
 	budget := core.NewDescriptorBudget(64)
 	cache := segment.NewDescriptors(seam.FS(), format.SegmentName, budget)
-	pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil)
+	pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil, nil)
 
 	e := streamEnv{seam: seam, set: set, maker: maker, pool: pool, cache: cache, budget: budget, cap: cap}
 	setup(e)
@@ -1249,7 +1249,7 @@ func TestStreamClosesUnderDenseAppendsRacingAppendsDoesNotPanic(t *testing.T) {
 		}
 		set := segment.NewSet(streamCap, nil)
 		maker := segment.NewMaker(seam.FS(), set, 3*streamCap, 0, nil)
-		pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil)
+		pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil, nil)
 		pool.Start()
 		budget := core.NewDescriptorBudget(64)
 		cache := segment.NewDescriptors(seam.FS(), format.SegmentName, budget)
@@ -1720,7 +1720,7 @@ func streamOverFS(t *testing.T, cap int64, fsys storage.FS, setup func(e streamE
 	maker := segment.NewMaker(fsys, set, 3*cap, 0, nil)
 	budget := core.NewDescriptorBudget(64)
 	cache := segment.NewDescriptors(fsys, format.SegmentName, budget)
-	pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil)
+	pool := segment.NewPool(maker, segment.Targets{Content: 2}, nil, nil)
 
 	e := streamEnv{set: set, maker: maker, pool: pool, cache: cache, budget: budget, cap: cap}
 	setup(e)

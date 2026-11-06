@@ -40,33 +40,38 @@ type retireEnv struct {
 // on every unlink.
 var noPool = segment.Targets{Content: -1}
 
-// retirer builds a retirer over a fresh seam. targets is the pool's; noPool
-// means every retirement unlinks. readOnly is the R89 check, nil meaning
-// writable. durable collects the durable-unlink signal's calls, when the
-// test needs it.
+// retirer builds a retirer over a fresh seam, with no retired-segment hook.
+// targets is the pool's; noPool means every retirement unlinks. readOnly is
+// the R89 check, nil meaning writable. The durable signal's calls, which the
+// worker goroutine may be the one to make, are handed out guarded: read them
+// through the returned collector's own lock.
 func retirer(t *testing.T, targets segment.Targets, readOnly func() error) (*retireEnv, *durableCollector) {
 	t.Helper()
-	return retirerBuilt(t, targets, readOnly, 0, nil)
+	return retirerBuilt(t, targets, readOnly, nil, 0, nil)
 }
 
 // retirerLogged is retirer with a logger the test reads back.
 func retirerLogged(t *testing.T, targets segment.Targets, readOnly func() error, h slog.Handler) (*retireEnv, *durableCollector) {
 	t.Helper()
-	return retirerBuilt(t, targets, readOnly, 0, slog.New(h))
+	return retirerBuilt(t, targets, readOnly, nil, 0, slog.New(h))
 }
 
 // retirerSeeded is retirer with the Maker seeded at last, the way open seeds
 // it from the largest id the directory names.
 func retirerSeeded(t *testing.T, targets segment.Targets, readOnly func() error, last core.SegmentID) (*retireEnv, *durableCollector) {
 	t.Helper()
-	return retirerBuilt(t, targets, readOnly, last, nil)
+	return retirerBuilt(t, targets, readOnly, nil, last, nil)
 }
 
 // retirerBuilt is retirer with every knob a test needs: the read-only check,
-// the Maker's seed and a logger for the retirer and its ledger. The durable
-// signal's slice is handed out guarded: the worker goroutine is the one that
-// appends to it, so a test must read it through the collector's own lock.
-func retirerBuilt(t *testing.T, targets segment.Targets, readOnly func() error, last core.SegmentID, log *slog.Logger) (*retireEnv, *durableCollector) {
+// the retired-segment hook, the Maker's seed and a logger for the retirer and
+// its ledger. The read-only check the pool's refill and the retirer both ask
+// is the one the journal's owner passes to both constructors. The durable
+// signal's calls are handed out guarded through the returned collector — the
+// worker goroutine is the one that appends to them — while the hook's
+// collector belongs to the caller that built the hook handed in here
+// (retirerHooked's, say).
+func retirerBuilt(t *testing.T, targets segment.Targets, readOnly func() error, retired func(core.SegmentID), last core.SegmentID, log *slog.Logger) (*retireEnv, *durableCollector) {
 	t.Helper()
 
 	seam := newSeam(t)
@@ -75,7 +80,8 @@ func retirerBuilt(t *testing.T, targets segment.Targets, readOnly func() error, 
 	c := segment.NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(64))
 	var p *segment.Pool
 	if targets.Content >= 0 {
-		p = segment.NewPool(m, targets, nil)
+		// The helper's read-only check holds the retirer only; a pool test that needs it builds its own pool.
+		p = segment.NewPool(m, targets, nil, nil)
 	}
 	dc := &durableCollector{}
 	r := segment.NewRetirer(segment.RetirerConfig{
@@ -85,6 +91,7 @@ func retirerBuilt(t *testing.T, targets segment.Targets, readOnly func() error, 
 		Maker:    m,
 		FS:       seam.FS(),
 		ReadOnly: readOnly,
+		Retired:  retired,
 		Durable:  dc.add,
 		Log:      log,
 	})
@@ -123,6 +130,106 @@ func (d *durableCollector) at(i int) segment.Retirement {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.recs[i]
+}
+
+// retiredCall is one retired-segment hook call: the id it was handed, the
+// error the set refused a ClaimRetirement of that id with — nil when the
+// segment was still in the set, which is the very bug the hook's ordering
+// exists to keep out — and the freed count the executor reported when the
+// call was made, zero when the collector does not probe the executor.
+type retiredCall struct {
+	id    core.SegmentID
+	err   error
+	freed uint64
+}
+
+// retiredCollector keeps the retired-segment hook's calls under a mutex: the
+// worker goroutine is the one that makes them. Its hook asks the ledger what
+// has become of the id — a segment that has left the set is refused
+// ErrNotInSet — and records the answer beside the call. The probe of a
+// segment still in the set would claim it, so it is released at once: the
+// retired one had no claim of ours.
+type retiredCollector struct {
+	mu   sync.Mutex
+	set  *segment.Set
+	recs []retiredCall
+	// The retirer the hook reads the freed count through, once the collector
+	// has been handed one: Counters takes the executor's own lock, so a hook
+	// the executor calls with that lock held never returns, and the
+	// retirement that called it hangs.
+	r     *segment.Retirer
+	probe bool
+}
+
+// bind hands the collector the set its retirer retires from; its hook reads
+// it through the mutex, and nothing retires before the bind.
+func (rc *retiredCollector) bind(set *segment.Set) {
+	rc.mu.Lock()
+	rc.set = set
+	rc.mu.Unlock()
+}
+
+// probeRetirer makes every call of the collector's hook after it read the
+// freed count through the retirer's own counters: Counters takes the
+// executor's lock, so only a hook called holding no lock of the executor's
+// comes back.
+func (rc *retiredCollector) probeRetirer(r *segment.Retirer) {
+	rc.mu.Lock()
+	rc.r = r
+	rc.probe = true
+	rc.mu.Unlock()
+}
+
+// hook returns the retired-segment hook a retirer's constructor takes.
+func (rc *retiredCollector) hook() func(core.SegmentID) {
+	return func(id core.SegmentID) {
+		rc.mu.Lock()
+		set := rc.set
+		_, _, err := set.ClaimRetirement(id)
+		if err == nil {
+			set.Release(id)
+		}
+		var freed uint64
+		if rc.probe {
+			freed = rc.r.Counters().FreedBytes
+		}
+		rc.recs = append(rc.recs, retiredCall{id: id, err: err, freed: freed})
+		rc.mu.Unlock()
+	}
+}
+
+// len is how many hook calls have arrived so far.
+func (rc *retiredCollector) len() int {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	return len(rc.recs)
+}
+
+// at is the call at i.
+func (rc *retiredCollector) at(i int) retiredCall {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	return rc.recs[i]
+}
+
+// saw is whether any call names id — the fresh id of a recycle, which a hook
+// must never be handed.
+func (rc *retiredCollector) saw(id core.SegmentID) bool {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	for _, c := range rc.recs {
+		if c.id == id {
+			return true
+		}
+	}
+	return false
+}
+
+// snapshot is a copy of the hook's calls, for a test's failure message.
+func (rc *retiredCollector) snapshot() []retiredCall {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	return append([]retiredCall(nil), rc.recs...)
 }
 
 // segment makes one spare, takes it into the set and seals it with the full
@@ -713,6 +820,14 @@ func (f *countingFault) At(string, []byte) (time.Duration, int, error) {
 	return 0, 0, nil
 }
 
+// count is how many calls the seam has consulted it on, read under the
+// mutex for the goroutine that may be inside At.
+func (f *countingFault) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
 // TestRetireRefusals: an Active segment, a spare of the pool and a segment
 // already claimed are each refused without a seam call and without a double
 // retire: the executor never names live storage a stream still appends to,
@@ -940,7 +1055,7 @@ func TestRetireRecycleFailureIsAnUnlink(t *testing.T) {
 		before := set.Counters()
 
 		applier := &appliedRename{FS: fsys}
-		p := segment.NewPool(m, segment.Targets{Content: 1}, nil)
+		p := segment.NewPool(m, segment.Targets{Content: 1}, nil, nil)
 		cache := segment.NewDescriptors(applier, format.SegmentName, core.NewDescriptorBudget(64))
 		r := segment.NewRetirer(segment.RetirerConfig{
 			Set: set, Cache: cache, Pool: p, Maker: m, FS: applier,
@@ -1582,10 +1697,15 @@ func TestRetireReadOnly(t *testing.T) {
 	e.r.Stop()
 }
 
-// readOnlyFlag is a test's read-only check: a flag under its own mutex.
+// readOnlyFlag is a test's read-only check: a flag under its own mutex, and
+// the count of every call made of it. Both the pool's refill and the retirer
+// ask the same check — the journal's owner hands one function to both
+// constructors — so a test that needs to prove a worker ran, rather than pass
+// vacuously, waits for the count to rise.
 type readOnlyFlag struct {
-	mu  sync.Mutex
-	off bool
+	mu    sync.Mutex
+	off   bool
+	calls int
 }
 
 func (f *readOnlyFlag) set(on bool) {
@@ -1594,13 +1714,278 @@ func (f *readOnlyFlag) set(on bool) {
 	f.mu.Unlock()
 }
 
+// check is the read-only check itself.
 func (f *readOnlyFlag) check() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls++
 	if f.off {
 		return errReadOnly
 	}
 	return nil
+}
+
+// count is how many calls the check has been asked, from either consumer.
+func (f *readOnlyFlag) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// retirerHooked builds a retirer whose retired-segment hook is the collector's
+// own probe of the set the retirer retires from: each call records the id it
+// was handed and what the ledger answered of it. The hook is handed to the
+// build before the set exists — the closure reads the set under the
+// collector's mutex — and nothing retires before the bind that follows. A test
+// that also wants each call to read the freed count through the retirer's own
+// counters — the probe that pins the hook to hold no executor lock — calls
+// the collector's probeRetirer with e.r.
+func retirerHooked(t *testing.T, targets segment.Targets, readOnly func() error) (*retireEnv, *retiredCollector) {
+	t.Helper()
+	rc := &retiredCollector{}
+	e, _ := retirerBuilt(t, targets, readOnly, rc.hook(), 0, nil)
+	rc.bind(e.set)
+	return e, rc
+}
+
+// TestRetireRetiredHookAfterLeavingTheSet: each completed retirement calls the
+// retired-segment hook exactly once, with the retired segment's id — the old
+// id for a recycle, never the fresh one — after the segment has left the set
+// and before the directory sync, so a not-durable unlink calls it too; and no
+// refusal or failure calls it at all. The hook's probe of the ledger, a
+// ClaimRetirement of the id it was handed, is refused ErrNotInSet: before the
+// segment left the set that same probe would find the claim the retirement
+// holds already and answer ErrClaimed, which is what makes the assertion
+// discriminate. The hook's consumer drops the copy-table
+// entries of a retired segment, so a copy never names one — so it must never
+// run for a segment the set still holds.
+func TestRetireRetiredHookAfterLeavingTheSet(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	t.Run("unlink", func(t *testing.T) {
+		e, rc := retirerHooked(t, noPool, nil)
+		id := e.segment(true)
+
+		if _, err := e.r.Retire(id, segment.NotHeld); err != nil {
+			t.Fatalf("the unlink retire: %v", err)
+		}
+		if rc.len() != 1 {
+			t.Fatalf("the unlink retire called the hook %d times, want once", rc.len())
+		}
+		got := rc.at(0)
+		if got.id != id {
+			t.Fatalf("the hook was called for %d, want the retired %d", got.id, id)
+		}
+		if !errors.Is(got.err, segment.ErrNotInSet) {
+			t.Fatalf("the hook's id was still in the set: %v, want %v", got.err, segment.ErrNotInSet)
+		}
+	})
+
+	t.Run("recycle", func(t *testing.T) {
+		e, rc := retirerHooked(t, segment.Targets{Content: 1}, nil)
+		id := e.segment(true)
+
+		res, err := e.r.Retire(id, segment.NotHeld)
+		if err != nil {
+			t.Fatalf("the recycle retire: %v", err)
+		}
+		if !res.Recycled || res.Fresh == 0 || res.Fresh == id {
+			t.Fatalf("the retire did not recycle: %+v", res)
+		}
+		if rc.len() != 1 {
+			t.Fatalf("the recycle retire called the hook %d times, want once", rc.len())
+		}
+		got := rc.at(0)
+		if got.id != id {
+			t.Fatalf("the hook was called for %d, want the old id %d", got.id, id)
+		}
+		if rc.saw(res.Fresh) {
+			t.Fatalf("the hook was called for the fresh id %d, which names a spare the pool holds", res.Fresh)
+		}
+		if !errors.Is(got.err, segment.ErrNotInSet) {
+			t.Fatalf("the hook's id was still in the set: %v, want %v", got.err, segment.ErrNotInSet)
+		}
+	})
+
+	t.Run("a recycle that fails and falls back to an unlink", func(t *testing.T) {
+		e, rc := retirerHooked(t, segment.Targets{Content: 1}, nil)
+		old := e.segment(true)
+
+		// The recycle's rename fails, so the fallback unlink retires the
+		// segment: one retirement, one hook call.
+		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpRename, "*", 1, syscall.EIO)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		res, err := e.r.Retire(old, segment.NotHeld)
+		if err != nil {
+			t.Fatalf("the fallback-owning retire: %v", err)
+		}
+		if res.Recycled {
+			t.Fatalf("the failed recycle was reported as one: %+v", res)
+		}
+		if rc.len() != 1 || rc.at(0).id != old {
+			t.Fatalf("the fell-back recycle called the hook for %+v, want once for %d", rc.snapshot(), old)
+		}
+		if !errors.Is(rc.at(0).err, segment.ErrNotInSet) {
+			t.Fatalf("the hook's id was still in the set: %v, want %v", rc.at(0).err, segment.ErrNotInSet)
+		}
+	})
+
+	t.Run("a not-durable unlink calls it, the durable signal does not", func(t *testing.T) {
+		e, rc := retirerHooked(t, noPool, nil)
+		id := e.segment(true)
+
+		// The unlink's directory sync fails, so the retirement is not durable
+		// and the durable signal stays silent — but the hook has run, for the
+		// retirement was complete before the sync was asked.
+		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSyncDir, "*", 1, syscall.EIO)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		res, err := e.r.Retire(id, segment.NotHeld)
+		if err != nil {
+			t.Fatalf("the not-durable retire: %v", err)
+		}
+		if res.Durable {
+			t.Fatalf("the retire whose directory sync failed reported durable: %+v", res)
+		}
+		if rc.len() != 1 || rc.at(0).id != id {
+			t.Fatalf("the not-durable unlink called the hook for %+v, want once for %d", rc.snapshot(), id)
+		}
+		if !errors.Is(rc.at(0).err, segment.ErrNotInSet) {
+			t.Fatalf("the hook's id was still in the set: %v, want %v", rc.at(0).err, segment.ErrNotInSet)
+		}
+	})
+
+	t.Run("refusals", func(t *testing.T) {
+		t.Run("the read-only check failing", func(t *testing.T) {
+			ro := &readOnlyFlag{}
+			e, rc := retirerHooked(t, noPool, ro.check)
+			id := e.segment(true)
+
+			ro.set(true)
+			if _, err := e.r.Retire(id, segment.NotHeld); err == nil {
+				t.Fatal("the read-only retire succeeded, want the check's refusal")
+			}
+			if rc.len() != 0 {
+				t.Fatalf("the refused retire called the hook for %+v, want none", rc.snapshot())
+			}
+		})
+
+		t.Run("the wrong reason", func(t *testing.T) {
+			e, rc := retirerHooked(t, noPool, nil)
+			id := e.segment(true)
+
+			if _, err := e.r.Retire(id, segment.ReasonEnded); !errors.Is(err, segment.ErrWrongReason) {
+				t.Fatalf("the wrong-reason retire: %v, want %v", err, segment.ErrWrongReason)
+			}
+			if rc.len() != 0 {
+				t.Fatalf("the refused retire called the hook for %+v, want none", rc.snapshot())
+			}
+		})
+
+		t.Run("a failed remove", func(t *testing.T) {
+			e, rc := retirerHooked(t, noPool, nil)
+			id := e.segment(true)
+			name := format.SegmentName(id)
+
+			if err := e.seam.Schedule(journaltest.Failing(journaltest.OpRemove, name, 1, syscall.EIO)); err != nil {
+				t.Fatalf("Schedule: %v", err)
+			}
+			if _, err := e.r.Retire(id, segment.NotHeld); err == nil {
+				t.Fatal("the retire whose remove fails: no error")
+			}
+			if rc.len() != 0 {
+				t.Fatalf("the failed retire called the hook for %+v, want none", rc.snapshot())
+			}
+		})
+	})
+
+	t.Run("a nil hook retires without a panic", func(t *testing.T) {
+		e, _ := retirer(t, noPool, nil)
+		id := e.segment(true)
+		if _, err := e.r.Retire(id, segment.NotHeld); err != nil {
+			t.Fatalf("the retire with a nil hook: %v", err)
+		}
+	})
+
+	// The hook's contract is that it runs holding no lock of the executor's,
+	// which is what lets its consumer read the freed count through the
+	// executor's own counters, called back from the hook — Counters takes the
+	// executor's mutex, so a hook the executor calls with that mutex held
+	// never returns. Each retire runs on its own goroutine and the wait is
+	// bounded, so that failure is the test's own timeout, not a hang. Both
+	// call sites are probed: an unlink's and a recycle's.
+	t.Run("the hook reads the freed count the executor holds", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			targets segment.Targets
+		}{
+			{"unlink", noPool},
+			{"recycle", segment.Targets{Content: 1}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				e, rc := retirerHooked(t, tc.targets, nil)
+				rc.probeRetirer(e.r)
+				id := e.segment(true)
+
+				type out struct {
+					res segment.Retirement
+					err error
+				}
+				done := make(chan out, 1)
+				go func() {
+					res, err := e.r.Retire(id, segment.NotHeld)
+					done <- out{res, err}
+				}()
+				select {
+				case o := <-done:
+					if o.err != nil {
+						t.Fatalf("the retire whose hook reads the counters: %v", o.err)
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatal("the retire never returned: the hook's probe of the executor's own counters blocked it, so the hook was called holding a lock of the executor's")
+				}
+				if rc.len() != 1 {
+					t.Fatalf("the retire called the hook %d times, want once", rc.len())
+				}
+				// The freed count is the one the executor itself reported at
+				// the moment of the call — the cap, the very figure the
+				// hook's consumer would report beside the segment it drops.
+				if got := rc.at(0).freed; got != uint64(segCap) {
+					t.Fatalf("the hook read a freed count of %d from the executor, want the segment's cap %d", got, segCap)
+				}
+			})
+		}
+	})
+
+	t.Run("the worker path", func(t *testing.T) {
+		e, rc := retirerHooked(t, noPool, nil)
+		id := e.segment(true)
+
+		// A failed assertion must join the worker too, or the profiler
+		// reports the leak beside the failure and buries it.
+		t.Cleanup(e.r.Stop)
+		segment.RetryEveryForTest(e.r, time.Millisecond)
+		e.r.Start()
+		e.r.Enqueue(id, segment.NotHeld)
+		deadline := time.Now().Add(10 * time.Second)
+		for rc.len() == 0 {
+			if time.Now().After(deadline) {
+				t.Fatalf("the worker's retire never called the hook: the ledger holds %+v", e.set.Counters())
+			}
+			runtime.Gosched()
+		}
+		if rc.len() != 1 || rc.at(0).id != id {
+			t.Fatalf("the worker's retire called the hook for %+v, want once for %d", rc.snapshot(), id)
+		}
+		if !errors.Is(rc.at(0).err, segment.ErrNotInSet) {
+			t.Fatalf("the hook's id was still in the set: %v, want %v", rc.at(0).err, segment.ErrNotInSet)
+		}
+		// Stopped here rather than left to the cleanup, so a Stop that
+		// wedges fails this test on its own line rather than at the
+		// cleanup's.
+		e.r.Stop()
+	})
 }
 
 // TestRetireWorkerLifecycle: Start launches one worker a Stop joins, leaving

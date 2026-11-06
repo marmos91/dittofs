@@ -1653,7 +1653,7 @@ func TestSealWriteSealTakesEntriesAsData(t *testing.T) {
 		set := segment.NewSet(streamCap, nil)
 		budget := core.NewDescriptorBudget(8)
 		cache := segment.NewDescriptors(e.seam.FS(), format.SegmentName, budget)
-		pool := segment.NewPool(segment.NewMaker(e.seam.FS(), set, streamMax, 0, nil), segment.Targets{Content: 2}, nil)
+		pool := segment.NewPool(segment.NewMaker(e.seam.FS(), set, streamMax, 0, nil), segment.Targets{Content: 2}, nil, nil)
 		pool.Start()
 		defer pool.Stop()
 		awaitCounters(t, "a content spare ready for the acceptance", pool,
@@ -2473,7 +2473,7 @@ func streamOverPool(t *testing.T, e streamEnv) (set *segment.Set, pool *segment.
 	// a refill still in flight — would answer no space rather than race
 	// the seal, which the round exists to do. Four stays ahead of every
 	// take a round can make, so a spare refusal names a full device alone.
-	pool = segment.NewPool(segment.NewMaker(e.seam.FS(), set, streamMax, 0, nil), segment.Targets{Content: 4}, nil)
+	pool = segment.NewPool(segment.NewMaker(e.seam.FS(), set, streamMax, 0, nil), segment.Targets{Content: 4}, nil, nil)
 	pool.Start()
 	awaitCounters(t, "the round's content spares ready", pool,
 		func(c segment.PoolCounters) bool { return c.Spares >= 4 })

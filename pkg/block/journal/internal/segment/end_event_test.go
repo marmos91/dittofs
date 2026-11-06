@@ -789,7 +789,7 @@ func TestEndEveryEndedSegmentHandsOneEventUnderRace(t *testing.T) {
 	maker := segment.NewMaker(seam.FS(), set, streamMax, 0, nil)
 	budget := core.NewDescriptorBudget(512)
 	cache := segment.NewDescriptors(seam.FS(), format.SegmentName, budget)
-	pool := segment.NewPool(maker, segment.Targets{Content: 4}, nil)
+	pool := segment.NewPool(maker, segment.Targets{Content: 4}, nil, nil)
 	t.Cleanup(func() { pool.Stop() })
 	pool.Start()
 	awaitCounters(t, "the content spares ready", pool,

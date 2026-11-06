@@ -24,9 +24,9 @@ import (
 const poolAttempts = 1 << 22
 
 // poolOf is a pool over a fresh seam and ledger: the Maker seeded with last,
-// reserving against max, the pool keeping spares of t ready. The set the pool
-// reaches through the Maker is the set returned beside it, so a test reads
-// the ledger's counters directly.
+// reserving against max, the pool keeping spares of t ready under a nil
+// read-only check. The set the pool reaches through the Maker is the set
+// returned beside it, so a test reads the ledger's counters directly.
 func poolOf(t *testing.T, t2 segment.Targets, max int64, last core.SegmentID, log *slog.Logger) (
 	*journaltest.Seam, *segment.Set, *segment.Maker, *segment.Pool,
 ) {
@@ -35,7 +35,7 @@ func poolOf(t *testing.T, t2 segment.Targets, max int64, last core.SegmentID, lo
 	seam := newSeam(t)
 	set := segment.NewSet(segCap, nil)
 	m := segment.NewMaker(seam.FS(), set, max, last, log)
-	return seam, set, m, segment.NewPool(m, t2, log)
+	return seam, set, m, segment.NewPool(m, t2, nil, log)
 }
 
 // awaitCounters fails t unless what the pool reports satisfies want within a
@@ -478,7 +478,7 @@ func TestPoolAdoptCountsTowardClassAtCap(t *testing.T) {
 	// The journal's own ledger and pool, at a maximum one cap below the
 	// footprint the adoptions make: adopting is still served.
 	_, set, m := maker(t, 4, 2*segCap)
-	p := segment.NewPool(m, segment.Targets{Content: 1, Headroom: 1, Reserve: 1}, nil)
+	p := segment.NewPool(m, segment.Targets{Content: 1, Headroom: 1, Reserve: 1}, nil, nil)
 
 	classes := []struct {
 		id  core.SegmentID
@@ -1772,5 +1772,127 @@ func TestPoolARecycledContentSparePaysTheDemandLevel(t *testing.T) {
 	if got := p.PendingForTest(); got != 0 {
 		t.Fatalf("after the parked make landed the demand level is %d, want 0", got)
 	}
+	p.Stop()
+}
+
+// TestPoolReadOnlyMakesNoSpare: while the read-only check refuses, the refill
+// worker makes no spare below the pool's target — the seam sees no call, the
+// pool's counters and the ledger's own stay at zero. The waits below prove two
+// things beyond the spares' absence, both through the check's call count.
+// First, that each pass ran and then ended: a kick is sent after the first
+// check call and the second call awaited, which one worker goroutine can
+// only reach once the first pass returned — the assertions that follow
+// therefore see a pass that has ended, not one still in flight, and a branch
+// that loops instead of ending its pass (a `continue` where the pass returns)
+// spins the count up without a kick. Second, bounded: each wait fails within
+// poolAttempts yields rather than hanging, so a worker that never wakes is a
+// failure, not a timeout. A check that returns nil again lets the next kick
+// fill every class: a property of the refill, not a claim that a journal
+// clears (a read-only journal stays so until it is reopened, which builds a
+// new pool), and it catches a check that wedged the worker (R89).
+func TestPoolReadOnlyMakesNoSpare(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	ro := &readOnlyFlag{}
+	ro.set(true)
+	seam := newSeam(t)
+	set := segment.NewSet(segCap, nil)
+	m := segment.NewMaker(seam.FS(), set, noMax, 0, nil)
+	p := segment.NewPool(m, segment.Targets{Content: 2, Headroom: 1, Reserve: 1}, ro.check, nil)
+	// A failed assertion must stop the worker too, or the profiler reports
+	// the leak beside the failure and buries it.
+	t.Cleanup(p.Stop)
+
+	// A counting fault on the seam proves the read-only journal makes no call
+	// at all: a make would reach the seam whatever it failed at.
+	fault := &countingFault{}
+	seam.SetFault(fault)
+	p.Start()
+
+	// The first pass ran: the check was asked. Without this wait the
+	// assertions below would pass vacuously, for a worker that never woke
+	// makes no spare either.
+	for range poolAttempts {
+		if ro.count() > 0 {
+			break
+		}
+		runtime.Gosched()
+	}
+	if first := ro.count(); first < 1 {
+		t.Fatalf("the refill worker never asked the read-only check in %d yields: a worker that never woke makes no spare either", poolAttempts)
+	}
+
+	// A pass that asked the check must end without making: the kick is held
+	// for the next pass while this one runs, so a kick now makes the worker
+	// ask again, which one goroutine can only do once this pass returned. The
+	// count over the interval stays the two asks these kicks caused while the
+	// pass ends as it should; a branch that spins on the refusal instead
+	// drives the count unbounded.
+	p.Kick()
+	for range poolAttempts {
+		if ro.count() > 1 {
+			break
+		}
+		runtime.Gosched()
+	}
+	if got := ro.count(); got < 2 {
+		t.Fatalf("the read-only pass never ended: after the kick the check was asked %d times in %d yields, want the first pass returned and a second asked", got, poolAttempts)
+	}
+
+	if got := fault.count(); got > 0 {
+		t.Fatalf("the read-only journal made %d seam calls, want none: a read-only pass makes no spare (RFC 1 §5.4)", got)
+	}
+	if c := p.Counters(); c.Spares != 0 || c.HeadroomBytes != 0 || c.RepackReserveBytes != 0 || c.Held != 0 {
+		t.Fatalf("over the read-only interval the pool reports %+v, want every class empty", c)
+	}
+	if c := set.Counters(); c.UsedBytes != 0 || c.Spares != 0 {
+		t.Fatalf("over the read-only interval the ledger holds %+v, want no spare accounted", c)
+	}
+
+	// The read-only interval held exactly two asks, one per kick: a branch
+	// that loops on the refusal rather than ending its pass would have asked
+	// many more, none of which a kick caused (R89: the worker waits for the
+	// next kick once the check refuses).
+	if got := ro.count(); got != 2 {
+		t.Fatalf("over the read-only interval the check was asked %d times, want once per kick: a read-only pass ends, it does not spin", got)
+	}
+
+	// The check returns nil again (the refill's property; a journal does not
+	// clear): the next kick — not the change itself — refills, every class to
+	// its target. A worker the check wedged would leave the
+	// pool short past this wait.
+	seam.SetFault(nil)
+	ro.set(false)
+	p.Kick()
+
+	awaitCounters(t, "the pool filled once the journal was writable", p,
+		func(c segment.PoolCounters) bool {
+			return c.Spares == 2 && c.HeadroomBytes == segCap && c.RepackReserveBytes == segCap
+		})
+	if err := set.Check(); err != nil {
+		t.Fatalf("after the fill: %v", err)
+	}
+
+	// The full pool turned read-only is the same: a class is chosen before
+	// the check, so a pass over a pool no class of which is short ends
+	// without asking. The count is read once the fill's last pass has ended,
+	// then a kick runs a pass over the read-only full pool. A check asked
+	// before the class choice would be asked once per kick whatever the
+	// pool's fill.
+	for range poolAttempts {
+		runtime.Gosched()
+	}
+	before := ro.count()
+	ro.set(true)
+	p.Kick()
+	for range poolAttempts {
+		runtime.Gosched()
+	}
+	if got := ro.count(); got != before {
+		t.Fatalf("a kick at a full read-only pool moved the check's count from %d to %d, want it unmoved: the check runs only once a class is short", before, got)
+	}
+
+	// Stopped here rather than left to the cleanup, so a Stop that wedges
+	// fails this test on its own line rather than at the cleanup's.
 	p.Stop()
 }
