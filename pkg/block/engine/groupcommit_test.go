@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,6 +25,7 @@ type callLog struct {
 	mu      sync.Mutex
 	calls   []string
 	commits [][]entity.FileID
+	marks   []*kvstore.MarksWrite // each commit's marks, nil for none
 }
 
 func (l *callLog) add(c string) {
@@ -37,7 +39,7 @@ type loggedHandle struct {
 	log *callLog
 }
 
-func (h loggedHandle) Sync(ctx context.Context, ids ...journal.FileID) error {
+func (h loggedHandle) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
 	h.log.add("sync")
 	return h.Handle.Sync(ctx, ids...)
 }
@@ -55,6 +57,7 @@ func (x loggedExistence) Commit(ctx context.Context, p []kvstore.PendingExistenc
 	x.log.mu.Lock()
 	x.log.calls = append(x.log.calls, "commit")
 	x.log.commits = append(x.log.commits, fs)
+	x.log.marks = append(x.log.marks, marks)
 	x.log.mu.Unlock()
 	return x.Existence.Commit(ctx, p, marks)
 }
@@ -134,6 +137,41 @@ func TestDueFilesCommitInBoundedBatches(t *testing.T) {
 		if log.calls[i] != "sync" || log.calls[i+1] != "commit" {
 			t.Fatalf("calls %v: each commit must follow its batch's sync", log.calls)
 		}
+	}
+	// One group commit: its last call alone carries the journal's marks,
+	// read after every batch's sync, and the journal is handed what it
+	// recorded.
+	var with []int
+	for i, m := range log.marks {
+		if m != nil {
+			with = append(with, i)
+		}
+	}
+	if len(with) != 1 || with[0] != 3 {
+		t.Fatalf("calls %v carry the marks, want the last of the four alone", with)
+	}
+	if got, want := log.marks[3].Marks, u.j.SyncMarks(); !slices.Equal(got, want) {
+		t.Errorf("the marks carried are %v, want %v, read after the last sync", got, want)
+	}
+	if got := u.j.Recorded(); len(got) != 1 || !slices.Equal(got[0], log.marks[3].Marks) {
+		t.Errorf("MarksRecorded was handed %v, want the one write's %v", got, log.marks[3].Marks)
+	}
+}
+
+// Marks whose call failed are not handed to the journal as recorded.
+func TestMarksOfAFailedCallAreNotRecorded(t *testing.T) {
+	c := &conflicting{}
+	u := newUnit(t, func(d *engine.Deps) { c.Existence = d.Existence; d.Existence = c })
+	f := u.create(t, "a")
+	u.write(t, f, 0, []byte("a"))
+	c.on.Store(true)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	if err := u.e.CommitNow(ctx, u.share.ID, f); err == nil {
+		t.Fatal("a commit under a conflict succeeded")
+	}
+	if got := u.j.Recorded(); len(got) != 0 {
+		t.Errorf("MarksRecorded was handed %v by a call that failed", got)
 	}
 }
 

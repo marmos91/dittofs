@@ -122,18 +122,24 @@ func (l *losses) raiseAll() {
 // A journal whose device was lost whole is synced no more: the sync answers
 // the journal closed, so no Commit answers a verifier past the loss.
 func (e *Engine) sync(ctx context.Context, b *binding, ids ...journal.FileID) error {
+	_, err := e.syncMarks(ctx, b, ids...)
+	return err
+}
+
+// syncMarks is sync, answering the marks the sync that succeeded returned.
+func (e *Engine) syncMarks(ctx context.Context, b *binding, ids ...journal.FileID) ([]entity.SyncMark, error) {
 	b.gc.mu.Lock()
 	lost := b.gc.halted
 	b.gc.mu.Unlock()
 	if lost {
-		return journal.ErrClosed
+		return nil, journal.ErrClosed
 	}
 	for {
-		err := b.h.Sync(ctx, ids...)
+		marks, err := b.h.Sync(ctx, ids...)
 		e.drain(b)
 		var failed *journal.SyncError
 		if !errors.As(err, &failed) {
-			return err
+			return marks, err
 		}
 		// decision: a file the SyncError names that no failed-window event
 		// covers, as when the loss ring overflowed, keeps its pending writes
@@ -153,7 +159,7 @@ func (e *Engine) sync(ctx context.Context, b *binding, ids ...journal.FileID) er
 		// The journal promises nothing durable past a failed window, the
 		// other files' writes and later ones included: sync again.
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
 	}
 }
