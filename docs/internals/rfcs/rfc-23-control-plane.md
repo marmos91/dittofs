@@ -429,8 +429,9 @@ node is the primary" could act unfenced, and a retry first sent locally could
 apply twice after a takeover. On one node there is no gateway and no fence.
 
 **The node builds no journal.** The engine opens each device's journal itself,
-through the opener the node passes as `Open`, once it has read the version floor
-and the journal identity the store records ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); it closes them at its
+through the opener the node passes as `Open`, once it has read the version floor,
+the journal identity and the sync marks the store records, raising the journal's
+open generation with the marks ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); it closes them at its
 stop. A journal built before that read could open with the wrong floor.
 
 Beside the rows: the clock, the fault seam ([RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition)), the

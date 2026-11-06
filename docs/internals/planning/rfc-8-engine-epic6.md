@@ -216,7 +216,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | The engine's store access outside block metadata's views and `Refs` is `Lifecycle` alone, its six calls: `JournalID` for this node's device, `Tags` (D2), `VersionLimits`, `RaiseVersionLimits`, `RaiseAtStart` and `RaiseAtAttach` (D4); the engine never calls `RecordJournal` (D3) | invariant | §2.1, RFC 16 §3 | T6.1 |
+| R1 | The engine's store access outside block metadata's views and `Refs` is `Lifecycle` alone, its seven calls: `JournalID` for this node's device, `Tags` (D2), `VersionLimits`, `RaiseVersionLimits`, `RaiseAtStart` and `RaiseAtAttach` (D4), and `SyncMarks`, which reads the journal's sync marks and raises its open generation in one transaction (RFC 16 §3); the engine never calls `RecordJournal` (D3) | invariant | §2.1, RFC 16 §3 | T6.1 |
 | R2 | `JournalID` answers the identity the store records for a device; `J‖journal` is written when the journal is created, before anything in it is acknowledged | invariant | §2.5 step 1, RFC 16 §4.2, RFC 1 §3 | T6.1 |
 | R3 | Every write of `S‖id‖vl` (at start, at an attach, at every raise) is a tracked max-write: it writes the larger of the value it reads and its own, never blindly, and never lowers the limit | invariant | §2.7, RFC 16 §4.2 | T6.1, T6.2, T6.3, T6.7 |
 | R4 | The limits are raised in as many transactions as `K` takes, never one over every share | bound | §2.7, E40 | T6.1, T6.7 |
@@ -441,7 +441,8 @@ pkg/metadata/entity/
   openstate.go       T6.1  Shard's primary journal identity (D10)
 pkg/metadata/kvstore/
   lifecycle.go       T6.1  Lifecycle(): JournalID, VersionLimits, RaiseVersionLimits,
-                           RaiseAtStart, RaiseAtAttach, Tags (D2 to D4, D10); RecordJournal
+                           RaiseAtStart, RaiseAtAttach, Tags, SyncMarks (D2 to D4, D10);
+                           RecordJournal
                      T6.11 RaiseAtStart in batches of K, Tags in batches, VersionLimits
                            with GetMany (D8)
   shards.go          T6.1  RaiseIncarnations split into its start and attach forms (D4);
@@ -498,12 +499,13 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   `RaiseAtStart(ctx, shards)` and `RaiseAtAttach(ctx, shard)` (D4), each returning the
   incarnation it wrote per shard, rewriting `kvstore`'s `decision:` at `RaiseIncarnations`
   for `RaiseAtStart`, and `Tags(ctx)` (D2), its record declared in `entity` and carrying the
-  journal identity of each of the share's shards (D10); the primary's journal identity added
+  journal identity of each of the share's shards (D10); `SyncMarks(ctx, journal)` reading
+  every `J‖journal‖sm‖stream` and raising `J‖journal‖og` in one transaction (RFC 16 §3); the primary's journal identity added
   to `entity.Shard` and its codec (D10); `RecordJournal(ctx, id, node, device)` on the
   opened store, writing `J‖journal` and `JD‖node‖device`, deleting the `J‖journal` the
   overwritten key named and the older index key of a journal recorded again (D3), and
   rewriting, in the same transaction, the primary journal identity of every shard that names
-  the deleted one (D10), with its `ponytail:`; the engine's `Lifecycle` declaring the six
+  the deleted one (D10), with its `ponytail:`; the engine's `Lifecycle` declaring the seven
   calls. `kv.Counting` gains a count of Updates and the most keys one Update wrote, its
   first consumer here. In E2's fixture, the real view replaces the stub `Lifecycle` that
   refuses every call (`unbuiltLifecycle`), and the fixture records `Fixture.Journal`, the
@@ -559,7 +561,9 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   goes. E2's fixture gains a second share on its journal.
 - **Acceptance criteria:**
   - A content call never waits on the lifecycle mutex.
-  - A `Bind` that fails at any step leaves no handle open and the table unchanged.
+  - A `Bind` that fails at any step leaves no handle open that it opened, and the table
+    unchanged; a handle it took over from the metadata reconcile is handed back to it
+    (RFC 8 §2.5), closed outside the lifecycle mutex.
   - A share bound above a floor of 9·10⁸ gets a first version above it from the real
     journal.
 - **Tests:** a content call on share A while a `Bind` of share B holds the lifecycle mutex

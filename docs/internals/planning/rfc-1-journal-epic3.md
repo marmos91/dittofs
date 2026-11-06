@@ -65,7 +65,7 @@ turns no conformance test green and adds none to `known.yaml`.
 ### 1.1 In scope
 
 - `pkg/block/journal/internal/format`: the `format` file, segment header, seal marker,
-  record (header, 14 kinds and their bodies), catalog entry and trailer codecs; CRC32C;
+  record (header, 16 kinds and their bodies), catalog entry and trailer codecs; CRC32C;
   segment file names; the footer reader; the slot scanner.
 - `pkg/block/journal/internal/platform`: files, sync, directory sync and allocation per
   OS; the barrier, copy-on-write, Btrfs subvolume and Windows cache-policy probes; the
@@ -483,8 +483,8 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
   not a gate: until they land, a kind's golden is checked against its hex file alone (P18).
 - **Deliverables:** `record.go` and `kinds.go`: the 96-byte header, both seeded checksums,
   verification (magic, header checksum, segment id, own offset), kind classification, epoch
-  check, D9's bounds; the 14 kinds with their field rules, the `write` modification time, the
-  fixed bodies of `loss` (16 bytes), `clone target` (56), `hold`, `unhold` and `stamp` (8),
+  check, D9's bounds; the 16 kinds with their field rules, the `write` modification time, the
+  fixed bodies of `loss` and `reconciled` (16 bytes), `clone target` (56), `hold`, `unhold` and `stamp` (8),
   padding; the whole-payload verify function; one golden per kind; `FuzzRecord`. Each
   per-kind golden contains a full header, so there are no separate header goldens and no
   separate header fuzz target: `FuzzRecord` and `FuzzScan` reach the same parser.
@@ -519,10 +519,10 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
     kind byte is the table's value, and that every payload and zero field is as the table
     gives."
 - **Done when:**
-  - 14 goldens match the encoder and their hex files, and `raw.Record` for every kind
+  - 16 goldens match the encoder and their hex files, and `raw.Record` for every kind
     2.13a builds, and decode back; the non-zero synced-through offset is checked against
     the hex file alone until 2.13a extends `raw` (P18);
-  - another identity, another segment id, another own offset, kinds 0, 15 and 128, a
+  - another identity, another segment id, another own offset, kinds 0, 17 and 128, a
     non-zero epoch, and a flipped byte of a `write`'s modification time each return their
     class, and a verifying unknown kind is never stepped over;
   - the verify function refuses a payload with any one byte changed and never returns part
