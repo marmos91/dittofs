@@ -395,19 +395,73 @@ func terminal(err error) bool {
 
 // unstage ends removal r whose phase 1 will not commit: its own pending
 // operation leaves the entry, so no Commit waits on it and the file's other
-// operations commit, and the guard is released. A phase 1 that ended on a
-// terminal failure, err, settles the journal's marker without the removal
-// (RFC 8 §8.1), so no later start re-applies it, and logs the loss when the
-// file still exists; err nil, as a clone's loop end passes, leaves the marker
-// for the next start's recovery.
+// operations commit. A phase 1 that ended on a terminal failure, err, settles
+// the journal's marker without the removal (RFC 8 §8.1), so no later start
+// re-applies it. For a file still there, the settle waits for the existence
+// of the file's operations below the removal, a lost write's included,
+// committed by commitBelow, and the loss is logged; a commit that fails is
+// retried by the journal's loop, the guard held and the marker unsettled
+// until it commits. A file found gone is discarded at once. err nil, as a
+// clone's loop end passes, releases the guard and leaves the marker for the
+// next start's recovery.
 func (e *Engine) unstage(r *removal, err error) {
 	fe := e.files.lockFor(r.f)
 	fe.ops = slices.DeleteFunc(fe.ops, func(op pendingOp) bool { return op.version == r.v })
 	e.files.unlock(r.f, fe)
-	if err != nil && !errors.Is(err, entity.ErrStale) {
-		e.d.Logger.Error("removal ended unapplied, its journal marker settled", "file", r.f, "kind", r.kind.String(), "err", err)
+	if err == nil || errors.Is(err, entity.ErrStale) {
+		e.release(r, err != nil)
+		return
 	}
-	e.release(r, err != nil)
+	e.d.Logger.Error("removal ended unapplied, its journal marker settled", "file", r.f, "kind", r.kind.String(), "err", err)
+	if e.commitBelow(r.b.gc.removals.ctx, r) {
+		return
+	}
+	r.b.gc.removals.enqueue(&loopItem{b: r.b, f: r.f, kind: r.kind,
+		run: func(ctx context.Context) answer {
+			if e.commitBelow(ctx, r) {
+				return itemDone
+			}
+			return itemRetry
+		},
+		// The loop's end leaves the file and its marker to the next start,
+		// as it leaves a phase 1 it cut short.
+	})
+}
+
+// commitBelow commits, in a transaction of its own, the existence of r's
+// file's pending operations below r, a lost write's from its loss record,
+// once r ended unapplied, then releases the guard and settles the journal
+// through r: the settle then drops no write's or loss's record that metadata
+// never recorded (RFC 1 §3.10). A file found gone settles with nothing
+// committed. It answers false, the claim released and the guard held, when
+// the commit failed.
+func (e *Engine) commitBelow(ctx context.Context, r *removal) bool {
+	ctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
+	defer cancel()
+	e.claimBelow(r)
+	err := e.sync(ctx, r.b, fileID(r.f))
+	if ops := e.claimed(r); err == nil && len(ops) > 0 {
+		var failed map[entity.FileID]error
+		failed, err = e.d.Existence.Commit(ctx, []kvstore.PendingExistence{{Share: r.b.share.ID, File: r.f, Ops: ops}}, nil)
+		if err == nil {
+			err = failed[r.f]
+		}
+	}
+	switch {
+	case err == nil:
+		dones := e.committed(r)
+		e.release(r, true)
+		for _, d := range dones {
+			d()
+		}
+		return true
+	case errors.Is(err, entity.ErrStale):
+		e.unclaim(r)
+		e.release(r, true)
+		return true
+	}
+	e.unclaim(r)
+	return false
 }
 
 // claimBelow claims r's file's live operations below r's version, writes and
