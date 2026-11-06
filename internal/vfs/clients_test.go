@@ -975,7 +975,6 @@ func TestEveryOpenStateErrorIsMapped(t *testing.T) {
 		{openstate.ErrDeletePending, vfs.ErrDeletePending},
 		{openstate.ErrAccess, vfs.ErrAccess},
 		{openstate.ErrLocked, vfs.ErrLocked},
-		{&openstate.LockedError{}, vfs.ErrLocked},
 		{openstate.ErrRangeNotLocked, vfs.ErrRangeNotLocked},
 		{openstate.ErrLost, vfs.ErrLost},
 		{openstate.ErrStopped, vfs.ErrUnavailable},
@@ -988,6 +987,11 @@ func TestEveryOpenStateErrorIsMapped(t *testing.T) {
 		if got := openErr(c.err); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%v maps to %#v, want %#v", c.err, got, c.want)
 		}
+	}
+	holder := openstate.Lock{Owner: openstate.LockOwner{Name: []byte("holder")}}
+	var locked *vfs.LockedError
+	if got := openErr(&openstate.LockedError{Holder: holder}); !errors.Is(got, vfs.ErrLocked) || !errors.As(got, &locked) || !reflect.DeepEqual(locked.Holder, holder) {
+		t.Errorf("a lock conflict maps to %v, want ErrLocked naming its holder", got)
 	}
 }
 

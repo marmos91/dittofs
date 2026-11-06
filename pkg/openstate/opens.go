@@ -224,8 +224,16 @@ type Opens interface {
 	// Renamed moves every open of f made through the entry fromName in
 	// fromDir to toName in toDir, as a rename of that entry commits through
 	// any open or none, so a deferred unlink removes the entry's current
-	// name. The service calls it under f's admission lock.
+	// name. A nil toName, with a zero toDir, is the entry's removal, by an
+	// unlink or a rename over it: the opens made through it keep no entry,
+	// as one made by handle keeps none. The service calls it under f's
+	// admission lock.
 	Renamed(ctx context.Context, f FileKey, fromDir entity.FileID, fromName []byte, toDir entity.FileID, toName []byte) error
+	// Entry is the entry the open o of f was made through, its directory
+	// and its name there as renames have moved them, or a lock state's
+	// open's; zero and nil for one made by handle, or for a reference
+	// naming no open. It changes nothing.
+	Entry(ctx context.Context, who Caller, f FileKey, o OpenRef) (dir entity.FileID, name []byte, err error)
 	// Downgrade narrows an open's access and deny to masks within them, and
 	// returns the open's new reference sequence.
 	Downgrade(ctx context.Context, who Caller, o OpenRef, q Seqs, access, deny entity.AccessMask) (seq uint32, err error)
@@ -729,6 +737,16 @@ func (t *Table) takeOver(ctx context.Context, e *entry, who Caller, r OpenReques
 // open is not reconnected. Write it in the rename's own transaction, as an
 // unlink writes its records, if a failover is seen in that window unlinking
 // a stale name.
+//
+// decision: an open's name is matched byte for byte, as its opener spelled
+// it, while the store folds names on a case-insensitive share. So there an
+// unlink or a rename spelling the name another way leaves the open its old
+// name: a change through it is reported under a name that is gone or names
+// another file, and a delete on close is deferred to that name, which then
+// removes nothing. Open state knows no share's fold rule. Overturned once a
+// client is seen spelling one entry two ways; then the service records and
+// passes the store's own spelling of the entry, or passes the share's
+// FoldRule here and both names are folded.
 func (v opens) Renamed(ctx context.Context, f FileKey, fromDir entity.FileID, fromName []byte, toDir entity.FileID, toName []byte) error {
 	t := v.t
 	if _, err := t.running(); err != nil {
@@ -745,7 +763,9 @@ func (v opens) Renamed(ctx context.Context, f FileKey, fromDir entity.FileID, fr
 				if t.via[o.Via]--; t.via[o.Via] <= 0 {
 					delete(t.via, o.Via)
 				}
-				t.via[toDir]++
+				if !toDir.IsZero() {
+					t.via[toDir]++
+				}
 				t.idx.Unlock()
 				o.Via = toDir
 			}
@@ -755,6 +775,24 @@ func (v opens) Renamed(ctx context.Context, f FileKey, fromDir entity.FileID, fr
 		}
 		return nil
 	})
+}
+
+// Entry reads o's open's Via and Name under f's step.
+func (v opens) Entry(ctx context.Context, who Caller, f FileKey, o OpenRef) (entity.FileID, []byte, error) {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return entity.FileID{}, nil, err
+	}
+	var dir entity.FileID
+	var name []byte
+	err := t.step(f.ID, func(e *entry) error {
+		op, _, _, err := t.lockTarget(e, who, o)
+		if op != nil {
+			dir, name = op.Via, slices.Clone(op.Name)
+		}
+		return err
+	})
+	return dir, name, err
 }
 
 // addOpen adds o, a new open of f, to e under its step, its shard already

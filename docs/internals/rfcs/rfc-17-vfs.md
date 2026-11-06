@@ -1344,7 +1344,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrReadOnly` | a mutation where only reading is admitted: a share or a client rule narrowed to read-only ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)), a snapshot ([RFC 12](rfc-12-snapshots.md)), the pseudo-filesystem, a journal whose filesystem turned read-only ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)) | — |
 | `ErrNameTooLong` | a name past the share's length limit ([RFC 7 §3.2](rfc-7-namespace-metadata.md#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)); any other name the store refuses is `ErrInvalid` | — |
 | `ErrInvalid` | the arguments cannot be honoured as given: a name the store refuses, an overlapping copy or clone within one file, a clone longer than `clone_max_len`, a deny entry naming a well-known principal [RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)'s table lacks | — |
-| `ErrNoSpace` | a permanent capacity refusal: no space comes without operator action ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s second row); answered at once | — |
+| `ErrNoSpace` | a permanent capacity refusal: no space comes without operator action ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s second row), including bytes held unread after a failed bounded retry; answered at once | — |
 | `ErrQuota` | a logical quota refused; answered at once | `*QuotaError{Scope}`: `QuotaShare`, `QuotaProject`, `QuotaUser`, `QuotaGroup`, the first exceeded in that order — four, though adapters map only two classes, because the metric label and the refusal's message name the scope |
 | `ErrLocked` | a byte-range lock others hold conflicts | `*LockedError{Holder}`, RFC 14's aliased ([RFC 14 §2.3](rfc-14-open-state.md#2.3%20Lock)): `Holder` is the conflicting `Lock`, its range and its owner, which a protocol's denial reports. Of who holds it, it carries only the owner's `Client` and `Name`, which an NFSv4 `LOCK4denied` and an NLM `holder` return in a denial anyway; never the holder's principal |
 | `ErrRangeNotLocked` | an `Unlock` named a range the owner does not hold | — |
@@ -1359,6 +1359,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrIncomplete` | a read of a file a snapshot lists as incomplete, or a copy or clone from one ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)) | — |
 | `ErrInconsistent` | a store invariant the filesystem's own state breaks; the store raises a health condition naming the record ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — |
 | `ErrLost`, `ErrUnavailable`, `ErrCorrupt` | the content errors of [RFC 8](rfc-8-engine.md) | — |
+| `ErrIO` | the local journal device failed a read the bounded retry could not complete ([RFC 28 §3.3](rfc-28-journal-format.md#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify)); answered at once, never held: the device has already failed three attempts, started within 15 s and so about 30 s in all, and the bytes are kept, not lost | — |
 | `ErrPastEnd` | a `Seek` from an offset at or past the file's end | — |
 
 `StateError` kinds, each matched by `errors.Is(err, ErrState)`, are RFC 14's
@@ -1825,7 +1826,7 @@ Steps 1–3 as for a write, with read access; then the engine's `Read`, which
 resolves residency and streams verified chunks
 ([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20holds%20only%20verified%20chunks%2C%20in%20file%20order)).
 It never returns an unverified byte, but it can return `n` verified bytes and
-then an error (`ErrLost`, `ErrUnavailable`, `ErrCorrupt`) for the chunk after
+then an error (`ErrLost`, `ErrUnavailable`, `ErrCorrupt`, `ErrIO`) for the chunk after
 them. An adapter answers a short read of the `n` bytes when `n > 0` and its
 protocol allows, and the error otherwise; `ErrUnavailable` is transient
 (held, as §3.2 says). The wire statuses are
@@ -2512,8 +2513,7 @@ func (s *Filesystem) createLocked(ctx context.Context, c Caller, dir Handle, nam
 
 ```go
 func (s *Filesystem) lockAt(ctx context.Context, c Caller, ref OpenRef, r LockReq) (StateRef, error) {
-	exclusive := slices.ContainsFunc(r.Ranges, func(x LockRange) bool { return x.Exclusive })
-	if err := s.authz.LockState(ctx, c, ref, exclusive); err != nil { // below: under no open, the I/O the lock guards
+	if err := s.authz.LockState(ctx, c, ref); err != nil { // below: under no open, read data or ownership
 		return StateRef{}, err
 	}
 	// RFC 14 §11.3: every range in one step, all or none, and only a single range
@@ -2534,25 +2534,27 @@ func (s *Filesystem) lockAt(ctx context.Context, c Caller, ref OpenRef, r LockRe
 A waiting lock holds no worker and has no deadline; it ends only as RFC 14's
 waiter does ([RFC 14 §2.10](rfc-14-open-state.md#2.10%20Lock%20waiters)).
 
-**`authz.LockState` decides a lock under no open as the I/O it guards.**
-`Lock` and `TestLock` call it; a `LockReq` is exclusive when any of its ranges
-is. Through an open, a lock state or a delegation it decides nothing more: open state's
+**`authz.LockState` decides a lock under no open as
+[RFC 19 §3.8](rfc-19-authorization.md#3.8%20Locks%20outside%20an%20open)
+does.** `Lock` and `TestLock` call it. Through an open, a lock state or a delegation it decides nothing more: open state's
 opener check, the call's principal against the open's
 ([§3.1](#3.1%20Operations)), is the whole check, as the open was authorised
 for its access when it was granted. Under no open — an anonymous `OpenRef`,
 NLM's — it calls `Files.Authorize` for the caller afresh, with no parent,
-wanting read data for a shared lock or a test and write data for an exclusive
-lock, as a lock daemon opens the file to lock it. `CancelLock` and `Unlock`
-do not call it: they decide no right, as they only give up what the owner
-holds.
+wanting read data, and a caller who owns the file **MUST** be admitted without
+it, within the caller's share access. An exclusive lock asks no more than a shared one, and a test is decided as
+a shared lock. `CancelLock` and `Unlock` do not call it: they decide no right,
+as they only give up what the owner holds.
 
-> decision: a lock under no open is decided as the caller's own right to the
-> I/O it guards: read data for a shared range or a test, write data for an
-> exclusive one. Through an open or a lock state, open state's opener check is
-> the whole check, as the open was authorised for its access when granted; an
-> unlock or a cancel decides no right, as it only gives up what the owner
-> holds. Overturned if a client is seen locking through an open a range of
-> access the open was not granted.
+> decision: a lock under no open is decided as RFC 19 §3.8's: read data or
+> ownership of the file, for a shared range, an exclusive one or a test alike.
+> Asking write data for an exclusive range would refuse the lock-then-write of
+> a file opened for read and later reopened for write. Through an open or a
+> lock state, open state's opener check is the whole check, as the open was
+> authorised for its access when granted; an unlock or a cancel decides no
+> right, as it only gives up what the owner holds. The no-open rule moves only
+> with RFC 19 §3.8's; the rest is overturned if a client is seen locking
+> through an open a range of access the open was not granted.
 
 ## 6. Invariants, and the test of each
 
@@ -2568,7 +2570,7 @@ Every test runs in §8's integration tier unless it names another tier. A row is
 | V9 | The share grant is evaluated on every call. | A client removed from a share grant is refused on its next call with a handle it already holds; an SMB `MAXIMUM_ALLOWED` open whose parent grants delete-child includes `DELETE`, and after the parent's group changes so it no longer does, a cached delete-child decision is not reused. |
 | V10 | Quota is enforced only by the service, and overshoot stays within §5.6's bound. | Writers on one primary never pass a hard limit by more than what commits concurrently add; **(cluster)** writers through `k` primaries overshoot by no more than the bound, counted per run, on a 1 GiB project quota as on a 1 TiB one; a write refused by a share-wide, project, user and group quota in turn returns a `*QuotaError` naming each scope, and with two exceeded the first in §4.3's order; `StatFS` inside a project tighter than its share reports the project's, and the share's once the project's quota is deleted. |
 | V11 | (cluster, [single-node profile](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)) A forwarded mutation retried after a lost reply returns its original result and applies once. | Multi-node tier: a forwarded write whose reply the loopback transport drops, retried after another write lands on the same extent, applies once. |
-| V12 | Every call that names a handle or an open is admitted — state, flavour, client rules, resolution — whatever path the handle arrived by. | For each of lock, unlock, test-lock and watch, reached by a handle presented directly, by `Root` with a path, by `Root` with a name, and by the zero `ShareRef` then a walk from the pseudo-root: a quiesced share returns `ErrDelay`, a share refusing the flavour `ErrWrongSecurity`, a client outside its rules `ErrAccess`; a compound crossing from a share squashing root into one that does not acts as root only in the second; a caller admitted and cached, then disabled, is refused on its next call. |
+| V12 | Every call that names a handle or an open is admitted — state, flavour, client rules, resolution — whatever path the handle arrived by. | For each of lock, unlock, test-lock and watch, reached by a handle presented directly, by `Root` with a path, by `Root` with a name, and by the zero `ShareRef` then a walk from the pseudo-root: a quiesced share returns `ErrDelay`, a share refusing the flavour `ErrWrongSecurity`, a client outside its rules `ErrAccess` for a lock, a test-lock and a watch, while its unlock of a lock, its cancel of a waiting lock and its close of an open taken before the rules changed succeed, as they only release state; a compound crossing from a share squashing root into one that does not acts as root only in the second; a caller admitted and cached, then disabled, is refused on its next call. |
 | V13 | No mount, tree connect or session is stored; a reconnecting client is admitted afresh. | A renamed share keeps serving held handles and established tree connects, and a new `Root` needs the new name. |
 | V14 | Every node builds the same pseudo-filesystem from the same share list. | Pure unit: two filesystems built from one share list return byte-identical pseudo handles, numeric ids and change attributes, and a share added on one is seen on the other with a raised change attribute. |
 | V16 | The `Version` `GetAttr` returns advances on every accepted write and never moves backward. | Client A reads `Version`, B writes and is acknowledged, A's next `GetAttr` is greater before any existence commit and not lower after it; 16 readers `GetAttr` while writes commit in a loop and none sees a `Version` lower than one it saw; a `chmod` drawn below a write committed or staged at a higher version is redrawn above it. |

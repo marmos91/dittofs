@@ -59,8 +59,11 @@ type noJournal struct{ engine.Handle }
 // file the journal holds nothing of is still data, and no journal call is
 // made.
 func TestAllocationAnswersFromMetadata(t *testing.T) {
-	u := newUnit(t)
-	u.e.BindForTest(u.share, u.j, noJournal{})
+	u := newUnitWith(t, unitConfig{
+		wrap: func(engine.Handle) engine.Handle {
+			return noJournal{}
+		},
+	})
 	f := u.committed(t, "f", 8*kib, 16*kib)
 	u.allocations(t, f, run{0, 8 * kib, false}, run{8 * kib, 8 * kib, true}, run{16 * kib, 0, false})
 }
@@ -114,7 +117,7 @@ func TestAllocationEndsAtTheEndOfFile(t *testing.T) {
 	if _, err := u.e.Write(t.Context(), u.share.ID, h, 16*kib, make([]byte, 4*kib), engine.WriteOpts{Done: func() {}}); err != nil {
 		t.Fatal(err)
 	}
-	u.e.AddOp(h, 1<<20, false, 10*kib, 30*kib)
+	u.e.AddOp(h, unitLimit, false, 10*kib, 30*kib)
 	u.allocations(t, h, run{10 * kib, 10 * kib, true}, run{20 * kib, 0, false})
 
 	k := u.committed(t, "k", 4*kib, 4*kib)

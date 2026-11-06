@@ -8,36 +8,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
-
-// binding is one bound share's storage: its journal and its handle there.
-type binding struct {
-	share Share
-	j     Journal
-	h     Handle
-}
-
-// bindings is the share table, read on every content call without a lock.
-//
-// decision: the share table is copy-on-write: a share's attach or removal
-// copies the whole table, up to 10⁴ entries, once per change, so the hot path
-// reads it without a lock. Overturned if share churn is measured in changes
-// per second.
-type bindings = map[entity.ShareID]*binding
-
-// bindingOf is the binding of share s, read from the share table without a
-// lock; a share with no binding is a Delay with DelayFrozen, its binding
-// still to come, and no journal is touched. A share being removed never
-// reaches it unbound, as admission answers ErrStale from the removal mark.
-func (e *Engine) bindingOf(s entity.ShareID) (*binding, error) {
-	if t := e.shares.Load(); t != nil {
-		if b := (*t)[s]; b != nil {
-			return b, nil
-		}
-	}
-	return nil, &vfserr.Delay{Cause: vfserr.DelayFrozen}
-}
 
 // opKind is what a pending operation does to its file.
 type opKind uint8

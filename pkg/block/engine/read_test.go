@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -30,6 +31,13 @@ type stubContent struct {
 	failWith error
 	mu       sync.Mutex
 	calls    int
+}
+
+// dep makes c the engine's content view, the real one behind it answering
+// every call c does not stub.
+func (c *stubContent) dep(d *engine.Deps) {
+	c.Content = d.Content
+	d.Content = c
 }
 
 func (c *stubContent) Covering(_ context.Context, _ entity.ShareID, _ entity.FileID, off, n int64) iter.Seq2[entity.Span, error] {
@@ -101,9 +109,11 @@ func zeros(p []byte) bool { return bytes.Count(p, []byte{0}) == len(p) }
 // neither the journal nor block metadata.
 func TestAReadOutOfRangeIsInvalid(t *testing.T) {
 	st := &stubContent{cover: func(_ int, off, n int64) []entity.Span { return nil }}
-	u := newUnit(t, func(d *engine.Deps) { d.Content = st })
 	var log []string
-	u.e.BindForTest(u.share, u.j, recordingHandle{u.h, &log})
+	u := newUnitWith(t, unitConfig{
+		deps: []func(*engine.Deps){st.dep},
+		wrap: func(h engine.Handle) engine.Handle { return recordingHandle{h, &log} },
+	})
 	for _, off := range []int64{-1, math.MaxInt64 - 100} {
 		if n, err := u.e.Read(t.Context(), u.share.ID, entity.NewFileID(), off, make([]byte, 4*kib)); n != 0 || !errors.Is(err, vfserr.ErrInvalid) {
 			t.Errorf("Read at %d = %d, %v; want ErrInvalid", off, n, err)
@@ -167,7 +177,7 @@ func TestReadResolutionTable(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			c := &stubContent{cover: row.cover}
-			u := newUnit(t, func(d *engine.Deps) { d.Content = c })
+			u := newUnit(t, c.dep)
 			dst := fill(4*kib, 0xFF)
 			n, err := u.e.Read(t.Context(), u.share.ID, entity.NewFileID(), 0, dst)
 			if n != row.n || !errors.Is(err, row.err) || (row.err == nil) != (err == nil) {
@@ -211,8 +221,10 @@ func TestAReadAsksTheJournalFirst(t *testing.T) {
 		u.clock.Advance(time.Second)
 		return []entity.Span{{Extent: entity.Extent{Offset: off, Length: n}, Class: entity.Hole}}
 	}}
-	u = newUnit(t, func(d *engine.Deps) { d.Content = c })
-	u.e.BindForTest(u.share, u.j, recordingHandle{u.h, &log})
+	u = newUnitWith(t, unitConfig{
+		deps: []func(*engine.Deps){c.dep},
+		wrap: func(h engine.Handle) engine.Handle { return recordingHandle{h, &log} },
+	})
 	f := entity.NewFileID()
 	u.write(t, f, 4*kib, fill(4*kib, 'a'))
 
@@ -437,15 +449,13 @@ func TestALostExtentLogsOnce(t *testing.T) {
 func TestAReadOfAnotherSharesFileIsCorrupt(t *testing.T) {
 	var errs atomic.Int64
 	u := newUnit(t, func(d *engine.Deps) { d.Logger = slog.New(countHandler{errors: &errs}) })
-	other := engine.Share{ID: entity.NewShareID(), Tag: 2, Limit: 1 << 20, State: engine.Serving}
-	h, err := u.j.Share(other.Tag, other.Limit, journal.Version{}, other.SyncPolicy)
-	if err != nil {
+	other := enginetest.AddShare(t, u.fs.Store, "other", 1<<20)
+	if err := u.e.Bind(t.Context(), other); err != nil {
 		t.Fatal(err)
 	}
-	u.e.BindForTest(other, u.j, h)
 	f := entity.NewFileID()
 	u.write(t, f, 0, []byte("a"))
-	_, err = u.e.Read(t.Context(), other.ID, f, 0, make([]byte, 1))
+	_, err := u.e.Read(t.Context(), other.ID, f, 0, make([]byte, 1))
 	var foreign *journal.OtherShareError
 	if !errors.Is(err, vfserr.ErrCorrupt) || errors.As(err, &foreign) || u.e.Reads("corrupt") != 1 {
 		t.Errorf("Read = %v, counted corrupt %d; want ErrCorrupt, counted once", err, u.e.Reads("corrupt"))
@@ -504,11 +514,11 @@ func TestAPendingWriteKeepsTheOverwriteOverIt(t *testing.T) {
 	c := &stubContent{cover: func(call int, off, n int64) []entity.Span {
 		s := entity.Span{Extent: entity.Extent{Offset: off, Length: n}, Class: entity.Uncarved}
 		if call == 1 {
-			s.Overwrite = entity.VersionOf(1 << 30)
+			s.Overwrite = entity.VersionOf(unitLimit - 1)
 		}
 		return []entity.Span{s}
 	}}
-	u := newUnit(t, func(d *engine.Deps) { d.Content = c })
+	u := newUnit(t, c.dep)
 	f := entity.NewFileID()
 	u.write(t, f, 0, fill(4*kib, 'a'))
 	u.lose(f, 0, 4*kib)
@@ -531,14 +541,23 @@ func (h writeAfterRead) ReadAt(ctx context.Context, id journal.FileID, off int64
 	return n, m, held, v, err
 }
 
+// afterFirstRead is the unit config whose journal handle runs *hook once,
+// after its first ReadAt answers: the test sets *hook before that read.
+func afterFirstRead(hook *func()) unitConfig {
+	return unitConfig{wrap: func(h engine.Handle) engine.Handle {
+		return writeAfterRead{h, &sync.Once{}, func() { (*hook)() }}
+	}}
+}
+
 // A write staged after the journal answered a read is not applied to it: a
 // hole the read saw stays zeros, not data the journal does not hold.
 func TestAWriteAfterTheJournalAnsweredIsNotApplied(t *testing.T) {
-	u := newUnit(t)
+	var hook func()
+	u := newUnitWith(t, afterFirstRead(&hook))
 	f := u.create(t, "f")
 	u.write(t, f, 12*kib, fill(4*kib, 'a'))
 	u.commit(t, f)
-	u.e.BindForTest(u.share, u.j, writeAfterRead{u.h, &sync.Once{}, func() { u.write(t, f, 0, fill(4*kib, 'b')) }})
+	hook = func() { u.write(t, f, 0, fill(4*kib, 'b')) }
 	dst := fill(4*kib, 0xFF)
 	if n, err := u.e.Read(t.Context(), u.share.ID, f, 0, dst); n != 4*kib || err != nil || !zeros(dst) {
 		t.Errorf("Read = %d, %v, zeros %v; want 4 KiB of zeros", n, err, zeros(dst))
@@ -571,7 +590,7 @@ func TestAWindowAskedAgainCountsItsLastPass(t *testing.T) {
 				}
 				return spans
 			}}
-			u := newUnit(t, func(d *engine.Deps) { d.Content = st })
+			u := newUnit(t, st.dep)
 			n, err := u.e.Read(t.Context(), u.share.ID, entity.NewFileID(), 0, make([]byte, 8*kib))
 			if n != 2*kib || !errors.Is(err, c.err) || (c.err == nil) != (err == nil) {
 				t.Errorf("Read = %d, %v; want 2 KiB, %v", n, err, c.err)
@@ -588,19 +607,20 @@ func TestAWindowAskedAgainCountsItsLastPass(t *testing.T) {
 // journal step and its lookup d is written over b, then c over the hole, and
 // both commit. The read answers 0…b or c…d, never c…b.
 func TestAReadAskedAgainIsNeverTorn(t *testing.T) {
-	u := newUnit(t)
+	var hook func()
+	u := newUnitWith(t, afterFirstRead(&hook))
 	f := u.create(t, "f")
 	u.write(t, f, 4*kib, fill(4*kib, 'b'))
 	u.commit(t, f)
 	u.e.ClearOps(f)
-	u.e.BindForTest(u.share, u.j, writeAfterRead{u.h, &sync.Once{}, func() {
+	hook = func() {
 		u.write(t, f, 4*kib, fill(4*kib, 'd'))
 		u.commit(t, f)
 		u.e.ClearOps(f)
 		u.write(t, f, 0, fill(4*kib, 'c'))
 		u.commit(t, f)
 		u.e.ClearOps(f)
-	}})
+	}
 	dst := make([]byte, 8*kib)
 	n, err := u.e.Read(t.Context(), u.share.ID, f, 0, dst)
 	if n != 8*kib || err != nil {
@@ -658,7 +678,7 @@ func TestAReadAskedAgainEndsAtItsDeadline(t *testing.T) {
 				u.clock.Advance(10 * time.Millisecond)
 				return []entity.Span{s}
 			}}
-			u = newUnit(t, func(d *engine.Deps) { d.Content = st })
+			u = newUnit(t, st.dep)
 			var ctx context.Context = cctx
 			if c.name == "deadline" {
 				ctx = deadlineCtx{cctx, u.clock.Now().Add(50 * time.Millisecond)}
@@ -701,9 +721,11 @@ func TestADeadlineInsideAReaskIsTheContextsOwn(t *testing.T) {
 	st := &stubContent{cover: func(_ int, off, n int64) []entity.Span {
 		return []entity.Span{{Extent: entity.Extent{Offset: off, Length: n}, Class: entity.Uncarved, Applied: entity.VersionOf(5)}}
 	}}
-	u := newUnit(t, func(d *engine.Deps) { d.Content = st })
 	ctx := &endingCtx{Context: t.Context(), done: make(chan struct{})}
-	u.e.BindForTest(u.share, u.j, &failOnSecondRead{Handle: u.h, ctx: ctx})
+	u := newUnitWith(t, unitConfig{
+		deps: []func(*engine.Deps){st.dep},
+		wrap: func(h engine.Handle) engine.Handle { return &failOnSecondRead{Handle: h, ctx: ctx} },
+	})
 	_, err := u.e.Read(ctx, u.share.ID, entity.NewFileID(), 0, make([]byte, 4*kib))
 	var d *vfserr.Delay
 	if !errors.Is(err, context.DeadlineExceeded) || errors.As(err, &d) {
@@ -718,7 +740,7 @@ func TestAStoreFailureAnswersTheBytesBefore(t *testing.T) {
 	st := &stubContent{fail: 2, cover: func(_ int, off, n int64) []entity.Span {
 		return []entity.Span{{Extent: entity.Extent{Offset: off, Length: n}, Class: entity.Hole}}
 	}}
-	u := newUnit(t, func(d *engine.Deps) { d.Content = st })
+	u := newUnit(t, st.dep)
 	f := entity.NewFileID()
 	u.write(t, f, 4*kib, fill(4*kib, 'a'))
 	dst := make([]byte, 12*kib)
@@ -767,15 +789,16 @@ func TestPendingOperationsMakeHolesInCommittedData(t *testing.T) {
 // the read's two steps, reads as the new bytes, not lost: the file's applied
 // the store answers is kept on the pending write's run.
 func TestALostPendingWriteOverwrittenReadsTheNewBytes(t *testing.T) {
-	u := newUnit(t)
+	var hook func()
+	u := newUnitWith(t, afterFirstRead(&hook))
 	f := u.create(t, "f")
 	u.write(t, f, 0, fill(4*kib, 'a'))
 	u.lose(f, 0, 4*kib)
-	u.e.BindForTest(u.share, u.j, writeAfterRead{u.h, &sync.Once{}, func() {
+	hook = func() {
 		u.write(t, f, 0, fill(8*kib, 'n'))
 		p := u.e.Pending(f)
 		u.commitOps(t, f, p[len(p)-1:])
-	}})
+	}
 	dst := make([]byte, 8*kib)
 	if n, err := u.e.Read(t.Context(), u.share.ID, f, 0, dst); n != 8*kib || err != nil || !bytes.Equal(dst, fill(8*kib, 'n')) {
 		t.Errorf("Read = %d, %v, bytes %q…; want the new write's 8 KiB", n, err, dst[:min(n, 1)])
@@ -806,14 +829,14 @@ func TestAReadAnswersTheRunsBeforeTheFirstItCannotRead(t *testing.T) {
 		{"a lost write beside an overwrite", true, func(call int) []entity.Span {
 			s := sp(4*kib, 4*kib, entity.Uncarved)
 			if call == 1 {
-				s.Overwrite = entity.VersionOf(1 << 30)
+				s.Overwrite = entity.VersionOf(unitLimit - 1)
 			}
 			return []entity.Span{sp(0, 4*kib, entity.Hole), s}
 		}, 0, vfserr.ErrLost, 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			st := &stubContent{cover: func(call int, _, _ int64) []entity.Span { return c.cover(call) }}
-			u := newUnit(t, func(d *engine.Deps) { d.Content = st })
+			u := newUnit(t, st.dep)
 			f := entity.NewFileID()
 			size := 8 * kib
 			if c.write {
@@ -839,7 +862,7 @@ func TestAZeroRefSplitByADeallocateReadsZeros(t *testing.T) {
 	st := &stubContent{cover: func(int, int64, int64) []entity.Span {
 		return []entity.Span{{Extent: entity.Extent{Offset: 0, Length: 12 * kib}, Class: entity.Carved}}
 	}}
-	u := newUnit(t, func(d *engine.Deps) { d.Content = st })
+	u := newUnit(t, st.dep)
 	f := entity.NewFileID()
 	v, err := u.h.Deallocate(t.Context(), journal.NewFileID(f), journal.Extent{Off: 4 * kib, Len: 4 * kib})
 	if err != nil {
@@ -869,7 +892,7 @@ func TestAStoreRefusalCrossesARead(t *testing.T) {
 	} {
 		t.Run(c.err.Error(), func(t *testing.T) {
 			st := &stubContent{fail: 1, failWith: c.err}
-			u := newUnit(t, func(d *engine.Deps) { d.Content = st })
+			u := newUnit(t, st.dep)
 			if _, err := u.e.Read(t.Context(), u.share.ID, entity.NewFileID(), 0, make([]byte, kib)); !c.want(err) {
 				t.Errorf("a store answering %v: Read: %v", c.err, err)
 			}

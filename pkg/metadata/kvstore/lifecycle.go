@@ -385,8 +385,8 @@ func (l Lifecycle) VersionLimits(
 // half the key budget, so a batch writes at most K/2 keys and reads three
 // keys a share with tracking (its info, its state and its limit), and no
 // transaction holds every share. A share being removed or retired is
-// skipped, since nothing attaches it again and it must not fail the raise for
-// the shares batched with it, and so is one with no record, which a removal
+// skipped, since it draws no version and it must not fail the raise for the
+// shares batched with it, and so is one with no record, which a removal
 // leaves at its last step (RFC 16 §2.3.2), its ShareID never reused. A batch
 // that fails leaves the earlier ones raised: a raise is safe to run again.
 func (l Lifecycle) RaiseVersionLimits(

@@ -121,11 +121,19 @@ func (j *FakeJournal) SetVersionLimit(mark journal.Version) error {
 	return nil
 }
 
-// Stats reports the loss ring and generation, and each tag's held bytes.
+// Stats reports the loss ring and generation, each tag's held bytes, the
+// version limit last set and the next version the counter issues.
 func (j *FakeJournal) Stats() journal.Stats {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	s := journal.Stats{Losses: slices.Clone(j.losses), LossGeneration: j.gen, Shares: map[journal.ShareTag]journal.ShareStats{}}
+	s := journal.Stats{
+		Losses:         slices.Clone(j.losses),
+		LossGeneration: j.gen,
+		Shares:         map[journal.ShareTag]journal.ShareStats{},
+		VersionLimit:   journal.Version{Counter: j.limit},
+		NextVersion:    journal.Version{Counter: j.last + 1},
+	}
+
 	for tag, n := range j.held {
 		s.Shares[tag] = journal.ShareStats{HeldBytes: n}
 		s.HeldBytes += n
@@ -177,9 +185,35 @@ func (j *FakeJournal) Lose(id journal.FileID, e journal.Extent, why journal.Loss
 	j.losses = append(j.losses, journal.LossEvent{SeqNum: uint64(len(j.losses)) + 1, Share: f.tag, File: id, Extent: e, Version: v, Reason: why})
 }
 
-func (j *FakeJournal) Forget(context.Context, journal.ShareTag) error {
-	return journal.ErrNotImplemented
+// Forget drops tag whole: every file of the tag and the bytes it holds. It is
+// refused with ErrHandleOpen while a handle of tag is open, and forgetting a
+// tag that holds nothing succeeds.
+func (j *FakeJournal) Forget(_ context.Context, tag journal.ShareTag) error {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	if j.closed {
+		return journal.ErrClosed
+	}
+
+	for _, h := range j.handles {
+		if h.tag == tag && !h.closed {
+			return journal.ErrHandleOpen
+		}
+	}
+
+	for id, f := range j.files {
+		if f.tag == tag {
+			delete(j.files, id)
+		}
+	}
+
+	delete(j.held, tag)
+
+	return nil
 }
+
 func (j *FakeJournal) Strand(journal.ShareTag) error { return journal.ErrNotImplemented }
 func (j *FakeJournal) Repack(context.Context, int64, journal.RepackScope) (int64, error) {
 	return 0, journal.ErrNotImplemented

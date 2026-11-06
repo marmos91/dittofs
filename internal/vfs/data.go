@@ -92,6 +92,7 @@ func (fs *Filesystem) Write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, of
 		res.Release()
 		return vfs.WriteResult{}, err
 	}
+	fs.entryChanged(ctx, a, &ref, f, written(wr.WCC))
 	if stable(a, ref, st) {
 		var v vfs.Verifier
 		if v, _, err = fs.engine.Commit(ctx, f.Share, f.ID, off, int64(len(src))); err == nil && v != wr.Verifier {
@@ -167,7 +168,7 @@ func (fs *Filesystem) Commit(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 	if off < 0 || length < 0 {
 		return vfs.Verifier{}, vfs.ErrInvalid
 	}
-	a, unlock, release, err := fs.opened(ctx, c, ref)
+	a, unlock, release, err := fs.opened(ctx, c, ref, false)
 	if err != nil {
 		return vfs.Verifier{}, err
 	}
@@ -224,10 +225,14 @@ func (fs *Filesystem) Deallocate(ctx context.Context, c vfs.Call, ref vfs.OpenRe
 		return vfs.WCC{}, err
 	}
 	defer release()
-	defer unlock()
-	return fs.stage(ctx, c, a, ref.Handle, f, off, false, func() error {
+	w, err := fs.stage(ctx, c, a, ref.Handle, f, off, false, func() error {
 		return fs.engine.Deallocate(ctx, f.Share, f.ID, off, length)
 	})
+	unlock()
+	if err == nil {
+		fs.entryChanged(ctx, a, &ref, f, written(w))
+	}
+	return w, err
 }
 
 // Seek answers the first offset at or after off of the file ref names that
@@ -286,7 +291,7 @@ func (fs *Filesystem) io(ctx context.Context, c vfs.Call, ref vfs.OpenRef, op vf
 	if off < 0 || n < 0 {
 		return nil, vfs.File{}, nil, nil, vfs.ErrInvalid
 	}
-	a, unlock, release, err := fs.opened(ctx, c, ref)
+	a, unlock, release, err := fs.opened(ctx, c, ref, false)
 	if err != nil {
 		return nil, vfs.File{}, nil, nil, err
 	}

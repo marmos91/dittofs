@@ -9,6 +9,8 @@ package engine
 import (
 	"context"
 	"fmt"
+	"maps"
+	"sync"
 	"sync/atomic"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -33,6 +35,17 @@ type Engine struct {
 	sample   func() vfserr.Verifier   // samples a write's verifier, before it is staged
 	reads    readSeries
 	lost     lostLog
+
+	// mu is the lifecycle mutex: Bind takes it only to read and swap the
+	// share table and the fields below, never across I/O, and no content call
+	// takes it.
+	mu       sync.Mutex
+	journals []Journal                   // the journals open, one per device; Start opens them
+	busy     map[entity.ShareID]struct{} // the shares with a lifecycle call in progress
+	raised   map[entity.ShardID]struct{} // the shards whose incarnation this process raised
+	starting bool                        // a Start runs: a lifecycle call answers ErrDelay
+	started  bool                        // a Start succeeded
+	health   Stats                       // the shares refused at start and the conditions raised
 }
 
 // New checks d and builds the engine. It takes no settings, opens nothing and
@@ -59,7 +72,14 @@ func New(d Deps) (*Engine, error) {
 		}
 	}
 	d.Logger = d.Logger.With("component", "engine")
-	return &Engine{d: d, files: newFiles(d.Clock), sample: zeroVerifier}, nil
+
+	return &Engine{
+		d:      d,
+		files:  newFiles(d.Clock),
+		sample: zeroVerifier,
+		busy:   map[entity.ShareID]struct{}{},
+		raised: map[entity.ShardID]struct{}{},
+	}, nil
 }
 
 // Apply hands the engine its node-level settings: first before Start, then on
@@ -77,23 +97,122 @@ func (e *Engine) Apply(s Settings) error {
 	return nil
 }
 
-// Start opens each device's journal and attaches shares, all or nothing.
-func (e *Engine) Start(ctx context.Context, shares []Share) error { return errUnbuilt }
+// errStarted refuses a Start while one runs or after one succeeded.
+var errStarted = fmt.Errorf("engine: already started: %w", vfserr.ErrInvalid)
+
+// errDevices refuses a Start over more than one journal device.
+var errDevices = fmt.Errorf("engine: more than one journal device, and no shard record names its share's journal: %w", errUnbuilt)
+
+// Start runs the start steps over shares, each complete before the next, and
+// serves the shares once they have all run (RFC 8 §2.5). A step that fails
+// closes in reverse what earlier steps opened and returns its error, so the
+// engine is serving or as built, and Start may run again. A share refused
+// at step 1 does not fail Start: it is not attached, and Stats names it and
+// its device. Start runs once: a second, or one while one runs, is refused.
+func (e *Engine) Start(ctx context.Context, shares []Share) error {
+	e.mu.Lock()
+
+	if e.started || e.starting {
+		e.mu.Unlock()
+
+		return errStarted
+	}
+
+	e.starting = true
+	e.mu.Unlock()
+
+	o, err := e.start(ctx, shares)
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.starting = false
+
+	if err != nil {
+		return err
+	}
+
+	t := make(bindings, len(e.table())+len(o.table))
+	maps.Copy(t, e.table())
+	maps.Copy(t, o.table)
+	e.shares.Store(&t)
+
+	if o.journal != nil {
+		e.journals = []Journal{o.journal}
+	}
+
+	e.health = o.stats
+	e.started = true
+
+	return nil
+}
+
+// start runs the start steps, closing in reverse what they opened when one
+// fails, and returns what Start publishes.
+func (e *Engine) start(ctx context.Context, shares []Share) (opened, error) {
+	// ponytail: Start serves one journal device only, as nothing the engine
+	// reads names the journal a share lives on, so it cannot tell which
+	// device's journal gives a share its handle, counts in its floor or
+	// forgets its tag. The ceiling is a node with more than one device not
+	// starting at all. Serve every device once the shard record carries its
+	// primary's journal identity and Start matches it against the identity
+	// JournalID answers for each device.
+	if len(e.d.Devices) != 1 {
+		return opened{}, errDevices
+	}
+
+	var u undo
+
+	o, err := e.openJournal(ctx, shares, &u)
+	if err != nil {
+		return opened{}, u.unwind(err)
+	}
+
+	return o, nil
+}
 
 // Close stops the engine and closes what it opened, in reverse.
 func (e *Engine) Close(ctx context.Context) error { return errUnbuilt }
 
-// Bind attaches a new share above the floor, or applies a change to one
-// already bound.
-func (e *Engine) Bind(ctx context.Context, s Share) error { return errUnbuilt }
-
 // Unbind admits nothing new for the share and joins what it has in flight.
+// While Start runs it answers ErrDelay.
 func (e *Engine) Unbind(ctx context.Context, id entity.ShareID, keepHolds bool) error {
+	if err := e.whileStarting(); err != nil {
+		return err
+	}
+
 	return errUnbuilt
 }
 
 // Drop closes the share's handles and forgets its tag in every journal.
-func (e *Engine) Drop(ctx context.Context, id entity.ShareID) error { return errUnbuilt }
+// While Start runs it answers ErrDelay.
+func (e *Engine) Drop(ctx context.Context, id entity.ShareID) error {
+	if err := e.whileStarting(); err != nil {
+		return err
+	}
 
-// Stats reports the engine's counters and conditions.
-func (e *Engine) Stats() Stats { return Stats{} }
+	return errUnbuilt
+}
+
+// whileStarting is ErrDelay with DelayFrozen while Start runs, the shares not
+// attached yet (RFC 17 §4.3), and nil otherwise.
+func (e *Engine) whileStarting() error {
+	e.mu.Lock()
+
+	defer e.mu.Unlock()
+
+	if e.starting {
+		return &vfserr.Delay{Cause: vfserr.DelayFrozen}
+	}
+
+	return nil
+}
+
+// Stats reports the engine's counters and conditions: before Start, none.
+func (e *Engine) Stats() Stats {
+	e.mu.Lock()
+
+	defer e.mu.Unlock()
+
+	return e.health.clone()
+}

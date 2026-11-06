@@ -177,13 +177,15 @@ func streamFileID(i int) core.FileID {
 	return core.NewFileID(id)
 }
 
-// TestStreamAFailedWriteBoundsTheSyncedThroughOfTheRecordsAfterIt checks R10
-// at the seam: one record lands and is synced, the next write fails with the
-// seam's EIO, and the two appends after it — one past a Sync between them —
-// each carry a synced-through at or below the failed slot's offset, read back
-// from storage by decoding their headers. It catches a synced-through that
-// outran a failed write.
-func TestStreamAFailedWriteBoundsTheSyncedThroughOfTheRecordsAfterIt(t *testing.T) {
+// TestStreamAFailedWriteEndsItsSegmentAndTheStreamRollsPastIt checks R48 at
+// the seam: one record lands and is synced, the next write fails with the
+// seam's EIO — no location — and the segment is ended in the ledger, never
+// taking a further append, while the next append rolls into a new segment
+// whose header names no predecessor. It catches a stream that keeps landing
+// records in a segment a failed write ended. (R10's synced-through bound over
+// the failed slot is held by the concurrent checks of end_test.go, which run
+// the zero-slot choreography this sequential shape cannot.)
+func TestStreamAFailedWriteEndsItsSegmentAndTheStreamRollsPastIt(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	// One synced record, then a failed one: the fault is armed once the
@@ -195,11 +197,12 @@ func TestStreamAFailedWriteBoundsTheSyncedThroughOfTheRecordsAfterIt(t *testing.
 	defer func() { _ = e.s.Close() }()
 
 	// The first write lands and is synced, so its record carries a
-	// synced-through of zero and the next one has room to name the prefix.
+	// synced-through of zero and the stream holds its first segment.
 	h1 := streamMustWrite(t, e, streamFileID(1), 0, make([]byte, 64), 7, 1)
 	if h1.SyncedThrough != 0 {
 		t.Fatalf("the first record carries SyncedThrough %d, want 0", h1.SyncedThrough)
 	}
+	firstSegment := h1.Segment
 	if err := e.s.Sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
@@ -219,23 +222,34 @@ func TestStreamAFailedWriteBoundsTheSyncedThroughOfTheRecordsAfterIt(t *testing.
 		t.Fatalf("disarming the write fault: %v", err)
 	}
 
-	// The failed slot's offset is the first record's end. The next two
-	// records each carry a synced-through at or below it.
-	failedOff := h1.Offset + h1.Size()
-	for i, between := range []bool{false, true, false} {
-		if between {
-			if err := e.s.Sync(); err != nil {
-				t.Fatalf("Sync between the appends: %v", err)
-			}
-		}
-		payload := streamTestBody(64, 0x3c)
-		h, body := streamWriteHeader(streamFileID(2), int64(128+64*i), payload, 8, core.Version{Counter: uint64(3 + i)})
-		p := streamAppendWrite(t, e, h, body)
-		got, _ := streamReadRecord(t, e, p.Loc)
-		if got.SyncedThrough > failedOff {
-			t.Fatalf("record %d after the failed write carries SyncedThrough %d, want at most the failed slot's offset %d",
-				i+1, got.SyncedThrough, failedOff)
-		}
+	// The failed write's segment is ended in the ledger, never sealed: it
+	// takes no further append, not even a seal marker (R48).
+	if state, err := e.set.State(firstSegment); err != nil || state != segment.Ended {
+		t.Fatalf("the failed segment's state is %v, %v, want Ended", state, err)
+	}
+
+	// The next appends land in a new segment whose header names no
+	// predecessor, and the records there read back and sync well: the
+	// failure belongs to the ended segment alone.
+	payload := streamTestBody(64, 0x3c)
+	h, body := streamWriteHeader(streamFileID(2), 0, payload, 8, core.Version{Counter: 3})
+	p := streamAppendWrite(t, e, h, body)
+	if p.Loc.Segment == firstSegment {
+		t.Fatalf("the append after the failed write stayed in segment %d, want a rolled-to new one: a failed append ends its segment", firstSegment)
+	}
+	if hdr := streamSegmentHeader(t, e, p.Loc.Segment); hdr.Predecessor != 0 {
+		t.Fatalf("the new segment names predecessor %d, want none: the stream continues past a failed append in a segment naming no predecessor", hdr.Predecessor)
+	}
+	if err := e.s.Sync(); err != nil {
+		t.Fatalf("the Sync on the rolled-to segment = %v, want nil", err)
+	}
+
+	// The second append stays in that segment: the stream did not end more
+	// of it than the one failure.
+	h3, b3 := streamWriteHeader(streamFileID(2), 64, streamTestBody(64, 0x7d), 8, core.Version{Counter: 4})
+	p3 := streamAppendWrite(t, e, h3, b3)
+	if p3.Loc.Segment != p.Loc.Segment {
+		t.Fatalf("the second append after the failure landed in segment %d, want the first's %d: one failure rolls once", p3.Loc.Segment, p.Loc.Segment)
 	}
 }
 
@@ -907,10 +921,13 @@ func TestStreamAFailedTakeIsRefusedAndLeftForRetirement(t *testing.T) {
 		t.Fatalf("the ledger after the failed take: %v", err)
 	}
 	// The failed segment is Ended in the ledger — not Active, which the
-	// counters alone cannot tell: a further record charge on it is
-	// refused, and its retire runs.
-	if err := e.set.AddRecord(1, 7, 8); !errors.Is(err, segment.ErrWrongState) {
-		t.Fatalf("charging a record to the failed take's segment = %v, want ErrWrongState: the segment must be Ended, never Active", err)
+	// counters alone cannot tell: its Seal is refused — an ended segment
+	// never takes one, Active does — and its retire runs.
+	if err := e.set.Seal(1, true); !errors.Is(err, segment.ErrWrongState) {
+		t.Fatalf("sealing the failed take's segment = %v, want ErrWrongState: the segment must be Ended, never Active", err)
+	}
+	if state, err := e.set.State(1); err != nil || state != segment.Ended {
+		t.Fatalf("the failed take's segment's state is %v, %v, want Ended", state, err)
 	}
 	if freed, err := e.set.Retire(1); freed != streamCap || err != nil {
 		t.Fatalf("retiring the failed take's segment freed %d, %v, want its cap %d, nil: only a non-Active segment retires", freed, err, streamCap)
@@ -972,7 +989,10 @@ func TestStreamReadAtARefusedSegmentMakesOneAttempt(t *testing.T) {
 	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpRead, streamSegName(1), 0, syscall.EIO)); err != nil {
 		t.Fatalf("disarming the read fault: %v", err)
 	}
-	if _, err := e.s.ReadAt(1, buf, p.Loc.Off); !errors.Is(err, segment.ErrSegmentGone) {
+	// A closed stream refuses reads, so a second stream over the same cache
+	// reads the retired segment.
+	reader := segment.NewStream(2, streamIdentity, e.set, e.pool, e.cache)
+	if _, err := reader.ReadAt(1, buf, p.Loc.Off); !errors.Is(err, segment.ErrSegmentGone) {
 		t.Fatalf("the ReadAt of a closed segment = %v, want ErrSegmentGone", err)
 	}
 }
@@ -1632,12 +1652,14 @@ func (fs *streamShortFS) Open(name string) (storage.File, error) {
 	return &streamShortFile{File: f, fs: fs}, nil
 }
 
-// TestStreamAShortWriteCountsAsAFailure checks that a WriteAt that lands all
-// but 8 bytes and reports nil is treated as the failure it is: the Append
-// returns io.ErrShortWrite and no location, its slot's bytes are never
-// counted as synced — the records after it carry a synced-through at or below
-// the short slot's offset — and the share is not charged for it.
-func TestStreamAShortWriteCountsAsAFailure(t *testing.T) {
+// TestStreamAShortWriteCountsAsAFailureAndEndsTheSegment checks that a
+// WriteAt that lands all but 8 bytes and reports nil is treated as the
+// failure it is: the Append returns io.ErrShortWrite and no location, the
+// share is not charged for it, and the segment is ended — the short slot is
+// bytes no later synced-through offset may pass — so the next append rolls
+// into a new segment. It catches a stream that keeps landing records in a
+// segment a short write corrupted.
+func TestStreamAShortWriteCountsAsAFailureAndEndsTheSegment(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	seg := streamSegName(1)
@@ -1667,17 +1689,23 @@ func TestStreamAShortWriteCountsAsAFailure(t *testing.T) {
 		t.Fatalf("the share holds %d bytes after the short write, want the landed record's %d alone", got, a.Loc.Len)
 	}
 
-	// The record after the short one carries a synced-through at or below
-	// the short slot's own offset, even past a Sync in between.
-	if err := e.s.Sync(); err != nil {
-		t.Fatalf("the Sync after the short write: %v", err)
+	// The short-written segment is ended, and the record after the short
+	// one lands in a new segment naming no predecessor whose sync answers
+	// nil: the short slot's bytes belong to the ended segment alone.
+	if state, err := e.set.State(a.Loc.Segment); err != nil || state != segment.Ended {
+		t.Fatalf("the short-written segment's state is %v, %v, want Ended", state, err)
 	}
 	cPayload := streamTestBody(64, 0x7d)
 	ch, cbody := streamWriteHeader(streamFileID(3), 192, cPayload, 7, core.Version{Counter: 3})
 	c := streamAppendWrite(t, e, ch, cbody)
-	cHeader, _ := streamReadRecord(t, e, c.Loc)
-	if cHeader.SyncedThrough > a.Loc.Off+a.Loc.Len {
-		t.Fatalf("the record after the short write carries SyncedThrough %d, want at most the failed slot's offset %d", cHeader.SyncedThrough, a.Loc.Off+a.Loc.Len)
+	if c.Loc.Segment == a.Loc.Segment {
+		t.Fatalf("the append after the short write stayed in segment %d, want a rolled-to new one", a.Loc.Segment)
+	}
+	if hdr := streamSegmentHeader(t, e, c.Loc.Segment); hdr.Predecessor != 0 {
+		t.Fatalf("the new segment names predecessor %d, want none: a short write ends its segment too", hdr.Predecessor)
+	}
+	if err := e.s.Sync(); err != nil {
+		t.Fatalf("the Sync on the segment after the short write: %v", err)
 	}
 	_ = bh
 }

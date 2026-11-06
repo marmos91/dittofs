@@ -127,7 +127,8 @@ var openDelays = map[openstate.DelayCause]vfs.DelayCause{
 
 // openErr is the service's error for one open state answered; anything open
 // state does not name goes on to storeErr, as open state hands the store's
-// failures on.
+// failures on. A lock conflict keeps the *LockedError naming the holder,
+// which a protocol's denial reports.
 //
 // decision: ErrStopped is ErrUnavailable, the answer a draining filesystem
 // gives: open state stops only after the filesystem has drained, so a call
@@ -136,9 +137,12 @@ var openDelays = map[openstate.DelayCause]vfs.DelayCause{
 func openErr(err error) error {
 	var delay *openstate.DelayError
 	var revoked *openstate.RevokedError
+	var locked *openstate.LockedError
 	switch {
 	case err == nil || neutral(err):
 		return err
+	case errors.As(err, &locked):
+		return fmt.Errorf("%w: %w", vfs.ErrLocked, locked)
 	case errors.As(err, &delay):
 		return &vfs.Delay{Cause: openDelays[delay.Cause]}
 	case errors.As(err, &revoked):

@@ -63,8 +63,11 @@ var ErrNotContent = errors.New("kvstore: file holds no content")
 //
 // Each file's existence fence and record are read tracked, so the commit
 // conflicts with a removal, a release or a takeover. A file that fails on its
-// own — released, holding no content, operations out of order — is reported
-// in the returned map and fails no other.
+// own — released, its record undecodable, holding no content, operations out
+// of order — is reported in the returned map and fails no other. A store
+// error is no file's own: a conflict retries the transaction, and any other
+// fails the whole call, as does a removal, hole or overwrite record that does
+// not decode.
 //
 // ponytail: a single operation that alone needs more than the budget — a
 // write over 10^5 holes — still commits in one transaction, which the
@@ -137,7 +140,18 @@ func commitExistence(tx kv.Txn, p PendingExistence, first, budget int, fresh boo
 	if err != nil {
 		return 0, 0, err
 	}
-	f, err := fileIn(tx, p.Share, p.File)
+	// The record is read here rather than through fileIn so that a store
+	// error reading it — a conflict, unavailability — fails the transaction,
+	// to be retried or returned whole, while only a missing or undecodable
+	// record is this file's own failure.
+	b, ok, err := get(tx, fileKey(p.Share, p.File))
+	if err != nil {
+		return 0, 0, err
+	}
+	if !ok {
+		return 0, 0, fileFailed(entity.ErrStale)
+	}
+	f, err := decodeFile(p.Share, p.File, b)
 	if err != nil {
 		return 0, 0, fileFailed(err)
 	}

@@ -7,6 +7,7 @@ package admit
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -18,6 +19,12 @@ import (
 type Netgroups interface {
 	Members(ctx context.Context, name string) (members []string, found bool, err error)
 }
+
+// ErrClientRule is Check's refusal by the share's client rules. It wraps
+// vfs.ErrAccess, so a caller answers it as any refusal of access, and a
+// caller exempting a call from the client rules exempts it from this one
+// only: an error the netgroup read answers is never it, whatever it wraps.
+var ErrClientRule = fmt.Errorf("%w: refused by the share's client rules", vfs.ErrAccess)
 
 // Check runs admission's steps 2 and 3 for a call by id reaching a share
 // under policy p, in order, and answers whether a client rule narrowed the
@@ -41,11 +48,11 @@ func Check(ctx context.Context, p entity.ExportPolicy, id vfs.Identity, ng Netgr
 			continue
 		}
 		if r.Access == entity.AccessNone {
-			return false, vfs.ErrAccess
+			return false, ErrClientRule
 		}
 		return r.Access == entity.AccessRead, nil
 	}
-	return false, vfs.ErrAccess
+	return false, ErrClientRule
 }
 
 // matches reports whether rule r applies to a client at addr. A netgroup

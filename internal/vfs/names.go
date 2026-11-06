@@ -166,7 +166,8 @@ func creating(dir vfs.Handle) lockorder.Set {
 // file an exclusive create's retry made, or ErrExist, and a check for name
 // failing for any other cause fails the create; then the store's create of a
 // file with ID id, or one the store draws when id is zero. The locks held
-// keep any other call from adding name between the two.
+// keep any other call from adding name between the two. Only a create that
+// added name is reported to the watches.
 func (fs *Filesystem) createLocked(ctx context.Context, a *admitted, c vfs.Call, op vfs.Op, dir vfs.Handle, name []byte, ca vfs.CreateArgs, id entity.FileID) (vfs.CreateResult, error) {
 	nf, err := newFile(ca)
 	if err != nil {
@@ -178,7 +179,9 @@ func (fs *Filesystem) createLocked(ctx context.Context, a *admitted, c vfs.Call,
 	if err != nil {
 		return r, err
 	}
-	if _, _, err := fs.meta.Namespace().Lookup(ctx, a.caller.Identity, dir, name); err != nil {
+	_, _, err = fs.meta.Namespace().Lookup(ctx, a.caller.Identity, dir, name)
+	added := err != nil
+	if added {
 		if !merrs.IsNotFoundError(err) {
 			return vfs.CreateResult{}, storeErr(err)
 		}
@@ -199,6 +202,9 @@ func (fs *Filesystem) createLocked(ctx context.Context, a *admitted, c vfs.Call,
 		return vfs.CreateResult{}, storeErr(err)
 	}
 	r.Dir.After = fs.attrs(ctx, a, dir)
+	if added {
+		fs.changedIn(ctx, dir, openstate.Change{What: openstate.ChangeAddEntry, Name: name})
+	}
 	return r, nil
 }
 
@@ -243,6 +249,7 @@ func (fs *Filesystem) Link(ctx context.Context, c vfs.Call, dir vfs.Handle, name
 	}
 	r.File = fs.attrs(ctx, a, target)
 	r.Dir.After = fs.attrs(ctx, a, dir)
+	fs.changedIn(ctx, dir, openstate.Change{What: openstate.ChangeAddEntry, Name: name})
 	return r, nil
 }
 
@@ -327,6 +334,8 @@ func (fs *Filesystem) unlinkLocked(ctx context.Context, a *admitted, c vfs.Call,
 		return vfs.UnlinkResult{}, false, err
 	}
 	r.Dir.After = fs.attrs(ctx, a, dir.H)
+	fs.changedIn(ctx, dir.H, openstate.Change{What: openstate.ChangeRemove, Name: name})
+	fs.entryGone(ctx, f, fileOf(dir.H), name)
 	fs.releaseOrphan(ctx, f, orphan)
 	return r, false, nil
 }
@@ -462,15 +471,33 @@ func (fs *Filesystem) renameLocked(ctx context.Context, a *admitted, c vfs.Call,
 	if moves {
 		r.Moved = &vfs.WCC{After: fs.attrs(ctx, a, srcH)}
 	}
+	if fd == td {
+		fs.changedIn(ctx, from.H, openstate.Change{What: openstate.ChangeRename, Name: fromName, To: toName})
+	} else {
+		fs.changedIn(ctx, from.H, openstate.Change{What: openstate.ChangeRemove, Name: fromName})
+		fs.changedIn(ctx, to, openstate.Change{What: openstate.ChangeAddEntry, Name: toName})
+	}
 	if err := fs.opens.Renamed(ctx, keyOf(src), fileOf(from.H), fromName, fileOf(to), toName); err != nil {
 		// The rename committed; an open's stale name only defers a delete
 		// on close to a name that is gone, which then removes nothing.
 		fs.log.Warn("vfs: open names not moved with a rename", "file", src.ID, "err", err)
 	}
 	if replaces {
+		fs.entryGone(ctx, *dst, fileOf(to), toName)
 		fs.releaseOrphan(ctx, *dst, orphan)
 	}
 	return r, false, nil
+}
+
+// entryGone tells open state that name in dir, an entry of f, is removed,
+// so the opens made through it no longer name it.
+func (fs *Filesystem) entryGone(ctx context.Context, f vfs.File, dir entity.FileID, name []byte) {
+	if err := fs.opens.Renamed(ctx, keyOf(f), dir, name, entity.FileID{}, nil); err != nil {
+		// The unlink committed; an open's stale name only reports a change
+		// through it under a name that is gone, or defers a delete on close
+		// to one, which then removes nothing.
+		fs.log.Warn("vfs: open names not dropped with their entry", "file", f.ID, "err", err)
+	}
 }
 
 // admitChange admits a change to h, a directory or a file: ErrReadOnly for a

@@ -35,6 +35,9 @@ rfc1 / 9.4 / A / "repack under read":
   tests: [TestRFC1A_RepackUnderRead]
 rfc1 / 9.4 / A / "removals survive to `Since`":
   tests: [TestRFC1A_RemovalsSurviveToSince]
+rfc1 / 9.4 / A / "`Settle` drops by version, never content":
+  owner: epic 8
+  reason: 'Settle over held extents, both markers and synced loss records needs the data path''s Settle over the real journal'
 rfc1 / 9.4 / A / "no resurrection":
   tests: [TestRFC1A_NoResurrection]
 rfc1 / 9.4 / A / "removal outlives its segment":
@@ -375,3 +378,72 @@ rfc28 / 4.2 / C / "an ended segment is emptied once":
 rfc28 / 4.2 / C / "an open at an exhausted headroom":
   owner: epic 7
   reason: 'the open''s headroom reserve and the deferred loss records are not built yet'
+rfc1 / 9.4 / B / "a closed writer forgets its error":
+  owner: epic 5
+  reason: 'the descriptor cache does not keep a writer''s error past its close yet'
+rfc28 / 4.2 / A / "a failed read is not damage":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "unproven tail with a failed re-read":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "failed window with a failed read":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "unreadable is not empty":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "acknowledging a range":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a removal whose phase 2 is done":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "an unread file at start":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "same-commit supersession":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "resume after the unlink":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a deferred drop in another segment":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a drop races a repack copy":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "partial drops at the maximum":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a resume scoped by the mark":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a drop held up by a pinned segment":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a partial drop survives a restart":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a removal from offset 0":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a header-only record by version":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a lost hold fails its snapshot":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "`format` rebuilt":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "an unread file keeps its order":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "unread, offloaded":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a dead unread record":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'

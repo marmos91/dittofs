@@ -591,13 +591,13 @@ tiering, or moving between buckets — `Block` gains a `Store` field then.
 
 ### 2.4 FileData and holes
 
-    FileData(file)         = { size, applied, Version, Charged, Modify, Change }   // fields of RFC 7's File value
+    FileData(file)         = { size, applied, removedThrough, removedFrom, Version, Charged, Modify, Change }   // fields of RFC 7's File value
     Hole(file, start)      = { end, version, born }
     Overwrite(file, start) = { end, version, born }
     Removal(file, version) = { start, end, kind, cut, cursor, done, ovSpan, holeCredit, charge, shard, fileVersion, clone }   // clone: { srcShare, src, srcOff, dstOff, len, asOf }, kind clone only
 
 **FileData is not a record of its own.** It names the fields of the one `File`
-value ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)) that only the write path sets: `size`, `applied`, the
+value ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)) that only the write path sets: `size`, `applied`, `removedThrough`, `removedFrom`, the
 write-time `Modify` and `Change`, and, with every other writer of the File,
 `Version` and `Charged`. They are persisted in the File's one key
 ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)); what makes them this document's is who may write them, not where
@@ -895,7 +895,19 @@ error. Existence therefore also records the **overwrite set**
   covers that overlaps content whose existence was committed before it** —
   below the earlier `size` and outside the hole set — with `version` the
   newest version covering that run. It writes none for a first write into a
-  hole or past `size`, so appends and first writes write nothing new. Where the
+  hole or past `size`, so appends and first writes write nothing new. One more
+  run gets one, because a journal that loses a record without a trace must
+  still be able to tell its older held content from current content
+  ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)): a run where the write superseded another write of
+  the file above `applied`, which the engine passes in the write's `Over`
+  ([§10.1](#10.1%20Interface)'s `PendingWrite`) from its pending writes, and after a crash from
+  `Since`'s `Change.Over` ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since), [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)) — by the commit the superseded write has left the index, so
+  only the journal can say so. For example, an append W1 at v1 and an
+  overwrite W2 at v2 of the same offset, committed together, leave a record
+  at v2, so W1 is never taken for current if W2's record is lost. Removals need
+  none: phase 1 records the file's `removedThrough` and `removedFrom` (§6.2),
+  which bound what any removal took. The extra records are at most one per run
+  per commit, counted in [RFC 8](rfc-8-engine.md)'s B5 overwriting case. Where the
   run overlaps an existing overwrite record, the overlapped part takes the new
   version and the record is split around it; records of different versions are
   never merged, since a merged record would hold back an extent already carved
@@ -982,7 +994,7 @@ The rules:
 - **A stability reply MUST NOT precede the existence commit of any pending write
   in its extent that overwrites committed content** — any write covering an
   offset below the committed `size` and outside the committed holes, which is
-  exactly a write whose commit writes an overwrite record ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)). Answered
+  exactly a write whose commit writes an overwrite record over committed content ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)). Answered
   before it, the journal can lose the write while the old ref still covers the
   extent, which then reads the superseded chunk as current, with no error.
   Appends and hole fills are committed lazily: losing one before its commit
@@ -1245,7 +1257,7 @@ replaces, where *n* is the number of refs in the file, plus O(log *h*) per
 unstamped version whose `born` it rebuilds ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)),
 where *h* is the number of versions in the file record's history. An existence commit
 **MUST** write O(holes changed + overwritten runs) records per file it covers:
-one overwrite record per run of a write that replaced committed content, plus
+one overwrite record per run of a write that replaced committed content or a write the same commit covers, plus
 at most two for the existing records it splits ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)). No per-commit cost may
 grow with the size of the file: a commit that is O(file) makes a file of *N*
 chunks O(*N*²) to write. A record that packs many refs into one value counts as
@@ -1563,7 +1575,11 @@ no write can land in the extent, since the share admits none.
   a deallocate, joins them into its merged hole instead, below), and
   splits at the edge at most the two overwrite records that straddle them, each
   piece keeping its `version` and `born`, so phase 2 still dates the refs under
-  the inside piece; sets `applied = max(applied, v)`; and lowers `Charged` by the
+  the inside piece; sets `applied = max(applied, v)`; for a truncate-down, a
+  deallocate or a clone's destination extent, not a release, sets `removedThrough = max(removedThrough, v)` and `removedFrom` to the
+  extent's start where `removedThrough` was unset ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)), otherwise
+  to the lower of the two
+  ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)); and lowers `Charged` by the
   charged bytes the extent removes — its bytes below the old `size` less the
   holes among them, which phase 1 reads, at most K of them, but does not write.
   An extent holding more than K holes is not read past K: phase 1 lowers
@@ -2558,6 +2574,25 @@ type BlockCommit struct {
 // refs found already committed (§4.4). Dropped and refused refs are absent.
 type CommitResult map[FileID][]Extent
 
+// PendingExistence is one file's existence to commit (§3.4): its writes and
+// synced losses above applied, in version order, from the engine's pending
+// existence or, after a crash, the journal's Since (RFC 8 §2.5, §5.1).
+// Remove and Clone refuse a pending whose File or Epoch differs from the
+// file and epoch they are called with, so one call holds one of each.
+type PendingExistence struct {
+    File   FileID
+    Epoch  uint64 // primary's epoch the commit runs under (§4.1)
+    Writes []PendingWrite
+}
+
+type PendingWrite struct {
+    Extent  Extent
+    Version JournalVersion
+    Mtime   int64
+    Lost    bool     // from a synced loss record: uncarved, nothing held (§3.4)
+    Over    []Extent // runs where it superseded an earlier pending write of the file (RFC 1 §3.10's Change.Over); each gets an overwrite record (§3.3)
+}
+
 type Existence interface {
     // Commit applies pending existence for many files in one bounded batch (§3.4).
     Commit(ctx context.Context, pending []PendingExistence) error
@@ -2903,7 +2938,7 @@ range-splitting backend's tail ranges.
 
 | Record | Value fields | Written by |
 | --- | --- | --- |
-| **FileData** (fields of `File`) | `size` u64 · `applied` version (u128) · `Version` version (u128) · `Charged` u64 · `MaxSpan` u64, the longest hole the file has had · `MaxOverwrite` u64, the longest overwrite record it has had · `Modify`, `Change` (i64 ns) · the `File`'s `born` u64 | existence commit, which gives back a replaced masked hole's bytes when owed; removal phase 1, which lowers `Charged` and, for a deallocate, raises `MaxSpan` to its merged hole, edge holes joined, and for a clone to `len`, the longest hole its batches can write; the phase-2 transaction that sets `done`, which folds the removal's `charge` into `Charged` and, for a clone, joins the extent's edge holes and raises `MaxSpan` ([§6.2](#6.2%20Truncation%20and%20deallocation), [§6.6](#6.6%20Clone%20and%20server-side%20copy)) |
+| **FileData** (fields of `File`) | `size` u64 · `applied` version (u128) · `removedThrough` version (u128), zero for none · `removedFrom` u64 · `Version` version (u128) · `Charged` u64 · `MaxSpan` u64, the longest hole the file has had · `MaxOverwrite` u64, the longest overwrite record it has had · `Modify`, `Change` (i64 ns) · the `File`'s `born` u64 | existence commit, which gives back a replaced masked hole's bytes when owed; removal phase 1, which lowers `Charged`, sets `removedThrough` and `removedFrom` for a truncate-down, deallocate or clone, and, for a deallocate, raises `MaxSpan` to its merged hole, edge holes joined, and for a clone to `len`, the longest hole its batches can write; the phase-2 transaction that sets `done`, which folds the removal's `charge` into `Charged` and, for a clone, joins the extent's edge holes and raises `MaxSpan` ([§6.2](#6.2%20Truncation%20and%20deallocation), [§6.6](#6.6%20Clone%20and%20server-side%20copy)) |
 | **Hole** | `end` u64 · `version` (u128), the operation that made it · `born` u64 (`SnapshotCut`) | existence commit; removal phase 1 (edge narrowing, a deallocate's merged hole with its edge holes joined) and phase 2 (drops; a clone's batches write the source's holes, born at the clone's `cut`) |
 | **Overwrite** | `end` u64 · `version` (u128) · `born` u64 | existence commit creates and splits; a removal masks from phase 1 and drops or narrows in phase 2; the primary's pruning deletes |
 | **Removal** | `start`, `end` u64 · `kind` (truncate, deallocate, release, clone) · `cut` u64 (`SnapshotCut`) · `cursor` u64 · `done` bool · `ovSpan` u64, the File's `MaxOverwrite` at phase 1 · `holeCredit` bool, phase 1 found more than K holes and the masked holes' bytes are given back as they are dropped or replaced ([§6.2](#6.2%20Truncation%20and%20deallocation)) · `charge` i64, the change to `Charged` the batches have gathered, folded when `done` is set while the File exists · `shard`, the File's shard at phase 1, which names its `rr` entry for the prune ([§6.4](#6.4%20Delete)) · for kind release, `fileVersion`, the deleted File's `Version`, which names its floor entry ([§6.4](#6.4%20Delete)) · for kind clone, the clone spec: `srcShare` ShareID, `src` FileID, `srcOff`, `dstOff`, `len` u64, `asOf` version (u128), the source's change version ([RFC 1 §3.2](rfc-1-journal.md#3.2%20Read)) | removal phase 1 creates; phase 2 advances and gathers `charge`; primary prunes |

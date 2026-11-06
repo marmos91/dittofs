@@ -8,17 +8,65 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// BindForTest installs a binding of s over j and h, copying the share table as
-// a share's attach does, for a test that cannot bind through Bind and Start.
-func (e *Engine) BindForTest(s Share, j Journal, h Handle) {
-	t := bindings{}
-	if old := e.shares.Load(); old != nil {
-		for k, v := range *old {
-			t[k] = v
-		}
+// ErrNotStarted is the answer of a Bind while no journal is open.
+var ErrNotStarted = errNotStarted
+
+// The errors start answers and refuses shares with, for a test to match.
+var (
+	ErrUnbuilt      = errUnbuilt
+	ErrStarted      = errStarted
+	ErrJournalLost  = errJournalLost
+	ErrNotRecorded  = errNotRecorded
+	ErrUnidentified = errUnidentified
+)
+
+// SetJournalsForTest sets the journals the engine has open, as Start will.
+func (e *Engine) SetJournalsForTest(js ...Journal) {
+	e.mu.Lock()
+	e.journals = js
+	e.mu.Unlock()
+}
+
+// MarkRaisedForTest records shard as raised by this process, as Start will.
+func (e *Engine) MarkRaisedForTest(shard entity.ShardID) {
+	e.mu.Lock()
+	e.raised[shard] = struct{}{}
+	e.mu.Unlock()
+}
+
+// TableForTest is the share table's pointer, compared for identity.
+func (e *Engine) TableForTest() any {
+	return e.shares.Load()
+}
+
+// StateOf is share s's binding state, zero when it has no binding.
+func (e *Engine) StateOf(s entity.ShareID) ShareState {
+	b := e.table()[s]
+
+	if b == nil {
+		return 0
 	}
-	t[s.ID] = &binding{share: s, j: j, h: h}
-	e.shares.Store(&t)
+
+	return ShareState(b.state.Load())
+}
+
+// LifecycleFree reports whether the lifecycle mutex is free now.
+func (e *Engine) LifecycleFree() bool {
+	if !e.mu.TryLock() {
+		return false
+	}
+
+	e.mu.Unlock()
+
+	return true
+}
+
+// HoldLifecycle takes the lifecycle mutex and returns the function that
+// releases it.
+func (e *Engine) HoldLifecycle() (release func()) {
+	e.mu.Lock()
+
+	return e.mu.Unlock
 }
 
 // BindingOf reports whether share s is bound, through the content path's

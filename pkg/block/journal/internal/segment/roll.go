@@ -1,7 +1,6 @@
 package segment
 
 import (
-	"errors"
 	"fmt"
 	"math"
 
@@ -75,13 +74,34 @@ func (ss *Streams) Len() int {
 	return len(ss.s)
 }
 
-// Close closes every stream, joining their errors: the first refusal names
-// itself, and the rest land beside it, for no one error owns the set. Join
-// drops the nils, so a clean close answers nil.
-func (ss *Streams) Close() error {
-	errs := make([]error, len(ss.s))
-	for i, s := range ss.s {
-		errs[i] = s.Close()
+// OnEnd registers fn as the consumer of every stream's end events: each stream
+// hands its own over, so fn can see events of any of them. It must be called
+// before the first append of any stream, and panics past one, as Stream.OnEnd
+// does.
+func (ss *Streams) OnEnd(fn func(EndEvent)) {
+	for _, s := range ss.s {
+		s.OnEnd(fn)
 	}
-	return errors.Join(errs...)
+}
+
+// Close closes every stream. It answers nil today, for a stream's close has no
+// failure of its own; the error stays in the signature for the group's close
+// to join.
+func (ss *Streams) Close() error {
+	// Two phases, so the set is never half closed: every stream stops
+	// admitting appends and reads first, then each is drained.
+	type begun struct {
+		ref   Ref
+		began bool
+	}
+	b := make([]begun, len(ss.s))
+	for i, s := range ss.s {
+		b[i].ref, b[i].began = s.beginClose()
+	}
+	for i, s := range ss.s {
+		if b[i].began {
+			s.finishClose(b[i].ref)
+		}
+	}
+	return nil
 }

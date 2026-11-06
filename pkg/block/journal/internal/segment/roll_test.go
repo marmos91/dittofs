@@ -2073,12 +2073,12 @@ func TestRollAFailedSuccessorHeaderWriteEndsTheSpareAndTheNextAppendRollsAgain(t
 
 	// The spare the failed write left is Ended in the ledger, held at its
 	// cap for a retirement to unlink — never Active, which the state and
-	// the refused charge below name, and never a spare again.
+	// the refused seal below name, and never a spare again.
 	if state, err := e.set.State(seg2); err != nil || state != segment.Ended {
 		t.Fatalf("the failed successor's state after the unwind is %v, %v, want Ended at its cap", state, err)
 	}
-	if err := e.set.AddRecord(seg2, 7, 8); !errors.Is(err, segment.ErrWrongState) {
-		t.Fatalf("charging a record to the failed successor = %v, want ErrWrongState: the segment must be Ended, never Active", err)
+	if err := e.set.Seal(seg2, true); !errors.Is(err, segment.ErrWrongState) {
+		t.Fatalf("sealing the failed successor = %v, want ErrWrongState: the segment must be Ended, never Active", err)
 	}
 	if state, err := e.set.State(seg1); err != nil || state != segment.Sealed {
 		t.Fatalf("the full segment's state after the failed roll is %v, %v, want Sealed: its seal settled before the write failed", state, err)

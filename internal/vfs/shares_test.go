@@ -551,7 +551,7 @@ func TestOnlyAnUnsquashedProvenCallerIsAdmin(t *testing.T) {
 	ops := s.user(t, "ops", "1500", s.share, entity.AccessAdmin)
 	caller := func(id vfs.Call) authz.Caller {
 		t.Helper()
-		a, release, err := s.admit(ctx, id, s.share, true)
+		a, release, err := s.admit(ctx, id, s.share, true, false)
 		s.must(t, err)
 		release()
 		return a.caller
@@ -583,7 +583,7 @@ func TestAProvenUserHoldingUIDZeroIsRoot(t *testing.T) {
 	nobody := s.user(t, "nobody", "", s.share, entity.AccessRead)
 	caller := func() authz.Caller {
 		t.Helper()
-		a, release, err := s.admit(ctx, proven(root.Principal, inLab), s.share, true)
+		a, release, err := s.admit(ctx, proven(root.Principal, inLab), s.share, true, false)
 		s.must(t, err)
 		release()
 		return a.caller
@@ -663,7 +663,7 @@ func TestAProvenPrincipalWithNoUIDIsAnonymous(t *testing.T) {
 	s.must(t, s.cp.PutUser(ctx, host))
 	s.must(t, s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: host.Principal, Access: entity.AccessAdmin}))
 	s.must(t, s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: entity.AuthenticatedUsers, Access: entity.AccessReadWrite}))
-	a, release, err := s.admit(ctx, proven(host.Principal, inLab), s.share, true)
+	a, release, err := s.admit(ctx, proven(host.Principal, inLab), s.share, true, false)
 	s.must(t, err)
 	release()
 	if c := a.caller; c.Principal != nobody.Principal || c.Authenticated || c.Admin || c.Privileged || c.Mapped != host.Principal {
@@ -721,7 +721,7 @@ func TestAReadOnlyClientRuleNarrowsWrites(t *testing.T) {
 		if writes := info.MaximalAccess&entity.WriteData != 0; writes != (c.want == entity.NotNarrowed) || info.MaximalAccess&entity.ReadData == 0 {
 			t.Errorf("%s: an admin's maximal access %#x", c.name, info.MaximalAccess)
 		}
-		a, release, err := s.admit(ctx, proven(s.fs.Admin.Principal, inLab), s.share, true)
+		a, release, err := s.admit(ctx, proven(s.fs.Admin.Principal, inLab), s.share, true, false)
 		s.must(t, err)
 		release()
 		if a.caller.ReadOnly != c.want {
@@ -842,7 +842,7 @@ func TestANewShareSquashesRootToAnonymous(t *testing.T) {
 	s := newShares(t, nil, nil)
 	ctx := t.Context()
 	fresh := s.addShare(t, "fresh", "/fresh")
-	a, release, err := s.admit(ctx, claimed(0, inLab), fresh, true)
+	a, release, err := s.admit(ctx, claimed(0, inLab), fresh, true, false)
 	s.must(t, err)
 	release()
 	if a.caller.Privileged || a.caller.Principal != entity.AnonymousPrincipal {
@@ -869,7 +869,7 @@ func TestASquashedCallerIsTheAnonymousPrincipalOnly(t *testing.T) {
 	s.must(t, s.cp.AddMember(ctx, entity.Membership{Group: staff.Principal, Member: bob.Principal}))
 	nobody := s.user(t, "nobody", "", s.share, entity.AccessRead)
 	s.must(t, s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashAll, Anonymous: nobody.Principal}))
-	a, release, err := s.admit(ctx, claimed(1000, inLab), s.share, true)
+	a, release, err := s.admit(ctx, claimed(1000, inLab), s.share, true, false)
 	s.must(t, err)
 	release()
 	if a.caller.Principal != nobody.Principal || a.caller.InGroup(staff.Principal) {
@@ -903,7 +903,7 @@ func TestANarrowedWriteIsErrReadOnly(t *testing.T) {
 		want     error
 	}{{true, s.fs.Admin.Principal, vfs.ErrReadOnly}, {false, reader.Principal, vfs.ErrAccess}} {
 		s.must(t, s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, ReadOnly: c.readOnly}))
-		a, release, err := s.admit(ctx, proven(c.who, inLab), s.share, true)
+		a, release, err := s.admit(ctx, proven(c.who, inLab), s.share, true, false)
 		s.must(t, err)
 		err = storeErr(s.authz.Decide(ctx, a.caller, vfs.OpWrite, a.root(), nil, nil, entity.WriteData))
 		release()

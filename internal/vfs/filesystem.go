@@ -147,6 +147,8 @@ type Filesystem struct {
 	recovery  openstate.Recovery
 	lockState openstate.Locks
 	grants    openstate.Grants
+	watches   openstate.Watches
+	watchers  watchers       // the watches set here, as their changes are delivered
 	reg       *registry      // each client's callback paths
 	sending   sync.WaitGroup // the callbacks being delivered and the releases being run
 	marks     releaser
@@ -189,6 +191,8 @@ func New(d Deps) (*Filesystem, error) {
 		recovery:  d.Open.Recovery(),
 		lockState: d.Open.Locks(),
 		grants:    d.Open.Grants(),
+		watches:   d.Open.Watches(),
+		watchers:  watchers{set: map[vfs.WatchID]watcher{}},
 		reg:       newRegistry(),
 		build:     make(chan struct{}, 1),
 		joins:     map[entity.ShareID]*join{},

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -59,6 +60,10 @@ type Fixture struct {
 	Seam  *journaltest.Seam
 	Clock *sim.TestClock
 	Share engine.Share // the share as the engine binds it
+	// Second is a second share of the store, on the same journal, which no
+	// Start binds: a row binds it through Bind. SecondRoot is its root.
+	Second     engine.Share
+	SecondRoot entity.Handle
 	// Journal is the ID Init gave the fixture's journal, which the store
 	// records for Node and Dir, so its Lifecycle view answers it there.
 	Journal journal.JournalID
@@ -123,6 +128,8 @@ func New(t *testing.T) *Fixture {
 		State:      engine.Serving,
 	}
 
+	f.addSecond()
+
 	t.Cleanup(func() { f.stop(true) })
 	f.start()
 	return f
@@ -134,6 +141,44 @@ func (f *Fixture) Restart() {
 	f.t.Helper()
 	f.stop(true)
 	f.start()
+}
+
+// RestartAfter stops the process cleanly, runs change over the stopped
+// journal directory and store, and starts a new process over them.
+func (f *Fixture) RestartAfter(change func()) {
+	f.t.Helper()
+	f.stop(true)
+	change()
+	f.start()
+}
+
+// Reinit replaces the journal in the fixture's directory with a new, empty
+// one, as an operator re-initialising a lost device would, and returns its
+// identity. It records nothing in the store. Call it only while the process
+// is stopped, inside RestartAfter.
+func (f *Fixture) Reinit() journal.JournalID {
+	f.t.Helper()
+
+	if err := os.RemoveAll(f.Dir); err != nil {
+		f.t.Fatalf("fixture: remove the journal: %v", err)
+	}
+
+	if err := os.Mkdir(f.Dir, 0o700); err != nil {
+		f.t.Fatalf("fixture: make the journal directory: %v", err)
+	}
+
+	id, err := journal.Init(
+		f.t.Context(),
+		f.Dir,
+		fixtureInstall,
+		journal.WithClock(f.Clock),
+		journal.WithStorage(f.Seam.FS()),
+	)
+	if err != nil {
+		f.t.Fatalf("fixture: journal init: %v", err)
+	}
+
+	return id
 }
 
 // Crash simulates a power loss under the journal and starts a new process on
@@ -163,10 +208,42 @@ func (f *Fixture) File(name string) (entity.Handle, entity.FileID) {
 // row that reads back what the journal holds.
 func (f *Fixture) Handle() engine.Handle {
 	f.t.Helper()
-	h, ok := f.handles.Load(f.Share.Tag)
-	if !ok {
-		f.t.Fatal("fixture: the engine opened no handle on the share's tag")
+
+	return f.HandleOf(f.Share.Tag)
+}
+
+// addSecond creates the second share, with the fixture's administrator
+// granted on it.
+func (f *Fixture) addSecond() {
+	ctx := f.t.Context()
+	f.Second = AddShare(f.t, f.FS.Store, "second", 0)
+	grant := entity.ShareGrant{
+		Share:     f.Second.ID,
+		Principal: f.FS.Admin.Principal,
+		Access:    entity.AccessAdmin,
 	}
+
+	if err := f.FS.Store.ControlPlane().SetGrant(ctx, grant); err != nil {
+		f.t.Fatalf("fixture: grant on the second share: %v", err)
+	}
+
+	root, _, err := f.FS.Store.Files().Root(ctx, f.FS.Admin, f.Second.ID)
+	if err != nil {
+		f.t.Fatalf("fixture: the second share's root: %v", err)
+	}
+
+	f.SecondRoot = root
+}
+
+// HandleOf is the handle the running engine opened on tag.
+func (f *Fixture) HandleOf(tag journal.ShareTag) engine.Handle {
+	f.t.Helper()
+
+	h, ok := f.handles.Load(tag)
+	if !ok {
+		f.t.Fatalf("fixture: the engine opened no handle on tag %d", tag)
+	}
+
 	return h.(engine.Handle)
 }
 
