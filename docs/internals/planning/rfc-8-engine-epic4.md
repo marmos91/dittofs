@@ -505,7 +505,8 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   the due set and waits for the batch in flight, built here and called by epic 6's `Drop`,
   which tests it (T6.9). `kvstore`'s `PendingOp` split (D6), with its own test.
   `kvstore`'s marks write (RFC 6 §10.1): `Existence.Commit`'s `marks *MarksWrite`, its
-  tracked `og` check, `ErrOpenGenMoved` and `ErrSyncMarks`, each mark keyed by its `Stream`
+  tracked `og` check, `ErrOpenGenMoved`, and `ErrSyncMarks` only for a marks-only
+  transaction, a conflict beside files being the files' (it names no keys), each mark keyed by its `Stream`
   and none deleted, as RFC 6 §10.1 and RFC 8 §5.2 say, with its own test. E2's fake
   journal gains sync marks: `Sync` returns a mark per stream covering what it synced, and
   `Stats().SyncMarks` keeps each stream's latest mark, merged by `Stream`, as RFC 1 §3.7
@@ -574,7 +575,8 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
     entry gone, on `lostWhole` and on `dropShare`.
 - **Tests:** the split's table over a stub `Existence`: each failure shape (a file in the
   map, a whole-call error, two failing files, every file failing, each on a batch that
-  carries the marks) against the expected calls
+  carries the marks; the marks pulled out on a whole-call error and sent alone once; the
+  marks alone failing with a store error, retried alone with backoff) against the expected calls
   (catches a committed file resubmitted, or a failing one resubmitted with the rest). Over
   the real `kvstore` over a `kv.KV` wrapper, through `newUnitOver`, making one file's File
   record undecodable: the other files' overwrite `Commit`s succeed, that file's answers `ErrDelay`,
@@ -585,7 +587,9 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   other files commit, that file fails alone: catches a split on conflicts only, RFC 8
   §5.2); a store stalled past the bound, or closed, does not split (catches 2G−1 bounded
   calls on a store-wide failure, or a commit left retrying until the caller's deadline);
-  §15.2's "sync marks are keyed by stream" row over the fake and the real `kvstore` (R26); the condition cleared on `dropShare` and on `lostWhole`
+  §15.2's "sync marks are keyed by stream" row over the fake and the real `kvstore` (R26);
+  the "sync marks ride in one batch" row's case of a store naming the marks keys through
+  `newUnitOver`'s `kv.KV` wrapper, since the real `kvstore` names none; the condition cleared on `dropShare` and on `lostWhole`
   (catches a condition naming a file nothing will commit); a `kv.KV` wrapper through
   `newUnitOver` that records the mark on each call sees it on every group-commit call and on
   no `Existence.Overwrites` call of a `Commit` (catches a retried call left unmarked, which

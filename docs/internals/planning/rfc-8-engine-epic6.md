@@ -300,9 +300,12 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   under the mutex and, when it is set, publishes nothing and undoes in reverse; `Close`
   waits for the set to drain, within the stop bound (D7), before it closes anything, so no
   handle is published on, or left open over, a journal stop step 4 closes. After the set
-  drains, `Close` also waits for every handle marked closing to finish its `Close`, as a
-  retried `Bind` does, and closing every handle skips it, since a failed `Bind` leaves the
-  set before its handle's `Close` returns. A binding's state
+  drains, `Close` also joins every handle marked closing, within the stop bound (D7); past
+  it, that handle and its journal are left open and reported in the error. Closing every
+  handle skips such a handle, since a failed `Bind` leaves the set before its handle's
+  `Close` returns. For the same reason a `Bind`, `Unbind` or `Drop` of a share whose tag has
+  a handle marked closing waits, outside the mutex, for that `Close` to return (RFC 8
+  §2.3). A binding's state
   (serving, quiesced, removing) is an atomic in the binding, so a state change swaps
   nothing; attach and removal copy the table, as RFC 8 §1.1's `decision:` says. Epic 3's
   T3.1 already declares the table, `atomic.Pointer[bindings]` in `engine.go` read through
@@ -815,8 +818,8 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   left for start; the last group commit per journal, then each journal's group commit
   goroutines (epic 4's T4.3) stopped and joined, so no batch runs on a journal step 4
   closes; cancel and join the version-limit raise and the retried open; wait for D1's set
-  of lifecycle calls in progress to drain, then for every handle marked closing to finish
-  its own `Close`; close every other handle, then every journal, in
+  of lifecycle calls in progress to drain, then join every handle marked closing, within
+  the stop bound; close every other handle, then every journal, in
   reverse, only after every join; a join past the stop bound (D7), the context's deadline
   or, with none, the default, leaving its components open, the journal and every handle on
   it, and reported in the error.
@@ -850,7 +853,9 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   whichever lands last; a `Bind` that took over a handle, failed, its handle's `Close`
   held by a hook, then `Close` called: `Journal.Close` does not start before the handle's
   `Close` returns, and the handle is closed once (catches a `Close` that joins only the
-  lifecycle set, R42), written with T6.8 or the subtask that builds the metadata
+  lifecycle set, R42), and the same with the hook never releasing the handle's `Close`:
+  `Close` returns its error within the stop bound with that handle and its journal still
+  open (catches an unbounded wait on a handle marked closing, R43), written with T6.8 or the subtask that builds the metadata
   reconcile, whichever lands last; `prof.Watch` finds no goroutine left.
 
 ### T6.9 `Unbind` and `Drop`
