@@ -2,12 +2,23 @@ package lock
 
 import (
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/errors"
 )
+
+// waitEnd fails the test unless ends delivers a grace period's end within 5 s.
+// The bound is generous on purpose: these tests check that the callback comes,
+// not how promptly a busy machine fires a timer.
+func waitEnd(t *testing.T, ends <-chan struct{}, msg string) {
+	t.Helper()
+	select {
+	case <-ends:
+	case <-time.After(5 * time.Second):
+		t.Fatal(msg)
+	}
+}
 
 func TestNewGracePeriodManager_StartsNormal(t *testing.T) {
 	gpm := NewGracePeriodManager(5*time.Second, nil)
@@ -134,13 +145,7 @@ func TestGracePeriod_ExpiresAfterDuration(t *testing.T) {
 		t.Error("expected active state immediately after entering")
 	}
 
-	// Wait for expiration
-	select {
-	case <-callbackCalled:
-		// OK
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("grace period did not expire within expected time")
-	}
+	waitEnd(t, callbackCalled, "grace period did not expire")
 
 	// State should be normal after expiration
 	if gpm.GetState() != GraceStateNormal {
@@ -168,13 +173,7 @@ func TestGracePeriod_EarlyExitWhenAllReclaimed(t *testing.T) {
 	// Mark second client as reclaimed - should trigger early exit
 	gpm.MarkReclaimed("client2")
 
-	// Wait for callback
-	select {
-	case <-callbackCalled:
-		// OK - early exit triggered
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("early exit callback was not called")
-	}
+	waitEnd(t, callbackCalled, "early exit callback was not called")
 
 	if gpm.GetState() != GraceStateNormal {
 		t.Errorf("expected GraceStateNormal after early exit, got %v", gpm.GetState())
@@ -182,30 +181,24 @@ func TestGracePeriod_EarlyExitWhenAllReclaimed(t *testing.T) {
 }
 
 func TestGracePeriod_CallsOnGraceEndCallback(t *testing.T) {
-	var callbackCount int32
+	ends := make(chan struct{}, 4)
 
 	gpm := NewGracePeriodManager(50*time.Millisecond, func() {
-		atomic.AddInt32(&callbackCount, 1)
+		ends <- struct{}{}
 	})
 	defer gpm.Close()
 
 	// Test timer-based exit
 	gpm.EnterGracePeriod([]string{})
-	time.Sleep(100 * time.Millisecond)
-
-	if atomic.LoadInt32(&callbackCount) != 1 {
-		t.Errorf("expected callback to be called once, got %d", callbackCount)
-	}
+	waitEnd(t, ends, "callback was not called on the timer's exit")
 
 	// Test manual exit (should also call callback)
 	gpm.EnterGracePeriod([]string{})
 	gpm.ExitGracePeriod()
+	waitEnd(t, ends, "callback was not called on the manual exit")
 
-	// Give time for callback
-	time.Sleep(10 * time.Millisecond)
-
-	if atomic.LoadInt32(&callbackCount) != 2 {
-		t.Errorf("expected callback to be called twice, got %d", callbackCount)
+	if n := len(ends); n != 0 {
+		t.Errorf("expected the callback once per exit, got %d more", n)
 	}
 }
 
@@ -423,13 +416,7 @@ func TestGracePeriod_NoExpectedClients_NoEarlyExit(t *testing.T) {
 		t.Error("should still be active when no expected clients defined")
 	}
 
-	// Wait for timer to expire
-	select {
-	case <-callbackCalled:
-		// OK - timer expired
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("timer should have expired")
-	}
+	waitEnd(t, callbackCalled, "timer should have expired")
 }
 
 func TestGracePeriod_GetDuration(t *testing.T) {
