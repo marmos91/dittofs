@@ -469,15 +469,13 @@ func terminal(err error) bool {
 // of the file's operations below the removal, a lost write's included,
 // committed by commitBelow, and the loss is logged; a commit that fails is
 // retried by the journal's loop, the guard held and the marker unsettled
-// until it commits. A file found gone is discarded at once. err nil, as a
-// clone's loop end passes, releases the guard and leaves the marker for the
-// next start's recovery.
+// until it commits. A file found gone is discarded at once.
 func (e *Engine) unstage(r *removal, err error) {
 	fe := e.files.lockFor(r.f)
 	fe.ops = slices.DeleteFunc(fe.ops, func(op pendingOp) bool { return op.version == r.v })
 	e.files.unlock(r.f, fe)
-	if err == nil || errors.Is(err, entity.ErrStale) {
-		e.release(r, err != nil)
+	if errors.Is(err, entity.ErrStale) {
+		e.release(r, true)
 		return
 	}
 	e.d.Logger.Error("removal ended unapplied, its journal marker settled", "file", r.f, "kind", r.kind.String(), "err", err)

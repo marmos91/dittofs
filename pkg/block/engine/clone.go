@@ -590,21 +590,27 @@ func (e *Engine) cloned(c *cloneRun) {
 }
 
 // cloneEnded ends a clone whose phase 1 will not commit: the destination
-// gone, err its store error, or its loop ended first, err nil, which leaves
-// the journal's marker for the next start (unstage). Its copies leave the
-// entry with its own operation: committed as writes, they would raise the
-// destination's applied above the clone, and the next start's rebuild of it
-// would then be skipped as applied. Both registrations go, and the call
-// answers why.
+// gone, err its store error, or its loop ended first, err nil. A destination
+// gone loses the clone's copies with its own operation: committed as writes,
+// they would raise the destination's applied above the clone, and the next
+// start's rebuild of it would then be skipped as applied. A loop's end, as
+// Close's stop of the work queue, leaves the destination as it is: its
+// operations, the clone's and its copies included, stay in the entry and its
+// guard stays held, so no group commit after it commits any, and the
+// journal's marker leaves the clone to the next start, as a removal's cut
+// short phase 1 is left (RFC 8 §2.5 step 2). Both registrations go, and the
+// call answers why.
 func (e *Engine) cloneEnded(c *cloneRun, r *removal, err error) {
 	if c.res != nil {
 		_ = c.res.Close()
 		c.res = nil
 	}
-	fe := e.files.lockFor(c.dst)
-	fe.ops = slices.DeleteFunc(fe.ops, func(op pendingOp) bool { return op.copy })
-	e.files.unlock(c.dst, fe)
-	e.unstage(r, err)
+	if err != nil {
+		fe := e.files.lockFor(c.dst)
+		fe.ops = slices.DeleteFunc(fe.ops, func(op pendingOp) bool { return op.copy })
+		e.files.unlock(c.dst, fe)
+		e.unstage(r, err)
+	}
 	e.unregister(c.dst, c.rd)
 	e.unregister(c.src, c.rs)
 	if err != nil {

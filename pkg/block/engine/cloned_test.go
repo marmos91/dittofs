@@ -568,27 +568,60 @@ func TestAClonesPhase1SyncsWhatItCommits(t *testing.T) {
 	}
 }
 
-// A clone whose retried phase 1 its loop's end cuts short leaves the
-// destination's entry without its copies or its own operation, so nothing
-// commits them above the clone before the next start rebuilds it, and its
-// guard is released; the call answers unavailable.
-func TestALoopEndingDropsARetriedClone(t *testing.T) {
-	x := &refusingClone{}
+// retriedClone starts a clone of the first MiB of src onto dst whose phase 1
+// the store refuses until x.left runs out, and returns once the loop retried
+// it, with the clone's version and the channel of its answer. dst's first
+// pending operation is a write below the clone, which makes it due.
+func (u *unit) retriedClone(t *testing.T, x *refusingClone, src, dst entity.FileID) (journal.Version, <-chan error) {
+	t.Helper()
 	x.left.Store(1 << 30)
-	u := clonedUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
-	src := u.committedFile(t, "src", fill(mib, 's'))
-	dst := u.create(t, "dst")
 	errc := make(chan error, 1)
 	go func() {
 		errc <- u.e.Clone(context.Background(), u.share.ID, src, u.share.ID, dst, vfserr.Extent{Len: mib})
 	}()
-	u.until(t, "the clone's first refusal", func() bool { return x.calls.Load() > 0 })
-	u.e.CloseGroupCommits()
+	u.until(t, "the loop retrying the clone's phase 1", func() bool { return x.calls.Load() >= 2 })
+	p := u.e.Pending(dst)
+	if len(p) < 2 || p[1].Off != 0 || p[1].Len != mib {
+		t.Fatalf("the destination's pending operations %+v, want the write below and the clone's", p)
+	}
+	return p[1].Version, errc
+}
+
+// A clone whose retried phase 1 Close's stop of the work queue cuts short
+// stays out of the last group commit: the destination's write outside the
+// extent, staged above the clone, is not committed, no Settle reaches the
+// clone's version, the entry keeps the clone's operation and its copies for
+// the next start's rebuild, and the call answers unavailable. Dropping the
+// clone's operation at the loop's end lets the last group commit commit the
+// write above it, and settle past it.
+func TestALoopEndingLeavesARetriedCloneForRecovery(t *testing.T) {
+	x := &refusingClone{}
+	c, h := hooked(unitConfig{deps: []func(*engine.Deps){func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x }}})
+	u := clonedUnitWith(t, c)
+	h.e = u.e
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	dst := u.create(t, "dst")
+	u.write(t, dst, 4*mib, fill(10, 'w'))
+	cv, errc := u.retriedClone(t, x, src, dst)
+	u.write(t, dst, 6*mib, fill(10, 'z'))
+	before := len(u.e.Pending(dst))
+	u.e.StopRemovalLoops()
 	if err := <-errc; !errors.Is(err, vfserr.ErrUnavailable) {
 		t.Errorf("a clone its loop's end cut short: %v, want ErrUnavailable", err)
 	}
-	if u.e.GuardHeld(dst) || len(u.e.Pending(dst)) != 0 {
-		t.Errorf("after the loop ended: guard %v, pending %+v; want neither", u.e.GuardHeld(dst), u.e.Pending(dst))
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	_ = u.e.CommitAll(ctx, u.rec) // the last group commit
+	cancel()
+	if applied, _ := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, dst); !applied.IsZero() {
+		t.Errorf("the last group commit committed the destination at %v", applied)
+	}
+	for _, s := range h.settleLog() {
+		if s.v.Compare(cv) >= 0 {
+			t.Errorf("settled at %v, at or above the cut-short clone's %v", s.v, cv)
+		}
+	}
+	if p := u.e.Pending(dst); len(p) != before || p[1].Version != cv {
+		t.Errorf("after the loop ended the entry holds %+v, want its %d operations, the clone's among them", p, before)
 	}
 }
 
