@@ -210,9 +210,9 @@ homebrew_casks:
     # on launch (exit 137). Casks quarantine downloads; strip it after install.
     hooks:
       post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/dfs"]
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}"]
           end
     directory: Casks
     repository:
@@ -236,9 +236,9 @@ homebrew_casks:
     # on launch (exit 137). Casks quarantine downloads; strip it after install.
     hooks:
       post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/dfsctl"]
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}"]
           end
     directory: Casks
     repository:
