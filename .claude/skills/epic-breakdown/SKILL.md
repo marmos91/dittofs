@@ -34,19 +34,31 @@ The vocabulary is the one under "Terminology: epic and subtask, nothing else" in
 `.claude/skills/rfc-to-epic-plan/SKILL.md`: read it there. The epic document adds `D` for its
 decisions, and its subtask headings (`### T4.3 …`) and estimate lines
 (`**Subtask T4.3 estimate: …**`) always carry the `T`, because the checks parse them.
-Progress is tracked by mapping pull requests to subtask ids, so they must stay stable:
+An epic split into parts (`7a`, `7b`) keeps the epic's subtask ids, `T7.<n>`, numbered once
+across the parts (under "Terminology" in the plan skill).
 
-- **Keep the plan's ids.** Where the plan's candidate list numbers a subtask, keep its id
-  for the same work. New subtasks get the next free numbers, after the plan's.
-- **Split with a letter suffix, never by renumbering.** A subtask split after its id may
-  have been cited becomes `T4.3a`, `T4.3b`; work mapped to `T4.3` then covers both parts.
-- **Never reuse or drop an id that a pull request has cited.** Search both forms first, with
-  the repository named as Step 6.1 says (`R=$(gh repo view --json nameWithOwner -q
-  .nameWithOwner)`; without `-R` the search can return nothing, with no error):
-  `gh pr list -R "$R" --state all --search '"T<epic>.<n>" in:title,body'` and
-  `'"<epic>.<n>" in:title,body'`, since pull requests cite ids in their descriptions too,
-  and discard the hits that only cite an RFC's §<epic>.<n>. If the work moved, say where
-  in §9.
+Two things decide the numbers: the order of work, and whether an id has been cited.
+
+- **Number in order of work.** The ids read as a path, `T4.1 → T4.2 → T4.3 → …`, in the
+  order of §6: each subtask depends only on subtasks above it, and as far as the
+  dependencies allow on the one just above. What blocks the most goes first: the foundation
+  several later subtasks build on, the subtask another epic waits for, and, between two
+  independent subtasks, the riskier one. The plan's candidate list is already in that
+  order; take its ids where the work is the same, and where the breakdown adds, drops or
+  reorders subtasks, renumber so the path still reads in order.
+- **A cited id is fixed.** Progress is tracked by mapping pull requests to subtask ids, so
+  once a pull request or an issue cites an id it keeps its number for the same work, even
+  where that leaves the numbers out of order; §6 and §7 still list it at its place in the
+  order of work. Search both forms first, with the repository named as Step 6.1 says
+  (`R=$(gh repo view --json nameWithOwner -q .nameWithOwner)`; without `-R` the search can
+  return nothing, with no error): `gh pr list -R "$R" --state all --search '"T<epic>.<n>"
+  in:title,body'` and `'"<epic>.<n>" in:title,body'`, since pull requests cite ids in their
+  descriptions too, and discard the hits that only cite an RFC's §<epic>.<n>; then the
+  epic's sub-issues (Step 6.4). For a split epic, `<epic>` is the number without its letter.
+- **Split with a letter suffix, never by renumbering.** A subtask split after its id was
+  cited becomes `T4.3a`, `T4.3b`; work mapped to `T4.3` then covers both parts.
+- **Never reuse or drop a cited id.** A subtask added once ids are cited takes the next free
+  number and its place in the order of work. If cited work moved, say where in §9.
 
 ## When to use
 
@@ -73,8 +85,10 @@ inputs rather than guess.
 
 ## Step 1 — Read
 
-- The plan: the epic's row in §2, its section in §5, its blockers and synchronisation points
-  in §3, the general rules in §1.5, and every §7 coverage row that names the epic. That
+- The plan: the epic's row in §2, its section in §5 (its **Owns:** and **Done when:**
+  lines), its blockers and synchronisation points in §3, the general rules in §1.5, the
+  §4.2 decisions and §4.3 simplifications that name the epic (they become entries of the
+  epic document's §4), and every §7 coverage row that names the epic. That
   gives the **owned sections**: the RFC sections, and the related-RFC sections, the epic is
   answerable for.
 - **A plan written before these conventions** may lack some of that. Fall back, and say in
@@ -196,9 +210,19 @@ state. Signs that a subtask should be split: its acceptance criteria take many b
 touches two independent subsystems, or its title needs an "and" between two unrelated
 things.
 
-**Order.** Dependencies first, high-risk subtasks early so they fail fast, and checkpoints
-(§7 below) wherever something larger than one subtask can be shown to work. Checkpoints are
-the natural places to cut a pull request.
+**Order.** Settle the order before the numbers, and number from it ("Number in order of
+work" above). Draw the dependencies, then order them so that:
+
+1. no subtask depends on one below it in §6 (the check enforces this);
+2. what blocks the most comes first: a subtask several others build on, or one another epic
+   waits for, moves as early as its own dependencies allow;
+3. the list reads as one path where it can, each subtask building on the one just above;
+   where two branches run in parallel, finish one branch before starting the other rather
+   than alternating;
+4. between independent subtasks, the high-risk one goes first, so it fails fast.
+
+Mark checkpoints (§7 below) wherever something larger than one subtask can be shown to
+work. Checkpoints are the natural places to cut a pull request.
 
 ## Step 4 — Estimate each subtask in man-days
 
@@ -231,10 +255,12 @@ a malformed line (`2,5`, `~2`, `0.3`, an indented or bulleted line, a missing wo
 reported rather than summed; a `### T<k>.<n>` subtask heading in §6 without exactly one
 estimate line, an estimate line without a heading or under another subtask's heading, a
 subtask id of another epic, a duplicate heading and a second epic line are reported, so a
-deleted or misplaced line cannot go unnoticed; and a header line that no longer matches
-the sum is reported.
+deleted or misplaced line cannot go unnoticed; a header line that no longer matches
+the sum is reported; and so is a subtask whose `**Depends on:**` names a subtask of this
+document listed after it in §6. The epic may carry a letter (`Epic 7a`); its subtask ids
+are then the epic number's (`T7.<n>`).
 
-`grep -E '^\*\*(Epic [0-9]+|Subtask T[0-9]+\.[0-9]+[a-z]?) estimate:' <epic-doc>` lists the whole estimate.
+`grep -E '^\*\*(Epic [0-9]+[a-z]?|Subtask T[0-9]+\.[0-9]+[a-z]?) estimate:' <epic-doc>` lists the whole estimate.
 
 **Updating the plan is not required.** Its estimate line for this epic was the figure when
 the plan was written, and the epic document's line supersedes it for this epic. The plan
@@ -575,6 +601,9 @@ Before handing over, check:
   `Source`, or rewrite the row in the RFC's words. This holds for rows this run did not
   write, too, when revising an existing document.
 - No subtask is over 5 man-days without a reason, and none was cut to reach a count.
+- §6 lists the subtasks in order of work, blockers first, and their numbers ascend in that
+  order except for ids already cited, which keep theirs; the order-of-work graph in §7
+  matches §6's `**Depends on:**` lines.
 - `epic-check.awk` prints only its `TOTAL` line, and the header's `**Epic <k> estimate: …**`
   line says the same; the plan is touched only if the user asked for it.
 - §8's suggested pull requests cover every subtask once, their man-days add up to the
