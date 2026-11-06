@@ -860,8 +860,15 @@ have read r1, content the share had already replaced before the cut.
   for *k* once its journal holds no version at or below *k*'s mark that is not
   offloaded. When no hold record of *k* remains, one transaction marks the snapshot
   `complete`. A primary that finds a hold record for its shard but no hold for *k*
-  in its journal — every copy was lost — **MUST** mark the snapshot `failed`. A
-  snapshot is never `complete` with bytes missing.
+  in its journal — every copy was lost — **MUST** mark the snapshot `failed`. So
+  **MUST** the acknowledgement of a journal range that never reads, for a hold
+  record in it, and for every snapshot with a live hold on that journal when
+  the range is one nothing names, or for a file whose dropped extent lies at or
+  below a live hold mark, since the other files' holds for the cut can still drain
+  ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)). No hold record of a journal is deleted while an acknowledgement
+  runs on it with any range not yet marked done, which follows the engine's marking of
+  its snapshots: otherwise an offload during its repack could complete a cut
+  whose last version step 1 just dropped. A snapshot is never `complete` with bytes missing.
 - **Holds are bounded, counting what the cut itself will hold.** The new hold can
   keep every dirty byte at the cut, so each bound counts held bytes plus dirty
   bytes not yet offloaded. A cut **MUST** be refused with `ErrHoldBacklog` when

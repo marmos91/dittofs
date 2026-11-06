@@ -317,7 +317,7 @@ type File struct {
 	// change counter every adapter reports is its counter half.
 	Version JournalVersion
 
-	// Size, Charged, Applied, Modify and the Change a write sets are owned by
+	// Size, Charged, Applied, RemovedThrough, RemovedFrom, Modify and the Change a write sets are owned by
 	// the write path: only an existence commit sets them (§2.5, RFC 6 §3),
 	// except Charged, which the transaction that finishes a removal also
 	// sets (RFC 6 §2.4).
@@ -337,6 +337,15 @@ type File struct {
 	// Applied is the newest journal version whose existence change this File
 	// records (RFC 6 §2.4); it only moves forward.
 	Applied JournalVersion
+
+	// RemovedThrough is the version of the newest truncate-down, deallocate or
+	// clone into this file, and RemovedFrom the lowest offset any of them removed
+	// from: a truncate's new size, or a deallocate's or clone destination's start.
+	// RemovedThrough zero means no such removal, and RemovedFrom then means nothing. Set by the removal's
+	// phase 1 (RFC 6 §6.2) and read only by the acknowledgement of a journal
+	// range that never reads (RFC 28 §3.3).
+	RemovedThrough JournalVersion
+	RemovedFrom    int64
 
 	// MaxSpan is the length of the longest hole this file has ever had
 	// (RFC 6 §2.4), raised by the transaction that writes a longer one — a
@@ -526,7 +535,7 @@ path does not.
 | `Owner`, `Group` at create | the create: the caller's principal, and the credential's group, the principal's primary group or, with neither, the caller's own principal; under a setgid parent, the parent's group | the create |
 | `Mode`, `Owner`, `Group`, `Flags` | chmod, chown, set-flags, ACL change; setuid and setgid also cleared by an unprivileged caller's write ([§9.6](#9.6%20setuid%20and%20setgid%20are%20cleared%20when%20an%20unprivileged%20caller%20changes%20the%20file)) | its own operation |
 | `Access` | read, and only if the policy records it ([§9.2](#9.2%20Timestamps)) | its own operation |
-| `Size`, `Charged`, `Applied`, `Modify`, and `Change` and `Version` on write, and an explicit set of size or `Modify` | a client write, truncate, deallocate, clone or copy into the file, a set-attribute | **existence** ([§2.5](#2.5%20Where%20%60size%60%20lives)) |
+| `Size`, `Charged`, `Applied`, `RemovedThrough`, `RemovedFrom`, `Modify`, and `Change` and `Version` on write, and an explicit set of size or `Modify` | a client write, truncate, deallocate, clone or copy into the file, a set-attribute | **existence** ([§2.5](#2.5%20Where%20%60size%60%20lives)) |
 | `Change`, `Version` on attribute change | chmod, chown, set-flags, ACL and xattr change, link, unlink, rename: each draws a `Version` and stores it in the File in its own transaction ([§9.4](#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)) | its own operation |
 | `Nlink` | link, unlink, rename over an existing entry | the entry change that caused it ([§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries)) |
 | a directory's `Modify`, `Change`, `Version` | create, unlink, rename in it | the entry change, as a delta ([§9.2](#9.2%20Timestamps)) |
@@ -2336,7 +2345,7 @@ order; the IDs are kept as issued, because other RFCs and tests cite them.
 | N9 | A release verifies inside its transaction that `Nlink` is zero, its pending release exists and no durable open names the file or a stream of it, range-guarding their durable open records; an open of a file that has lost its last entry (for a stream, whose base has) guards that File record; a file's streams are released with it, each as a file. |
 | N10 | Every wait in this component ends without operator action. |
 | N11 | A listing is ordered by a 63-bit keyed digest of each entry's key; its cookie is that digest, at least 3 with the top bit clear, and resolves with no stored state; no page ends inside a collision chain. |
-| N12 | `Size`, `Charged`, `Applied`, a file's `Modify` and its write `Change` are fields of the File, stored once, written only by an existence commit, which also advances `Version`, and, for `Charged` alone, by the transaction that finishes a removal ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes)); a directory's `Modify`, `Change` and `Version` advance instead by entry deltas folded into its record ([§9.2](#9.2%20Timestamps)); `GetAttr` is `Files.Get` with the engine's overlay applied by the filesystem service. This component calls no other component. |
+| N12 | `Size`, `Charged`, `Applied`, `RemovedThrough`, `RemovedFrom`, a file's `Modify` and its write `Change` are fields of the File, stored once, written only by an existence commit, which also advances `Version`, and, for `Charged` alone, by the transaction that finishes a removal ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes)); a directory's `Modify`, `Change` and `Version` advance instead by entry deltas folded into its record ([§9.2](#9.2%20Timestamps)); `GetAttr` is `Files.Get` with the engine's overlay applied by the filesystem service. This component calls no other component. |
 | N13 | An entry is its own record, and no operation's cost grows with the size of its directory beyond the results it returns. |
 | N14 | Residency is not an attribute. |
 | N15 | `Mode` and the ACL agree after every transaction; `chmod` merges into the ACL as RFC 19 §4.3 specifies and never replaces it. |

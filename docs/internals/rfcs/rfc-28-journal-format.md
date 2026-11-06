@@ -579,7 +579,7 @@ gives as 0 is written as zero.
 | 7 | `clone target` | the destination | `DstOff`, `Len` | its version | 56 bytes: source `ShareID`, source `FileID`, source offset, `AsOf` (16 bytes, epoch then counter) |
 | 8 | `offloaded` | the file | one extent marked; one record per extent | the newest version marked | none |
 | 9 | `unmark` | the file | one extent unmarked; one record per extent | the version of the content unmarked | none |
-| 10 | `loss` | the dropped record's | the extent dropped | the version dropped | 16 bytes: dropped sequence number, then a flag word — bit 0 synced, bit 1 its offloaded bit was set, bits 8–15 the reason: 1 corrupt, 2 stale, 3 failed sync window; the rest zero |
+| 10 | `loss` | the dropped record's | the extent dropped | the version dropped | 16 bytes: dropped sequence number, then a flag word — bit 0 synced, bit 1 its offloaded bit was set, bits 8–15 the reason: 1 corrupt, 2 stale, 3 failed sync window, 5 acknowledged unreadable ([§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)); the rest zero |
 | 11 | `hold` | the file | 0, 0 | the hold mark | 8 bytes: the cut number ([RFC 6](rfc-6-block-metadata.md)'s `SnapshotCut`) |
 | 12 | `unhold` | zero | 0, 0 | zero | 8 bytes: the cut number |
 | 13 | `stamp` | the file | 0, 0 | `through` | 8 bytes: the cut number |
@@ -848,14 +848,16 @@ journal produces whose header slot is zeros — a spare no stream took — or wh
 header does not verify, or verifies and names this journal's identity, with the
 segment id of its file name or another — a recycle a crash interrupted after the
 rename (§2.2) — and in which no record header verifies anywhere, no seal marker
-verifies and no successor names it — a take whose first records a crash lost — holds nothing that was ever durable: a take is made
+verifies, no successor names it and no read failed — a take whose first records a crash lost — holds nothing that was ever durable: a take is made
 durable only with the records after it. A segment whose header verifies and
 names another journal is never one, whatever its records: it is foreign (above),
 and is left alone. The identity is checked first because no record of another
 journal verifies here, its checksums being seeded with that journal's identity,
 so the test for a record-less segment alone would take a foreign segment for a
 spare and zero its slots, destroying what may be the only copy of another
-journal's content. A spare reaches its `.seg` name only once whole (§2.2), but recovery still
+journal's content. A read that fails with an I/O error is never evidence of
+zeros: a segment the device cannot read fails the test, so one full of data on
+a briefly unreadable device is never zeroed ([§3.3](#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify)). A spare reaches its `.seg` name only once whole (§2.2), but recovery still
 checks its size against the cap and, where the platform reports it, that no
 extent is left unallocated or unwritten; one that fails is unlinked and made
 again rather than adopted. A re-adopted spare whose header slot or trailer slot
@@ -939,8 +941,9 @@ record that does not — or every record of the tail, when the sync fails, which
 a failed sync window ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)) — **MUST** be re-appended, keeping its numbers
 ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)), from a copy that verified at the first read, to a spare that is
 then synced; one that verified at neither read is dropped by
-[§3.3](#3.3%20Torn%20and%20corrupt%20records). Once its tail is proven, the segment is sealed after its last verifying
-record, unless its sync failed ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)) or recovery ends it instead (a torn header above, a torn slot in [§3.3](#3.3%20Torn%20and%20corrupt%20records)). The re-appends draw on the repack reserve ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), never on a share's
+[§3.3](#3.3%20Torn%20and%20corrupt%20records), and one whose first read fails with an I/O error is held by its rule for a
+read that fails ([§3.3](#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify)). Once its tail is proven, the segment is sealed after its last verifying
+record, unless its sync failed ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)), recovery ends it instead (a torn header above, a torn slot in [§3.3](#3.3%20Torn%20and%20corrupt%20records)), or it holds an unread record. The re-appends draw on the repack reserve ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), never on a share's
 limit, so a journal opened at its maximum after the process was killed still
 opens. The cost is one sync and one read of the writes past the last proven
 sync point per stream — at most one sync bound's worth, besides the segments recovery
@@ -1159,20 +1162,389 @@ otherwise it is torn and not reported. Only when no copy verifies is the
 record lost. Otherwise a stale original left on a failed segment, rotting before
 that segment is unlinked, would append a loss naming the sequence number and so
 mask the good copy. A
-segment holding one or more unreadable records **MUST** be reported and
+segment holding one or more records that do not verify **MUST** be reported and
 **MUST NOT** be selected by a reclamation pass while it still backs held extents
-it cannot produce. Once the unreadable records' extents have been dropped as
+it cannot produce. Once those records' extents have been dropped as
 above, the segment holds only extents it can produce, and repack **MAY** proceed
 normally — carrying forward what is still live, and the loss record of each
 dropped record whose loss is deferred ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), and unlinking the rest once
 that copy is synced.
 
+#### A read that fails is not a record that does not verify
+
+A read of a segment that fails with an I/O error returns no bytes to check, so
+it is not evidence of damage: the error may pass, and a loss record does not.
+A read that fails is started again only while fewer than 3 attempts have been
+made, less than 15 s has passed since the first started, and the request's
+deadline has not passed. A request whose deadline passes during an attempt is
+answered with the error at the deadline ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)); the attempt runs on,
+and what it returns is checked as any read's. A record whose bytes no attempt read is
+**unread**, and each later access to it makes one attempt, never three.
+Wherever this RFC or [RFC 1](rfc-1-journal.md) drops a record that does not verify — at `ReadAt`,
+`Offered`, repack, or the check of an unproven tail at open ([§3.1](#3.1%20Rebuilding)) — an unread
+record is not dropped, except as the two rules below say: the journal
+**MUST NOT** drop its extents, append a loss record for it or report it as
+corruption. It keeps them held, and the segment holding it is **suspect**,
+reported and counted ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), until a read of the record returns bytes,
+which are then checked as any record's are. Every access to the record — a
+read, an offload, a repack — tries that read again, so the state ends once the
+device reads again.
+
+> decision: an I/O error suspends, a bad checksum discards. A failed read
+> returned no bytes, and the device may return them later or after a repair; a
+> record that does not verify returned wrong bytes, and no retry fixes them. A
+> discard is silent only at the tail, where a record that does not verify cannot
+> be told from a torn write; an I/O error always can, since a torn write reads
+> back as bad bytes, so it is never discarded silently. Revisit if a device is
+> seen returning an I/O error for a torn write.
+
+> decision: no timer retries an unread record; offload and repack revisit every
+> dirty one, and a record nothing touches stays suspect until it is next read.
+> A read blocked in the kernel cannot be cancelled, and the kernel has retried
+> before returning the error, so the 15 s bounds starting an attempt, not the
+> total: with attempts of similar length the total stays under about 30 s, and
+> the request is answered at its deadline whatever the attempt does. Overturned by suspect segments seen
+> outliving their fault because nothing read them.
+
+Two sites resolve an unread record rather than hold it, because each has
+another answer than waiting:
+
+- **A failed sync window.** Where [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync) resolves a window from a read of the
+  failed segment, an unread record fails its part of the window, as one that
+  does not verify against the kept checksum. Its write was never answered as
+  stable, and failing it raises the loss generation, so the client resends;
+  holding it would leave the window unresolved and the segment never a repack
+  candidate. A header-only record is re-appended from memory and is unaffected.
+- **The unproven tail at open** ([§3.1](#3.1%20Rebuilding)). When the tail's sync fails, the
+  whole tail is a failed window, but a record whose first read failed is still
+  held as unread, as below, and leaves no part of the window pending: the sync
+  that failed is the open's own, and the record lies only past the last sync
+  proven on disk, so an earlier sync may have covered it and its write been
+  answered as stable. Otherwise, a record that verified at the first
+  read and whose direct re-read fails is re-appended from the first copy, as one
+  whose re-read did not verify: there is a copy to fall back on, and holding it
+  would let a later read, served from the page cache, clear a record that only
+  ever reached the cache. Only a record whose first read failed is held as
+  unread. It is then read only bypassing the page cache, and a read that
+  returns bytes that do not verify makes it torn — never written, no loss
+  record — not corruption, since nothing proves it synced. A read that returns
+  bytes that verify re-appends the record from them, as a record of the tail
+  that verified is re-appended, and its file serves only once that copy is
+  synced: nothing else proves it on the device, and a sync of its own segment,
+  where the tail's sync failed, cannot ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)). While it is unread
+  its segment is not sealed (the seal marker would be written after a record
+  not proven on the device) and takes no further append; the stream continues
+  in a new segment. The record is held as any unread record is, not as a
+  failed window; lying above its file's `applied`, it makes the file unread
+  (below) until it reads.
+
+While a record is unread:
+
+- `ReadAt` of its extent **MUST** fail with `ErrUnreadable` ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), never report the
+  extent `missing` or serve an older record it supersedes — except where the
+  unread record is itself the content whose offloaded bit is set: metadata's
+  ref is then that content, so `ReadAt` reports the extent `missing`, with no
+  drop and no loss record, and the read resolves as **Remote** for as long as
+  the device fails;
+- it counts as a copy that verifies, so no loss record is appended for its
+  sequence number while another copy of it does not verify (above);
+- an offer leaves its extent out of every stretch: the stretch before it ends
+  there, as an artificial end ([RFC 8 §6.7](rfc-8-engine.md#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)), the one after starts past it, and
+  no widening takes it as a neighbour. The offer tries the record apart from
+  the stretches, so a failed read leaves that extent **Dirty** and fails no
+  other part of the pass;
+- it is a record that verifies for the torn-tail rule, so no truncation cuts
+  it off, and repack does not carry it forward or select its segment while it
+  is live (above); no pass that empties or unlinks a segment, at open or
+  after, removes the segment holding it while it is live, and the segment
+  stays suspect until it reads or is dead;
+- the scan at open does not fail on it: where the record's header or a catalog
+  that verifies names its extents, they are held as unread, and the scan
+  resumes past it as it does past a bad record. A header-only record backs no
+  extent, so one its header or a catalog names makes its **file** unread instead: every read
+  of the file fails with `ErrUnreadable` until the record reads, since applying the
+  file without it could serve what its loss, removal or clone changed. An
+  unread forget record makes every file of its tag unread. A content record
+  above its file's `applied` whose payload is unread makes its file unread the
+  same way: `Since` cannot yield its modification time, which its payload
+  carries. `Since` of an unread file yields `ErrUnreadable` ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)),
+  and the engine's re-apply at start ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 3) skips the
+  file and runs for it again once the record reads, by whatever access, or is
+  acknowledged, before the file serves a read; the start does not fail on it. An unread file
+  takes writes, but its `applied` never passes the unread record: `Sync`
+  naming the file fails with `ErrUnreadable`, and no existence commit or offload of
+  the file is made, until the record reads or is acknowledged — every read of
+  the file, every `Sync` naming it and every offload pass that visits it
+  tries the record again, so a file nothing reads is still retried; then its
+  operations apply in version order ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)).
+
+> decision: an unread file takes writes but serves no read, and its `applied`
+> never passes the unread record. Applied out of order, the record would be
+> skipped by `Since(id, applied)` once it reads, or, applied anyway, would undo
+> a write acknowledged after it. Overturned by a record kind whose effect
+> commutes with every later write, which none of the header-only kinds does.
+
+> decision: a dead unread content record — one that backs no held or
+> retained extent, superseded by a later record — does not pin its segment or keep it suspect:
+> dropping it loses nothing, so repack may unlink the segment without reading
+> it. An unread header-only record is never dead: whether it is live cannot be
+> told without reading it, and dropping a truncate or forget would bring back
+> what it removed. Revisit if snapshot retention ever lets a superseded record be reached
+> without being retained.
+
+**An unread range that nothing names is never truncated or cut off as torn**,
+at the tail of the newest segment or anywhere else, and never makes its segment
+a spare ([§3.1](#3.1%20Rebuilding)): unreadable never counts as empty. The open **MUST** fail
+instead, naming the segment and the range, since serving the rest could serve
+content an unread record superseded; the engine refuses that journal's shares
+and retries the open until the range reads or an operator acknowledges it
+(below, [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). A range a catalog names holds only its files, as above,
+and the journal opens.
+
+#### An operator acknowledges a range that never reads
+
+A range that never reads again leaves only by an operator's acknowledgement,
+one of [RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)'s exceptions. The operator names the journal, by its node
+and device, and every range to acknowledge on it, each a segment and a byte
+range, in one acknowledgement ([RFC 23 §3.3](rfc-23-control-plane.md#3.3%20Stores%20and%20namespaces)); until then the range is reported by the
+`journal_range_unreadable` health condition ([RFC 25](rfc-25-observability.md)), naming the segment
+and the range. The acknowledgement is `Acknowledge` on an open journal and
+`AcknowledgeUnreadable` on one whose open the range fails ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), and
+the two do the same:
+
+1. **Each unread record in the range becomes a loss.** Its extents are
+   dropped and a loss record of reason *acknowledged* ([§2.3](#2.3%20Records)) is appended
+   for it, as for a record that does not verify (above), except that it always
+   carries the synced flag, in the unproven tail at open too: an I/O error is never a torn write (above),
+   and the record may have been answered as stable, so it reads **Lost**, never
+   as the write it replaced. The files report the loss by [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)'s
+   **Local content corrupt** path, and the loss generation rises. An unread
+   header-only record has no extent of its own and never becomes a loss itself
+   ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)). What it does depends on its kind. An unread `stamp` drops
+   nothing: a lost stamp is rebuilt from metadata ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)). An unread
+   `hold` drops nothing either, but its file's content at the cut may no longer
+   be retained. Its cut number is in its unread payload, so the engine marks
+   `failed` every snapshot of the file's share with a live hold on this journal
+   ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)), from the files the acknowledgement's `AckResult` lists
+   ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). For example, a hold of file X for cut 1
+   lost while the other files' holds for cut 1 read would otherwise let cut 1
+   reach `complete` with X read at a version the cut never held. An unread
+   `unhold` drops nothing: the holds it released stay, the safe direction, until
+   [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)'s release of a hold whose cut has neither a `LiveCut` nor a
+   `cutting` record, at start and by its periodic check. An unread
+   `offloaded` record drops nothing: its bits are lost in the safe direction, and
+   the extents are offered again. An unread `unmark` clears the offloaded bit of
+   every extent of its file, the safe direction, which the reseed sets again
+   where a ref justifies it. For a removal, release, loss or clone target, every
+   extent the journal holds for its file (for a forget record, every file of
+   its tag) from a record with a lower content version is dropped the same way — versions, not sequence numbers, because a
+   repack copy of content takes a new sequence number and keeps its version
+   ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)); a forget record carries no version, so for it every extent of
+   its tag goes — each with its own loss record, and the file
+   resolves from metadata and reads again. Writes with a higher version stay
+   held. A file whose dropped extent lies at or below a live hold mark is
+   listed in `AckResult.HoldFiles` too, so the engine fails that snapshot as
+   for an unread `hold`. In `AcknowledgeUnreadable`, and in an `Acknowledge` a resume runs
+   before the shares attach (below), these loss records are
+   appended before the journal serves, so they draw on the open reserve after
+   the records of [RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write), alongside the open's corrupt drops, and past it
+   are deferred as those are ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)): the unread record stays on disk until
+   step 3 retires its segment, whose copy carries the deferred loss record, and
+   a crash before then finds the operation running and turns it into a loss
+   again. A deferred loss of a lower-version extent in another segment is owed
+   by that segment's retirement instead, and nothing on disk names it once the
+   unread record's segment is gone, so step 3 retires that segment first.
+2. **An unnamed part of the range is refused, and metadata finds what it
+   superseded.** The scan refuses the range and resynchronises past it, as past
+   a bad record, and the open proceeds; the segment's readable records stay
+   held. A range nothing names fails the open, so this step runs only in
+   `AcknowledgeUnreadable`; on an open journal every unread range is named.
+   What the range held is unknown, and no sequence number or version on disk
+   bounds it — a re-append keeps both its numbers, a carried header-only
+   record keeps both, and a carried content copy keeps its version under a new
+   sequence number — so any held record, in its segment or another, may be content the
+   range superseded — a write under a lost write, content a lost
+   truncate, deallocate, clone, delete or forget removed — and the engine
+   finds those from metadata ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)), after the journal opens and
+   before its re-apply at start ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 3), so before
+   any share serves. For each file the journal holds:
+
+   - a file metadata does not know, or knows as removed, or of a tag forgotten
+     or being removed, loses every held extent;
+   - an extent above the file's `applied` — a write whose existence metadata
+     has not committed — is dropped: metadata cannot tell whether a lost write
+     superseded it, and a lost write over it may have been answered as stable,
+     since a stability point waits only for the existence commit of an
+     overwrite of committed content;
+   - an extent at or below `applied` whose offloaded bit is set is dropped; a
+     ref's versions span a whole block, not an offset, so they cannot tell
+     whether it was superseded, and the read fetches the current content;
+   - each part of a dirty extent at or below `applied` is dropped unless
+     metadata classes its offsets uncarved with no overwrite record above its
+     version. Where it classes them otherwise — a hole,
+     past the size, carved, a newer overwrite record, or a removal not done
+     whose version is above it — a committed change superseded that part. A
+     clone's removal covers its destination from phase 1, and once done the
+     clone's `RemovedThrough` does (below). In
+     normal operation committed dirty content is always classed uncarved with
+     no newer overwrite record, and is kept.
+   - where the file's `RemovedThrough` is set, the part of a dirty extent
+     whose version is below it that lies at or past `RemovedFrom` is dropped,
+     the part below kept ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)): a
+     removal whose phase 2 is done leaves no hole or overwrite record where a
+     later write past the size or into the hole landed, so without it a lost
+     truncate and a lost rewrite would let the older content read again. For
+     example, a dirty extent at 5 MiB, a truncate to 3 MiB whose phase 2 is
+     done, and a rewrite at 5 MiB, the truncate and the rewrite both in the
+     range: the extent is below `RemovedThrough` and past `RemovedFrom`, so it
+     reads **Lost**, never as the content the truncate removed.
+
+   > decision: the `RemovedThrough` test over-drops: every dirty extent older
+   > than the file's newest removal and past the lowest offset any removal of
+   > the file started at is dropped and reads **Lost**, including content past
+   > a deallocated range's end that no removal touched — after a truncate to
+   > 0, all of it, for the file's life. Only an acknowledgement
+   > of an unnamed range pays it, and every extra drop is a reported loss, never
+   > a wrong read. Overturned by a per-file record of each removal's range kept
+   > until the journal holds nothing older under it.
+
+   > decision: a segment the drop must repack that holds an unread record
+   > outside the acknowledgement makes the files it would drop from unread,
+   > rather than repacking around the record or refusing the request: the
+   > record pins the segment, so the reserve cannot come back from it, and the
+   > operator should not have to declare a range lost that may still read. The
+   > operation stays running until that record reads, is acknowledged or dies
+   > and the drop it held up is done.
+   > Overturned by repack learning to carry a segment forward around an unread
+   > record.
+
+   A partial drop copies the part kept and makes the copy durable before the
+   loss record, one source segment at a time as a repack of it, so each
+   segment gives back the repack reserve its copies spent, as `DropSuperseded`
+   states. A segment the drop must repack that also holds an unread record
+   outside the acknowledgement is not repacked: the files whose extents it
+   would drop are made unread, and the operation records those extents as
+   pending, with their bound (below), names the segment and stays running. It calls `DropSuperseded`
+   again for them once that record reads, is acknowledged or dies — when the
+   segment is no longer suspect ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)) — and at every start
+   that finds it running; each file serves again only after that drop, never
+   when the pinning record alone reads, so it serves nothing stale. Otherwise
+   the drop finishes at the journal's maximum, and an interrupted
+   operation resumes with the extents still pending. Each is dropped with `DropSuperseded` ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)), bounded by the highest content
+   version among the file's extents step 2 chose, so a write the file took
+   after that, while it was unread, is kept, with a loss record of reason
+   *acknowledged* ([§2.3](#2.3%20Records)), which raises the loss generation for dirty content
+   as a corrupt loss does. Re-apply then commits a dropped write's existence
+   from its loss record, so it reads **Lost**, never as what it replaced;
+   offloaded content resolves as **Remote**. No loss record can name what the
+   range itself held, so the engine also raises the loss sequence of every
+   file of the journal's shares, as for a device lost whole
+   ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). It may also have held a `hold`, so `AckResult.Unnamed` is set
+   and the engine marks `failed` every snapshot with a live hold on this
+   journal.
+3. **The segment is retired.** Once the loss records are synced, no unread
+   record remains in the segment, so it is no longer suspect: repack carries its
+   readable live records forward and unlinks it ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)). A segment
+   holding an extent step 1 dropped with a deferred loss is copied first, its
+   copy carrying the loss record, and the unread record's segment is unlinked
+   only once every such copy is synced, so a crash before then finds the unread
+   record and drops the extent again. The rule waits on a copy, never on a
+   retirement, so two acknowledged records that drop into each other's segments
+   are both copied and both unlinked. A segment that cannot be copied, because
+   it holds an unread record outside the acknowledgement,
+   keeps the unread record's segment, and the operation running, until that
+   record reads, is acknowledged or dies.
+   `Acknowledge` and `AcknowledgeUnreadable` each run that repack before they
+   return, so a plain open afterwards finds nothing unread; an unread
+   header-only record leaves no loss record, so until its segment is unlinked a
+   restart would find it unread again, and the operation stays running until
+   the unlink; the space comes back, and a journal full of
+   suspect segments drains.
+
+The acknowledgement is an operation ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations)), resumed after a crash.
+Before step 1 it records its ranges and, for each, whether any part is one
+nothing names. Each range has its own mark: once steps 1 and 2 have run for it
+and the engine has marked `failed` the snapshots the `AckResult` names, the
+range is recorded **done**, with the extents step 2 left pending and their
+bound, by file. A
+range added to a running operation ([RFC 23 §3.3](rfc-23-control-plane.md#3.3%20Stores%20and%20namespaces)) takes its own mark, set once its own
+steps are done, and never clears another range's. **It stays running until** the journal's shares are attached
+with their loss sequences raised, no extent is left pending, and every segment
+holding a range it names is unlinked; every other statement of when it ends
+points here. A start that finds it running raises the loss sequences, as past
+an acknowledged device loss, and re-runs steps 1 and 3 for its ranges, with
+`AcknowledgeUnreadable` where a range still fails the open and `Acknowledge`
+where it opens. Either runs before the shares attach, so its loss records are
+the open's own: they draw on the open reserve and are deferred past it as the
+first run's were ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), and a reserve that run drew cannot hold the resume
+short of step 3. What
+else it does depends on each range's mark:
+
+- **Not done.** It marks `failed` every snapshot with a live hold on the
+  journal, as for a range nothing names, since an `AckResult` returned before
+  the stop is not kept. For a part nothing names, it also runs step 2's check of
+  every held extent before re-apply, whether or not its open fails, since once
+  the segment is unlinked nothing on disk says what the range held. No share of
+  the journal has served since that range was found: a range nothing names
+  fails the open, and the retried open attaches the shares only after its mark.
+  A named range not done runs no check: its own records are found again by
+  step 1, and a write made since cannot be one it superseded.
+- **Done.** It runs no check and fails no snapshot. Step 2 judged every extent
+  held before the shares served, and every write since is newer than anything
+  the range held. It calls `DropSuperseded` for the recorded pending extents
+  before re-apply, which makes their files unread again while a live unread
+  record still pins their segment.
+
+Over-failing a snapshot is the safe direction, as over-raising a loss sequence
+is, and both are bounded to a stop inside the acknowledgement's own calls. A
+start that finds it running raises every file's sequence even where only named
+records were dropped: over-reporting costs an SMB open one failed flush, and
+under-reporting a loss is the failure the sequence exists to prevent. A crash
+before the unlink leaves the range on disk and the open failing until the
+operation resumes; a record already turned into a loss is not unread, so
+resuming changes nothing done.
+
+> decision: a resume re-runs step 2 only for a range nothing names whose mark
+> is not done, rather than at every start that finds the operation running, or
+> whenever any range of it is not done. A pinned segment or a
+> header-only record awaiting its unlink can keep the operation running for
+> days while the shares serve, and step 2 over a serving journal drops every
+> stable write whose existence has not committed and fails every snapshot with
+> a live hold, at each restart. Overturned by a range whose content can be
+> superseded by a write made after the acknowledgement began, which no record
+> kind allows.
+
+**(cluster)** A shard whose journal is replicated never waits for this: it
+rejoins from its replicas ([RFC 10](rfc-10-journal-replication.md)), as for a lost device.
+
+> decision: an acknowledged loss, removal, release or clone target record drops
+> everything its file held from before it, rather than keeping the file unread. Its change — a loss,
+> removal, release or clone — cannot be read back, and the catalog carries no
+> payload, so what it changed is unknown; a removal it carried that metadata
+> never applied comes back from the remote tier. The operator chose that over a
+> file that never reads. Overturned by a catalog that carries header-only
+> payloads.
+
+> decision: an unnamed range drops only itself and then checks every held
+> extent of the journal's shares against metadata, rather than bounding the drop
+> by sequence number or dropping its segment: re-appends and carried records
+> keep old numbers, so none on disk bounds what the range held, while
+> metadata's committed versions and the file's removal fields limit which
+> surviving dirty extent a lost committed change may have superseded, in the
+> range's segment as in any other, at the over-drop stated at step 2. What
+> metadata cannot judge — writes not yet committed, and offloaded extents,
+> whose refs version a block rather than an offset — is dropped too: the first
+> is at most an existence interval's worth, the second costs a refetch.
+> Overturned by a segment header that records the stream's next fresh sequence
+> number when the segment is taken, a format change that would bound which
+> uncommitted writes the range could have superseded.
 
 ### 3.4 Unattachable files
 
 A `.seg` file that recovery cannot attach and does not re-adopt as a spare
 ([§3.1](#3.1%20Rebuilding)) — a header naming another journal, or a name it did not write —
-is an orphan. An implementation **MAY** unlink an orphan it is
+is an orphan. A segment whose header cannot be read, or does not verify, is
+never one: it is damaged or unread ([§3.1](#3.1%20Rebuilding), [§3.3](#3.3%20Torn%20and%20corrupt%20records)). An implementation **MAY** unlink an orphan it is
 certain it wrote, **MUST** age-gate that decision, and **MUST NOT** unlink a
 file whose name it could not itself have produced.
 
@@ -1224,6 +1596,43 @@ new journal, and none is created:
   records the identity the error names for this node and directory
   ([RFC 16 §3.2](rfc-16-metadata-store.md#3.2%20How%20it%20is%20assembled), `RecordJournal`), and then opens with it as `expect`; no
   `Restamp` is needed.
+- **A `format` file the device cannot read.** An I/O error reading `format`
+  is not a lost journal: every segment may still read. `Open` fails with
+  `*UnreadableRangesError` naming `format` ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), and once an operator
+  acknowledges it ([§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)), `RebuildFormat` writes a new one by the
+  whole-file replace of [§2.1](#2.1%20Layout) — the replace lands on new sectors — from
+  `expect`, the caller's installation ID, the format version and, from the
+  replication extension on, the generation the metadata store records for the
+  journal, writing the higher of the highest format version a verifying header
+  of `expect` names and the replication extension's where the store's journal record
+  carries a generation, so a journal whose extension was enabled after its
+  newest segment was taken keeps its generation fencing. It does so
+  only when at least one segment names `expect` — by a header that verifies
+  naming it or, behind a header that names nothing or is acknowledged, by a
+  record that verifies under `expect`'s seed — and no header names another
+  identity; a header that fails its checksum names nothing, as
+  in any open ([§3.1](#3.1%20Rebuilding)), and its records attach only if they verify under
+  `expect`'s seed. A header naming another
+  identity means a wrong mount or a lost journal, which the
+  rebuild reports, naming that segment so the operator can remove it or mount
+  the right device, and does not repair, since a stray segment of another
+  journal and the one segment of a copied-in journal look alike. A header that
+  fails with an I/O error blocks the rebuild until it reads or the same
+  acknowledgement names its segment's header range, since it may name another
+  identity: `RebuildFormat` takes the acknowledged ranges, each covering its
+  header's whole slot, and counts a header in one as not naming another
+  identity but never as the one that names
+  `expect`; `AcknowledgeUnreadable` then acknowledges the ranges. A segment of
+  another journal behind such a header contributes nothing: its records are
+  seeded with that journal's identity and never verify here ([§2.3](#2.3%20Records)), and
+  the acknowledgement retires the segment. Where none names `expect`, the
+  journal is lost, as above for one found missing. For example, a dead sector under `format` in a directory of 40 segments
+  whose headers all name `expect` costs a rewrite of 56 bytes, not every write
+  not yet offloaded. With `expect` zero, after a lost
+  store, an `Open` that cannot read `format` names, besides `format`, the one
+  identity every verifying header names, where they agree, which the recovery
+  import passes to `RebuildFormat` once `format` is acknowledged.
+
 - **A lost store.** Once an operator has acknowledged the loss and a recovery
   import has rebuilt the store ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)), the caller records the identity
   the error names for this directory and, since the rebuilt store carries a new
@@ -1270,6 +1679,28 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | Requirement | Check |
 | --- | --- |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) corrupt, dirty | After reseed, corrupt a record whose extent is dirty; assert the read reports the extent `missing`, the sentinel in `p` is untouched, and the event names the file and extent as data loss. |
+| [§3.3](#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify) a failed read is not damage | Fail every read of a dirty record's body with `EIO` at the seam, at `ReadAt`, at offload, at repack and at open, the open three times: once with the record's header readable; once with its header and the segment's catalog unreadable too and a later record's synced-through past it; once with the record as the last of the newest segment, its header unreadable and nothing proving it synced. Each time, an older synced write lies under the record. Assert the first read stops after 3 attempts, no loss record is appended, the extent is never reported `missing`, `ReadAt` fails with the error, never serving the older write, and a later `ReadAt` makes one attempt, the extent stays dirty, no truncation cuts it off and its segment is not unlinked; the first open succeeds and the other two fail naming the segment and the range, the engine serving the other journals' shares; then let reads succeed and assert the record reads back with no reopen, and that the refused shares attach with no restart. A journal that drops what it could not read loses a dirty write to a passing error. |
+| [§3.3](#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify) unproven tail with a failed re-read | Write A and B and sync neither; reopen with the seam keeping them readable as a dead process's cache would, the direct re-read of A failing with `EIO`, and B's first read failing too with its header readable. Assert A is re-appended from its first copy, B is held as unread and its segment not sealed, and no loss record is appended; then make B's device-level read return bytes that do not verify, while a cached read would verify; assert B is dropped as torn, with no loss record and no damage reported. Repeat with the tail's sync failing; assert B is held as unread with no loss record and its window is not left pending; then let B's direct read return bytes that verify, and assert B is re-appended and its file serves only once that copy is synced. Repeat with B synced, answered stable and committed over an older committed write W_old, its payload read failing at open: assert `ReadAt` fails with `ErrUnreadable` and never returns W_old; acknowledge B's range and assert B reads **Lost**, its loss record synced, never W_old, again after a restart. A journal that holds A lets a cached read clear a write that never reached the device. |
+| [§3.3](#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify) failed window with a failed read | Write A, fail its sync, and resolve the window from a read of the failed segment that fails with `EIO`; assert A's part of the window fails, the loss generation rises, and the segment becomes a repack candidate. |
+| [§3.3](#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify) unreadable is not empty | Fail every read of a sealed segment holding dirty records, header slot included, and reopen; assert the segment is not re-adopted as a spare, no slot of it is zeroed, and the open fails naming it. With its catalog readable and one header-only record's payload failing, assert the journal opens and every read of that record's file fails with the error until the record reads. |
+| [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) acknowledging a range | Hold a dirty record A, an older synced write under it, and a header-only stamp of another file B unread, in one sealed segment whose catalog verifies; acknowledge the range with `check=true` and assert nothing changes and the result names A's extent, B and no unnamed part. Give B a readable dirty write after its stamp and one before. Acknowledge it; assert A reads as **Lost**, not the older write, a loss record names A, both of B's writes still read, no loss record names B or the stamp; repeat with B's unread record a truncate below both writes and assert B's earlier write is dropped with a loss record and its later one still reads; B reads from metadata, the loss generation rises, `journal_range_unreadable` clears, and repack unlinks the segment. Repeat with the range unnamed so the open fails: a synced write W1 of F in an earlier segment, committed, under W2 in the range, committed; a truncate of G in the range, committed, over a held write of G in another segment; an append A of P, synced and not committed, and a write B over A, answered stable, in the range; an offloaded extent of Q under an offloaded overwrite in the range, the ref carrying an older version elsewhere in its block; a readable write R of H after the range in its segment, committed and superseded by nothing; a write E of C, committed and in the range's segment, under a clone into C as its destination, from another file whose source run was copied locally, the clone's records in the range, once with the clone done and once with its phase 1 committed and no batch run; a delete of D in the range, committed; and a file K with dirty committed content only in another segment. Assert the acknowledgement opens the journal before any share serves; `ReadAt` of F at W2's extent fails as **Lost** and never returns W1; G reads at the truncated size; P never reads A where B was written; Q reads the overwrite from the remote; R reads back with no loss record; C at the cloned extent never returns E; D's held extents are dropped with loss records of reason acknowledged; the loss generation rises; K reads unchanged with nothing of it dropped; the check listed the segment, the range and F, G, P, C and D, and not H. Crash during each acknowledgement, including after the unlink and before the shares attach, and restart; assert the operation resumes to the same end state, the loss sequences are raised, and no second loss record names A. Let the range read before the acknowledgement runs; assert the operation ends with nothing dropped. |
+| [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a removal whose phase 2 is done | Write dirty E of F at 5 MiB, in a segment outside the range; truncate F to 3 MiB and let phase 2 finish; write W at 5 MiB and grow F past 8 MiB; truncate F down to 7 MiB, so `RemovedFrom` stays at 3 MiB; make the range holding both truncates and W an unnamed unreadable range; acknowledge it. Assert `ReadAt(F, 5 MiB)` fails as **Lost** and never returns E, E is dropped with a loss record, and a dirty extent of F below 3 MiB older than the truncate still reads. Repeat with a deallocate of [4 MiB, 6 MiB) whose phase 2 is done and a first write W into the hole: assert every dirty extent of F older than the deallocate at or past 4 MiB is dropped and reads **Lost**, including any past 6 MiB, and one below 4 MiB still reads. Repeat with a clone into F whose source has a hole at 5 MiB, done, and a first write W there: assert F never returns E at 5 MiB. |
+| [§3.3](#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify) an unread file at start | Crash with a synced write of F above its `applied` whose payload is unread, in a catalogued segment, and with a truncate of G whose header is unread; restart. Assert `Start` succeeds, F and G are unread — every read fails with `ErrUnreadable`, writes are taken, `Sync` fails — the node's other files serve, and once the records read each file's re-apply runs with no restart. |
+| [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) same-commit supersession | Write W1 and W2 at one offset X of F, both above `applied`, committed in one existence commit; make W2's slot an unnamed unreadable range; acknowledge it. Assert the commit wrote an overwrite record at W2's version, `ReadAt(F, X)` fails as **Lost** and never returns W1. Repeat with a crash before that commit. |
+| [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) resume after the unlink | Acknowledge an unnamed range holding a write W2 over a committed W1 and file X's hold for cut 1 while Y's reads; crash after `AcknowledgeUnreadable` has unlinked the segment and before the drop. Restart; assert the start runs the drop before re-apply, `ReadAt` never returns W1, and cut 1 is `failed`. |
+| [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a deferred drop in another segment | Write dirty X of F over [5, 6) MiB at v1 in segment T; truncate F to 3 MiB at v2, phase 2 done, its record U in segment S; write F at [7, 8) MiB; make U unread, its catalog entry readable. Acknowledge U and crash before its loss records are appended; restart with the open reserve drawn by an earlier open and the headroom exhausted. Assert the resume runs `Acknowledge` before the shares attach, defers X's loss rather than failing with `ErrNoSpace`, and does not unlink S before T's copy is synced. Crash again before that copy is synced and restart; assert `ReadAt(F, 5 MiB)` never returns X's bytes. Let the operation end; assert a loss record names X and S is unlinked. A design that unlinks S first serves X where the truncate left zeros. |
+| [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a drop races a repack copy | Make a deallocate D of F at v5 unread, its catalog entry readable, over W0 at v3 in another segment; start a repack of W0's segment and hold its copy of W0 after its held check; acknowledge D. Assert the copy is abandoned, and after a restart the deallocated range never reads W0. |
+| [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) partial drops at the maximum | Fill the journal to its maximum with segments interleaving dirty records of many files; acknowledge an unnamed range whose partial drops' kept parts exceed the repack reserve. Assert the drop finishes, each touched segment is retired before the next is taken, and the shares attach. |
+| [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a resume scoped by the mark | On an open journal, make F's truncate T unread with its catalog entry readable; give G a synced append W, answered stable, its existence not committed. Acknowledge T and crash before the unlink; restart. Assert W still reads, no loss record names it, and T's drop is done. Repeat with an unnamed range whose acknowledgement is marked done and a segment still pinned, a stable uncommitted append W of G written after the shares attached; restart. Assert W still reads, no snapshot cut after the mark is failed, and the pending drop runs before re-apply. Repeat with that acknowledgement marked done and E of F recorded pending, its segment still pinned by G's unread write Y, as in "a drop held up by a pinned segment", and a stable uncommitted append W of H written after the shares attached: acknowledge Y, adding it to the running operation, and crash before its steps are done; restart. Assert W still reads and no loss record names it, and the pending drop runs before re-apply: `ReadAt(F, 4 MiB)` never returns E's bytes. A design that re-runs step 2 at every start, or whenever a range is not done, drops W as **Lost**. |
+| [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a drop held up by a pinned segment | Put E over [2, 6) MiB of F in segment S2 beside G's live unread write Y, outside the acknowledgement; make an unnamed range hold F's truncate to 3 MiB, phase 2 done, with F grown past 6 MiB after it; acknowledge it. Assert F is unread and the operation stays running naming S2. Let Y read; assert `ReadAt(F, 4 MiB)` never returns E's bytes, the drop runs before F serves, and the operation ends once S2 is unlinked. Repeat with G overwriting Y so it dies unread, and again with a restart while Y is still unread: assert F is unread after the restart and never returns E. Repeat with a write W to F's [3, 4) MiB after the shares attach, then let Y read; assert W still reads and no loss record names it. |
+| [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a partial drop survives a restart | Write dirty E over [2 MiB, 6 MiB), outside the range; truncate to 3 MiB, phase 2 done, and grow F past 6 MiB with no write to [3 MiB, 6 MiB), the truncate in an unnamed unreadable range; acknowledge it: assert E's [3 MiB, 6 MiB) is dropped and reads **Lost**, never E's bytes or zeros, and E's [2 MiB, 3 MiB) still reads. Crash and reopen; assert the same, and that an older synced E0 under [2 MiB, 3 MiB) is never served. Crash again at each point of the drop — after the copy's append and before its sync, after the copy's sync and before the loss record, and after the loss record's sync; assert each reopen reads E's [2 MiB, 3 MiB), never E0, and the last also reads [3 MiB, 6 MiB) as **Lost**. |
+| [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a removal from offset 0 | Write dirty E at 1 MiB, outside the range; truncate to 0, phase 2 done; write W at 1 MiB growing F to 4 MiB; truncate to 3 MiB, the removals and W in an unnamed unreadable range; acknowledge it: assert `RemovedFrom` stays 0 and `ReadAt(F, 1 MiB)` fails as **Lost**, never returns E. |
+| [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a header-only record by version | Write W0 of F at v3 in one segment; make a deallocate D of F at v5 unread in another; repack W0's segment so its copy takes a sequence number above D's. Acknowledge D; assert the copy of W0 is dropped with a loss record and a read at the punched offset never returns W0. Repeat with an unread forget record; assert every extent of its tag is dropped. |
+| [§3.3](#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) a lost hold fails its snapshot | Cut snapshot 1 with dirty files X and Y on one journal; make X's `hold` unread, its catalog entry readable; acknowledge it. Assert snapshot 1 is `failed`, never `complete`, and a snapshot of another share is untouched. Repeat with the range unnamed; assert every snapshot with a live hold on the journal is `failed`. Make an `unhold` of a deleted cut unread and acknowledge it; assert nothing is dropped and the cut's holds are released by the periodic check of RFC 12 §2.3, not before. |
+| [§3.4](#3.4%20Unattachable%20files) `format` rebuilt | Make `format` fail every read with `EIO`; assert `Open` fails with `*UnreadableRangesError` naming `format`, no share serves and nothing is reported lost. Acknowledge it; assert `format` is rewritten, the journal opens with every dirty write readable and no loss record. Repeat with a copied-in segment of another journal beside them; assert the rebuild is refused as a wrong mount or lost journal and `format` is not rewritten. Repeat with one segment header failing with `EIO`; assert the rebuild waits until it reads, and that an acknowledgement naming both `format` and that header's slot rebuilds `format` and then acknowledges the range; with every header acknowledged, assert `format` is rebuilt and every dirty write reads, and the same with every header failing its checksum; with no record verifying under `expect`'s seed either, assert the journal is reported lost. With `expect` zero, assert the error names `format` and the identity the verifying headers agree on. With the acknowledged header in a segment copied from another journal, assert none of its records is attached and the segment is retired. Repeat with the replication extension enabled after the newest segment header was written; assert the rebuilt `format` carries the extension's version and the store's generation. Repeat with no segment header naming `expect`; assert the journal is reported lost and `format` is not rewritten. |
+| [§3.3](#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify) an unread file keeps its order | Make a truncate of F at version v unread; write F at v+1 and `Sync`; assert the `Sync` fails with the error and F's `applied` stays below v. Let the record read; assert F has the truncate's size with the write over it, and that nothing the truncate removed reads back. |
+| [§3.3](#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify) unread, offloaded | Offload and mark a record A, then make it unread; assert `ReadAt` reports the extent `missing`, no loss record is appended, and the read resolves as **Remote**. Write B over A, offload neither, make B unread; assert `ReadAt` fails with the error and never returns A. |
+| [§3.3](#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify) a dead unread record | Write A, write B over it, make A unread; assert the segment is not suspect, repack unlinks it without reading A, and no loss record is appended. Make a truncate record unread in another segment, superseded in place by a later write; assert that segment stays suspect and is not unlinked. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) corrupt, offloaded | After reseed, corrupt a record whose extent's offloaded bit is set; assert the read reports the extent `missing` and the event is reported as repairable. |
 | [§2.2](#2.2%20Segments) directory entry survives | Create a segment, write and `Sync`; crash at the seam dropping every directory change not synced; assert the segment and its record survive. |
 | [§2.4](#2.4%20The%20segment%20catalog) footer is not authoritative | Corrupt a sealed segment's footer; assert recovery scans that segment and reaches the same index. Then write a verifying footer whose entry disagrees with its record's header; assert the read through that entry is refused as corruption. |
@@ -1523,9 +1954,31 @@ Sync and unlink, per platform ([§2.2](#2.2%20Segments), [RFC 1 §5.2](rfc-1-jou
   `fcntl(F_FULLFSYNC)` for every sync, the directory's included.
 - **Linux**: `fdatasync` on the file ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Syncing)), and `fsync` on the directory's
   descriptor after a create, a rename or an unlink. Open **MUST** refuse a
-  filesystem mounted without cache flushes where the mount options say so
-  (`nobarrier` or `barrier=0` on ext4, `nobarrier` on older XFS): there no sync
-  reaches the device, and a synced record does not survive power loss.
+  filesystem mounted without cache flushes where its options say so
+  (`nobarrier` or `barrier=0` on ext4, read from the effective options named
+  below, `nobarrier` on older XFS): there no sync
+  reaches the device, and a synced record does not survive power loss. Open
+  **MUST** also refuse ext4 data journaling — the `data=journal` mode, read from
+  the filesystem's effective options (`/proc/fs/ext4/<dev>/options`, `<dev>` the
+  kernel's name for the directory's device number, not the mount source, which
+  device-mapper names differently; they include a superblock default
+  `/proc/mounts` omits, and an unreadable file is an error of the check), or the
+  journal-data file
+  attribute on the journal's directory or on any file in it: there a sync
+  returns once the data is in the filesystem's own journal, and a failure to
+  write it to its place is reported to a later sync, if at all, so
+  [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)'s window would fail the wrong writes; and a read past the page
+  cache falls back to a buffered one there, so the open's tail check
+  ([§3.1](#3.1%20Rebuilding)) would read the cache, not the device. The check covers
+  every filesystem the ext4 driver mounts, ext3 included, which the mount table
+  reports as `ext3`. Each file is checked because the attribute is inherited
+  only at creation and can be set on one file alone, and a recycle renames a
+  file with its attribute. An attribute set while the journal runs is found at
+  the next open, as the copy-on-write attribute is. Open **MUST** refuse a
+  kernel older than 4.13: there ext4, XFS and Btrfs each began recording a
+  writeback error per file and reporting it to every descriptor open when it
+  happened, which [RFC 1 §7.4](rfc-1-journal.md#7.4%20Open%20descriptors)'s pinned writer relies on; an earlier kernel
+  reports it to the first sync through any descriptor and clears it.
 - **Windows**: segments are opened with `FILE_SHARE_DELETE`, so one can be
   deleted while a reader still holds it; `FlushFileBuffers` is the sync. There
   is no directory sync: a create, rename or unlink is made durable by opening the
