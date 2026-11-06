@@ -84,7 +84,7 @@ func TestExtentCountCountsHeldRetainedAndMarkers(t *testing.T) {
 	if c := fs.extentCount(); c != 2 { // one held of the new write, one retained
 		t.Fatalf("after writeRetain, count = %d, want 2", c)
 	}
-	if err := fs.update(id, func(f *file) error { return f.deallocate(ext(0, 2), ver(3)) }); err != nil {
+	if _, err := fs.update(id, func(f *file) error { return f.deallocate(ext(0, 2), ver(3)) }); err != nil {
 		t.Fatalf("deallocate: %v", err)
 	}
 	// The deallocation narrows the new piece's head away and keeps a
@@ -122,13 +122,13 @@ func TestExtentCountMatchesWalk(t *testing.T) {
 			if round%2 == 0 {
 				fn = func(f *file) error { f.writeRetain(write(off, 4, r, v)); return nil }
 			}
-			if err := fs.update(id, fn); err != nil {
+			if _, err := fs.update(id, fn); err != nil {
 				t.Fatal(err)
 			}
 		case 1: // fill, of a fresh record or one the file holds
 			r, v := next()
 			off := int64(rng.IntN(64)) * 4
-			if err := fs.update(id, func(f *file) error {
+			if _, err := fs.update(id, func(f *file) error {
 				f.fill(Placed{Extent: ext(off, 16), Record: r, Skip: uint32(off), Version: ver(v)})
 				return nil
 			}); err != nil {
@@ -137,14 +137,14 @@ func TestExtentCountMatchesWalk(t *testing.T) {
 		case 2: // settle, sometimes before the removals it settles
 			fs.settleRemovals(id, ver(uint64(rng.IntN(16))))
 		case 3, 4: // deallocate, sometimes of nothing
-			err := fs.update(id, func(f *file) error {
+			_, err := fs.update(id, func(f *file) error {
 				return f.deallocate(ext(int64(rng.IntN(64))*4, int64(rng.IntN(4))), ver(uint64(rng.IntN(16))))
 			})
 			if err != nil && !errors.Is(err, core.ErrZeroLength) {
 				t.Fatal(err)
 			}
 		case 5: // truncate or delete
-			if err := fs.update(id, func(f *file) error {
+			if _, err := fs.update(id, func(f *file) error {
 				if rng.IntN(2) == 0 {
 					f.truncate(int64(rng.IntN(64))*4, ver(uint64(rng.IntN(16))))
 				} else {
@@ -155,7 +155,7 @@ func TestExtentCountMatchesWalk(t *testing.T) {
 				t.Fatal(err)
 			}
 		case 6: // mark, then release what is offloaded
-			if err := fs.update(id, func(f *file) error {
+			if _, err := fs.update(id, func(f *file) error {
 				f.held.markOffloaded(ext(0, 512), core.Version{}, newest)
 				_, err := f.held.release(ext(0, 512), nil)
 				return err
@@ -170,7 +170,7 @@ func TestExtentCountMatchesWalk(t *testing.T) {
 				}
 			})
 			if len(window) > 0 {
-				if err := fs.update(id, func(f *file) error {
+				if _, err := fs.update(id, func(f *file) error {
 					f.failWindow(window, nil)
 					return nil
 				}); err != nil {
@@ -179,11 +179,11 @@ func TestExtentCountMatchesWalk(t *testing.T) {
 			}
 		case 10: // lose a segment, as a recycle: entries can drop
 			seg := core.SegmentID(1 + rng.IntN(4))
-			if err := fs.update(id, func(f *file) error { f.segmentGone(seg); return nil }); err != nil {
+			if _, err := fs.update(id, func(f *file) error { f.segmentGone(seg); return nil }); err != nil {
 				t.Fatal(err)
 			}
 		case 11: // claim under a tag, as an append does
-			if err := fs.update(id, func(f *file) error {
+			if _, err := fs.update(id, func(f *file) error {
 				return f.recorded(core.SegmentID(7), core.Extent{}, Numbers{}, core.ShareTag(1), id)
 			}); err != nil {
 				t.Fatal(err)
@@ -435,7 +435,7 @@ func TestAdmissionAllocatesNothing(t *testing.T) {
 	fs.setExtentLimit(headroom)
 	id := fid(1)
 	for i := range 1010 {
-		if err := fs.update(id, func(f *file) error {
+		if _, err := fs.update(id, func(f *file) error {
 			f.write(Placed{Extent: ext(int64(i)*8, 8), Record: rec(core.SegmentID(1+i/60_000), uint32(i)*8), Version: ver(uint64(i + 1))})
 			return nil
 		}); err != nil {
@@ -493,7 +493,7 @@ func TestBoundRefusesTheWritePastIt(t *testing.T) {
 		if err != nil || a != 1 {
 			t.Fatalf("write %d admitted (%d, %v), want (1, nil)", i, a, err)
 		}
-		if err := fs.commit(id, a, func(f *file) error {
+		if _, err := fs.commit(id, a, func(f *file) error {
 			f.write(Placed{Extent: e, Record: rec(core.SegmentID(1+i/60_000), uint32(i)*4096), Version: ver(uint64(i + 1))})
 			return nil
 		}); err != nil {
@@ -549,7 +549,7 @@ func TestBoundRefusesTheWritePastIt(t *testing.T) {
 	}
 	// A truncate is never refused by the bound, and lowers the count: it is
 	// how the engine gets out of the refusal.
-	if err := fs.update(id, func(f *file) error {
+	if _, err := fs.update(id, func(f *file) error {
 		f.truncate(4096, ver(1<<40))
 		return nil
 	}); err != nil {
@@ -562,7 +562,7 @@ func TestBoundRefusesTheWritePastIt(t *testing.T) {
 	// An offload's mark and a release of one whole piece: never refused, and
 	// the count falls again. The released piece is the one at step, the
 	// highest the truncate kept — the whole of it, for allOffloaded.
-	if err := fs.update(id, func(f *file) error {
+	if _, err := fs.update(id, func(f *file) error {
 		f.held.markOffloaded(ext(step, 4096), core.Version{}, newest)
 		_, err := f.held.release(ext(step, 4096), nil)
 		return err
@@ -594,7 +594,7 @@ func TestPunchesPastAllowanceRefused(t *testing.T) {
 	// One extent of 10^5 4 KiB pieces, marked offloaded so a release can
 	// narrow it; the count is padded to the limit with another file's.
 	const nPunch = 100000
-	if err := fs.update(id, func(f *file) error {
+	if _, err := fs.update(id, func(f *file) error {
 		f.held.insert(Placed{Extent: ext(0, int64(nPunch)*2*4096), Record: rec(1, 0), Version: ver(1)})
 		f.held.markOffloaded(whole, ver(1), ver(1))
 		return nil
@@ -603,7 +603,7 @@ func TestPunchesPastAllowanceRefused(t *testing.T) {
 	}
 	border := fid(2)
 	for n := range int64(limit - 1) {
-		if err := fs.update(border, func(f *file) error {
+		if _, err := fs.update(border, func(f *file) error {
 			f.write(Placed{Extent: fillExtent(n), Record: rec(core.SegmentID(2+n/60_000), uint32(n)*4096), Version: ver(uint64(n) + 1)})
 			return nil
 		}); err != nil {
@@ -633,7 +633,7 @@ func TestPunchesPastAllowanceRefused(t *testing.T) {
 			}
 			continue
 		}
-		if err := fs.commit(id, a, func(f *file) error { return f.deallocate(e, ver(2)) }); err != nil {
+		if _, err := fs.commit(id, a, func(f *file) error { return f.deallocate(e, ver(2)) }); err != nil {
 			t.Fatal(err)
 		}
 		if c := fs.extentCount(); c > ceiling+1 {
@@ -655,10 +655,10 @@ func TestPunchesPastAllowanceRefused(t *testing.T) {
 	}
 
 	// A truncate and a delete are never refused.
-	if err := fs.update(id, func(f *file) error { f.truncate(4096, ver(3)); return nil }); err != nil {
+	if _, err := fs.update(id, func(f *file) error { f.truncate(4096, ver(3)); return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if err := fs.update(border, func(f *file) error { f.delete(ver(3)); return nil }); err != nil {
+	if _, err := fs.update(border, func(f *file) error { f.delete(ver(3)); return nil }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -670,7 +670,7 @@ func TestPunchesPastAllowanceRefused(t *testing.T) {
 	// it in two — is refused, reserving its one entry.
 	if c := fs.extentCount(); c < ceiling-1 {
 		for n := range int64(ceiling - c) {
-			if err := fs.update(border, func(f *file) error {
+			if _, err := fs.update(border, func(f *file) error {
 				f.write(Placed{Extent: fillExtent(100_000 + n), Record: rec(core.SegmentID(2+(100_000+n)/60_000), uint32(100_000+n)*4096), Version: ver(uint64(100_001 + n))})
 				return nil
 			}); err != nil {
@@ -679,7 +679,7 @@ func TestPunchesPastAllowanceRefused(t *testing.T) {
 		}
 	}
 	ring := fid(3)
-	if err := fs.update(ring, func(f *file) error {
+	if _, err := fs.update(ring, func(f *file) error {
 		f.held.insert(Placed{Extent: ext(0, 3*4096), Record: rec(3, 0), Version: ver(1)})
 		f.held.markOffloaded(whole, ver(1), ver(1))
 		return nil
@@ -707,7 +707,7 @@ func TestSplittingRemovalsRefusedAtTheCeiling(t *testing.T) {
 	const ceiling = limit + limit/8
 	fs.setExtentLimit(limit)
 	id := fid(1)
-	if err := fs.update(id, func(f *file) error {
+	if _, err := fs.update(id, func(f *file) error {
 		f.held.insert(Placed{Extent: ext(0, 3*4096), Record: rec(1, 0), Version: ver(1)})
 		f.held.markOffloaded(whole, ver(1), ver(1))
 		return nil
@@ -716,7 +716,7 @@ func TestSplittingRemovalsRefusedAtTheCeiling(t *testing.T) {
 	}
 	pad := func(upto int64) {
 		for n := fs.extentCount(); n < upto; n++ {
-			if err := fs.update(fid(2), func(f *file) error {
+			if _, err := fs.update(fid(2), func(f *file) error {
 				f.write(Placed{Extent: fillExtent(n), Record: rec(2, uint32(n)*4096), Version: ver(uint64(n) + 1)})
 				return nil
 			}); err != nil {
@@ -740,7 +740,7 @@ func TestSplittingRemovalsRefusedAtTheCeiling(t *testing.T) {
 	// Its commit replaces the reservation with the same two entries — the
 	// piece's split halves and the marker — leaving the count at the ceiling
 	// above it by the one marker the deallocation added.
-	if err := fs.commit(id, a, func(f *file) error { return f.deallocate(ext(4096, 4096), ver(2)) }); err != nil {
+	if _, err := fs.commit(id, a, func(f *file) error { return f.deallocate(ext(4096, 4096), ver(2)) }); err != nil {
 		t.Fatal(err)
 	}
 	if c := fs.extentCount(); c != ceiling+1 {
@@ -765,7 +765,7 @@ func TestSplittingRemovalsRefusedAtTheCeiling(t *testing.T) {
 	var fs2 files
 	fs2.setExtentLimit(limit)
 	id2 := fid(1)
-	if err := fs2.update(id2, func(f *file) error {
+	if _, err := fs2.update(id2, func(f *file) error {
 		f.held.insert(Placed{Extent: ext(0, 4*4096), Record: rec(1, 0), Version: ver(1)})
 		f.held.insert(Placed{Extent: ext(6*4096, 4*4096), Record: rec(1, 16*4096), Version: ver(1)})
 		f.held.markOffloaded(whole, ver(1), ver(1))
@@ -774,7 +774,7 @@ func TestSplittingRemovalsRefusedAtTheCeiling(t *testing.T) {
 		t.Fatal(err)
 	}
 	for n := fs2.extentCount(); n < ceiling-1; n++ {
-		if err := fs2.update(fid(2), func(f *file) error {
+		if _, err := fs2.update(fid(2), func(f *file) error {
 			f.write(Placed{Extent: fillExtent(n), Record: rec(2, uint32(n)*4096), Version: ver(uint64(n) + 1)})
 			return nil
 		}); err != nil {
@@ -785,7 +785,7 @@ func TestSplittingRemovalsRefusedAtTheCeiling(t *testing.T) {
 	if err != nil || a2 != 1 {
 		t.Fatalf("a splitting release at the ceiling less one = (%d, %v), want (1, nil)", a2, err)
 	}
-	if err := fs2.commit(id2, a2, func(f *file) error {
+	if _, err := fs2.commit(id2, a2, func(f *file) error {
 		_, err := f.held.release(ext(4096, 4096), nil)
 		return err
 	}); err != nil {
@@ -817,7 +817,7 @@ func TestOverBoundAtOpen(t *testing.T) {
 		ids[i] = fid(byte(i + 1))
 	}
 	for n := range int64(2 * limit) {
-		if err := fs.update(ids[n%4], func(f *file) error {
+		if _, err := fs.update(ids[n%4], func(f *file) error {
 			// One length short of the next piece, so a write never meets its
 			// neighbour and each file's pieces stay countable one a write.
 			f.write(Placed{Extent: ext(n*8192, 4096), Record: rec(core.SegmentID(1+n/60_000), uint32(n)*4096), Version: ver(uint64(n) + 1)})
@@ -863,7 +863,7 @@ func TestOverBoundAtOpen(t *testing.T) {
 		if fs.extentCount() <= limit-1 {
 			break
 		}
-		if err := fs.update(ids[n%4], func(f *file) error {
+		if _, err := fs.update(ids[n%4], func(f *file) error {
 			f.held.markOffloaded(whole, core.Version{}, newest)
 			// The file's own piece at that index: n = (4k + own), spaced
 			// 8192 from every other piece, so this is the k-th piece
@@ -892,7 +892,7 @@ func TestOverBoundAtOpen(t *testing.T) {
 		assertIndexRefusal(t, err)
 	}
 	for _, id := range ids {
-		if err := fs.update(id, func(f *file) error {
+		if _, err := fs.update(id, func(f *file) error {
 			f.held.markOffloaded(whole, core.Version{}, newest)
 			_, err := f.held.release(whole, nil)
 			return err
@@ -900,7 +900,7 @@ func TestOverBoundAtOpen(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := fs.update(borderID(&fs, ids), func(f *file) error {
+	if _, err := fs.update(borderID(&fs, ids), func(f *file) error {
 		f.held.markOffloaded(whole, core.Version{}, newest)
 		_, err := f.held.release(whole, nil)
 		return err
@@ -928,7 +928,7 @@ func TestAbandonReturnsAdmission(t *testing.T) {
 	var fs files
 	fs.setExtentLimit(100)
 	id := fid(1)
-	if err := fs.update(id, func(f *file) error {
+	if _, err := fs.update(id, func(f *file) error {
 		f.write(Placed{Extent: fillExtent(0), Record: rec(1, 0), Version: ver(1)})
 		return nil
 	}); err != nil {
@@ -981,7 +981,7 @@ func TestConcurrentAdmissionNeverPassesBound(t *testing.T) {
 				if err != nil {
 					return
 				}
-				if err := fs.commit(id, a, func(f *file) error {
+				if _, err := fs.commit(id, a, func(f *file) error {
 					f.write(Placed{Extent: e, Record: rec(core.SegmentID(w+1), uint32(round)*4096), Version: ver(uint64(round) + 1)})
 					return nil
 				}); err != nil {
@@ -1008,7 +1008,7 @@ func TestNonSplittingRemovalsNeverRefused(t *testing.T) {
 	const limit = 100
 	fs.setExtentLimit(limit)
 	id := fid(1)
-	if err := fs.update(id, func(f *file) error {
+	if _, err := fs.update(id, func(f *file) error {
 		f.write(write(0, 32, rec(1, 0), 1))
 		f.write(write(40, 8, rec(1, 64), 1))
 		f.held.markOffloaded(whole, ver(1), ver(1))
@@ -1017,7 +1017,7 @@ func TestNonSplittingRemovalsNeverRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	for n := range int64(limit + limit/4) {
-		if err := fs.update(fid(2), func(f *file) error {
+		if _, err := fs.update(fid(2), func(f *file) error {
 			f.write(Placed{Extent: fillExtent(n), Record: rec(core.SegmentID(3+n/60_000), uint32(n)*4096), Version: ver(uint64(n) + 1)})
 			return nil
 		}); err != nil {
@@ -1051,7 +1051,7 @@ func TestCeilingSaturatesAtTheLargestLimit(t *testing.T) {
 	var fs files
 	fs.setExtentLimit(math.MaxInt64)
 	id := fid(1)
-	if err := fs.update(id, func(f *file) error {
+	if _, err := fs.update(id, func(f *file) error {
 		f.held.insert(Placed{Extent: ext(0, 3*4096), Record: rec(1, 0), Version: ver(1)})
 		f.held.markOffloaded(whole, ver(1), ver(1))
 		return nil
@@ -1078,7 +1078,7 @@ func TestNetNegativeWriteRefusedOverBound(t *testing.T) {
 	fs.setExtentLimit(2)
 	id := fid(1)
 	for i := range int64(3) {
-		if err := fs.update(id, func(f *file) error {
+		if _, err := fs.update(id, func(f *file) error {
 			f.write(Placed{Extent: ext(i*10, 10), Record: rec(1, uint32(i)*4096), Version: ver(uint64(i) + 1)})
 			return nil
 		}); err != nil {

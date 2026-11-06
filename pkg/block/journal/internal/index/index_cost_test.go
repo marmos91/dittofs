@@ -42,7 +42,7 @@ func indexBytesPerEntry(n int, order func(i int) int) float64 {
 		if err != nil {
 			panic(err)
 		}
-		err = fs.commit(id, adm, func(f *file) error {
+		_, err = fs.commit(id, adm, func(f *file) error {
 			if err := f.recorded(r.Segment, e, Numbers{Version: v, Seq: core.Seq(i + 1)}, 1, id); err != nil {
 				return err
 			}

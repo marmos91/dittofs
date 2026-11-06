@@ -150,20 +150,35 @@ func (f *file) fillParts(p Placed, fn func(Placed)) {
 	part(cursor, extentEnd(p.Extent))
 }
 
-// fill holds p for id as a Fill does, unless the fill is older than the file:
-// when the version id is checked against is above asOf — the change version a
-// read of id reported, before whatever change has happened since — it writes
-// nothing and returns ErrStaleFill, which the caller matches with errors.Is.
-// The comparison is on counter halves only: both sides of it come from this
-// journal, whose versions carry no epoch, so an asOf that carries one anyway
-// loses its epoch rather than winning the comparison. The check and the
-// insert run under the file's lock, in one update. A fill refused on a file
-// with no entry leaves no entry, since an update that leaves nothing behind
-// drops the empty entry it was given.
-func (fs *files) fill(id core.FileID, p Placed, asOf core.Version) error {
+// fill holds p for id under tag as a Fill does, claiming the file for tag in
+// the same update, so the delta it returns carries its owner and no fill's
+// bytes are accounted under the zero tag. A file another tag owns is refused
+// with the claim's OtherShareError, before the staleness check, as every
+// journal call checks the tag first.
+//
+// A fill older than the file is refused with ErrStaleFill, which the caller
+// matches with errors.Is: when the version id is checked against is above
+// asOf, the change version a read of id reported before whatever change has
+// happened since, it writes nothing. The comparison is on counter halves
+// only: both sides of it come from this journal, whose versions carry no
+// epoch, so an asOf that carries one anyway loses its epoch rather than
+// winning the comparison. The checks and the insert run under the file's
+// lock, in one update, whose delta it returns.
+//
+// A fill refused for either reason changes nothing, the claim included: the
+// file is claimed only once both checks pass. On a file with no entry it
+// leaves no entry, since an update that leaves nothing behind drops the empty
+// entry it was given.
+func (fs *files) fill(tag core.ShareTag, id core.FileID, p Placed, asOf core.Version) (HeldDelta, error) {
 	return fs.update(id, func(f *file) error {
+		if err := f.check(tag, id); err != nil {
+			return err
+		}
 		if fs.checkedAgainst(f, id).Counter > asOf.Counter {
 			return core.ErrStaleFill
+		}
+		if err := f.claim(tag, id); err != nil {
+			return err
 		}
 		f.fill(p)
 		return nil
@@ -201,7 +216,7 @@ func (fs *files) settleRemovals(id core.FileID, v core.Version) {
 	if !fs.view(id, func(*file) {}) {
 		return
 	}
-	_ = fs.update(id, func(f *file) error {
+	_, _ = fs.update(id, func(f *file) error {
 		f.settleRemovals(v)
 		return nil
 	})

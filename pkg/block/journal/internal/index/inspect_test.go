@@ -656,7 +656,7 @@ func TestInspectAllYieldsHoldingNoLock(t *testing.T) {
 				return nil
 			})
 			other := fid(byte(id.Bytes()[15]) + 20)
-			_ = fs.update(other, func(f *file) error {
+			_, _ = fs.update(other, func(f *file) error {
 				f.write(write(0, 8, rec(1, 0), 98))
 				return nil
 			})
@@ -691,7 +691,7 @@ func TestInspectAllDuringChanges(t *testing.T) {
 		if len(yielded) == 1 {
 			// Remove fid(4) so it leaves the map, and create fid(10), which
 			// sorts after every file already there.
-			if err := fs.update(fid(4), func(f *file) error {
+			if _, err := fs.update(fid(4), func(f *file) error {
 				f.held.cut(toEnd(0))
 				f.segmentGone(4)
 				return nil
@@ -726,7 +726,7 @@ func TestInspectFileConsistentUnderWrites(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := int64(1); i <= 300; i++ {
-			err := fs.update(id, func(f *file) error {
+			_, err := fs.update(id, func(f *file) error {
 				f.held.cut(toEnd(0))
 				for j := range int64(8) {
 					off := j * 4096
