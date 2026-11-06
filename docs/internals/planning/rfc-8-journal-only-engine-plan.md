@@ -375,16 +375,16 @@ harness (`journaltest/prof`) wired to the fixture.
 | 1 | **Interfaces** ⛔ | `pkg/block/engine`'s surface, `Deps` narrowed to this part, the engine over `pkg/vfs/vfserr`; the `Content` contract agreed with stage 2 | 5 | 8 | team | **everything** |
 | 2 | **Red e2e suite and test foundations** ⛔ | `engine-conformance` registered red, 45 rows, the fixture, a fault-injecting `kv.KV`, the fake journal | 9 | 28.5 | team | **all testing** in 3 to 10 |
 | 3 | **Write, read and overlay** ⛔ | per-file state, `Write`, `Draw`, `Overlay`, `Read`'s resolution, `Allocation` | 6 | 13 | A | 4, 8 |
-| 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 22 | B | 5, 6, 7, 8 |
-| 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 15.25 | B | 6, 8 |
-| 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 10 | 36.25 | C | 7, 8 |
+| 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 23 | B | 5, 6, 7, 8 |
+| 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 15.5 | B | 6, 8 |
+| 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 11 | 39.75 | C | 7, 8 |
 | 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 5 | 14.5 | C | 9 |
-| 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 7 | 19.5 | A | 5, 9 |
+| 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 7 | 19.75 | A | 5, 9 |
 | 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over stage 2's fake and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
 | 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 4 | 12.5 | team | the second part |
-| | **Total** | | **63** | **181** | | |
+| | **Total** | | **64** | **186** | | |
 
-**Plan estimate: 63 subtasks, 181 man-days.**
+**Plan estimate: 64 subtasks, 186 man-days.**
 
 RFC 8 is 3,627 lines, which gives N = 8. This part covers about half of it, and its cohesive
 areas are six: the data path, the stability point, removals, the lifecycle, capacity and
@@ -636,7 +636,7 @@ Sections owned: RFC 8 §1.1 (the request path), §4.1, §7.1, §7.5, §7.6, §12
 
 ### Epic 4 — Commit, group commit and losses ⛔
 
-**Epic 4 estimate: 7 subtasks, 22 man-days.**
+**Epic 4 estimate: 7 subtasks, 23 man-days.**
 
 The stability point and everything that commits existence. Appends and hole fills are
 answered after the sync; an overwrite of committed content waits for the group commit
@@ -704,7 +704,7 @@ owned: RFC 8 §4.1 (the verifier), §5.1, §5.2, §11.3. Counters: `engine_stabi
 
 ### Epic 5 — Removals ⛔
 
-**Epic 5 estimate: 5 subtasks, 15.25 man-days.**
+**Epic 5 estimate: 5 subtasks, 15.5 man-days.**
 
 `Truncate`, `Deallocate` and `Delete`: guard, journal step, phase 1 through `Existence.Remove`
 with the file's pending existence, release the guard, `Settle(id, v)`, post. No pass is ever
@@ -797,7 +797,7 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
 
 ### Epic 6 — Start, bindings and recovery ⛔
 
-**Epic 6 estimate: 10 subtasks, 36.25 man-days.**
+**Epic 6 estimate: 11 subtasks, 39.75 man-days.**
 
 The breakdown, `rfc-8-engine-epic6.md`, restates this epic and its estimate; the subtask list
 below is the plan's, kept for the history of the split.
@@ -946,7 +946,7 @@ Sections owned: RFC 8 §10 (the two measures, as far as repack goes), §10.2, §
 
 ### Epic 8 — Clone and copy, journal-held
 
-**Epic 8 estimate: 7 subtasks, 19.5 man-days.**
+**Epic 8 estimate: 7 subtasks, 19.75 man-days.**
 
 A clone whose source bytes are all journal-held or uncarved: copied into the destination
 above the removal's version and synced before phase 1, with phase 2 adopting nothing. A
@@ -1008,7 +1008,7 @@ excluded. Spans: a clone's batches as root spans.
   otherwise from the journal's clone marker, holding the source until the
   clone is done; the open is T8.3's, taken before `Resume`, so no start step calls
   `Hold`. The "source registration rebuilt" row of §1.4 holds in substance, its
-  wording ("from its clone-kind open record") in a cluster (epic 8's open point 6). A source unlinked before the restart is reported by neither of T8.3's paths: the
+  wording ("from its clone-kind open record") in a cluster (epic 8's open point 5). A source unlinked before the restart is reported by neither of T8.3's paths: the
   hold `install` makes carries no unlink, so `Releasing` refuses the pending release while
   it stands and `Release` reports no orphan. Its bytes stay until the next start, the
   ceiling `openstate`'s `decision:` on `CloneClose` names (§6 point 11).

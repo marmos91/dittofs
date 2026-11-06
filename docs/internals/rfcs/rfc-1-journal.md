@@ -669,7 +669,8 @@ read through a handle of the tag attached for the purpose — and only then
 > the store rather than beside the export.
 
 - **Failure.** No `salvage.path`, a refused one, a write error, no space or no master key is a
-  failed export: a health condition naming the tag, retried at every start and
+  failed export: a health condition naming the tag (`stranded_export_failed`,
+  [RFC 25 §3.9](rfc-25-observability.md#3.9%20The%20condition%20registry)), retried at every start and
   again while serving. It never withholds service. The
   tag stays stranded, its extents unevictable, and `Forget` of the tag waits for
   its export.
@@ -2220,7 +2221,8 @@ unless it has turned read-only, which fails the window whole ([§5.4](#5.4%20A%2
   dropped or kept reconcile-retained as older than metadata ([§3.3](#3.3%20Offload)), which no window holds again. Failing a window raises the
   loss generation before any `Sync` it fails returns, and the engine folds it into
   its write verifier ([RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)), so a client resends the unstable writes
-  the window held. Re-appending loses nothing and does not raise it.
+  the window held. The engine also raises `journal_sync_failed` ([RFC 8 §11.1](rfc-8-engine.md#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)).
+  Re-appending loses nothing and raises neither.
 
 **A failed window is reported once to each file that had a write in it.** The
 journal records, per file with a write in the failed window, an unreported
