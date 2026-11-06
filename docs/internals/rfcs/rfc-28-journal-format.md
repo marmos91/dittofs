@@ -396,7 +396,7 @@ it durable with the first records after it. It **MUST** identify:
 | 8 | 16 | journal identity |
 | 24 | 8 | segment id, the one in its name; ids start at 1 and ascend across all streams in the order segments are created |
 | 32 | 8 | predecessor's segment id, or 0 for none |
-| 40 | 4 | number of the append stream that opened it, for reporting only: the predecessor, not this number, links a stream's segments |
+| 40 | 4 | number of the append stream that opened it, which reporting and the stream's sync mark use ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)'s `SyncMark.Stream`): the predecessor, not this number, links a stream's segments |
 | 44 | 4 | CRC32C over bytes `[0, 44)`, **not seeded** |
 
 The header checksum is deliberately not seeded with the journal identity: a

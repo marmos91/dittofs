@@ -1776,13 +1776,18 @@ older content served as newer.
   that phase 1.
 - One transaction of each group commit also records the journal's sync marks
   (`Stats.SyncMarks`, [RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), read after the batches' sync: one key per append
-  stream ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), counted against `K`. Only one batch carries them, so no two
+  stream, keyed by each mark's `Stream`, and the write replaces the whole set,
+  deleting the key of any stream not in it ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), counted against `K`. Only one batch carries them, so no two
   of its transactions conflict on them. When that batch is split, one half keeps
   them. When the file left in it fails alone, they go in a transaction of their
   own. They ride on that transaction's `Existence.Commit` as its `marks` argument,
   and alone as a `Commit` with no pending existence ([RFC 6 §10.1](rfc-6-block-metadata.md#10.1%20Interface)'s
   `MarksWrite`). Either marks error, `ErrOpenGenMoved` or `ErrSyncMarks`, aborts the
-  whole transaction, so the files in it did not commit either; neither names a file. Once that transaction commits, the engine hands the marks it recorded to
+  whole transaction, so the files in it did not commit either; neither names a file.
+  The store answers `ErrSyncMarks` only when it knows the marks keys conflicted:
+  always in a transaction carrying only marks, and beside files only where it names
+  the conflicting keys. Any other conflict is the files', and the split narrows it
+  as below: one half keeps the marks, and they go alone once the last file fails. Once that transaction commits, the engine hands the marks it recorded to
   the journal's `MarksRecorded` ([RFC 1 §3.1](rfc-1-journal.md#3.1%20Write)), which keeps a segment a failure ended
   until they cover the copies made from it, or the journal seals the copies' segment. **One group commit at a time records a journal's marks, in the order it
   read them,** so its write replaces the stored marks unconditionally. Within a
@@ -1822,6 +1827,13 @@ older content served as newer.
   > by a deliberate double open of one directory. Overturned if a double open is
   > seen outside a test: then fence the process off the journal, answering its
   > shares `ErrDelay` under a condition, and commit nothing more for it.
+
+  > decision: a conflict beside files that the store does not name is a file's.
+  > Only the journal's group commit writes the marks keys, one at a time, and an
+  > open that reads them raises `og`, which the store reports as `ErrOpenGenMoved`,
+  > so nothing else can conflict on them. Answering `ErrSyncMarks` there would back
+  > off the marks and answer `ErrDelay` to stable overwrites on every file
+  > conflict. Overturned if anything else ever writes the marks keys.
 
   A group commit with no batch due writes them in a transaction of their own. A
   stability point waits for the marks only as
@@ -3948,7 +3960,8 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§10.3](#10.3%20Repack%20is%20triggered%20here) repack reserve | Fill one share to its limit with dirty bytes and another share's segments with released bytes. Assert repack of those segments proceeds and frees space for a third share's writes. A repack that reserves against its share's limit is refused. |
 | [§10.2.1](#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it) pacing law | Hold *M* half-way between *S* and *L* at a measured drain rate *r*; write *n* bytes. Assert the delay is *n* / 2*r* within 10 %, and zero below *S*. |
 | [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) group commit | Run 64 writers with `fsync` while `chmod` hits random files of the same journal. Assert no `fsync` waits on a conflict of another file beyond the split bound. Make one file's File record undecodable: assert the other files' overwrite flushes succeed, that file alone answers `ErrDelay`, and a health condition names it. |
-| [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) sync marks ride in one batch | Run a group commit of 64 files whose batch splits on a conflict without named keys; assert exactly one transaction of the group commit writes the sync marks, no two conflict on them, and a stability point returns only after the marks commit. Fail the marks' transaction with `ErrSyncMarks`; assert no file is blamed or split off, every file of that batch has its overwrite record before the marks land (the batch was retried without them), the marks are retried alone and backed off, and the waiting stability points answer `ErrDelay` until they land. Run a group commit with no batch due; assert the marks are written alone. Open the journal in a second process while the first still runs; assert the first's next marks transaction fails `ErrOpenGenMoved`, its batch's existence still commits on the retry without marks, the first records no further marks, and the second's marks stand. |
+| [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) sync marks ride in one batch | Run a group commit of 64 files whose batch splits on a conflict without named keys; assert exactly one transaction of the group commit writes the sync marks, no two conflict on them, and a stability point returns only after the marks commit. Fail the marks' transaction with `ErrSyncMarks`, the store naming the marks keys; assert no file is blamed or split off, every file of that batch has its overwrite record before the marks land (the batch was retried without them), the marks are retried alone and backed off, and the waiting stability points answer `ErrDelay` until they land. Conflict a file of the batch carrying the marks, without named keys; assert the store does not answer `ErrSyncMarks`, no stability point is backed off for the marks, and the marks land with the half that keeps them. Run a group commit with no batch due; assert the marks are written alone. Open the journal in a second process while the first still runs; assert the first's next marks transaction fails `ErrOpenGenMoved`, its batch's existence still commits on the retry without marks, the first records no further marks, and the second's marks stand. |
+| [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) sync marks are keyed by stream | Write on three streams and let a group commit record their marks; then `Sync` files on the third stream alone and let the next group commit run. Assert each stored mark is under its own stream's key and the first two streams' marks are unchanged. Restart with two streams configured and let a group commit run; assert each stored mark is its own stream's and no key of the dropped stream remains. A positional key lets one stream's mark overwrite another's, and that stream's lost synced tail goes undetected. |
 | [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) the marks fence is per open | Fail a marks write with `ErrSyncMarks` so its retry is queued; turn the journal read-only and let the in-place reopen run, raising `og`. Assert the queued retry is cancelled; repeat with a marks-only transaction of the closing open held in flight by a hook when the reopen starts and failed with `ErrSyncMarks` once released, and assert the drain waits for it before `SyncMarks` raises `og` and no retry of it runs after; repeat with a group commit with no batch due started after the drain began, and assert it starts no marks transaction until the reopen ends. Release a marks write of the closing open by a hook after the reopen's step 1 has raised `og` and the engine holds the new open's generation: assert it fails `ErrOpenGenMoved`, is dropped, and the process does not stop recording marks. Assert in each that the reopened journal's next group commit records its marks; and a whole-file `fsync` over committed content succeeds after the reopen. A design that fences per process answers every such `fsync` `ErrDelay` until a restart. |
 | [§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding) shared journal | Two shares on one device journal; fill one. Assert the other's writes are not refused. |
 | [§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck) no cross-share slowdown | Run N shares with M writers each on one node; saturate one share with writes and cold reads. Assert every other share's p99 write and read latency stays within its unloaded baseline's bound, and `engine_lock_wait_seconds` shows no area whose wait grows with the loaded share's rate. |

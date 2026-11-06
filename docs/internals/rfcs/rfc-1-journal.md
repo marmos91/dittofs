@@ -392,6 +392,7 @@ Init(ctx context.Context, dir string, install InstallationID) (JournalID, error)
 Open(ctx context.Context, dir string, floor Version, expect JournalID, marks []SyncMark) (*Journal, error)
 
 type SyncMark struct {
+    Stream   uint32 // the append stream's number, as its segments' headers carry it (RFC 28 §2.2)
     Segment  uint64 // the segment id the stream's last recorded sync reached
     Through  int64  // the stream's synced-through offset there when that sync completed: never past a slot whose write failed or had not completed
     Offset   int64  // the end of the last record that sync covered there, which may lie past Through; never a seal marker, footer or trailer
@@ -740,8 +741,10 @@ its own segment ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)), or in
 succeeded. That proof is in-process; a later open reads it from a later record's
 synced-through offset, a seal, or a recorded sync mark ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). So `Sync` also
 returns, for each stream holding a named record outside a sealed segment, the
-`SyncMark` that covers them: the segment, its synced-through offset, and the end
-and sequence number of the newest named record there. The journal knows where its records
+`SyncMark` that covers them: the stream's number, the segment, its synced-through
+offset, and the end and sequence number of the newest named record there. A mark
+names its stream rather than relying on its position: a `Sync` returns no mark for a
+stream holding no named record, and the stream count is configurable. The journal knows where its records
 are, and the caller owns the marks ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)). Once the slot
 it waits behind completes, `Sync` issues the stream's next sync itself rather than
 waiting for the timer.
