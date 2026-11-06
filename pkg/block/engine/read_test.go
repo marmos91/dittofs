@@ -21,14 +21,15 @@ import (
 )
 
 // stubContent answers each covering lookup with cover's spans, numbering the
-// calls from 1, and call fail, when set, with an error alone. Every other
-// content call panics.
+// calls from 1, and call fail, when set, with an error alone: failWith, or
+// "store down". Every other content call panics.
 type stubContent struct {
 	engine.Content
-	cover func(call int, off, n int64) []entity.Span
-	fail  int
-	mu    sync.Mutex
-	calls int
+	cover    func(call int, off, n int64) []entity.Span
+	fail     int
+	failWith error
+	mu       sync.Mutex
+	calls    int
 }
 
 func (c *stubContent) Covering(_ context.Context, _ entity.ShareID, _ entity.FileID, off, n int64) iter.Seq2[entity.Span, error] {
@@ -37,7 +38,11 @@ func (c *stubContent) Covering(_ context.Context, _ entity.ShareID, _ entity.Fil
 	call := c.calls
 	c.mu.Unlock()
 	if call == c.fail {
-		return func(yield func(entity.Span, error) bool) { yield(entity.Span{}, errors.New("store down")) }
+		err := c.failWith
+		if err == nil {
+			err = errors.New("store down")
+		}
+		return func(yield func(entity.Span, error) bool) { yield(entity.Span{}, err) }
 	}
 	spans := c.cover(call, off, n)
 	return func(yield func(entity.Span, error) bool) {
@@ -61,8 +66,14 @@ func (u *unit) write(t *testing.T, f entity.FileID, off int64, p []byte) {
 // at the versions the journal gave them, as the group commit will.
 func (u *unit) commit(t *testing.T, f entity.FileID) {
 	t.Helper()
+	u.commitOps(t, f, u.e.Pending(f))
+}
+
+// commitOps commits the existence of pending writes ps of f to the store.
+func (u *unit) commitOps(t *testing.T, f entity.FileID, ps []engine.PendingView) {
+	t.Helper()
 	var ops []kvstore.PendingOp
-	for _, op := range u.e.Pending(f) {
+	for _, op := range ps {
 		ops = append(ops, kvstore.PendingOp{Version: entity.JournalVersion(op.Version.Bytes()), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: op.Off, Length: op.Len}, Time: op.At})
 	}
 	failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: ops}})
@@ -421,10 +432,11 @@ func TestALostExtentLogsOnce(t *testing.T) {
 	}
 }
 
-// A read of a file another share's handle holds is corrupt, counted so, and
-// carries no journal type.
+// A read of a file another share's handle holds is corrupt, counted so,
+// logged at Error once, and carries no journal type.
 func TestAReadOfAnotherSharesFileIsCorrupt(t *testing.T) {
-	u := newUnit(t)
+	var errs atomic.Int64
+	u := newUnit(t, func(d *engine.Deps) { d.Logger = slog.New(countHandler{errors: &errs}) })
 	other := engine.Share{ID: entity.NewShareID(), Tag: 2, Limit: 1 << 20, State: engine.Serving}
 	h, err := u.j.Share(other.Tag, other.Limit, journal.Version{}, other.SyncPolicy)
 	if err != nil {
@@ -437,6 +449,9 @@ func TestAReadOfAnotherSharesFileIsCorrupt(t *testing.T) {
 	var foreign *journal.OtherShareError
 	if !errors.Is(err, vfserr.ErrCorrupt) || errors.As(err, &foreign) || u.e.Reads("corrupt") != 1 {
 		t.Errorf("Read = %v, counted corrupt %d; want ErrCorrupt, counted once", err, u.e.Reads("corrupt"))
+	}
+	if n := errs.Load(); n != 1 {
+		t.Errorf("%d Error lines for a corrupt read; want 1", n)
 	}
 }
 
@@ -745,5 +760,119 @@ func TestPendingOperationsMakeHolesInCommittedData(t *testing.T) {
 	dst = fill(46*kib, 0xFF)
 	if n, err := u.e.Read(t.Context(), u.share.ID, g, 4*kib, dst); n != 46*kib || err != nil || !zeros(dst) {
 		t.Errorf("below a write past a pending truncate: Read = %d, %v, zeros %v; want 46 KiB of zeros", n, err, zeros(dst))
+	}
+}
+
+// A pending write the journal lost, overwritten by a write committed between
+// the read's two steps, reads as the new bytes, not lost: the file's applied
+// the store answers is kept on the pending write's run.
+func TestALostPendingWriteOverwrittenReadsTheNewBytes(t *testing.T) {
+	u := newUnit(t)
+	f := u.create(t, "f")
+	u.write(t, f, 0, fill(4*kib, 'a'))
+	u.lose(f, 0, 4*kib)
+	u.e.BindForTest(u.share, u.j, writeAfterRead{u.h, &sync.Once{}, func() {
+		u.write(t, f, 0, fill(8*kib, 'n'))
+		p := u.e.Pending(f)
+		u.commitOps(t, f, p[len(p)-1:])
+	}})
+	dst := make([]byte, 8*kib)
+	if n, err := u.e.Read(t.Context(), u.share.ID, f, 0, dst); n != 8*kib || err != nil || !bytes.Equal(dst, fill(8*kib, 'n')) {
+		t.Errorf("Read = %d, %v, bytes %q…; want the new write's 8 KiB", n, err, dst[:min(n, 1)])
+	}
+}
+
+// Runs of one lookup's answer, each read up to the first that fails or is
+// missing: a hole then a carved run answers the hole's bytes and
+// unavailable; two holes with a gap between answer the first hole's bytes;
+// a pending write the journal lost over a hole, beside an uncarved run
+// overwritten above asOf, is lost at once, as that overwrite is not over it.
+func TestAReadAnswersTheRunsBeforeTheFirstItCannotRead(t *testing.T) {
+	sp := func(off, n int64, c entity.Class) entity.Span {
+		return entity.Span{Extent: entity.Extent{Offset: off, Length: n}, Class: c}
+	}
+	carved := sp(4*kib, 4*kib, entity.Carved)
+	carved.Ref = entity.ChunkRef{Chunk: entity.ChunkHash{1}}
+	for _, c := range []struct {
+		name  string
+		write bool // a pending write of [0, 4k) the journal lost
+		cover func(call int) []entity.Span
+		n     int
+		err   error
+		calls int
+	}{
+		{"carved after a hole", false, func(int) []entity.Span { return []entity.Span{sp(0, 4*kib, entity.Hole), carved} }, 4 * kib, vfserr.ErrUnavailable, 1},
+		{"a gap between holes", false, func(int) []entity.Span { return []entity.Span{sp(0, kib, entity.Hole), sp(2*kib, 2*kib, entity.Hole)} }, kib, nil, 1},
+		{"a lost write beside an overwrite", true, func(call int) []entity.Span {
+			s := sp(4*kib, 4*kib, entity.Uncarved)
+			if call == 1 {
+				s.Overwrite = entity.VersionOf(1 << 30)
+			}
+			return []entity.Span{sp(0, 4*kib, entity.Hole), s}
+		}, 0, vfserr.ErrLost, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			st := &stubContent{cover: func(call int, _, _ int64) []entity.Span { return c.cover(call) }}
+			u := newUnit(t, func(d *engine.Deps) { d.Content = st })
+			f := entity.NewFileID()
+			size := 8 * kib
+			if c.write {
+				u.write(t, f, 0, fill(4*kib, 'a'))
+				u.lose(f, 0, 4*kib)
+				size = 4 * kib
+			}
+			dst := fill(size, 0xFF)
+			n, err := u.e.Read(t.Context(), u.share.ID, f, 0, dst)
+			if n != c.n || !errors.Is(err, c.err) || (c.err == nil) != (err == nil) || st.calls != c.calls {
+				t.Errorf("Read = %d, %v after %d lookups; want %d, %v after %d", n, err, st.calls, c.n, c.err, c.calls)
+			}
+			if !zeros(dst[:n]) {
+				t.Errorf("the %d bytes read are not zeros", n)
+			}
+		})
+	}
+}
+
+// A pending deallocate inside a carved zero-ref run splits it, and both
+// pieces keep their class: the whole run reads as zeros.
+func TestAZeroRefSplitByADeallocateReadsZeros(t *testing.T) {
+	st := &stubContent{cover: func(int, int64, int64) []entity.Span {
+		return []entity.Span{{Extent: entity.Extent{Offset: 0, Length: 12 * kib}, Class: entity.Carved}}
+	}}
+	u := newUnit(t, func(d *engine.Deps) { d.Content = st })
+	f := entity.NewFileID()
+	v, err := u.h.Deallocate(t.Context(), journal.NewFileID(f), journal.Extent{Off: 4 * kib, Len: 4 * kib})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.e.AddOp(f, v.Counter, false, 4*kib, 4*kib)
+	dst := fill(12*kib, 0xFF)
+	if n, err := u.e.Read(t.Context(), u.share.ID, f, 0, dst); n != 12*kib || err != nil || !zeros(dst) {
+		t.Errorf("Read = %d, %v, zeros %v; want 12 KiB of zeros", n, err, zeros(dst))
+	}
+}
+
+// A store refusal crosses a read as the filesystem's: the file gone as
+// ErrStale, a clone's extent as a retry with DelayClone, anything else
+// unavailable.
+func TestAStoreRefusalCrossesARead(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want func(error) bool
+	}{
+		{entity.ErrStale, func(err error) bool { return errors.Is(err, vfserr.ErrStale) }},
+		{entity.ErrDelay, func(err error) bool {
+			var d *vfserr.Delay
+			return errors.As(err, &d) && d.Cause == vfserr.DelayClone
+		}},
+		{errors.New("store down"), func(err error) bool { return errors.Is(err, vfserr.ErrUnavailable) }},
+	} {
+		t.Run(c.err.Error(), func(t *testing.T) {
+			st := &stubContent{fail: 1, failWith: c.err}
+			u := newUnit(t, func(d *engine.Deps) { d.Content = st })
+			if _, err := u.e.Read(t.Context(), u.share.ID, entity.NewFileID(), 0, make([]byte, kib)); !c.want(err) {
+				t.Errorf("a store answering %v: Read: %v", c.err, err)
+			}
+		})
 	}
 }
