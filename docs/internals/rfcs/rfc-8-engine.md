@@ -559,7 +559,13 @@ live, through repack, until the whole-tag record exists.
 Without the join, a create admitted before the mark could commit a File record
 after step 4 has passed it, and nothing would delete it. From then on the
 binding runs nothing that takes a journal version: step 4's file drops are
-metadata transactions alone.
+metadata transactions alone. A `Bind`,
+`Unbind` or `Drop` naming a share with another lifecycle call in progress is
+answered `ErrDelay`, which its caller retries, and `Close` waits for every such
+call in progress before it closes anything. A `Bind`, `Unbind` or `Drop` of a share
+whose tag has a handle marked closing waits, outside the lock, for that `Close` to
+return, since a failed `Bind` ends its lifecycle call before its handle's `Close`
+does ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 
 Per-file state is keyed by file within its shard, and held at that shard's
 primary, which offloads the whole file. A file is never split across shards
@@ -838,20 +844,25 @@ tag counter above that journal's tags ([RFC 26 §2.3](rfc-26-catalog-backups.md#
    share's files not yet visited stay gated, and the reconcile's own release of the
    handle no longer closes it. **The handle has one owner at a time, decided under
    the lock that serializes the share table's swaps.** The takeover marks the
-   handle bound under that lock before it calls `Share`, and the reconcile, under
-   the same lock, checks at the end of the tag's visit that no mark is set and, in
-   the same hold of the lock, marks the handle closing; it calls `Close` after
+   handle bound under that lock before it calls `Share`, and the reconcile, at
+   the end of the tag's visit and in one hold of the same lock, records that the visit
+   has ended, checks that no mark is set and, if none is, marks the handle closing; it calls `Close` after
    releasing the lock, since nothing may do I/O under it. A `Bind` that finds the
    tag's handle closing does not take it over: it waits, outside the lock, for that
    `Close` to return, and then attaches through `Share` as for a tag with no handle
    open. Checking the mark and closing in two holds of the lock would let a `Bind`
    take the handle in between, `Share` return that same handle, and the
    reconcile's `Close` then close a handle the share serves. A `Bind` that fails after taking it over undoes its other steps in
-   reverse but does not close the handle: it clears the mark under the lock, which
-   hands the handle back to the reconcile, and the reconcile closes it as above when the
-   tag's visit ends, or, if the visit has already ended, the failed `Bind` marks it
-   closing in the same hold of the lock and closes it once it has released the
-   lock. Closing
+   reverse but does not close the handle: it clears the mark under the lock and, in
+   the same hold, reads whether the tag's visit has ended and ends its own lifecycle
+   call on the share, so a retried `Bind` is not refused as concurrent with it
+   ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)). If
+   the visit has not ended, that hands the handle back to the reconcile, which closes
+   it as above when the visit ends; if it has, the failed `Bind` marks it closing in
+   that same hold and closes it once it has released the lock. Recording the visit's
+   end in a later hold than the check would let a `Bind` failing in between see the
+   visit not ended and hand the handle to a reconcile that has already decided not to
+   close it. Closing
    it in the undo would leave the reconcile's next `DropOlder` on a closed handle
    and the share's files gated; closing it on neither side would leave the tag
    open and every later `Forget` of it refused. A file's visit reseeds its offloaded bits, as above, from its live and its
@@ -1026,10 +1037,17 @@ made and its checks passed ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20t
 stopping the node:
 
 - **Drain.** Drain the journal's shards as a primary that loses a shard does,
-   below, cancel every marks retry the closing open queued, and join a marks
-   transaction of it still running, before step 1 reads `SyncMarks` ([§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)). Every call on their files is answered retry-later from here until
+   below, mark the closing open closing, so its group commit starts no marks
+   transaction and queues no marks retry until the engine holds the generation
+   step 1's `SyncMarks` returns, join a marks
+   transaction of it still running, and only then cancel every marks retry it
+   queued, before step 1 reads `SyncMarks`. The group commit checks the closing
+   mark and records its marks transaction as running in one hold of the group
+   commit's own lock, which no lifecycle call takes and under which the drain sets
+   the mark, so the drain either stops it or joins it ([§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)). Every call on their files is answered retry-later from here until
    the file is served again, and so is every `Bind`, `Unbind` and `Drop` that
-   names a share the journal serves or would serve, an addition included; its
+   names a share the journal serves or would serve, an addition included, and
+   the drain waits for every one already in progress, as `Close` does ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)); its
    caller retries it as any `ErrDelay`, and a share's removal resumes at the
    step it recorded ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)). A drain past its bound abandons
    this attempt: the shards' tenants are added back as step 6 adds them, the
@@ -1114,7 +1132,11 @@ running.
    resumes as an operation at the next start.
 4. Close what the engine opened — every share's flow, then its journal handles,
    then the journals — in the reverse of the order they were opened, and nothing
-   it was handed, only after every join has completed. A component **MUST NOT** be closed while any work
+   it was handed, only after every join has completed. A journal handle marked
+   closing, by a failed `Bind` or the metadata reconcile, is not closed here: once
+   no lifecycle call is in progress, `Close` joins that handle's own `Close`, as a
+   retried `Bind` waits for it, within the stop bound (step 5: past it, that handle
+   and its journal are left open and reported in the error), and closes the rest. A component **MUST NOT** be closed while any work
    that uses it is still running ([RFC 1 §8.7](rfc-1-journal.md#8.7%20Shutdown)).
 5. A join that does not complete within its bound **MUST** leave the components
    it depends on open and report the failure, rather than close them under a
@@ -1463,10 +1485,9 @@ inputs:
   journal attach ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)) — so a shard handed away and back to
   the same process changes the verifier though neither the node nor the process
   did;
-- the **loss generation** of the journal holding the file ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), which the
-  journal raises on every loss of an extent not yet offloaded, on every sync
-  window it fails ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)) and once as it turns read-only ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)), and on nothing else: a loss of content the remote
-  tier already holds makes no client resend.
+- the **loss generation** of the journal holding the file, which rises only on the
+  events [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events) lists. A loss of content the remote tier already holds makes no
+  client resend.
 
 It changes whenever an acknowledged but unstable write might have been lost —
 a restart, the shard moving to another node or coming back to this one, or the
@@ -1765,13 +1786,25 @@ older content served as newer.
   that phase 1.
 - One transaction of each group commit also records the journal's sync marks
   (`Stats.SyncMarks`, [RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), read after the batches' sync: one key per append
-  stream ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), counted against `K`. Only one batch carries them, so no two
+  stream, each mark written under its own `Stream`, and nothing deleted: a kept
+  mark whose segment is gone reads as retired ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) and segment ids
+  never repeat, so at most one key per stream ever configured stays ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), counted against `K`. Only one batch carries them, so no two
   of its transactions conflict on them. When that batch is split, one half keeps
   them. When the file left in it fails alone, they go in a transaction of their
   own. They ride on that transaction's `Existence.Commit` as its `marks` argument,
   and alone as a `Commit` with no pending existence ([RFC 6 §10.1](rfc-6-block-metadata.md#10.1%20Interface)'s
   `MarksWrite`). Either marks error, `ErrOpenGenMoved` or `ErrSyncMarks`, aborts the
-  whole transaction, so the files in it did not commit either; neither names a file. Once that transaction commits, the engine hands the marks it recorded to
+  whole transaction, so the files in it did not commit either; neither names a file.
+  The store answers `ErrSyncMarks` only when it knows the marks keys conflicted:
+  always in a transaction carrying only marks, and beside files only where it names
+  the conflicting keys. Any other conflict is the files', and the split narrows it
+  as below: one half keeps the marks, and they go alone once the last file fails.
+  On any other whole-call failure, the engine takes the marks out and sends them
+  alone once, at once, while the files go on without them as below, splitting
+  unless the failure is store-wide, so no file is
+  backed off without having been tried without the marks. Marks alone failing with
+  any other store error are retried alone and backed off, as on `ErrSyncMarks`. A
+  queued marks retry is dropped once a later group commit's marks commit. Once that transaction commits, the engine hands the marks it recorded to
   the journal's `MarksRecorded` ([RFC 1 §3.1](rfc-1-journal.md#3.1%20Write)), which keeps a segment a failure ended
   until they cover the copies made from it, or the journal seals the copies' segment. **One group commit at a time records a journal's marks, in the order it
   read them,** so its write replaces the stored marks unconditionally. Within a
@@ -1784,17 +1817,17 @@ older content served as newer.
   still equals it, so it never overwrites the marks of a later open. The key
   is the open's alone: lease renewals do not touch it.
   A stored mark that does not decode is logged as a codec error, left out of what
-  `SyncMarks` returns with no error, handed to `Open` as absent, and overwritten by the next group commit: the marks only find a loss, and correctness rests on the `reconcile`
+  `SyncMarks` returns with no error, handed to `Open` as absent, and overwritten by the next group commit that carries its stream: the marks only find a loss, and correctness rests on the `reconcile`
   record ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). A marks error never splits a batch or blames a file: the
   engine retries the batch's existence at once without the marks, and only then
   handles the marks. On `ErrSyncMarks` the marks are retried alone, backed off, and
   the stability points waiting on them answer `ErrDelay` meanwhile. On
   `ErrOpenGenMoved` that write is dropped. If its generation is an earlier open's
   of this process, its own in-place reopen replaced it, and the current open's
-  next group commit records fresh marks; the in-place reopen's drain also cancels
-  every marks retry the previous open queued and joins a marks transaction of it
-  still running, so none meets the reopened `og` before the engine holds the new
-  open's generation. Only if `og` passed the current
+  next group commit records fresh marks; the in-place reopen's drain also stops the
+  previous open starting marks transactions or queuing marks retries, joins a marks
+  transaction of it still running, and then cancels every marks retry it queued, so
+  none meets the reopened `og` before the engine holds the new open's generation. Only if `og` passed the current
   open's generation has another process opened the journal, and then the process
   stops recording marks for it, and the stability points waiting on them answer
   `ErrDelay` at their deadline.
@@ -1805,12 +1838,19 @@ older content served as newer.
   > only the marks key. The commits fail closed only where the later open's
   > reconcile visits a file after them: it never indexed a record the earlier
   > process commits an overwrite record for, so it resolves that extent **Lost**.
-  > They neither cause nor prevent the later open serving older content it indexed
-  > itself, which the reconcile visits once and §7.1 answers from the journal
-  > first. Reachable only
+  > Where the reconcile visited the file before them, the later open serves the
+  > content it indexed even over an overwrite the earlier process acknowledged; the
+  > commits do not cause that, the double open does. Reachable only
   > by a deliberate double open of one directory. Overturned if a double open is
   > seen outside a test: then fence the process off the journal, answering its
   > shares `ErrDelay` under a condition, and commit nothing more for it.
+
+  > decision: a conflict beside files that the store does not name is a file's.
+  > Only the journal's group commit writes the marks keys, one at a time, and an
+  > open that reads them raises `og`, which the store reports as `ErrOpenGenMoved`,
+  > so nothing else can conflict on them. Answering `ErrSyncMarks` there would back
+  > off the marks and answer `ErrDelay` to stable overwrites on every file
+  > conflict. Overturned if anything else ever writes the marks keys.
 
   A group commit with no batch due writes them in a transaction of their own. A
   stability point waits for the marks only as
@@ -1833,6 +1873,10 @@ older content served as newer.
   an offload ([§6.3](#6.3%20The%20offload%20pipeline)), and raises `existence_commit_failing` naming it
   ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)); its stability points answer `ErrDelay` meanwhile, and no other
   file's flush or offer waits on it.
+  A whole-call failure that is store-wide — the commit's bound expiring with no
+  conflict, a stalled store, or the store closed — does not split: no file is
+  blamed, and the batch is retried whole by the next group commit, under
+  [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)'s rule for a stalled store.
 
 **Why.** An existence commit rewrites the file's record, which a namespace
 operation — `chmod`, a rename's `ctime`, an unlink — also writes. Without the
@@ -3880,7 +3924,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) attach above the floor | Move a share whose refs reach version 9·10⁸ onto a node whose journal's counter is near 2·10⁶; write over an extent the imported refs cover, offload, evict, read. Assert the new write's version exceeds 9·10⁸ and the read returns the new bytes. Repeat for a clone and a restore into the node. Remove the raise: the read returns the imported content. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) attach after a device loss | Write unstably to a share, the metadata store stalled so none commits, until its journal has reported versions far above its version floor; destroy the device, acknowledge the loss, and attach the share to a new journal whose counter starts at 0. Assert the counter is raised above the share's version limit `S‖id‖vl` as well as its floor, so no version the lost journal reported is issued again, and a write after the attach reads back. Assert too that the attach wrote the limit as a tracked max-write, the incarnation and the verifier changed, and a share whose `rm` row reads offloaded was not attached. An attach that raises only above the floor reissues those versions ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) metadata reconcile | Reopen a journal owing a reconcile, over files with an overwrite record, a ref, a hole and a truncate. Assert each piece strictly below its version is dropped and resolves as the text says, the piece at the overwrite record's version is kept and reads back, only the overwrite-record case raises the file's loss sequence, and a piece past `size` above `applied`, written while the reconcile runs, is kept. Delete a file whose content is held and prune its records; assert the reconcile drops all of it. On a file not yet visited, assert a read, a write, a truncate, a deallocate, a delete, a clone into it, a replica `Apply`, an offload offer, an eviction, a copy and clone source, a snapshot capture and a replica `Copy` each visit it first and then proceed, that one whose visit outlasts its deadline is answered retry-later, that its metadata is served, and that a stranded tag's salvage export runs. Let a group commit run while the reconcile runs, with one stream synced since the open and another idle; assert that commit records the synced stream's new mark and the idle one's recovered, lower mark, and that the reconcile writes no mark. Leave a clone whose phase 1 had not committed, with its source unvisited; assert start step 4's re-make reads the source only after visiting it, and that start is not held up while the visit waits. Fail a metadata read; assert the file stays gated, `journal_unreconciled` names the share, and the retry completes its visit. Refuse `DropOlder` with `ErrNoSpace`; assert the file is ungated, `Reconciled` is retried under `journal_unreconciled`, and succeeds once repack returns headroom. Hold a share unattached and crash after every attached share is visited; assert no `Reconciled` was appended and the next open owes the reconcile again. On a node holding a replica of a shard, assert the reconcile visits it and the replica gets a loss point; promote it and assert no stale piece serves. Turn the journal read-only mid-reconcile; assert the next open owes it again. Exhaust the headroom so `DropOlder` drops v6 in memory, unrecorded; write v10 over the extent and fail its sync window; assert v6 is not held again and never served. |
-| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) `Bind` takes over the reconcile's handle | Reopen a journal owing a reconcile with share S unattached, and give S an imported ref above the journal's counter; `Bind` S while the reconcile is visiting S's files. Assert the journal holds one handle of S's tag, S's files not yet visited are still gated, the version counter is above the ref and S's limit is written before S serves, a new write's version is above the imported ref, and the reconcile's release of the handle when S's visit ends leaves S's handle open and serving. A design that skips `Share` on takeover serves the imported content over the new write. Repeat with S's limit write failing after the takeover: assert the failed `Bind` leaves the handle open, the reconcile finishes S's visit through it and then closes it, and a later `Forget` of S's tag succeeds; repeat with the failure after S's visit ended and assert the handle is closed at once. Hold the reconcile by a hook between its release of the lock and its `Close` at the end of S's visit, and `Bind` S then; repeat with a failed `Bind`'s close held the same way and S's `Bind` retried. Assert each `Bind` waits for that `Close` and serves S through a handle opened after it, and S's next read succeeds. A design that checks the mark and closes in two holds of the lock hands S the handle the reconcile then closes. |
+| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) `Bind` takes over the reconcile's handle | Reopen a journal owing a reconcile with share S unattached, and give S an imported ref above the journal's counter; `Bind` S while the reconcile is visiting S's files. Assert the journal holds one handle of S's tag, S's files not yet visited are still gated, the version counter is above the ref and S's limit is written before S serves, a new write's version is above the imported ref, and the reconcile's release of the handle when S's visit ends leaves S's handle open and serving. A design that skips `Share` on takeover serves the imported content over the new write. Repeat with S's limit write failing after the takeover: assert the failed `Bind` leaves the handle open, the reconcile finishes S's visit through it and then closes it, and a later `Forget` of S's tag succeeds; repeat with the failure after S's visit ended and assert the handle is closed at once. Hold the reconcile by a hook right after the hold of the lock in which it finds S's mark set at the end of S's visit, and fail that `Bind` then: assert the failed `Bind` sees the visit ended and closes the handle. Hold the reconcile by a hook between its release of the lock and its `Close` at the end of S's visit, and `Bind` S then; repeat with a failed `Bind`'s close held the same way and S's `Bind` retried, which is not answered `ErrDelay`. Assert each `Bind` waits for that `Close` and serves S through a handle opened after it, and S's next read succeeds. A design that checks the mark and closes in two holds of the lock hands S the handle the reconcile then closes. With a failed `Bind`'s close held the same way, `Drop` S: assert the `Drop` waits for that `Close` to return, the handle is closed once, and the whole-tag `Forget` succeeds. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) unsuitable journal at start | Put two shares on two device journals, write to both and stop, then make one journal's directory refused by the platform checks, as on a mount without cache flushes. Start: assert `Start` succeeds, the other device's share is served, the refused share is not attached, `Stats` names it, its device and the rule, `journal_unsuitable` is raised, and nothing in the directory changed. Clear the check: assert the next retried open attaches the share, its content reads back, the shard's incarnation is higher than when `Start` returned, the write verifier differs from before the restart, and the condition clears with no operator step. Refuse it again, restart, and `Close` with the retry pending, then clear the check: assert nothing opens the directory. Repeat, failing a start transaction (step 2) instead of calling `Close`: assert `Start` returns its error and, once the check clears, nothing opens the directory. Refuse it again, restart, and empty the directory before clearing the check: assert the retried open leaves the share unattached as a lost device, waiting for an operator, raises `journal_lost` in place of `journal_unsuitable`, and creates nothing. Refuse it again and restart; with the retry pending, call `Unbind` on the refused share: assert it answers `ErrDelay` and succeeds once the share serves. Clear the check and make the retried open's recovery fail on I/O once: assert the share stays unattached, `journal_unsuitable` names the error, and the next retry attaches it. A `Start` that fails on the refusal stops every share of the node. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) unread range at start | Put two shares on two device journals; make an unnamed range of one unreadable at the seam and start. Assert `Start` succeeds, the other journal's share serves, the first's shares are unattached with `journal_range_unreadable` naming the segment and range, and the open is retried at 60 s. Let the range read; assert the shares attach after steps 3 to 6 and the reseed, with no restart. Repeat, acknowledging the range instead; assert the shares attach with their loss sequences raised and nothing stale is served. Make a retried open fail with `ErrUnsuitableStorage`; assert the condition and interval switch to unsuitable storage. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) reseed gates offer and eviction | Crash after an offload commit with its durable record unsynced, with the journal full; restart. Assert the block is not put again, and no extent of a file is evicted before the reseed has visited that file. Restart with a bit whose ref was deleted behind the journal: assert a ledger mismatch is reported, the bit is cleared with `Unmark`, the extent is offered again and never evicted before that offer commits. |
@@ -3937,8 +3981,9 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§10.3](#10.3%20Repack%20is%20triggered%20here) repack reserve | Fill one share to its limit with dirty bytes and another share's segments with released bytes. Assert repack of those segments proceeds and frees space for a third share's writes. A repack that reserves against its share's limit is refused. |
 | [§10.2.1](#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it) pacing law | Hold *M* half-way between *S* and *L* at a measured drain rate *r*; write *n* bytes. Assert the delay is *n* / 2*r* within 10 %, and zero below *S*. |
 | [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) group commit | Run 64 writers with `fsync` while `chmod` hits random files of the same journal. Assert no `fsync` waits on a conflict of another file beyond the split bound. Make one file's File record undecodable: assert the other files' overwrite flushes succeed, that file alone answers `ErrDelay`, and a health condition names it. |
-| [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) sync marks ride in one batch | Run a group commit of 64 files whose batch splits on a conflict without named keys; assert exactly one transaction of the group commit writes the sync marks, no two conflict on them, and a stability point returns only after the marks commit. Fail the marks' transaction with `ErrSyncMarks`; assert no file is blamed or split off, every file of that batch has its overwrite record before the marks land (the batch was retried without them), the marks are retried alone and backed off, and the waiting stability points answer `ErrDelay` until they land. Run a group commit with no batch due; assert the marks are written alone. Open the journal in a second process while the first still runs; assert the first's next marks transaction fails `ErrOpenGenMoved`, its batch's existence still commits on the retry without marks, the first records no further marks, and the second's marks stand. |
-| [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) the marks fence is per open | Fail a marks write with `ErrSyncMarks` so its retry is queued; turn the journal read-only and let the in-place reopen run, raising `og`. Assert the queued retry is cancelled; repeat with a marks-only transaction of the closing open held in flight by a hook when the reopen starts, and assert the drain waits for it before `SyncMarks` raises `og`. Assert in both that the reopened journal's next group commit records its marks; and a whole-file `fsync` over committed content succeeds after the reopen. A design that fences per process answers every such `fsync` `ErrDelay` until a restart. |
+| [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) sync marks ride in one batch | Run a group commit of 64 files whose batch splits on a conflict without named keys; assert exactly one transaction of the group commit writes the sync marks, no two conflict on them, and a stability point returns only after the marks commit. Fail the marks' transaction with `ErrSyncMarks`, the store naming the marks keys; assert no file is blamed or split off, every file of that batch has its overwrite record before the marks land (the batch was retried without them), the marks are retried alone and backed off, and the waiting stability points answer `ErrDelay` until they land. Conflict a file of the batch carrying the marks, without named keys; assert the store does not answer `ErrSyncMarks`, no stability point is backed off for the marks, and the marks land with the half that keeps them. Run a group commit with no batch due; assert the marks are written alone. Open the journal in a second process while the first still runs; assert the first's next marks transaction fails `ErrOpenGenMoved`, its batch's existence still commits on the retry without marks, the first records no further marks, and the second's marks stand. |
+| [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) sync marks are keyed by stream | Write on three streams and let a group commit record their marks; then `Sync` files on the third stream alone and let the next group commit run. Assert each stored mark is under its own stream's key and the first two streams' marks are unchanged. Restart with two streams configured and let a group commit run; assert each stored mark is its own stream's, the dropped stream's mark stays, and once its last segment is retired the next open reads it as retired. Restart instead with three streams again before that segment is retired, and let the new third stream sync; assert its first segment names the old one as predecessor, and that a lost tail of the old segment is then reported, not read as torn. A positional key lets one stream's mark overwrite another's, and a deleted key leaves the dropped stream's last segment with no proof of its tail, so a later loss there reads as torn. |
+| [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) the marks fence is per open | Fail a marks write with `ErrSyncMarks` so its retry is queued; turn the journal read-only and let the in-place reopen run, raising `og`. Assert the queued retry is cancelled; repeat with a marks-only transaction of the closing open held in flight by a hook when the reopen starts and failed with `ErrSyncMarks` once released, and assert the drain waits for it before `SyncMarks` raises `og` and no retry of it runs after; repeat with a group commit with no batch due started after the drain began, and assert it starts no marks transaction until the engine holds the new open's generation. Hold a group commit that read the closing open's `Stats.SyncMarks` before the drain set its mark by a hook just before its closing check, and release it once the engine holds the new open's generation: assert its marks write fails `ErrOpenGenMoved`, is dropped, and the process keeps recording marks. Assert in each that the reopened journal's next group commit records its marks; and a whole-file `fsync` over committed content succeeds after the reopen. A design that fences per process answers every such `fsync` `ErrDelay` until a restart. |
 | [§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding) shared journal | Two shares on one device journal; fill one. Assert the other's writes are not refused. |
 | [§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck) no cross-share slowdown | Run N shares with M writers each on one node; saturate one share with writes and cold reads. Assert every other share's p99 write and read latency stays within its unloaded baseline's bound, and `engine_lock_wait_seconds` shows no area whose wait grows with the loaded share's rate. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) join | Close with an offload parked in a stalled put. Assert no component is closed while the pass runs. |

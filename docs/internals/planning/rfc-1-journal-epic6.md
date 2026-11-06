@@ -287,7 +287,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R39 | A loss event is an extent the journal stopped holding without being asked: dropped as corrupt, as stale, or because a failed window was failed. It names the share, the file, the extent, the content version, the reason, whether the offloaded bit was set, and whether its loss is deferred (R92). Epic 1's `LossEvent` (1.7) has no such field: T6.2 adds it, an amendment of a surface frozen at S1, as T6.1's is for `SyncPolicy`; epic 7's open is the only one that sets it | invariant | RFC 1 §3.8 | T6.2 |
+| R39 | A loss event is an extent the journal stopped holding without being asked: dropped for one of RFC 28 §2.3's loss reasons. It names the share, the file, the extent, the content version, the reason, whether the offloaded bit was set, and whether its loss is deferred (R92). Epic 1's `LossEvent` (1.7) has no such field: T6.2 adds it, an amendment of a surface frozen at S1, as T6.1's is for `SyncPolicy`; epic 7's open is the only one that sets it | invariant | RFC 1 §3.8 | T6.2 |
 | R40 | `Stats` keeps the most recent loss events in a bounded ring, each with a sequence number, and counts them all, so a poller sees every new event or knows how many it missed | invariant | RFC 1 §3.8, §3.9 | T6.2 |
 | R41 | A loss is a record. The journal appends a loss record for each record piece a loss event drops, before it publishes the event, naming the file, extent, version and reason, and carrying in its payload the sequence number of the record it drops and whether that record was synced when it was dropped. The one exception is a loss an open defers past the open reserve (R92), which is epic 7's: its event is published first, marked deferred, and its record is written later, into the copy that retires the dropped record's segment | invariant | RFC 1 §3.8 | T6.2 |
 | R42 | An unsynced loss record (a record of a failed window, or one found corrupt before its sync) reaches nothing else: it names the exact record, never "at or below this version inside the extent" | invariant | RFC 1 §3.8 | T6.2 |
@@ -722,8 +722,8 @@ pkg/block/journal/
   record encoder; E1's `LossEvent`; E4's marker set (E4-5), which takes a loss kind (§9).
 - **Covers:** R39–R53, R56, R62, R76–R79, R83, R84, R92.
 - **Deliverables:** `internal/durability/loss.go`: `Lose(ctx, Loss) (core.LossEvent, error)`
-  (D6) with `Loss` naming the share, file, extent, version, sequence number, reason (corrupt,
-  stale, failed window), the extent's offloaded bit as it was, and whether the record was
+  (D6) with `Loss` naming the share, file, extent, version, sequence number, reason (RFC 28
+  §2.3's loss reasons), the extent's offloaded bit as it was, and whether the record was
   synced. It appends the loss record through E5's `Append`, drawing on the headroom where no
   spare is ready, with the flag R42 and R43 describe, then raises the generation, then publishes
   the event (R51). It checks no admission rule of its own (D6). A record it cannot append, the journal
@@ -1380,11 +1380,6 @@ suggestion only: one pull request per subtask works as well.
   keep the extent held, retry a bounded number of times and count the segment suspect. D11 drops
   nothing and returns the error, which holds under #3511 and is not decided for #3440. If the
   RFC's answer is that an `EIO` read drops the extent, T6.7 gains a branch.
-- **A header that does not verify.** #3449 asks whether a loss is named when a record's header
-  fails to verify in a scanned segment. At read time the index already names the record, so
-  T6.7 names it; the scanned case is E7's, and the two should agree. #3518 (open, closes #3449)
-  adds a fourth loss reason, `superseded`, for the reconcile's drops; T6.2's `Loss` names three,
-  and gains the fourth if it merges (the reconcile is E7's).
 - **Another copy of a record at read time (D10).** Only a re-append's original is registered.
   A copy a repack carried is not. Confirm with E9's owner whether it will register the source of
   a carry, or whether the RFC's "unless another copy verifies" is meant for recovery alone.
