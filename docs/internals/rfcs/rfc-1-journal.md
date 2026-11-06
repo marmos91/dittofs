@@ -1460,12 +1460,26 @@ yields `ErrUnreadable` and nothing else. `Since` reads a consistent view of the 
 and **MUST NOT** block writes to it for longer than a read does.
 
 `Settle(id, v)` is the caller's statement that metadata has recorded every
-removal of `id` at or below `v`. The journal drops those markers. `Settle` is
-not persisted and appends nothing: recovery rebuilds the markers from the removal
-records ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)), and the caller settles again ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)). Settling too early
-is the caller's error, not the journal's: a marker dropped before its removal is
-recorded is one a crash may leave metadata never learning of, until recovery
-rebuilds it.
+removal **and every loss** of `id` at or below `v`; a loss is recorded once the
+lost write's existence is committed, from the write or from its loss record.
+The journal drops every unsettled marker and every synced loss record of `id`
+at or below `v`, however many, and **MUST NOT** drop a held extent, whatever
+its version. `Settle` is not persisted and appends nothing: recovery rebuilds
+the markers from the removal records and starts every synced loss record
+unsettled again ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)), and the caller settles again ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)).
+
+A caller **MUST NOT** settle at `v` while a removal or a loss of `id` at or
+below `v` is unrecorded: a crash could leave metadata never learning of the
+removal, and a dropped loss record leaves the lost range reading as the file was
+before the write, with no error.
+[RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) says how the engine keeps to this; the journal does not check it.
+A caller may still settle a removal or a loss it has decided never to record, as
+the engine does for a removal a terminal failure ends ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)). The caller
+owns that cost: a discarded removal's extent reads **Lost** wherever nothing
+offloaded holds it, both before and after repack drops the removal record
+([§7.2](#7.2%20Repack)), a discarded loss's range reads as the file was before the
+lost write, and until repack drops the record recovery may yield it again after
+a crash, for the caller to discard again.
 
 ### 3.11 Snapshot holds
 
@@ -3067,6 +3081,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§8.5](#8.5%20Protecting%20readers%20from%20reclamation) unlink under read | Write a non-zero pattern into a segment holding nothing else, start a read of it, release the extent mid-read so the segment is unlinked; assert the read either returns the pattern or reports the extent missing with the sentinel in `p` untouched. |
 | [§8.5](#8.5%20Protecting%20readers%20from%20reclamation) repack under read | Same, with a repack copy and unlink instead; assert the read sees the old or the new location, never neither. |
 | [§3.10](#3.10%20Settle%20and%20Since) removals survive to `Since` | Write, then truncate, deallocate and delete across three files; crash before any `Settle`; reopen; assert `Since(id, 0)` yields each held extent and each removal marker at its version, and `Since(id, v)` for a removal's own version `v` does not yield it. `Settle` each file at its removal's version; assert `Since` no longer yields the marker and `RemovalMarkers` is zero. Crash and reopen again; assert the markers are back, unsettled. |
+| [§3.10](#3.10%20Settle%20and%20Since) `Settle` drops by version, never content | Hold an extent above a truncate's marker and `Settle` at a version above both: assert the extent is still held and readable. Truncate a file twice, at v1 and v2, and `Settle` it at v2: assert `Since(id, 0)` yields neither marker. Write and sync a record, report it lost synced, and `Settle` at its version: assert `Since` stops yielding the loss. |
 | [§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete) no resurrection | Write at v2, deallocate at v3 over it, then `Fill` the extent with a current `asOf` and version v2; assert the extent reads `missing`, and still does after reopen. Repeat with version v3: assert the fill is held, since only content below the marker's version is excluded. |
 | [§7.2](#7.2%20Repack) removal outlives its segment | Write a file, overwrite it, delete it, then reclaim until the segment holding the delete is the only one selected; crash and reopen. Assert the file does not exist. Repeat with the delete settled by `Settle(id, deleteVersion)` before reclamation and the unlink of the segments holding the old bytes not yet durable: hold their directory sync, let reclamation reach the segment holding the delete, crash and reopen; assert the file still does not exist. A reclaim gate that counts only content records treats a segment holding just a removal as empty; one that drops a removal before the unlink it covers is durable brings the old bytes back. |
 | [§3.3](#3.3%20Offload) removal during offload | Truncate an offered extent while `fn` runs, then read `offered`; assert it returns the offered bytes, `ReadAt` reports the extent missing, and a report naming it marks nothing. Repeat with delete. |
