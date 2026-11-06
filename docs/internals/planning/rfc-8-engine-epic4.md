@@ -160,7 +160,7 @@ modify and change times, `OpLost`, the marks write) and the test components they
 | 3 Observability | T4.2, T4.3, T4.4 | T4.2 counts `engine_stability_points_total` and opens `engine.sync`; T4.3 records `engine_pending_existence_ops` (the operations one commit applied) and opens `engine.existence_commit`; T4.4 counts `engine_group_commit_splits_total` and raises `existence_commit_failing` naming the file, logged at `Warn` on entering and leaving. Counters in unexported fields epic 7's `Stats` exposes; none labelled by share |
 | 4 Profiling | all | the unit composition calls `prof.Watch`; T4.3's timer and its batch goroutine are joined by `closeGroupCommits`, which the tests call as epic 6's `Close` will, so a leak fails the test that composes the engine |
 | 5 Public and internal | all | the split (T4.4) and the claim (T4.7) tested internally; `Commit` and `LossSeq` through `*Engine`; `-race` in T4.3, T4.4 and T4.7. What the commit writes, the split times and the loss op's charge included, is asserted over the real `kvstore` (T4.3, T4.5), and the verifier where the service reads it, by `Commit`'s answer against `Write`'s (T4.1) |
-| 6 Known failures | T4.1, T4.2, T4.3, T4.4, T4.6 | `TestRFC8A_Verifier` and `TestRFC8A_StableWriteLazyExistence` are already listed, naming epic 6, whose start they also need; T4.1 and T4.2 add their engine assertions and leave those entries. The new rows, verifier inputs (T4.1), overwrite waits for existence, stalled store and marks wait (T4.2), sync before existence (T4.3), group commit and sync marks ride in one batch (T4.4), and failed window with verifier after a loss (T4.6), enter `test/engine/known.yaml` naming this epic's issue, red until the journal's `Init`, `Sync`, crash seam and loss events exist; a row an epic-4 change turns green leaves it in that change |
+| 6 Known failures | T4.1, T4.2, T4.3, T4.4, T4.6 | `TestRFC8A_Verifier` and `TestRFC8A_StableWriteLazyExistence` are already listed, naming epic 6, whose start they also need; T4.1 and T4.2 add their engine assertions and leave those entries. The new rows, verifier inputs (T4.1), overwrite waits for existence, stalled store and marks wait (T4.2), sync before existence (T4.3), group commit, sync marks ride in one batch and sync marks are keyed by stream (T4.4), and failed window with verifier after a loss (T4.6), enter `test/engine/known.yaml` naming this epic's issue, red until the journal's `Init`, `Sync`, crash seam and loss events exist; a row an epic-4 change turns green leaves it in that change |
 | 7 v2 ignores v1 | none | no new import |
 | 8 Real dependencies | T4.1, T4.2, T4.3, T4.4, T4.6 | every conformance row runs over the real journal and `kvstore`; the fake journal is for the unit tests of the engine's logic only, none of which stands in for a row |
 | 9 Comments | all | the markers of §4 at their code sites, and three of RFC 8 §5.1's: the loss sequence's floor (`ponytail:`, T4.5), the lazy existence of appends (`decision:`, T4.2) and the stable-overwrite cost (`ponytail:`, T4.2) |
@@ -236,7 +236,7 @@ row.
 | R23 | A file that still fails alone is backed off by itself and raises `existence_commit_failing` naming it; its stability points answer `ErrDelay` meanwhile | MUST | §5.2, §11.1 | T4.4 |
 | R24 | A metadata conflict is retried under the caller's deadline and never reaches a client as an I/O error; unresolved at the deadline, `ErrDelay` with `DelayConflict` | MUST, MUST NOT | §11.3 | T4.4 |
 | R25 | A failed existence commit is retried by the next group commit, and fails a reply only through R11's rule | invariant | §5.1 | T4.4 |
-| R26 | §5.2 group commit (adapted: one file's removal record undecodable too, the existence fence checked for presence, never decoded); §5.2 sync marks ride in one batch | test row | §15.2 | T4.4 |
+| R26 | §5.2 group commit (adapted: one file's removal record undecodable too, the existence fence checked for presence, never decoded); §5.2 sync marks ride in one batch; §5.2 sync marks are keyed by stream | test row | §15.2 | T4.4 |
 
 **Losses**
 
@@ -290,7 +290,7 @@ Only what the RFC leaves to the code. Ids are stable; a missing number became a 
   the claimed operations with D6's times, so a loss the drain marked after the capture is
   left out; then one `Existence.Commit`, which splits by `K` itself. Each commit runs under
   `conflictBound`, 1 s, since `kv.Update` retries a conflict until its context ends. A
-  whole-call error splits the batch (T4.4) unless store-wide: the bound expiring with no
+  whole-call error splits the batch (T4.4) unless store-wide (RFC 8 §5.2): the bound expiring with no
   conflict, or the store closed. Undecodable removal, hole or overwrite records reach the
   engine as a whole-call error, so the split isolates them. On return the committed
   operations leave their entries, the mark is cleared and waiters are woken on every file
@@ -449,11 +449,13 @@ listed test fails on the regression it names (after "catches").
   its own lock (epic 3's `unlock`); `engine_pending_existence_ops`; `waitBatch`,
   `commitNow`, `commitThrough` and `commitAll` (D10); `dropShare(s)`, which removes a share's
   files from the due set and waits for the batch in flight, called and tested by epic 6's
-  `Drop` (T6.9). `kvstore`'s `PendingOp` split (D6) and its marks write (RFC 6 §10.1), each with its own
-  test. The superseded runs: one function computing each write's `Over` from the entry's
+  `Drop` (T6.9). `kvstore`'s `PendingOp` split (D6) and its marks write (RFC 6 §10.1, RFC 16 §4.2, RFC 8 §5.2:
+  `ErrSyncMarks` only for a marks-only transaction, each mark keyed by its `Stream`, none
+  deleted), each with its own test. The superseded runs: one function computing each write's `Over` from the entry's
   pending writes, which `PendingExistence` calls and epic 5's T5.1 and epic 8's T8.2 reuse,
   and `kvstore.PendingOp`'s `Over` (D6), with `Existence.Commit` writing an overwrite record
-  over it. E2's fake journal gains sync marks: `Sync` returns them, `MarksRecorded` logs them.
+  over it. E2's fake journal gains sync marks: `Sync` returns them, `Stats().SyncMarks` keeps each
+  stream's latest merged by `Stream` (RFC 1 §3.7), `MarksRecorded` logs them.
 - **Rows:** §5.1 sync before existence, the write and `Commit` half; red until the journal's
   crash seam and `Sync` exist.
 - **Tests,** over the fake with a call log: `Sync` before `Existence.Commit` in every batch
@@ -500,11 +502,12 @@ listed test fails on the regression it names (after "catches").
   composes the unit over a given `kv.KV`, for a wrapper that fails or conflicts on chosen
   keys.
 - **Rows:** §5.2 group commit (adapted), over the real journal and `kvstore`, red until the
-  journal's `Sync` exists; §5.2 sync marks ride in one batch, over the same, red until it
-  returns marks.
+  journal's `Sync` exists; §5.2 sync marks ride in one batch and §5.2 sync marks are keyed by stream, over the
+  same, red until it returns marks.
 - **Tests:** the split's table over a stub `Existence`, each failure shape (a file in the
   map, a whole-call error, two failing files, every file failing, each on a batch carrying
-  the marks) against the expected calls
+  the marks; the marks pulled out on a whole-call error and sent alone once; the marks alone
+  failing with a store error, retried alone with backoff) against the expected calls
   (catches a committed file resubmitted, or a failing one resubmitted with the rest). Over
   the real `kvstore` through `newUnitOver`: one file's File record undecodable, the other
   files' overwrite `Commit`s succeed, that file's answers `ErrDelay` and the condition names
@@ -513,7 +516,9 @@ listed test fails on the regression it names (after "catches").
   conflict held past `conflictBound` splits the batch, and so does one file's removal record
   made undecodable (catches a split on conflicts only); a store stalled past the bound, or
   closed, does not split (catches 2G−1 calls on a store-wide failure, or a commit left
-  retrying until the caller's deadline); the condition cleared on `dropShare` and on
+  retrying until the caller's deadline); the "sync marks ride in one batch" row's case of a
+  store naming the marks keys, through `newUnitOver`'s wrapper, since the real `kvstore` names
+  none; the condition cleared on `dropShare` and on
   `lostWhole` (catches a condition naming a file nothing will commit); a `kv.KV` wrapper
   recording the mark sees it on every group-commit call and on no `Existence.Overwrites` call
   of a `Commit` (catches a retried call left unmarked, which the self-fence never counts).

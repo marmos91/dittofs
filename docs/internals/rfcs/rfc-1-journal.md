@@ -392,6 +392,7 @@ Init(ctx context.Context, dir string, install InstallationID) (JournalID, error)
 Open(ctx context.Context, dir string, floor Version, expect JournalID, marks []SyncMark) (*Journal, error)
 
 type SyncMark struct {
+    Stream   uint32 // the append stream's number, as its segments' headers carry it (RFC 28 §2.2)
     Segment  uint64 // the segment id the stream's last recorded sync reached
     Through  int64  // the stream's synced-through offset there when that sync completed: never past a slot whose write failed or had not completed
     Offset   int64  // the end of the last record that sync covered there, which may lie past Through; never a seal marker, footer or trailer
@@ -741,8 +742,12 @@ its own segment ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)), or in
 succeeded. That proof is in-process; a later open reads it from a later record's
 synced-through offset, a seal, or a recorded sync mark ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). So `Sync` also
 returns, for each stream holding a named record outside a sealed segment, the
-`SyncMark` that covers them: the segment, its synced-through offset, and the end
-and sequence number of the newest named record there. The journal knows where its records
+`SyncMark` that covers them: the stream's number, the segment, its synced-through
+offset, and the end and sequence number of the newest named record there. A mark
+names its stream rather than relying on its position: a `Sync` returns no mark for a
+stream holding no named record, and the stream count is configurable. The caller
+keeps each stream's latest mark under its `Stream` and deletes none: a stream
+dropped at a restart still has a last segment on disk whose tail only its mark proves. The journal knows where its records
 are, and the caller owns the marks ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)). Once the slot
 it waits behind completes, `Sync` issues the stream's next sync itself rather than
 waiting for the timer.
@@ -1608,13 +1613,14 @@ and **MUST NOT** block writes to it for longer than a read does.
 removal **and every loss** of `id` at or below `v`; a loss is recorded once the
 lost write's existence is committed, from the write or from its loss record.
 The journal drops every unsettled marker and every synced loss record of `id`
-at or below `v`, however many, and **MUST NOT** drop a held extent, whatever
+at or below `v`, however many, a `superseded` one excepted, and **MUST NOT** drop a held extent, whatever
 its version. `Settle` is not persisted and appends nothing: recovery rebuilds
 the markers from the removal records and starts every synced loss record
-unsettled again ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)), and the caller settles again ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)).
+unsettled again, a `superseded` one excepted ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)), and the caller settles again ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)).
 
 A caller **MUST NOT** settle at `v` while a removal or a loss of `id` at or
-below `v` is unrecorded: a crash could leave metadata never learning of the
+below `v` is unrecorded (a piece `DropOlder` drops as `superseded` is not a loss
+here: metadata already holds content newer than it): a crash could leave metadata never learning of the
 removal, and a dropped loss record leaves the lost range reading as the file was
 before the write, with no error.
 [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) says how the engine keeps to this; the journal does not check it.
@@ -2524,9 +2530,12 @@ short of a whole spare and the open's retirements don't make it up, the open sti
 serves, with the headroom a spare short, counted by `Stats.HeadroomSparesShort`, from which the engine raises `journal_headroom_short`. Every later
 retirement, by repack or an open, tries the remake again until the count is zero. Failing the open would stop `Start` on the full
 device this fallback is for. Repeated opens with no retirement between take at
-most one spare per damage event: an open appends a `reconcile` record only where no
-unsettled one is on disk ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), but `Reconciled` can settle it at once, so
-a later open with new damage takes another, and each stays counted in
+most one spare per damage event, or per re-count after a crash during `Reconciled`: an open appends a `reconcile` record only where no
+unsettled one is on disk that no per-range `reconciled` record follows ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)).
+A crash that keeps only some of `Reconciled`'s per-range records lets the next open
+count the rest again, and that open takes another spare. `Reconciled` can also settle
+a `reconcile` record at once, so a later open with new damage takes another. Each
+spare taken stays counted in
 `Stats.HeadroomSparesShort` until a retirement remakes it. It is
 accounted to the journal, like the spare pool.
 
