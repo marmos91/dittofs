@@ -49,9 +49,17 @@ func lifecycleStore(t *testing.T, wrap func(kv.KV) kv.KV) *Store {
 // it, with its tag and shard.
 func namedShare(t *testing.T, s *Store, name string) entity.Share {
 	t.Helper()
+
+	return shareWithID(t, s, name, entity.NewShareID())
+}
+
+// shareWithID is namedShare with the ShareID given, so a test can place a
+// share in ShareID order.
+func shareWithID(t *testing.T, s *Store, name string, id entity.ShareID) entity.Share {
+	t.Helper()
 	ctx := context.Background()
 	sh := entity.Share{
-		ID:   entity.NewShareID(),
+		ID:   id,
 		Name: name,
 		Path: "/" + name,
 		Root: entity.NewFileID(),
@@ -690,8 +698,8 @@ func wantShardAt(t *testing.T, s *Store, id entity.ShardID, inc, grace uint64) {
 }
 
 // RFC 8 §2.5 step 2 and E40: the start raises its shards in transactions of
-// at most K keys, so 3 * K + 1 shards take at least 4 Updates, none writing
-// more than K keys. Shards 4 and 5 are named twice: without the dedup before
+// at most K keys, so 3 * K + 1 shards take 4 Updates, three of K and one of
+// a single shard, none writing more than K keys. Shards 4 and 5 are named twice: without the dedup before
 // the batches, shard 4 lands at the end of the first batch and the start of
 // the second, and is raised twice. Every shard comes back raised once, in the
 // map as in its record, whichever batch raised it.
@@ -720,8 +728,8 @@ func TestRaiseAtStartWithinK(t *testing.T) {
 		t.Errorf("one Update wrote %d keys, past K = %d", u.MostWrites, k)
 	}
 
-	if u.Updates < 4 {
-		t.Errorf("%d shards raised in %d Updates, want at least 4", n, u.Updates)
+	if u.Updates != 4 {
+		t.Errorf("%d shards raised in %d Updates, want 4", n, u.Updates)
 	}
 
 	if len(got) != n {
@@ -877,13 +885,14 @@ func TestRaiseAtStartRefusesBeforeAnyBatch(t *testing.T) {
 // own View, every share whole in one View, and resumes after the last share
 // read. 3 * K + 1 shares, sorted by ShareID: the one being removed, with two
 // shards, ends the first batch, the retired one starts the second, and one
-// whose record is gone starts the third. Each share is read once, the one
-// with no record included, which counts toward K, and Tags answers every
-// share with a record with its own state. The rm rows of the share being
-// removed are read in the View that reads its record: reading the batch's
-// records in one View and each share's rm rows in another would give the
-// same answer from two snapshots, so a removal step between them would mix
-// two states of one share.
+// whose record is gone starts the third. The walk takes 4 Views, three of K
+// shares and one of the last, so one View a share fails it. Each share is
+// read once, the one with no record included, which counts toward K, and
+// Tags answers every share with a record with its own state. The rm rows of
+// the share being removed are read in the View that reads its record:
+// reading the batch's records in one View and each share's rm rows in
+// another would give the same answer from two snapshots, so a removal step
+// between them would mix two states of one share.
 func TestTagsInBatches(t *testing.T) {
 	const k, n = 4, 3*4 + 1
 	ctx := context.Background()
@@ -979,6 +988,10 @@ func TestTagsInBatches(t *testing.T) {
 	removingView := -1
 	txns := log.take()
 
+	if want := (n + k - 1) / k; len(txns) != want {
+		t.Errorf("Tags read %d shares in %d Views, want %d", n, len(txns), want)
+	}
+
 	for i, txn := range txns {
 		inView := 0
 
@@ -1020,8 +1033,8 @@ func TestTagsInBatches(t *testing.T) {
 // RFC 16 §4.1: a batch of K items commits well inside the store's transaction
 // age, so VersionLimits reads the named shares' limits in batches of at most
 // K, each its own View with one GetMany, and answers every share: 3 * K + 1
-// shares, the last batch holding one, each limit its own value, and one share
-// with none written, which reads zero.
+// shares in 4 Views, the last batch holding one, each limit its own value,
+// and one share with none written, which reads zero.
 func TestVersionLimitsInBatches(t *testing.T) {
 	const k, n = 4, 3*4 + 1
 	ctx := context.Background()
@@ -1059,8 +1072,13 @@ func TestVersionLimitsInBatches(t *testing.T) {
 	}
 
 	read := 0
+	txns := log.take()
 
-	for i, txn := range log.take() {
+	if want := (n + k - 1) / k; len(txns) != want {
+		t.Errorf("VersionLimits read %d shares in %d transactions, want %d", n, len(txns), want)
+	}
+
+	for i, txn := range txns {
 		one := len(txn.batches) == 1 && txn.batches[0] <= k && len(txn.keys) == txn.batches[0]
 
 		if txn.update || !one {
@@ -1091,6 +1109,195 @@ func TestVersionLimitsInBatches(t *testing.T) {
 	for id, w := range want {
 		if v, ok := got[id]; !ok || v != w {
 			t.Errorf("share %v: limit %d, answered %v; want %d", id, v.Counter(), ok, w.Counter())
+		}
+	}
+}
+
+var errViewFailed = errors.New("injected view failure")
+
+// A batch that fails fails the whole read: Tags and VersionLimits return no
+// map and the error, so the start that reads them fails rather than taking a
+// map without the later batches' shares, which Open's floor would read as
+// zero limits. Each read fails at its second View of four, so a batch error
+// swallowed, or a partial map returned with it, shows.
+func TestLifecycleReadsFailWithTheirBatch(t *testing.T) {
+	const k, n = 4, 3*4 + 1
+	ctx := context.Background()
+	var faults *kvtest.FaultKV
+	s := lifecycleStore(t, func(db kv.KV) kv.KV {
+		faults = kvtest.NewFaultKV(db)
+
+		return faults
+	})
+
+	s.SetKeyBudget(k)
+	ids := make([]entity.ShareID, 0, n)
+
+	for i := range n {
+		ids = append(ids, namedShare(t, s, fmt.Sprintf("s%d", i)).ID)
+	}
+
+	failSecondView := func() {
+		t.Helper()
+
+		sched, err := sim.NewSchedule(1, nil, sim.Rule{
+			Op:    kvtest.OpView,
+			Key:   "*",
+			From:  2,
+			Count: 1,
+			Action: sim.FaultAction{
+				Err: errViewFailed,
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		faults.SetFault(sched)
+	}
+
+	failSecondView()
+
+	tags, err := s.Lifecycle().Tags(ctx)
+	if !errors.Is(err, errViewFailed) || tags != nil {
+		t.Errorf("Tags with its second View failed: %d shares, %v; want no map and the injected error",
+			len(tags), err)
+	}
+
+	failSecondView()
+
+	limits, err := s.Lifecycle().VersionLimits(ctx, ids)
+	if !errors.Is(err, errViewFailed) || limits != nil {
+		t.Errorf("VersionLimits with its second View failed: %d shares, %v; want no map and the injected error",
+			len(limits), err)
+	}
+}
+
+// pauseAfterView is a KV that runs a hook once, after its nth View returns,
+// so a test can change the store between two batches of one read.
+type pauseAfterView struct {
+	kv.KV
+
+	mu    sync.Mutex
+	views int
+	nth   int
+	hook  func()
+}
+
+// arm makes the nth View from now run hook once it returns.
+func (p *pauseAfterView) arm(nth int, hook func()) {
+	p.mu.Lock()
+
+	defer p.mu.Unlock()
+
+	p.views, p.nth, p.hook = 0, nth, hook
+}
+
+func (p *pauseAfterView) View(ctx context.Context, fn func(kv.Reader) error) error {
+	err := p.KV.View(ctx, fn)
+
+	p.mu.Lock()
+	p.views++
+	var hook func()
+
+	if p.views == p.nth {
+		hook, p.hook = p.hook, nil
+	}
+
+	p.mu.Unlock()
+
+	if hook != nil {
+		hook()
+	}
+
+	return err
+}
+
+// shareIDAt is a ShareID whose first byte is b, so shares sort by b.
+func shareIDAt(b byte) entity.ShareID {
+	id := entity.NewShareID()
+	id[0] = b
+
+	return id
+}
+
+// RFC 16 §2.3.2: shares created and removed while Tags walks the store. Each
+// batch is its own snapshot, so the walk answers each share as its batch
+// found it. 3 * K + 1 shares at 0x10 to 0xd0, so the first batch reads 0x10
+// to 0x40 and the walk resumes after 0x40. Between the first and second
+// batch, the records of 0x30, already read, and 0x80, not yet, are deleted,
+// as the last step of a removal leaves them, and six shares are created, two
+// below the cursor (0x05, 0x35) and four above it (0x45, 0x75, 0xd5, 0xe0).
+// Tags answers 0x30 as the first batch read it, not 0x80, not the two below
+// the cursor, which a single snapshot taken before they were created would
+// miss too, and every other share, the four new ones above the cursor
+// included. A walk that restarted from the first share would answer the two
+// below the cursor; one that skipped a batch would lose shares of the
+// original set.
+func TestTagsWithSharesChangedBetweenBatches(t *testing.T) {
+	const k, n = 4, 3*4 + 1
+	ctx := context.Background()
+	var p *pauseAfterView
+	s := lifecycleStore(t, func(db kv.KV) kv.KV {
+		p = &pauseAfterView{
+			KV: db,
+		}
+
+		return p
+	})
+
+	s.SetKeyBudget(k)
+	byFirst := map[byte]entity.Share{}
+
+	for i := range n {
+		b := byte(0x10 * (i + 1))
+		byFirst[b] = shareWithID(t, s, fmt.Sprintf("s%02x", b), shareIDAt(b))
+	}
+
+	created := []byte{0x05, 0x35, 0x45, 0x75, 0xd5, 0xe0}
+
+	p.arm(1, func() {
+		for _, b := range []byte{0x30, 0x80} {
+			err := s.kv.Update(ctx, func(tx kv.Txn) error {
+				return tx.Delete(shareKey(byFirst[b].ID, keys.SInfo))
+			})
+			if err != nil {
+				t.Error(err)
+			}
+		}
+
+		for _, b := range created {
+			byFirst[b] = shareWithID(t, s, fmt.Sprintf("s%02x", b), shareIDAt(b))
+		}
+	})
+
+	got, err := s.Lifecycle().Tags(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[entity.ShareID]entity.TagRecord{}
+
+	for b, sh := range byFirst {
+		if b == 0x80 || b == 0x05 || b == 0x35 {
+			continue
+		}
+
+		want[sh.ID] = entity.TagRecord{
+			Tag:   sh.Tag,
+			State: entity.TagServing,
+		}
+	}
+
+	if len(got) != len(want) {
+		t.Errorf("Tags named %d shares, want %d", len(got), len(want))
+	}
+
+	for b, sh := range byFirst {
+		w, ok := want[sh.ID]
+
+		if g, in := got[sh.ID]; in != ok || g != w {
+			t.Errorf("share 0x%02x: %+v, answered %v; want %+v, answered %v", b, g, in, w, ok)
 		}
 	}
 }
