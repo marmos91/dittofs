@@ -57,6 +57,7 @@ type Engine struct {
 	pendingApplied  atomic.Int64                                                               // engine_pending_existence_ops: operations committed
 	hooks           struct{ taken, captured, drained, written, staged atomic.Pointer[func()] } // a test's seams: after a batch's take, its capture, a drain's read of the ring, a write's WriteAt, and a removal's journal step
 	afterRegister   func()                                                                     // a test's hook: run once a clone's registrations are installed
+	noGuardSkip     atomic.Bool                                                                // a test's seam: capture takes a guarded file, so a test proves the stop at a removal alone
 }
 
 // New checks d and builds the engine. It takes no settings, opens nothing and

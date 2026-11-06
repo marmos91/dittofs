@@ -383,3 +383,7 @@ func (e *Engine) RemovalsPending() int {
 	}
 	return n
 }
+
+// NoGuardSkip has every capture take a file whose guard a removal holds,
+// as one would with the guard's skip removed.
+func (e *Engine) NoGuardSkip() { e.noGuardSkip.Store(true) }

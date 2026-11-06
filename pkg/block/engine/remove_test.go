@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -364,5 +365,86 @@ func TestADeallocateRecordsItsHoleAtOnce(t *testing.T) {
 	got := make([]byte, 4)
 	if _, err := u.e.Read(t.Context(), u.share.ID, f, 4, got); err != nil || string(got) != "\x00\x00bb" {
 		t.Errorf("read [4, 8): %q, %v; want two zeros then the write", got, err)
+	}
+}
+
+// conflictingRemove is the store's existence view answering every removal a
+// conflict while on, counting the removals it answered.
+type conflictingRemove struct {
+	engine.Existence
+	on    atomic.Bool
+	calls atomic.Int32
+}
+
+func (x *conflictingRemove) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+	x.calls.Add(1)
+	if x.on.Load() {
+		return kvstore.ErrConflict
+	}
+	return x.Existence.Remove(ctx, share, file, epoch, op, pending)
+}
+
+// retriedTruncate truncates f to size with its phase 1 conflictingRemove, staging
+// a write of [off, off+n) above it before phase 1, and returns once the loop
+// retried phase 1 at least once, with the truncate's version.
+func (u *unit) retriedTruncate(t *testing.T, x *conflictingRemove, f entity.FileID, size, off int64, n int) journal.Version {
+	t.Helper()
+	x.on.Store(true)
+	u.e.OnStaged(func() { u.write(t, f, off, fill(n, 'b')) })
+	var d *vfserr.Delay
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, size); !errors.As(err, &d) || d.Cause != vfserr.DelayConflict {
+		t.Fatalf("a conflictingRemove truncate: %v, want ErrDelay(DelayConflict)", err)
+	}
+	u.e.OnStaged(func() {})
+	u.until(t, "the loop retrying phase 1", func() bool { return x.calls.Load() >= 2 })
+	p := u.e.Pending(f)
+	if len(p) < 2 || p[len(p)-2].Len != 0 {
+		t.Fatalf("pending %+v, want the truncate and the write above it last", p)
+	}
+	return p[len(p)-2].Version
+}
+
+// A write staged above a truncate whose phase 1 conflicts and retries is
+// committed by no group commit, the guard's skip removed: the capture takes
+// the write below the truncate and stops at the truncate, so the file's
+// applied and every Settle of it stay below the truncate's version until
+// phase 1 commits, and the write above commits after. A capture claiming
+// past the truncate commits the write above first, and the store then skips
+// the truncate as applied.
+func TestAGroupCommitStopsAtARetriedRemoval(t *testing.T) {
+	x := &conflictingRemove{}
+	u, h := newHookedUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u.e.NoGuardSkip()
+	f := u.create(t, "a")
+	u.write(t, f, 0, fill(16, 'a')) // due, and below the truncate
+	tv := u.retriedTruncate(t, x, f, 3, 8, 4)
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	_ = u.e.CommitAll(ctx, u.rec)
+	cancel()
+	if n := u.size(t, f); n != 16 {
+		t.Errorf("the group commit left the size %d, want the write below the truncate's 16", n)
+	}
+	applied, err := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Compare(entity.JournalVersion(tv.Bytes())) >= 0 {
+		t.Errorf("applied %v while the truncate at %v retries phase 1", applied, tv)
+	}
+	for _, s := range h.settleLog() {
+		if s.v.Compare(tv) >= 0 {
+			t.Errorf("settled at %v while the truncate at %v retries phase 1", s.v, tv)
+		}
+	}
+	x.on.Store(false)
+	u.until(t, "phase 1 committing", func() bool { return !u.e.GuardHeld(f) })
+	if n := u.size(t, f); n != 3 {
+		t.Errorf("after phase 1 the size is %d, want 3", n)
+	}
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	if n := u.size(t, f); n != 12 {
+		t.Errorf("after the write's commit the size is %d, want 12", n)
 	}
 }

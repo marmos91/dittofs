@@ -504,17 +504,22 @@ func (e *Engine) failCause(b *binding, f entity.FileID) vfserr.DelayCause {
 
 // capture claims f's leading writes in place under its entry's lock and marks
 // the entry in-batch: the operations stay in the entry, so Overlay and Read
-// keep answering them until the batch returns. A file with no write at the
-// front of its entry is not captured: its operations are a removal's, which
-// commits them itself.
+// keep answering them until the batch returns. The claim runs in version
+// order and stops at the first operation that is not a write or a grow: a
+// removal, whose phase 1 commits it, so no batch raises applied or settles
+// the journal at or above a removal whose phase 1 has not committed, and a
+// file with no write at the front of its entry is not captured.
 //
 // decision: a file whose guard a removal holds is skipped without its
 // entry's lock, which a truncate holds across its journal call, and is taken
 // in a later batch: no file's commit waits on another's removal, and the
 // removal's phase 1 commits the writes below it itself. Correctness never
-// rests on the skip, as the store's fences order the two either way.
+// rests on the skip, which only spares a retried phase 1 a batch claiming
+// beside it: the stop at the removal is what keeps applied and every Settle
+// below it.
 func (e *Engine) capture(b *binding, f entity.FileID) (c captured, ok, held bool) {
-	if fe := e.files.entryOf(f); fe != nil && fe.guarded.Load() {
+	skip := !e.noGuardSkip.Load()
+	if fe := e.files.entryOf(f); skip && fe != nil && fe.guarded.Load() {
 		return captured{}, false, true
 	}
 	fe := e.files.lockOf(f)
@@ -522,13 +527,13 @@ func (e *Engine) capture(b *binding, f entity.FileID) (c captured, ok, held bool
 		return captured{}, false, false
 	}
 	defer e.files.unlock(f, fe)
-	if fe.guarded.Load() {
+	if skip && fe.guarded.Load() {
 		return captured{}, false, true
 	}
 	c = captured{b: b, f: f, fe: fe}
 	for i := range fe.ops {
 		if fe.ops[i].kind != opWrite && !fe.ops[i].grow {
-			break
+			break // a removal: nothing at or above it commits before its phase 1
 		}
 		fe.ops[i].claimed = true
 		c.n++
