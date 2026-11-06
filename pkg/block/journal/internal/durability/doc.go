@@ -20,7 +20,9 @@
 // generation a client reads as a write verifier.
 //
 // Every loss in the journal goes through one entry point, Lose. It appends
-// the loss record, syncs it, raises the generation by fixed rules, and only
+// the loss record, syncs it, raises the generation by fixed rules, and
 // then publishes the event, so no reader sees an event whose record a crash
-// could still forget.
+// could still forget. The exceptions are a deferred loss, whose record the
+// copy that retires the segment writes, and a loss whose record could not be
+// appended: both publish their event with no record behind them.
 package durability

@@ -73,10 +73,10 @@ func hasBody(k Kind) bool {
 }
 
 // LossReason is why a loss record drops the record it names: corruption, a
-// stale offload mark, a failed sync window, a superseding record, or an operator's
-// acknowledgement that it is unreadable. The
-// 0 it would need to name no reason is refused as damage, so no loss record
-// ever reads as reasonless.
+// stale offload mark, a failed sync window, a superseding record, or an
+// operator's acknowledgement that it is unreadable. The 0 it would need to
+// name no reason is refused as damage, so no loss record ever reads as
+// reasonless.
 type LossReason uint8
 
 const (
@@ -86,7 +86,7 @@ const (
 	// decision: reason 4 is accepted ahead of the format table, which now
 	// documents reasons 1, 2, 3 and 5 and leaves 4 unlisted. When an engine
 	// reconcile finds older content under a newer committed version, it
-	// drops the older record with a loss record naming reason 4 — a fourth
+	// drops the older record with a loss record naming reason 4 — one more
 	// way a record becomes unreachable — and the format table has yet to
 	// list it. The bound is LossReason.known's ceiling and the refusal text
 	// "%w: loss reason %d, want one of 1-5" and its tests: if the format's

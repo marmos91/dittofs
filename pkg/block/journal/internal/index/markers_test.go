@@ -571,6 +571,38 @@ func TestLossMarkerIsYieldedBySinceUntilSettled(t *testing.T) {
 	}
 }
 
+// TestLossIsNeverRefusedAtTheIndexBound checks that a synced loss whose
+// extent splits a held piece leaves its marker even with the index at its
+// ceiling. The marker is the only thing that tells Since of the loss, so a
+// refusal would leave the metadata reading the lost write as content.
+func TestLossIsNeverRefusedAtTheIndexBound(t *testing.T) {
+	var fs files
+	fs.setExtentLimit(1)
+	id := fid(1)
+	a := rec(1, 0)
+	change(t, &fs, id, func(f *file) error {
+		f.write(write(0, 16, a, 2))
+		return nil
+	})
+	if err := fs.lose(id, ext(4, 4), ver(3)); err != nil {
+		t.Fatalf("lose at the ceiling = %v, want no error", err)
+	}
+	var found bool
+	for _, ch := range fs.since(id, ver(1), nil) {
+		if ch.Kind == core.ChangeLoss {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("since yielded no ChangeLoss for a loss made at the ceiling")
+	}
+	for _, p := range heldPieces(&fs, id) {
+		if p.Extent.Off < 8 && p.Extent.Off+p.Extent.Len > 4 {
+			t.Fatalf("a piece still holds the lost extent: %+v", p)
+		}
+	}
+}
+
 // TestLossOutranksContentBelowItsVersion checks that a loss at v stops
 // holding content below v inside its extent, and masks a fill below v into
 // it, while content at v is held and bytes outside the extent are untouched.
