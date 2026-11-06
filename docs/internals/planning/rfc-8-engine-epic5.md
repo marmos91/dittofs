@@ -312,7 +312,6 @@ pkg/block/engine/
   file.go           T5.1  the entry's guard and in-flight mark
   groupcommit.go    T5.1  the capture's skip of a guarded file, commitThrough's wait for its release
   deps.go           T5.1  Existence.Size
-  ../../metadata/kvstore/  T5.1  Size, a truncate above the size as a hole (RFC 6 §6.2), Refused; T5.4  the holders read before Remove commits (D6)
   unbuilt.go        T5.1, T5.2, T5.4  each built method leaves it
   export_test.go    T5.1–T5.5  hooks inside the journal's removals and between them and phase 1
   conformance/
@@ -323,6 +322,8 @@ pkg/vfs/
   errors.go         T5.4  Errors() omits ErrFileOpen
 pkg/metadata/kvstore/
   existence.go      T5.1  Existence.Size (D4)
+  removal.go        T5.1  a truncate above the size as a hole (RFC 6 §6.2), Refused
+                    T5.4  the holders read before Remove commits (D6)
 test/engine/known.yaml  T5.1, T5.2, T5.3, T5.5  their entries
 ```
 
