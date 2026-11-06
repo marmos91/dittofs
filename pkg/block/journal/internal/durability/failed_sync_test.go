@@ -3,6 +3,7 @@ package durability
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -144,26 +145,33 @@ func TestStatsReportTheLastSyncFailure(t *testing.T) {
 
 // TestASyncOfAnEndedSegmentIsNotAFailure covers the worker's handling of
 // ErrSegmentEnded: a segment a failed append ended answers the sync with the
-// refusal, which counts nothing and is not issued again for it.
+// refusal, which counts nothing and is not issued again for it. A slot still
+// writing holds the segment's end event back, so the waiter leads before the
+// event is taken, and fails once the event delivers the window.
 func TestASyncOfAnEndedSegmentIsNotAFailure(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRigUnstarted(t, 1)
 	var attempts atomic.Int64
 	r.d.afterSync = func() { attempts.Add(1) }
 	r.d.Start(r.streams)
-	f := file(1)
+	f, g := file(1), file(2)
 	a := r.appendWrite(t, f, 0, "a")
+
+	hold := r.seam.HoldFirst(t, journaltest.OpWrite, format.SegmentName(a.Segment))
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		h := format.RecordHeader{Kind: format.KindWrite, File: g, Extent: core.Extent{Len: 1}, Version: core.Version{Counter: 1}, Tag: 1}
+		_, _ = r.streams.For(g).Append(h, format.RecordBody{Payload: []byte("g"), MTime: 1})
+	}()
+	<-hold.Reached()
 	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpWrite, format.SegmentName(a.Segment), 1, errors.New("write boom"))); err != nil {
 		t.Fatal(err)
 	}
-	h := format.RecordHeader{Kind: format.KindWrite, File: f, Extent: core.Extent{Off: 1, Len: 1}, Version: core.Version{Counter: 2}, Tag: 1}
-	if _, err := r.streams.For(f).Append(h, format.RecordBody{Payload: []byte("x"), MTime: 1}); err == nil {
-		t.Fatal("the append was expected to fail")
-	}
+	r.appendFailing(t, f, 1)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	ch := r.syncAsync(ctx, f)
-	t.Cleanup(cancel)
+	ch := r.syncAsync(context.Background(), f)
 	st := r.d.made[0]
 	eventually(t, "the worker to find the segment ended", func() bool {
 		st.mu.Lock()
@@ -172,11 +180,15 @@ func TestASyncOfAnEndedSegmentIsNotAFailure(t *testing.T) {
 		return ok
 	})
 	mustBlock(t, "Sync over an ended segment", ch)
-	if got := attempts.Load(); got != 1 {
-		t.Errorf("the worker issued %d syncs of the ended segment, want 1", got)
-	}
 	if got := r.syncsOf(a.Segment); got != 0 {
 		t.Errorf("the seam saw %d syncs of the ended segment, want 0", got)
+	}
+
+	hold.Release()
+	wg.Wait()
+	wantSyncError(t, mustReturn(t, "Sync once the window is taken", ch), a.Segment, f)
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("the worker issued %d syncs of the ended segment, want 1", got)
 	}
 	if got := r.d.Stats(); got.SyncFailures != 0 || got.LastSyncError != nil {
 		t.Errorf("an ended segment's refusal was counted: %+v", got)

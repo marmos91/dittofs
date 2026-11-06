@@ -26,6 +26,7 @@ func (d *Durability) run(st *stream) {
 		case <-fire:
 			fire, fired = nil, true
 		}
+		d.takeWindows(st)
 		d.complete(st)
 		d.stamp(st)
 		d.syncStep(st, fired)
@@ -199,6 +200,10 @@ func (d *Durability) complete(st *stream) {
 	kept := st.ledger[:0]
 	live := st.live
 	clear(live)
+	// A segment with a pending window keeps its failure and its synced value.
+	for _, w := range st.windows {
+		live[w.seg] = struct{}{}
+	}
 	stamped := 0
 	for i, e := range st.ledger {
 		if !e.done {

@@ -52,24 +52,17 @@ func TestEndedOlderSegmentDoesNotSpinTheTimer(t *testing.T) {
 	}
 }
 
-// TestSyncOverARecordStrandedInAnOlderSegmentIsNotNil pins that Sync names
+// TestSyncOverARecordStrandedInAnOlderSegmentIsASyncError pins that Sync names
 // every segment a file has an uncovered record in: the later record's sync
-// does not make the earlier, stranded one durable, and a waiter on it never
-// leads a sync of the active segment.
-func TestSyncOverARecordStrandedInAnOlderSegmentIsNotNil(t *testing.T) {
+// does not make the earlier, stranded one durable, and a waiter on it fails
+// with the segment's SyncError instead of leading a sync of the active one.
+func TestSyncOverARecordStrandedInAnOlderSegmentIsASyncError(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
 	f := file(1)
 	a, b := r.strand(t, f, f)
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	defer cancel()
-	err := r.d.Sync(ctx, f)
-	if err == nil {
-		t.Fatal("Sync returned nil over a record that is not durable")
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Sync = %v, want the context's error", err)
-	}
+	err := mustReturn(t, "Sync", r.syncAsync(context.Background(), f))
+	wantSyncError(t, err, a.Segment, f)
 	if r.d.Durable(a) {
 		t.Fatal("the stranded record reads durable")
 	}
@@ -86,11 +79,6 @@ func TestFailureIsRecordedAgainstTheSegmentSynced(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRigUnstarted(t, 1)
 	f, g := file(1), file(2)
-	a := r.appendWrite(t, f, 0, "a")
-	boom := errors.New("sync boom")
-	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, boom)); err != nil {
-		t.Fatal(err)
-	}
 	var once sync.Once
 	r.d.afterSync = func() {
 		once.Do(func() {
@@ -98,7 +86,13 @@ func TestFailureIsRecordedAgainstTheSegmentSynced(t *testing.T) {
 			r.appendWrite(t, g, 0, "b")
 		})
 	}
+	// Started before the first append: the end events are registered there.
 	r.d.Start(r.streams)
+	a := r.appendWrite(t, f, 0, "a")
+	boom := errors.New("sync boom")
+	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, boom)); err != nil {
+		t.Fatal(err)
+	}
 
 	err := mustReturn(t, "Sync of the failed segment", r.syncAsync(context.Background(), f))
 	var se *core.SyncError
