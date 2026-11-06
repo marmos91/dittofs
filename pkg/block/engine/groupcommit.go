@@ -52,9 +52,14 @@ type groupCommit struct {
 // raised matches. Withdraw this when Start opens the journal: it sets both,
 // the generation from Lifecycle.SyncMarks, before the first group commit.
 type marks struct {
-	journal  [16]byte          // the journal's identity
-	gen      kvstore.OpenGen   // the open generation of the journal's current open
-	recorded []entity.SyncMark // what the last committed marks write recorded
+	journal   [16]byte          // the journal's identity
+	gen       kvstore.OpenGen   // the open generation of the journal's current open
+	recorded  []entity.SyncMark // what the last committed marks write recorded
+	reads     uint64            // the marks reads made so far
+	readAt    uint64            // the read whose marks are recorded
+	ask       bool              // a stability point waits for marks read after the last read
+	backoff   time.Duration     // a write of marks alone that failed: its last backoff
+	notBefore time.Time         // and the next one's earliest time
 }
 
 // errClosed answers a write after the engine's group commits stopped.
@@ -248,6 +253,13 @@ func (g *groupCommit) run() {
 		if len(batch) > 0 {
 			g.commit(g.ctx, batch, last)
 			continue
+		}
+		switch mw := g.marksDue(); {
+		case mw == 0:
+			g.commitMarks(g.ctx)
+			continue
+		case mw > 0 && (wait < 0 || mw < wait):
+			wait = mw
 		}
 		var timer <-chan struct{}
 		if wait >= 0 {
@@ -528,32 +540,100 @@ func (e *Engine) syncAndCommit(ctx context.Context, g *groupCommit, batch []capt
 		pending[i] = e.pending(c)
 	}
 	var mw *kvstore.MarksWrite
+	var read uint64
 	if withMarks {
-		mw = g.readMarks()
+		mw, read = g.readMarks()
 	}
 	ctx, end := e.d.Tracer(ctx, "engine.existence_commit", slog.Int("files", len(batch)))
 	if e.commitSplit(ctx, pending, mw, failed, alone) {
-		g.recorded(mw)
+		g.recorded(mw, read)
 	}
 	end(nil)
 	return failed, alone
 }
 
 // readMarks is the journal's sync marks as a marks write of its current
-// open.
-func (g *groupCommit) readMarks() *kvstore.MarksWrite {
+// open, and the number of the read, which answers a stability point's ask
+// made before it.
+func (g *groupCommit) readMarks() (*kvstore.MarksWrite, uint64) {
 	g.mu.Lock()
+	g.marks.ask = false
+	g.marks.reads++
 	m := g.marks
 	g.mu.Unlock()
-	return &kvstore.MarksWrite{Journal: m.journal, Gen: m.gen, Marks: g.j.SyncMarks()}
+	return &kvstore.MarksWrite{Journal: m.journal, Gen: m.gen, Marks: g.j.SyncMarks()}, m.reads
 }
 
-// recorded notes mw's marks as recorded, then hands them to the journal.
-func (g *groupCommit) recorded(mw *kvstore.MarksWrite) {
+// recorded notes mw's marks, of the read-th read, as recorded, then hands
+// them to the journal.
+func (g *groupCommit) recorded(mw *kvstore.MarksWrite, read uint64) {
 	g.mu.Lock()
-	g.marks.recorded = mw.Marks
+	g.marks.recorded, g.marks.readAt = mw.Marks, read
 	g.mu.Unlock()
 	g.j.MarksRecorded(mw.Marks)
+}
+
+// marksDue is how long until a write of marks alone is due: -1 when no
+// stability point asks for one, else 0 once a failed one's backoff has
+// passed.
+func (g *groupCommit) marksDue() time.Duration {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.marks.ask || g.closed || g.halted {
+		return -1
+	}
+	return max(0, g.marks.notBefore.Sub(g.e.d.Clock.Now()))
+}
+
+// commitMarks records the journal's sync marks in a call of their own, for a
+// stability point waiting on them while no batch is due, and wakes the
+// waiters. One that fails is retried once its backoff, doubling as a failing
+// file's does, has passed.
+func (g *groupCommit) commitMarks(ctx context.Context) {
+	mw, read := g.readMarks()
+	cctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
+	_, err := g.e.d.Existence.Commit(cctx, nil, mw)
+	cancel()
+	if err == nil {
+		g.recorded(mw, read)
+	}
+	g.mu.Lock()
+	if err == nil {
+		g.marks.backoff, g.marks.notBefore = 0, time.Time{}
+	} else {
+		g.marks.backoff = min(max(2*g.marks.backoff, backoffMin), backoffMax)
+		g.marks.notBefore = g.e.d.Clock.Now().Add(g.marks.backoff)
+	}
+	close(g.returned)
+	g.returned = make(chan struct{})
+	g.mu.Unlock()
+}
+
+// awaitMarks returns once a committed transaction recorded marks read after
+// the read-th read, asking the group commit for them, or at ctx's end.
+func (g *groupCommit) awaitMarks(ctx context.Context, read uint64) error {
+	for {
+		g.mu.Lock()
+		done, closed, lost, returned := g.marks.readAt > read, g.closed, g.halted, g.returned
+		if !done && !closed && !lost {
+			g.marks.ask = true
+		}
+		g.mu.Unlock()
+		switch {
+		case done:
+			return nil
+		case closed:
+			return errClosed
+		case lost:
+			return errLost
+		}
+		g.poke()
+		select {
+		case <-returned:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // commitSplit commits pending's existence, recording in failed each file that

@@ -420,6 +420,27 @@ func (h *FakeHandle) Sync(_ context.Context, ids ...journal.FileID) ([]entity.Sy
 	return []entity.SyncMark{{Stream: fakeStream, Segment: newest.seg, Through: j.end, Offset: newest.end, Sequence: newest.seq}}, nil
 }
 
+// EndSegment ends the stream's segment, as a failed sync does: each file's
+// newest record is appended again, keeping its number, to a new segment and
+// synced there, so the stream's mark names the new segment.
+func (j *FakeJournal) EndSegment() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	var fs []*fakeFile
+	for _, f := range j.files {
+		if f.rec.seq != 0 {
+			fs = append(fs, f)
+		}
+	}
+	slices.SortFunc(fs, func(a, b *fakeFile) int { return cmp.Compare(a.rec.seq, b.rec.seq) })
+	j.seg, j.end = j.seg+1, 0
+	for _, f := range fs {
+		j.end += f.rec.n
+		f.rec.seg, f.rec.end = j.seg, j.end
+	}
+	j.synced = entity.SyncMark{Stream: fakeStream, Segment: j.seg, Through: j.end, Offset: j.end, Sequence: j.seq}
+}
+
 // SyncMarks is the mark of the stream's last sync, none before one.
 func (j *FakeJournal) SyncMarks() []entity.SyncMark {
 	j.mu.Lock()

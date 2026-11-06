@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"math"
+	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -14,11 +16,13 @@ import (
 
 // Commit makes [off, off+n) of file f of share s stable, n 0 the whole file,
 // and answers the verifier and the file's loss sequence, both sampled after
-// its sync and its wait. It syncs the file in the journal; when a pending
+// its sync and its waits. It syncs the file in the journal; when a pending
 // write in the extent at or below the version the sync covers overwrites
 // committed content, it also waits for the group commit to commit that
-// write's existence. Under a store that commits nothing that wait answers
-// ErrDelay at the caller's deadline, never success.
+// write's existence; and when the extent covers committed content, it waits
+// for recorded sync marks to cover the marks its sync returned. Under a store
+// that commits nothing either wait answers ErrDelay at the caller's deadline,
+// never success.
 func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, off, n int64) (vfserr.Verifier, uint64, error) {
 	if off < 0 || n < 0 {
 		return vfserr.Verifier{}, 0, vfserr.ErrInvalid
@@ -35,7 +39,7 @@ func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 	// journal's Sync returns the version it reached.
 	through, runs := e.pendingIn(f, off, n)
 	sctx, end := e.d.Tracer(ctx, "engine.sync")
-	err = e.sync(sctx, b, fileID(f))
+	marks, err := e.syncMarks(sctx, b, fileID(f))
 	end(err)
 	if err != nil {
 		return vfserr.Verifier{}, 0, e.journalErr(err)
@@ -61,7 +65,67 @@ func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 			}
 		}
 	}
+	if err := e.marksWait(ctx, b, s, f, off, n, marks); err != nil {
+		return vfserr.Verifier{}, 0, err
+	}
 	return e.sample(b), e.LossSeq(s, f), nil
+}
+
+// marksWait returns once recorded sync marks cover marks, those f's sync
+// returned, or at once when [off, off+n), n 0 the whole file, covers no
+// committed content: the journal's proof of a synced record is in-process,
+// and only a recorded mark carries it to disk. A write the lazy commit
+// already committed, or whose group commit's marks failed, is covered by
+// nothing else. It asks the group commit for marks read after the sync; when
+// those still cover none, the record's segment ended meanwhile and its copy
+// lies in another, so it syncs f again for the copy's mark.
+func (e *Engine) marksWait(ctx context.Context, b *binding, s entity.ShareID, f entity.FileID, off, n int64, marks []entity.SyncMark) error {
+	g := b.gc
+	checked := false
+	for {
+		g.mu.Lock()
+		read, ok := g.marks.reads, covered(marks, g.marks.recorded)
+		g.mu.Unlock()
+		if ok {
+			return nil
+		}
+		if !checked {
+			x := entity.Extent{Offset: off, Length: n}
+			if n == 0 {
+				x.Length = math.MaxInt64 - off
+			}
+			over, err := e.d.Existence.Overwrites(ctx, s, f, []entity.Extent{x})
+			if err != nil {
+				return e.storeErr(err)
+			}
+			if !over {
+				return nil
+			}
+			checked = true
+		}
+		if err := g.awaitMarks(ctx, read); err != nil {
+			return e.waitErr(b, f, err)
+		}
+		g.mu.Lock()
+		ok = covered(marks, g.marks.recorded)
+		g.mu.Unlock()
+		if !ok {
+			var err error
+			if marks, err = e.syncMarks(ctx, b, fileID(f)); err != nil {
+				return e.journalErr(err)
+			}
+		}
+	}
+}
+
+// covered reports that each returned mark has a recorded one covering it.
+func covered(returned, recorded []entity.SyncMark) bool {
+	for _, r := range returned {
+		if !slices.ContainsFunc(recorded, func(m entity.SyncMark) bool { return m.Covers(r) }) {
+			return false
+		}
+	}
+	return true
 }
 
 // pendingIn is the highest version pending in f's entry, and the extents of

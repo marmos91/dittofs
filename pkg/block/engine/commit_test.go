@@ -3,12 +3,14 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -300,5 +302,154 @@ func TestCommitSamplesAfterItsSync(t *testing.T) {
 	}
 	if seq != 1 {
 		t.Errorf("Commit answered loss sequence %d for the file the sync lost, want 1", seq)
+	}
+}
+
+// A Commit whose extent covers committed content waits for a recorded mark
+// over what its sync returned, in a call of marks alone when no batch is due,
+// and leaves the appends it does not wait for pending; one over the appends
+// alone waits for nothing.
+func TestCommitWaitsForTheMarksOverCommittedContent(t *testing.T) {
+	u, log := newLoggedUnit(t, 24*time.Hour, 64)
+	f := committedFile(t, u, "a", 4)
+	commits := log.count("commit")
+	u.write(t, f, 4, []byte("tail"))
+	if _, _, err := u.e.Commit(t.Context(), u.share.ID, f, 4, 4); err != nil {
+		t.Fatal(err)
+	}
+	if n := log.count("commit") - commits; n != 0 {
+		t.Fatalf("a Commit of the append alone made %d existence commits, want none", n)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if _, _, err := u.e.Commit(ctx, u.share.ID, f, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	log.mu.Lock()
+	calls, last, marks := len(log.commits)-commits, log.commits[len(log.commits)-1], log.marks[len(log.marks)-1]
+	log.mu.Unlock()
+	if calls != 1 || len(last) != 0 || marks == nil {
+		t.Fatalf("a whole-file Commit made %d calls, the last of %d files with marks %v; want one of marks alone", calls, len(last), marks)
+	}
+	if len(u.e.Pending(f)) != 1 {
+		t.Errorf("the append's existence is no longer pending: %+v", u.e.Pending(f))
+	}
+	rec := u.j.Recorded()
+	if len(rec) == 0 || !slices.Equal(rec[len(rec)-1], marks.Marks) {
+		t.Errorf("MarksRecorded was last handed %v, want %v", rec, marks.Marks)
+	}
+}
+
+// Under a store that commits nothing, a whole-file Commit over committed
+// content and a new append answers ErrDelay at its deadline, and one whose
+// sync a mark recorded before the stall covers is answered.
+func TestTheMarksWaitUnderAStalledStore(t *testing.T) {
+	stall := &stalledExistence{release: make(chan struct{})}
+	u := newUnit(t, func(d *engine.Deps) { stall.Existence = d.Existence; d.Existence = stall })
+	t.Cleanup(func() { close(stall.release) }) // before the group commit is closed
+	f := committedFile(t, u, "a", 4)
+	stall.stalled.Store(true)
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if _, _, err := u.e.Commit(ctx, u.share.ID, f, 0, 0); err != nil {
+		t.Errorf("a Commit a recorded mark covers, under a stalled store: %v, want it answered", err)
+	}
+
+	u.write(t, f, 4, []byte("tail"))
+	ctx, cancel = context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	_, _, err := u.e.Commit(ctx, u.share.ID, f, 0, 0)
+	var d *vfserr.Delay
+	if !errors.As(err, &d) || d.Cause != vfserr.DelayCommit {
+		t.Errorf("a whole-file Commit of a new append under a stalled store: %v, want ErrDelay(DelayCommit)", err)
+	}
+}
+
+// endingSegment is a handle whose next Sync of file f, once armed, ends the
+// journal's segment after it returns, and which counts f's syncs once on.
+type endingSegment struct {
+	engine.Handle
+	j     *enginetest.FakeJournal
+	f     journal.FileID // set before on
+	on    atomic.Bool
+	armed atomic.Bool
+	syncs atomic.Int32
+}
+
+func (h *endingSegment) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
+	marks, err := h.Handle.Sync(ctx, ids...)
+	if h.on.Load() && slices.Contains(ids, h.f) {
+		h.syncs.Add(1)
+		if h.armed.CompareAndSwap(true, false) {
+			h.j.EndSegment()
+		}
+	}
+	return marks, err
+}
+
+// A Commit whose record's segment ends before its marks are recorded syncs
+// again for its copy's mark, and is answered once that is recorded.
+func TestTheMarksWaitSyncsAgainWhenTheSegmentEnded(t *testing.T) {
+	h := &endingSegment{}
+	u := newUnitWith(t, unitConfig{wrap: func(x engine.Handle) engine.Handle {
+		h.Handle = x
+		return h
+	}})
+	f := committedFile(t, u, "a", 4)
+	u.write(t, f, 4, []byte("tail"))
+	h.j, h.f = u.j, journal.NewFileID(f)
+	h.armed.Store(true)
+	h.on.Store(true)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if _, _, err := u.e.Commit(ctx, u.share.ID, f, 0, 0); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if n := h.syncs.Load(); n != 2 {
+		t.Errorf("f was synced %d times, want twice: once for the Commit, once for its copy's mark", n)
+	}
+}
+
+// failingMarks is a store whose calls of marks alone, once on, fail,
+// counting them.
+type failingMarks struct {
+	engine.Existence
+	on    atomic.Bool
+	calls atomic.Int32
+}
+
+func (x *failingMarks) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+	if len(p) == 0 && x.on.Load() {
+		x.calls.Add(1)
+		return nil, kvstore.ErrSyncMarks
+	}
+	return x.Existence.Commit(ctx, p, marks)
+}
+
+// A write of marks alone that fails is retried only once its backoff has
+// passed, and the Commit waiting on it answers ErrDelay meanwhile.
+func TestAFailedMarksWriteBacksOff(t *testing.T) {
+	x := &failingMarks{}
+	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	f := committedFile(t, u, "a", 4)
+	u.write(t, f, 4, []byte("tail"))
+	x.on.Store(true)
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	_, _, err := u.e.Commit(ctx, u.share.ID, f, 0, 0)
+	var d *vfserr.Delay
+	if !errors.As(err, &d) {
+		t.Errorf("a Commit whose marks fail: %v, want ErrDelay", err)
+	}
+	if n := x.calls.Load(); n != 1 {
+		t.Errorf("the marks were tried %d times within their backoff, want once", n)
+	}
+	x.on.Store(false)
+	u.clock.Advance(time.Second) // past the backoff
+	ctx, cancel = context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if _, _, err := u.e.Commit(ctx, u.share.ID, f, 0, 0); err != nil {
+		t.Errorf("once the backoff passed: %v", err)
 	}
 }
