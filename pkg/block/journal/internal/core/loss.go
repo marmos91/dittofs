@@ -47,6 +47,10 @@ const (
 	// LossFailedWindow is an extent dropped because its sync window failed.
 	LossFailedWindow
 
+	// LossSuperseded is an extent dropped because metadata holds newer
+	// content under it. It never raises the generation.
+	LossSuperseded
+
 	// LossAcknowledged is an extent an operator acknowledged as unreadable.
 	LossAcknowledged
 )
