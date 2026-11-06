@@ -231,14 +231,17 @@ func TestMutatorDeltas(t *testing.T) {
 		{"writeRetain/refusal", dirty4k, through(rival, ok(func(f *file) { f.writeRetain(write(0, 4096, rec(2, 0), 10)) })), zero, isOther},
 
 		{"fill/hit: a gap", dirty4k, func(fs *files, id core.FileID) (HeldDelta, error) {
-			return fs.fill(id, write(4096, 4096, rec(2, 0), 5), ver(1))
+			return fs.fill(owner, id, write(4096, 4096, rec(2, 0), 5), ver(1))
 		}, at(HeldDelta{HeldBytes: 4096}), nil},
 		{"fill/miss: under held content", dirty4k, func(fs *files, id core.FileID) (HeldDelta, error) {
-			return fs.fill(id, write(0, 4096, rec(2, 0), 0), ver(1))
+			return fs.fill(owner, id, write(0, 4096, rec(2, 0), 0), ver(1))
 		}, zero, nil},
 		{"fill/refusal: stale", dirty4k, func(fs *files, id core.FileID) (HeldDelta, error) {
-			return fs.fill(id, write(4096, 4096, rec(2, 0), 5), ver(0))
+			return fs.fill(owner, id, write(4096, 4096, rec(2, 0), 5), ver(0))
 		}, zero, is(core.ErrStaleFill)},
+		{"fill/refusal: another share's file", dirty4k, func(fs *files, id core.FileID) (HeldDelta, error) {
+			return fs.fill(rival, id, write(4096, 4096, rec(2, 0), 5), ver(1))
+		}, zero, isOther},
 
 		{"truncate/hit: all the dirty content", dirty4k, through(owner, ok(func(f *file) { f.truncate(0, ver(10)) })),
 			at(HeldDelta{HeldBytes: -4096, DirtyBytes: -4096, Dirty: BecameClean}), nil},
@@ -329,6 +332,74 @@ func TestMutatorDeltas(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFillClaimsTheFile: a fill on a file no tag owns yet claims it in its own
+// update, so its delta carries the tag and a release through that share takes
+// the bytes back out of the same tag's sum. A fill refused for either reason
+// leaves no entry behind and does not claim.
+func TestFillClaimsTheFile(t *testing.T) {
+	const owner, rival core.ShareTag = 7, 8
+	id := fid(1)
+	p := write(0, 4096, rec(2, 0), 5)
+
+	var fs files
+	d, err := fs.fill(owner, id, p, ver(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (HeldDelta{Tag: owner, File: id, HeldBytes: 4096}); d != want {
+		t.Fatalf("fill delta = %+v, want %+v", d, want)
+	}
+	d, err = fs.update(id, func(f *file) error { _, err := f.held.release(ext(0, 4096), nil); return err })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (HeldDelta{Tag: owner, File: id, HeldBytes: -4096}); d != want {
+		t.Fatalf("release delta = %+v, want %+v", d, want)
+	}
+
+	// A stale fill of a file with no entry: its asOf predates a settled
+	// delete, which leaves the bucket's version behind and the entry gone.
+	t.Run("stale", func(t *testing.T) {
+		var fs files
+		asOf := fs.asOf(id)
+		change(t, &fs, id, func(f *file) error {
+			f.write(write(0, 4, rec(1, 0), 2))
+			f.delete(ver(3))
+			return nil
+		})
+		fs.settleRemovals(id, ver(3))
+		d, err := fs.fill(owner, id, p, asOf)
+		if !errors.Is(err, core.ErrStaleFill) || d != (HeldDelta{}) {
+			t.Fatalf("fill = (%+v, %v), want the zero delta and ErrStaleFill", d, err)
+		}
+		if fs.view(id, func(*file) {}) {
+			t.Fatalf("a stale fill left an entry: %+v", fs.inspect(id))
+		}
+	})
+
+	// A fill of a file another tag owns changes nothing, and the owner stays.
+	t.Run("another share's", func(t *testing.T) {
+		var fs files
+		if _, err := fs.fill(owner, id, p, ver(1)); err != nil {
+			t.Fatal(err)
+		}
+		before := fs.inspect(id)
+		d, err := fs.fill(rival, id, write(8192, 4096, rec(3, 0), 6), ver(1))
+		var other *core.OtherShareError
+		if !errors.As(err, &other) || d != (HeldDelta{}) {
+			t.Fatalf("fill = (%+v, %v), want the zero delta and an OtherShareError", d, err)
+		}
+		if !reflect.DeepEqual(fs.inspect(id), before) {
+			t.Fatalf("a refused fill changed the file:\n before %+v\n after  %+v", before, fs.inspect(id))
+		}
+		var tag core.ShareTag
+		fs.view(id, func(f *file) { tag, _ = f.owner() })
+		if tag != owner {
+			t.Fatalf("owner = %d, want %d", tag, owner)
+		}
+	})
 }
 
 // TestModelIndexNamesAContradictingTransition pins that the harness reports a

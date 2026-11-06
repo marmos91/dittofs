@@ -158,7 +158,7 @@ func TestSegmentBytesMatchWalk(t *testing.T) {
 				id := ids[rng.IntN(len(ids))]
 				off, n := inRange(512, 64)
 				nextVersion++
-				_, _ = fs.fill(id, Placed{Extent: ext(off, n), Record: active(&activeSeg), Version: ver(nextVersion)}, ver(nextVersion))
+				_, _ = fs.fill(1, id, Placed{Extent: ext(off, n), Record: active(&activeSeg), Version: ver(nextVersion)}, ver(nextVersion))
 			case 3: // mark and release of offloaded spans; a refused one changes nothing
 				id := ids[rng.IntN(len(ids))]
 				off, n := inRange(512, 64)

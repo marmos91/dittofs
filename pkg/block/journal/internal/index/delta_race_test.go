@@ -12,8 +12,10 @@ import (
 // TestDeltasStayWithTheirFile runs two goroutines, one file each in different
 // shards, over one index. Every delta a goroutine's update returns must name
 // its own file, and each goroutine's running sums must equal its file's
-// read-out at the end: a delta read from a shared segment or store-wide
-// counter would pick up the other goroutine's bytes.
+// read-out at the end. Each goroutine's records sit in segments of its own,
+// so a delta read from a per-segment counter would stay isolated and is
+// covered by the property test; this catches a delta read from a store-wide
+// figure, which would pick up the other goroutine's bytes.
 func TestDeltasStayWithTheirFile(t *testing.T) {
 	var fs files
 	a, b := fid(1), fid(2)

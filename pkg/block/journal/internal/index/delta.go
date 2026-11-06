@@ -28,11 +28,14 @@ const (
 type HeldDelta struct {
 	// Tag is the file's owner when the update ended.
 	//
-	// decision: a fill runs before its record claims the file, so a fill on
-	// a file no tag owns yet returns the zero tag. Whoever wires the real
-	// Fill must claim the file in the same update as the fill, or attribute
-	// the delta itself. Overturned when the journal's Fill claims before or
-	// within the fill's update.
+	// decision: a share's tag is never 0, which marks the journal's own records. fill claims the file in
+	// its own update, so no delta of a fill carries tag 0. Every other update
+	// follows a claim of the journal call that made it, so a file that holds
+	// bytes has an owner by then; only an update that skips the claim, as a
+	// test's direct mutation does, changes bytes of a file nothing owns and
+	// returns the zero tag. Overturned by a journal call that changes a file's
+	// bytes before claiming it: its delta would put those bytes under tag 0
+	// and a later release through the share would drive its sum below zero.
 	Tag           core.ShareTag
 	File          core.FileID
 	HeldBytes     int64 // change in the sum of held extent lengths

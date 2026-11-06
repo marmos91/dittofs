@@ -36,6 +36,9 @@ type deltaWorld struct {
 	seq     uint64
 	version uint64
 	step    int
+	// byTag is the running sum of every delta this world saw, by the tag the
+	// delta carried.
+	byTag map[core.ShareTag]heldTotals
 	// fail reports a violated check and stops the goroutine running it:
 	// t.Fatalf by default, which a world run off the test goroutine replaces.
 	fail func(string)
@@ -55,6 +58,18 @@ func (w *deltaWorld) owned(f *deltaFile) bool {
 	var tagged bool
 	w.fs.view(f.id, func(x *file) { tagged = x.tagged })
 	return tagged
+}
+
+// add adds d to the sums by the tag d carried.
+func (w *deltaWorld) add(d HeldDelta) {
+	if w.byTag == nil {
+		w.byTag = map[core.ShareTag]heldTotals{}
+	}
+	t := w.byTag[d.Tag]
+	t.held += d.HeldBytes
+	t.dirty += d.DirtyBytes
+	t.retained += d.RetainedBytes
+	w.byTag[d.Tag] = t
 }
 
 func (w *deltaWorld) next() uint64 { w.version++; return w.version }
@@ -147,10 +162,7 @@ func (w *deltaWorld) run(f *deltaFile, kind int) {
 		if e == whole {
 			e = ext(0, 1+int64(w.rng.IntN(4096)))
 		}
-		if !w.owned(f) {
-			wantTag = 0 // the fill runs before its record claims the file
-		}
-		d, err = w.fs.fill(f.id, Placed{Extent: e, Record: r, Version: ver(v)}, w.fs.asOf(f.id))
+		d, err = w.fs.fill(f.tag, f.id, Placed{Extent: e, Record: r, Version: ver(v)}, w.fs.asOf(f.id))
 		if err != nil {
 			w.fatalf(f, "fill refused: %v", err)
 		}
@@ -263,6 +275,7 @@ func (w *deltaWorld) check(f *deltaFile, d HeldDelta, err error, wantTag core.Sh
 	if d != (HeldDelta{}) && (d.File != f.id || d.Tag != wantTag) {
 		w.fatalf(f, "delta %+v names file %v tag %v, want this file under tag %v", d, d.File, d.Tag, wantTag)
 	}
+	w.add(d)
 	f.sum.held += d.HeldBytes
 	f.sum.dirty += d.DirtyBytes
 	f.sum.retained += d.RetainedBytes
@@ -314,7 +327,7 @@ func TestDeltaSumMatchesCounters(t *testing.T) {
 					dirtyFiles[x.id] = true
 				}
 			}
-			if err := checkDeltaSums(fs, w.last, sum, dirtyFiles); err != nil {
+			if err := checkDeltaSums(fs, w.last, sum, w.byTag, dirtyFiles); err != nil {
 				t.Fatalf("seed %d step %d: %v", seed, w.step, err)
 			}
 		}
