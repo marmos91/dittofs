@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
@@ -30,6 +32,14 @@ func TestASealThatFindsAFailedSyncDoesNotCountItAgain(t *testing.T) {
 	r.waitWindow(t, 0)
 	if got := r.d.Stats().SyncFailures; got != 1 {
 		t.Errorf("one failed fsync counted %d times", got)
+	}
+	// The sync's own error stands: the seal's EndSeal carries another one.
+	if se := r.d.Stats().LastSyncError; se == nil || !strings.Contains(se.Err.Error(), "sync boom") {
+		t.Errorf("LastSyncError = %+v, want the sync's own error", se)
+	}
+	var se *core.SyncError
+	if err := mustReturn(t, "later Sync", r.syncAsync(context.Background(), f)); !errors.As(err, &se) || !strings.Contains(se.Err.Error(), "sync boom") {
+		t.Errorf("SyncError.Err = %v, want the sync's own error", err)
 	}
 }
 
@@ -157,5 +167,26 @@ func TestAnEndingMarkOfAResolvedSegmentIsPrunedOnCompletion(t *testing.T) {
 	defer st.mu.Unlock()
 	if _, ok := st.ending[gone]; ok {
 		t.Error("ending mark of a segment nothing names was left after a completion")
+	}
+}
+
+// TestRemovingAnOlderSegmentsEntriesKeepsTheStampedPrefixExact pins the
+// ledger compaction the window and the completion pass share: after entries
+// leave from before the stamped boundary, stamped counts exactly the stamped
+// entries that stay, so the first unstamped one is the one the timer reads.
+func TestRemovingAnOlderSegmentsEntriesKeepsTheStampedPrefixExact(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	at := func(seg core.SegmentID) entry {
+		return entry{w: segment.Written{Loc: segment.Location{Segment: seg}}}
+	}
+	// Segment 1 holds two stamped entries, segment 2 one stamped and one not.
+	st := &stream{ledger: []entry{at(1), at(2), at(1), at(2)}, stamped: 3}
+	var taken int
+	st.removeLocked(func(e *entry) bool { return e.w.Loc.Segment == 1 }, func(entry) { taken++ })
+	if taken != 2 || len(st.ledger) != 2 {
+		t.Fatalf("took %d entries and kept %d, want 2 and 2", taken, len(st.ledger))
+	}
+	if st.stamped != 1 {
+		t.Errorf("stamped = %d after the older segment left, want 1: only one kept entry was stamped", st.stamped)
 	}
 }

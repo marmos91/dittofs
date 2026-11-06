@@ -74,8 +74,9 @@ type Durability struct {
 	// entry is wired, when a stopped stream must always reach it.
 	readOnly func(cause error)
 
-	// mu guards made, started and stopped, and is never held across a stream
-	// call.
+	// mu guards made, started and stopped. It is not held across a stream
+	// call, except that Start registers the layer's end consumer under it:
+	// nothing takes mu below a stream's own locks, so that cannot deadlock.
 	mu      sync.Mutex
 	made    map[uint32]*stream
 	started bool

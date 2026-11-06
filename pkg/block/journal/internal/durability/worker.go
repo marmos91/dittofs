@@ -199,26 +199,16 @@ func (d *Durability) complete(st *stream) {
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	kept := st.ledger[:0]
+	st.removeLocked(func(e *entry) bool { return e.done }, nil)
 	live := st.live
 	clear(live)
 	// A segment with a pending window keeps its failure and its synced value.
 	for _, w := range st.windows {
 		live[w.seg] = struct{}{}
 	}
-	stamped := 0
-	for i, e := range st.ledger {
-		if !e.done {
-			kept = append(kept, e)
-			live[e.w.Loc.Segment] = struct{}{}
-			if i < st.stamped {
-				stamped++
-			}
-		}
+	for i := range st.ledger {
+		live[st.ledger[i].w.Loc.Segment] = struct{}{}
 	}
-	st.stamped = stamped
-	clear(st.ledger[len(kept):]) // drop the references the tail still holds
-	st.ledger = kept
 	for seg := range st.synced {
 		if _, ok := live[seg]; !ok && (!st.haveLast || seg != st.lastSeg) {
 			delete(st.synced, seg)

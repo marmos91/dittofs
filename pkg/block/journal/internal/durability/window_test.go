@@ -363,6 +363,13 @@ func TestAFailureInTheSpareBeforeItsFirstSyncStopsTheStream(t *testing.T) {
 	r.d.Start(r.streams)
 	f, g := file(1), file(2)
 	_, spare := r.leaveAFailedSegment(t, f, g)
+	// taken counts the segments the streams have taken out of the pool: the
+	// set's segments, which a spare joins only when a stream takes it, so the
+	// pool's refills do not move it.
+	taken := func() int64 { return r.set.Counters().Segments }
+	if got := taken(); got != 2 {
+		t.Fatalf("%d segments taken after the first failure, want the failed one and the spare", got)
+	}
 	second := errors.New("second boom")
 	r.failSyncOf(t, spare.Segment, second)
 	r.settlePool(t)
@@ -379,6 +386,10 @@ func TestAFailureInTheSpareBeforeItsFirstSyncStopsTheStream(t *testing.T) {
 	}
 	if n := len(ro.all()); n != 1 {
 		t.Errorf("the read-only entry was called %d times, want once", n)
+	}
+	r.settlePool(t)
+	if got := taken(); got != 2 {
+		t.Errorf("%d segments taken after the second refusal, want 2: the stream rolled into a third", got)
 	}
 }
 

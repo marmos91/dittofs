@@ -11,11 +11,21 @@ import (
 // SyncFailure is the most recent sync failure, and when it happened (R64).
 type SyncFailure struct {
 	Err error
-	At  time.Time // the clock's Now at the failure
+	// At is the clock's Now when the worker took the failure. A failure the
+	// worker's own sync reported is stamped as it returns; a seal's failure is
+	// stamped when the worker takes its end event, which the stream hands over
+	// only after the segment's reservations and in-flight syncs drained, so At
+	// can lag the failure by that drain.
+	At time.Time
 }
 
 // failStamp is a stream's last sync failure, with the monotonic reading that
 // orders it against the other streams' failures.
+//
+// decision: a failStamp is immutable once stored. The worker is its only
+// writer, publishing a fresh one through st.lastFail's atomic pointer, and
+// Stats reads that pointer without any lock, so a poll never waits on a lock
+// an append takes. Withdrawn if a second goroutine ever stores one.
 type failStamp struct {
 	SyncFailure
 	mono time.Duration
@@ -23,6 +33,12 @@ type failStamp struct {
 
 // window is a failed segment's records that no sync covered: taken from the
 // ledger when the segment's end event reaches the worker (R13, R15, R85).
+//
+// decision: a window lives under the stream's leaf mutex, st.mu, like the
+// ledger its entries came out of: it is read and listed in st.windows only
+// with that mutex held, and only the stream's worker creates one (takeWindow)
+// or drops one (resolve), so no other goroutine mutates it. cause is kept for
+// the code that fails a window's records, which reads why the segment ended.
 type window struct {
 	seg     core.SegmentID
 	cause   segment.EndCause
@@ -58,6 +74,31 @@ func (d *Durability) takeWindows(st *stream) {
 	}
 }
 
+// removeLocked drops the ledger entries drop selects, in Track order, and
+// hands each to take, which may be nil. It is the one compaction of the ledger, shared by the
+// completion pass and the window: it recounts stamped over what stays, so the
+// stamped prefix stays the entries the worker has stamped, and clears the
+// references the tail still holds. st.mu must be held.
+func (st *stream) removeLocked(drop func(*entry) bool, take func(entry)) {
+	kept := st.ledger[:0]
+	stamped := 0
+	for i := range st.ledger {
+		e := &st.ledger[i]
+		if drop(e) {
+			if take != nil {
+				take(*e)
+			}
+			continue
+		}
+		kept = append(kept, *e)
+		if i < st.stamped {
+			stamped++
+		}
+	}
+	clear(st.ledger[len(kept):])
+	st.ledger, st.stamped = kept, stamped
+}
+
 func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	// A seal's failed sync is a sync failure no worker sync reported, so it is
 	// counted here, unless the worker already recorded a failure for the
@@ -65,6 +106,16 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	// one fsync failure is counted once. The clock is read before the lock.
 	// An append's end counts nothing, and a requested end is the failure the
 	// worker counted when it asked.
+	//
+	// decision: every EndSeal the worker holds no failure for is counted as a
+	// sync failure. A seal ends its segment mostly through a failed sync, and
+	// the sync failure is the count's subject (R62, R64). It is known to
+	// overcount: the stream also ends a segment with EndSeal when a write
+	// fails while a seal drains, or when the seal-marker write fails, and
+	// EndEvent cannot tell these from a failed sync, so sync_failures and
+	// LastSyncError can then show a write error. Withdrawn once EndEvent says
+	// whether the cause was a sync, which the stream would have to add, and
+	// only that case is counted.
 	var failedAt time.Time
 	var failedMono time.Duration
 	if ev.Cause == segment.EndSeal {
@@ -73,20 +124,9 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 
 	st.mu.Lock()
 	w := &window{seg: ev.Segment, cause: ev.Cause}
-	kept := st.ledger[:0]
-	stamped := 0
-	for i, e := range st.ledger {
-		if e.w.Loc.Segment == ev.Segment && !e.done && !st.covered(e.w.Loc) {
-			w.entries = append(w.entries, e)
-			continue
-		}
-		kept = append(kept, e)
-		if i < st.stamped {
-			stamped++
-		}
-	}
-	clear(st.ledger[len(kept):]) // drop the references the tail still holds
-	st.ledger, st.stamped = kept, stamped
+	st.removeLocked(func(e *entry) bool {
+		return e.w.Loc.Segment == ev.Segment && !st.covered(e.w.Loc)
+	}, func(e entry) { w.entries = append(w.entries, e) })
 	_, dup := st.failed[ev.Segment]
 	if !dup {
 		st.failed[ev.Segment] = ev.Err
@@ -110,8 +150,8 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 		// Nothing is held from the segment, so there is nothing to fail.
 		d.resolve(st, w)
 	}
-	// The segment that stopped the stream is the second refusal. A stopped
-	// stream takes no further segment, so no later event reaches here.
+	// A stopped stream is a refused one, whatever stopped it, and takes no
+	// further segment, so no later event reaches here.
 	if ev.Stopped && d.readOnly != nil {
 		d.readOnly(ev.Err)
 	}
