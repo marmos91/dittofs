@@ -111,14 +111,14 @@ type Durability struct {
 	// it.
 	refuse func() error
 
-	// keepWindows is a test knob, false in production: while set, the worker
-	// leaves every window pending instead of failing its content records, so a
-	// test of the window's own bookkeeping reads it before it resolves.
-	keepWindows atomic.Bool
-
-	// afterAppend, beforePublish and beforeSync are test hooks, nil in
-	// production.
+	// afterAppend, beforePublish, beforeSync, beforeFail and afterFail are test
+	// hooks, nil in production. beforeFail runs on the worker once per window,
+	// before its content records are failed, and afterFail once they are failed
+	// and reported, before the window is resolved; neither is called with a
+	// lock held.
 	afterAppend   func()
+	beforeFail    func(*window)
+	afterFail     func()
 	beforePublish func()
 	beforeSync    func()
 
@@ -327,6 +327,10 @@ type stream struct {
 	// dropping an entry once the record's segment is retired from the journal,
 	// when a stream with a long failure history shows up in a heap profile.
 	lost map[segment.Location]error
+	// marks are the failures no Sync has reported yet, per file, oldest
+	// first; told holds, per pending window, the files already told of it.
+	marks map[core.FileID][]mark
+	told  map[uint64]map[core.FileID]struct{}
 	// lastSeg is the newest segment the stream is known to have reached: the
 	// segment of a tracked record or of a sync, whichever is later.
 	lastSeg  core.SegmentID
@@ -575,6 +579,7 @@ type target struct {
 // work is a caller's targets on one stream.
 type work struct {
 	st      *stream
+	ids     []core.FileID
 	targets []target
 }
 
@@ -632,11 +637,12 @@ func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) error {
 		return core.ErrClosed
 	default:
 	}
+	// Every stream is consulted, also one with no target of the call: a failed
+	// window leaves the report for a file it lost a record of, and the record
+	// is no target by then.
 	var ws []work
 	for _, st := range d.snapshot() {
-		if ts := st.targetsOf(ids); len(ts) > 0 {
-			ws = append(ws, work{st: st, targets: ts})
-		}
+		ws = append(ws, work{st: st, ids: ids, targets: st.targetsOf(ids)})
 	}
 	return d.await(ctx, ws, true)
 }
@@ -645,8 +651,8 @@ func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) error {
 // core.ErrClosed once the layer stopped. It takes no context and never
 // returns a *core.SyncError: a record of a segment whose sync failed keeps
 // waiting until Stop, since following a re-append and the read-only wake are
-// not part of this layer yet. It consults and clears no marks, none existing
-// yet. A record with no sync running for it gets one, as a Sync would.
+// not part of this layer yet. It consults and clears no marks, which belong to
+// the Sync that names the file. A record with no sync running for it gets one, as a Sync would.
 func (d *Durability) WaitDurable(at segment.Location) error {
 	var ws []work
 	for _, st := range d.snapshot() {
@@ -719,7 +725,7 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 		wait := d.changes()
 		pending := false
 		for _, w := range ws {
-			p, err := w.st.check(w.targets, failFast)
+			p, err := w.st.check(w.ids, w.targets, failFast)
 			if err != nil {
 				return err
 			}
@@ -738,7 +744,27 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 	}
 }
 
-// check looks at one stream's targets. It reports whether any is pending, and
+// contentLocked reports whether the record at loc is a content record, one a
+// failed window fails. A record the stream holds nowhere counts as content. The
+// caller holds mu.
+func (st *stream) contentLocked(loc segment.Location) bool {
+	for i := len(st.ledger) - 1; i >= 0; i-- {
+		if st.ledger[i].w.Loc == loc {
+			return isContent(st.ledger[i].w)
+		}
+	}
+	for _, w := range st.windows {
+		for i := range w.entries {
+			if w.entries[i].w.Loc == loc {
+				return isContent(w.entries[i].w)
+			}
+		}
+	}
+	return true
+}
+
+// check looks at one stream's targets, and with failFast first answers the
+// marks owed to ids. It reports whether any is pending, and
 // returns an error for a closed layer or, with failFast, a failed segment. It
 // also leads a sync when the targets need one.
 //
@@ -752,30 +778,40 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 // waiter's goroutine, issues the sync so a cancelled waiter is never stuck in
 // the syscall.
 //
-// decision: a target in a pending window answers its *core.SyncError as soon
-// as syncStep stores failed[seg], before the segment's End and before any end
-// event, so before the window exists and before its records are failed through
-// the index. The answer can therefore return before the loss generation is
-// raised and before the failed records are named, which a Sync of a failed
-// record must not do. It stands because nothing reports a failed window to a
-// file any other way yet: once a file has no record left in a window, a later
-// Sync of it finds nothing to wait for and returns nil, so the failure is
-// told to a caller already waiting and to no other. Overturned by the
-// per-file report that a failed window leaves for each file it failed, which
-// answers after the loss, and by the re-append of a header-only record, which
-// must wait for the new sync (RFC 1 §5.3) instead of failing at once.
-func (st *stream) check(targets []target, failFast bool) (bool, error) {
+// decision: a content target in a pending window, or in a failed segment, is
+// pending until the worker has failed it, and the Sync is answered from the
+// mark the failure leaves for the file, not from the failed segment. The
+// answer therefore follows the generation's raise and the record's loss, which
+// a Sync of a failed record must not precede. A target the failure took is no
+// target any more: a Sync that targeted it and finds no mark left returns, as
+// another Sync of the file took the report, and a failure is told once.
+//
+// decision: a header-only target in a pending window, or in a failed segment,
+// answers its *core.SyncError at once, as before marks existed: such a record
+// is not failed, it stays in the window with nothing to wait for, and no mark
+// is ever set for it. Overturned by the re-append of a header-only record,
+// which must wait for the new sync (RFC 1 §5.3) instead of failing at once.
+func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	if failFast {
+		if err := st.takeMarksLocked(ids); err != nil {
+			return false, err
+		}
+	}
 	pending, lead := false, false
 	var failSeg core.SegmentID
 	var failErr error
 	for _, t := range targets {
+		_, lost := st.lost[t.loc]
+		if lost && failFast {
+			// Failed and gone from its window: the mark told the file.
+			continue
+		}
 		if !st.pending(t.loc) {
 			continue
 		}
 		pending = true
-		lerr, lost := st.lost[t.loc]
 		if !lost && st.covered(t.loc) && !st.inWindowLocked(t.loc) {
 			// A sync covers it and the worker is lifting what it superseded:
 			// the wait is for that, which another sync does not hasten.
@@ -783,12 +819,11 @@ func (st *stream) check(targets []target, failFast bool) (bool, error) {
 		}
 		err, bad := st.failed[t.loc.Segment]
 		if lost {
-			// The record was failed and its window resolved while the caller
-			// waited: the failure is told to it now.
-			err, bad = lerr, true
+			// Only a durability wait is here: it keeps waiting.
+			bad = true
 		}
 		if bad {
-			if failFast && failErr == nil {
+			if failFast && failErr == nil && !st.contentLocked(t.loc) {
 				failSeg, failErr = t.loc.Segment, err
 			}
 			continue

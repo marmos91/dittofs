@@ -13,9 +13,6 @@ import (
 // failWindows fails the content records of every pending window of the
 // stream. It runs on the worker, after the windows are taken.
 func (d *Durability) failWindows(st *stream) {
-	if d.keepWindows.Load() {
-		return
-	}
 	st.mu.Lock()
 	if len(st.windows) == 0 {
 		st.mu.Unlock()
@@ -64,6 +61,9 @@ func (d *Durability) failWindow(st *stream, w *window) {
 	if len(content) == 0 {
 		return
 	}
+	if d.beforeFail != nil {
+		d.beforeFail(w)
+	}
 
 	// Raised before anything is published or answered, so a reader that sees a
 	// loss event, or a Sync that returns its failure, finds the generation up.
@@ -81,14 +81,23 @@ func (d *Durability) failWindow(st *stream, w *window) {
 		d.failFile(st, w, f, byFile[f])
 	}
 
+	// The records leave the window and every file's mark is set in one step,
+	// so a waiter never sees a record gone with no report owed, and a Sync
+	// naming several files of the window hears of all of them at once.
 	st.mu.Lock()
 	for _, e := range content {
 		st.lost[e.w.Loc] = w.err
 	}
 	w.entries = slices.DeleteFunc(w.entries, func(e entry) bool { return isContent(e.w) })
+	for _, f := range files {
+		st.markLocked(w, f)
+	}
 	empty := len(w.entries) == 0
 	st.d.notifyAll()
 	st.mu.Unlock()
+	if d.afterFail != nil {
+		d.afterFail()
+	}
 	if empty {
 		d.resolve(st, w)
 	}

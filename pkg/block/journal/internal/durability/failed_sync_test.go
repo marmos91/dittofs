@@ -108,7 +108,6 @@ func TestSyncSucceedsInTheSegmentAfterAFailedOne(t *testing.T) {
 func TestStatsReportTheLastSyncFailure(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 2)
-	r.d.keepWindows.Store(true)
 	if got := r.d.Stats().LastSyncError; got != nil {
 		t.Fatalf("LastSyncError before any failure = %+v", got)
 	}
@@ -152,7 +151,6 @@ func TestStatsReportTheLastSyncFailure(t *testing.T) {
 func TestASyncOfAnEndedSegmentIsNotAFailure(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRigUnstarted(t, 1)
-	r.d.keepWindows.Store(true)
 	var attempts atomic.Int64
 	r.d.afterSync = func() { attempts.Add(1) }
 	r.d.Start(r.streams)

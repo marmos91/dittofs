@@ -317,7 +317,8 @@ func TestALossRecordIsNotAppendedUnderAFileDomain(t *testing.T) {
 	for i := 1; i < 4; i++ {
 		fr.publish(t, f, int64(i*4), "aaaa")
 	}
-	fr.failSegmentOf(t, loc.Segment, f)
+	fr.failSyncOf(t, loc.Segment, errors.New("sync boom"))
+	answer := fr.syncAsync(context.Background(), f)
 	select {
 	case <-atSync:
 	case <-time.After(5 * time.Second):
@@ -336,7 +337,10 @@ func TestALossRecordIsNotAppendedUnderAFileDomain(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the file's domain is held while a loss record is appended")
 	}
+	// The failure is not answered while the loss is being recorded.
+	mustBlock(t, "Sync while a loss record is appended", answer)
 	open()
+	wantSyncError(t, mustReturn(t, "Sync", answer), loc.Segment, f)
 	fr.awaitResolved(t)
 }
 

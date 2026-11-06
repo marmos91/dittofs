@@ -15,9 +15,11 @@ import (
 // FuzzSyncInterleaving drives append, Sync, a Sync with a cancelled context
 // and a scheduled sync failure, and a seal of a clean segment, over two files on one stream, and checks what
 // each Sync may return against what the test knows happened:
-//   - nil only if every earlier record of the file is Durable;
+//   - nil only if every earlier record of the file is Durable, bar the ones a
+//     SyncError already reported lost;
 //   - a SyncError only if a failure was scheduled while one of the file's
-//     records was unsynced, or on a segment a failure was scheduled for;
+//     records was unsynced, or on a segment a failure was scheduled for, and
+//     the file was not told of it by an earlier one;
 //   - the context's error only for the cancelled call.
 func FuzzSyncInterleaving(f *testing.F) {
 	f.Add([]byte{0, 1})
@@ -29,7 +31,6 @@ func FuzzSyncInterleaving(f *testing.F) {
 			ops = ops[:24]
 		}
 		r := newRig(t, 1)
-		r.d.keepWindows.Store(true)
 		files := [2]core.FileID{file(1), file(2)}
 		var locs [2][]segment.Location
 		var off int64
@@ -37,6 +38,9 @@ func FuzzSyncInterleaving(f *testing.F) {
 		var last segment.Location
 		appended := false
 		seals := 0
+		// told holds the records a SyncError reported lost: they stay not
+		// durable, and the failure is told once.
+		told := map[segment.Location]bool{}
 
 		for _, op := range ops {
 			i := int(op>>2) & 1
@@ -51,17 +55,20 @@ func FuzzSyncInterleaving(f *testing.F) {
 				switch {
 				case err == nil:
 					for _, l := range locs[i] {
-						if !r.d.Durable(l) {
+						if !told[l] && !r.d.Durable(l) {
 							t.Fatalf("Sync of file %d returned nil with %+v not durable", i, l)
 						}
 					}
 				case errors.Is(err, core.ErrSyncFailed):
 					hit := false
 					for _, l := range locs[i] {
-						hit = hit || (!r.d.Durable(l) && maybeFailed[l.Segment])
+						if !told[l] && !r.d.Durable(l) && maybeFailed[l.Segment] {
+							hit = true
+							told[l] = true
+						}
 					}
 					if !hit {
-						t.Fatalf("Sync of file %d failed with no failure scheduled for it: %v", i, err)
+						t.Fatalf("Sync of file %d failed with no failure scheduled for it, or was told before: %v", i, err)
 					}
 				default:
 					t.Fatalf("Sync of file %d returned %v", i, err)
@@ -99,7 +106,8 @@ func FuzzSyncInterleaving(f *testing.F) {
 // FuzzFailedSyncWindow drives writes over three files on one stream, Syncs,
 // and scheduled sync and write failures, and checks R14: a Sync that returns
 // nil never covers a record of a segment whose sync or append failed while the
-// record was unsynced, and no Sync hangs.
+// record was unsynced, no Sync hangs, and a file whose record a failure took
+// hears of it from exactly one SyncError.
 //
 // The model dooms a record when a failure is certain to meet it: it was
 // unsynced when a sync failure was scheduled on its segment, was written to a
@@ -117,12 +125,12 @@ func FuzzFailedSyncWindow(f *testing.F) {
 			ops = ops[:24]
 		}
 		r := newRig(t, 1)
-		r.d.keepWindows.Store(true)
 		files := [3]core.FileID{file(1), file(2), file(3)}
 		type rec struct {
 			file   int
 			loc    segment.Location
 			doomed bool
+			told   bool // a SyncError reported the loss
 		}
 		var recs []*rec
 		armedSync := map[core.SegmentID]bool{}
@@ -188,9 +196,9 @@ func FuzzFailedSyncWindow(f *testing.F) {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				err := r.d.Sync(ctx, files[i])
 				cancel()
-				doomedFile := false
+				doomedFile := false // a failure is owed to the file
 				for _, x := range recs {
-					doomedFile = doomedFile || (x.file == i && x.doomed)
+					doomedFile = doomedFile || (x.file == i && x.doomed && !x.told)
 				}
 				switch {
 				case err == nil:
@@ -198,20 +206,26 @@ func FuzzFailedSyncWindow(f *testing.F) {
 						t.Fatalf("Sync of file %d returned nil with a record of a failed window", i)
 					}
 					for _, x := range recs {
-						if x.file == i && !r.d.Durable(x.loc) {
+						if x.file == i && !x.told && !r.d.Durable(x.loc) {
 							t.Fatalf("Sync of file %d returned nil with %+v not durable", i, x.loc)
 						}
 					}
 				case errors.Is(err, core.ErrSyncFailed):
 					if !doomedFile {
-						t.Fatalf("Sync of file %d failed with no failure scheduled for it: %v", i, err)
+						t.Fatalf("Sync of file %d failed with no failure scheduled for it, or was told before: %v", i, err)
 					}
 					// The armed failure fired if the file had an unsynced
-					// record in its segment.
+					// record in its segment. The error reports every failure
+					// of a segment known failed by now.
 					for _, x := range recs {
 						if x.file == i && armedSync[x.loc.Segment] && !r.d.Durable(x.loc) {
 							failedSeg[x.loc.Segment] = true
 							armedSync[x.loc.Segment] = false
+						}
+					}
+					for _, x := range recs {
+						if x.file == i && x.doomed && failedSeg[x.loc.Segment] {
+							x.told = true
 						}
 					}
 				default:

@@ -143,7 +143,6 @@ func TestFireWithNothingUnsyncedIssuesNoSync(t *testing.T) {
 func TestFailedSegmentIsNotRetriedByTheTimer(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
-	r.d.keepWindows.Store(true)
 	before := r.clock.Pending()
 	a := r.appendWrite(t, file(1), 0, "a")
 	r.armed(t, before)

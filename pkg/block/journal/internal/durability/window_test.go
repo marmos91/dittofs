@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -39,12 +40,46 @@ func (r *rig) windowsOf(no int) []windowView {
 	return out
 }
 
-// waitWindow waits for stream no to hold a pending window and returns the
-// first one.
-func (r *rig) waitWindow(t *testing.T, no int) windowView {
+// viewOf copies w; the caller is the stream's worker, the window's only writer.
+func viewOf(w *window) windowView {
+	v := windowView{seg: w.seg, cause: w.cause}
+	for _, e := range w.entries {
+		v.locs = append(v.locs, e.w.Loc)
+		v.files = append(v.files, e.w.File)
+	}
+	return v
+}
+
+// watchWindows records every window as the worker is about to fail its
+// records, so a test can read what the window held before it resolved. It
+// must run before the layer starts.
+func (r *rig) watchWindows() *recorder[windowView] {
+	var rec recorder[windowView]
+	r.d.beforeFail = func(w *window) { rec.add(viewOf(w)) }
+	return &rec
+}
+
+// waitWindow waits until the worker has taken a window and is about to fail
+// it, and returns the first one.
+func waitWindow(t *testing.T, rec *recorder[windowView]) windowView {
 	t.Helper()
-	eventually(t, "the worker to take the window", func() bool { return len(r.windowsOf(no)) > 0 })
-	return r.windowsOf(no)[0]
+	eventually(t, "the worker to take the window", func() bool { return len(rec.all()) > 0 })
+	return rec.all()[0]
+}
+
+// waitResolved waits until stream no holds no pending window.
+func (r *rig) waitResolved(t *testing.T, no int) {
+	t.Helper()
+	eventually(t, "the windows to be resolved", func() bool { return len(r.windowsOf(no)) == 0 })
+}
+
+// newWatchedRig is a started rig whose windows are recorded.
+func newWatchedRig(t *testing.T, n int) (*rig, *recorder[windowView]) {
+	t.Helper()
+	r := newRigUnstarted(t, n)
+	rec := r.watchWindows()
+	r.d.Start(r.streams)
+	return r, rec
 }
 
 // failNextWrite schedules the next write of the segment's file to fail once.
@@ -86,7 +121,6 @@ func wantSyncError(t *testing.T, err error, seg core.SegmentID, files ...core.Fi
 func TestSyncOverARecordInAFailedAppendsSegmentFails(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
-	r.d.keepWindows.Store(true)
 	f, g := file(1), file(2)
 	a := r.appendWrite(t, f, 0, "a")
 	r.failNextWrite(t, a.Segment, errors.New("write boom"))
@@ -107,7 +141,6 @@ func TestSyncOverARecordInAFailedAppendsSegmentFails(t *testing.T) {
 func TestFailedSyncIsNeverSatisfiedByALaterSync(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
-	r.d.keepWindows.Store(true)
 	fa, fb := file(1), file(2)
 	a := r.appendWrite(t, fa, 0, "a")
 	b := r.appendWrite(t, fb, 0, "b")
@@ -117,12 +150,15 @@ func TestFailedSyncIsNeverSatisfiedByALaterSync(t *testing.T) {
 	r.failSyncOf(t, a.Segment, errors.New("sync boom"))
 
 	wantSyncError(t, mustReturn(t, "Sync", r.syncAsync(context.Background(), fa, fb)), a.Segment, fa, fb)
-	r.waitWindow(t, 0)
-	wantSyncError(t, mustReturn(t, "Sync after the window", r.syncAsync(context.Background(), fa, fb)), a.Segment, fa, fb)
+	r.waitResolved(t, 0)
+	// Both files were told once: the failure is not told again, and the
+	// records, gone from the window, are no target.
+	if err := mustReturn(t, "Sync after the window", r.syncAsync(context.Background(), fa, fb)); err != nil {
+		t.Fatalf("Sync after the failure was reported = %v, want nil", err)
+	}
 
 	// A later sync report for the failed segment must satisfy nothing.
 	r.sinks[0].Synced(a.Segment, b.Off+b.Len)
-	wantSyncError(t, mustReturn(t, "Sync after a later report", r.syncAsync(context.Background(), fa, fb)), a.Segment, fa, fb)
 	if r.d.Durable(a) || r.d.Durable(b) {
 		t.Errorf("a record of the failed window reads durable: a=%v b=%v", r.d.Durable(a), r.d.Durable(b))
 	}
@@ -134,8 +170,7 @@ func TestFailedSyncIsNeverSatisfiedByALaterSync(t *testing.T) {
 // its time.
 func TestSealFailureCountsAndFailsItsWindow(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	r := newRig(t, 1)
-	r.d.keepWindows.Store(true)
+	r, rec := newWatchedRig(t, 1)
 	f := file(1)
 	sealBoom := errors.New("seal boom")
 	a := r.appendWrite(t, f, 0, "a")
@@ -145,7 +180,7 @@ func TestSealFailureCountsAndFailsItsWindow(t *testing.T) {
 	if _, err := r.streams.For(f).Seal(false); err == nil {
 		t.Fatal("the seal was expected to fail")
 	}
-	w := r.waitWindow(t, 0)
+	w := waitWindow(t, rec)
 	if w.cause != segment.EndSeal || w.seg != a.Segment || !slices.Equal(w.locs, []segment.Location{a}) {
 		t.Errorf("window = %+v, want the seal's window of %+v", w, a)
 	}
@@ -165,13 +200,12 @@ func TestSealFailureCountsAndFailsItsWindow(t *testing.T) {
 // of the counters: the window is taken, and no sync failed.
 func TestAppendFailureTakesItsWindowAndCountsNothing(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	r := newRig(t, 1)
-	r.d.keepWindows.Store(true)
+	r, rec := newWatchedRig(t, 1)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
 	r.failNextWrite(t, a.Segment, errors.New("write boom"))
 	r.appendFailing(t, f, 1)
-	w := r.waitWindow(t, 0)
+	w := waitWindow(t, rec)
 	if w.cause != segment.EndAppend {
 		t.Errorf("window cause = %v, want append", w.cause)
 	}
@@ -185,8 +219,7 @@ func TestAppendFailureTakesItsWindowAndCountsNothing(t *testing.T) {
 // the window.
 func TestWindowIsTheRecordsSinceTheLastSuccessfulSync(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	r := newRig(t, 1)
-	r.d.keepWindows.Store(true)
+	r, rec := newWatchedRig(t, 1)
 	f := file(1)
 	synced := r.appendWrite(t, f, 0, "a")
 	if err := mustReturn(t, "Sync", r.syncAsync(context.Background(), f)); err != nil {
@@ -197,7 +230,7 @@ func TestWindowIsTheRecordsSinceTheLastSuccessfulSync(t *testing.T) {
 	r.failNextWrite(t, b.Segment, errors.New("write boom"))
 	r.appendFailing(t, f, 3)
 
-	w := r.waitWindow(t, 0)
+	w := waitWindow(t, rec)
 	if !slices.Equal(w.locs, []segment.Location{b, c}) {
 		t.Errorf("window = %v, want the records since the last sync %v, %v (not %v)", w.locs, b, c, synced)
 	}
@@ -209,8 +242,7 @@ func TestWindowIsTheRecordsSinceTheLastSuccessfulSync(t *testing.T) {
 // window, so its file's Sync fails instead of hanging.
 func TestARecordStillWritingWhenTheSyncFailsIsInTheWindow(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	r := newRig(t, 1)
-	r.d.keepWindows.Store(true)
+	r, rec := newWatchedRig(t, 1)
 	f, g, h := file(1), file(2), file(3)
 	first := r.appendWrite(t, h, 0, "h")
 	if err := mustReturn(t, "Sync", r.syncAsync(context.Background(), h)); err != nil {
@@ -234,11 +266,15 @@ func TestARecordStillWritingWhenTheSyncFailsIsInTheWindow(t *testing.T) {
 	<-hold.Reached()
 	other := r.appendWrite(t, g, 0, "g")
 	r.failSyncOf(t, first.Segment, errors.New("sync boom"))
-	wantSyncError(t, mustReturn(t, "Sync of the later record", r.syncAsync(context.Background(), g)), first.Segment, g)
+	// The window waits for the slot still writing, so no record of it is
+	// failed, and no Sync of one answered, until the slot is done.
+	chG := r.syncAsync(context.Background(), g)
+	mustBlock(t, "Sync of the later record before the window is failed", chG)
 
 	hold.Release()
 	wg.Wait()
-	w := r.waitWindow(t, 0)
+	wantSyncError(t, mustReturn(t, "Sync of the later record", chG), first.Segment, g)
+	w := waitWindow(t, rec)
 	for _, loc := range []segment.Location{held, other} {
 		if !slices.Contains(w.locs, loc) {
 			t.Errorf("window %v misses %v", w.locs, loc)
@@ -279,7 +315,6 @@ func TestAnEmptyWindowIsAnnouncedResolvedAtOnce(t *testing.T) {
 	r := newRigConfigured(t, 1, func(c *Config) {
 		c.Resolved = func(stream uint32, seg core.SegmentID) { got.add(resolvedAt{stream, seg}) }
 	})
-	r.d.keepWindows.Store(true)
 	r.d.Start(r.streams)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
@@ -307,51 +342,53 @@ func TestAResolvedWindowIsAnnouncedOnceAndItsRecordsAreNotPending(t *testing.T) 
 	r := newRigConfigured(t, 1, func(c *Config) {
 		c.Resolved = func(stream uint32, seg core.SegmentID) { got.add(resolvedAt{stream, seg}) }
 	})
-	r.d.keepWindows.Store(true)
+	var early atomic.Int64
+	r.d.beforeFail = func(*window) { early.Add(int64(len(got.all()))) }
 	r.d.Start(r.streams)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
 	r.failNextWrite(t, a.Segment, errors.New("write boom"))
 	r.appendFailing(t, f, 1)
-	r.waitWindow(t, 0)
-	if n := len(got.all()); n != 0 {
+	eventually(t, "the window to be announced", func() bool { return len(got.all()) > 0 })
+	if n := early.Load(); n != 0 {
 		t.Fatalf("a window holding a record was announced before it was resolved: %d", n)
 	}
-
-	st := r.d.made[0]
-	st.mu.Lock()
-	w := st.windows[0]
-	if !st.pending(a) {
-		t.Error("the record of a pending window is not pending")
-	}
-	st.mu.Unlock()
-	r.d.resolve(st, w)
+	r.waitResolved(t, 0)
 
 	if g := got.all(); len(g) != 1 || g[0] != (resolvedAt{0, a.Segment}) {
 		t.Fatalf("announced %+v, want the segment once", g)
 	}
+	st := r.d.made[0]
 	st.mu.Lock()
-	defer st.mu.Unlock()
-	if st.pending(a) {
-		t.Error("the record of a resolved window is still pending")
-	}
 	if _, ok := st.failed[a.Segment]; ok {
 		t.Error("the resolved segment's failure was kept")
 	}
 	if len(st.windows) != 0 {
 		t.Errorf("windows = %d, want the resolved one dropped", len(st.windows))
 	}
+	st.mu.Unlock()
+	// The failed record is no target of a Sync: the file hears of it once and
+	// then has nothing pending.
+	wantSyncError(t, mustReturn(t, "Sync", r.syncAsync(context.Background(), f)), a.Segment, f)
+	if err := mustReturn(t, "Sync again", r.syncAsync(context.Background(), f)); err != nil {
+		t.Errorf("Sync of a resolved window's file again = %v, want nil", err)
+	}
+	if r.d.Durable(a) {
+		t.Error("the record a window failed reads durable")
+	}
 }
 
 // leaveAFailedSegment drives the segment a stream took to leave a failed one: it
 // fails a sync of f, then appends g's record in the spare. The two files are
-// distinct so a Sync of g does not meet the failed segment's window.
+// distinct so a Sync of g does not meet the failed segment's window. f's record
+// is a header-only one, which a failed window keeps rather than fails, so that
+// no loss record is appended into the spare ahead of g's.
 func (r *rig) leaveAFailedSegment(t *testing.T, f, g core.FileID) (first, spare segment.Location) {
 	t.Helper()
-	first = r.appendWrite(t, f, 0, "a")
+	first = r.appendKind(t, f, format.KindDelete, format.RecordBody{})
 	r.failSyncOf(t, first.Segment, errors.New("first boom"))
 	wantSyncError(t, mustReturn(t, "Sync", r.syncAsync(context.Background(), f)), first.Segment, f)
-	r.waitWindow(t, 0)
+	eventually(t, "the worker to take the window", func() bool { return len(r.windowsOf(0)) > 0 })
 	r.settlePool(t)
 	spare = r.appendWrite(t, g, 1, "b")
 	if spare.Segment == first.Segment {
@@ -367,7 +404,6 @@ func TestAFailureInTheSpareBeforeItsFirstSyncStopsTheStream(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	var ro recorder[error]
 	r := newRigConfigured(t, 1, func(*Config) {})
-	r.d.keepWindows.Store(true)
 	r.d.readOnly = ro.add
 	r.d.Start(r.streams)
 	f, g := file(1), file(2)
@@ -408,7 +444,6 @@ func TestAFailureAfterTheSparesFirstSyncRollsOn(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	var ro recorder[error]
 	r := newRigConfigured(t, 1, func(*Config) {})
-	r.d.keepWindows.Store(true)
 	r.d.readOnly = ro.add
 	r.d.Start(r.streams)
 	f, g := file(1), file(2)
@@ -419,7 +454,14 @@ func TestAFailureAfterTheSparesFirstSyncRollsOn(t *testing.T) {
 	r.appendWrite(t, g, 2, "c")
 	r.failSyncOf(t, spare.Segment, errors.New("later boom"))
 	wantSyncError(t, mustReturn(t, "later Sync", r.syncAsync(context.Background(), g)), spare.Segment, g)
-	r.waitWindowOf(t, 0, spare.Segment)
+	eventually(t, "the spare's window to be resolved", func() bool {
+		for _, w := range r.windowsOf(0) {
+			if w.seg == spare.Segment {
+				return false
+			}
+		}
+		return true
+	})
 	r.settlePool(t)
 	if next := r.appendWrite(t, g, 3, "d"); next.Segment == spare.Segment {
 		t.Error("the stream did not roll out of the failed spare")
@@ -427,20 +469,4 @@ func TestAFailureAfterTheSparesFirstSyncRollsOn(t *testing.T) {
 	if n := len(ro.all()); n != 0 {
 		t.Errorf("the read-only entry was called %d times for a failure after a sync", n)
 	}
-}
-
-// waitWindowOf waits for stream no to hold a pending window of seg.
-func (r *rig) waitWindowOf(t *testing.T, no int, seg core.SegmentID) windowView {
-	t.Helper()
-	var got windowView
-	eventually(t, "the worker to take the segment's window", func() bool {
-		for _, w := range r.windowsOf(no) {
-			if w.seg == seg {
-				got = w
-				return true
-			}
-		}
-		return false
-	})
-	return got
 }

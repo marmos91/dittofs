@@ -137,8 +137,12 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	st.removeLocked(func(e *entry) bool {
 		return e.w.Loc.Segment == ev.Segment && !st.covered(e.w.Loc)
 	}, func(e entry) { w.entries = append(w.entries, e) })
-	_, dup := st.failed[ev.Segment]
-	if !dup {
+	first, dup := st.failed[ev.Segment]
+	if dup {
+		// The sync's own error stands over the one a seal found after it,
+		// which the segment's records are reported with.
+		w.err = first
+	} else {
 		st.failed[ev.Segment] = ev.Err
 	}
 	_, wasCounted := st.counted[ev.Segment]
@@ -187,6 +191,7 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 func (d *Durability) resolve(st *stream, w *window) {
 	st.mu.Lock()
 	st.windows = slices.DeleteFunc(st.windows, func(o *window) bool { return o == w })
+	delete(st.told, w.id)
 	held := false
 	for i := range st.ledger {
 		held = held || st.ledger[i].w.Loc.Segment == w.seg
