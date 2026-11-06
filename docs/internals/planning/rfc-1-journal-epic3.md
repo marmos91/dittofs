@@ -11,7 +11,7 @@ subtasks". The Windows cache-policy refusal and the XFS and ext4 barrier rows, m
 the plan's list, are added; the `format` replace, the direct reads, the storage-agnostic
 leg and the device fixtures leave this epic (P21).
 **Depends on:** sync point **S2, red suite in CI**; epic 1's storage seam (`storage.FS`,
-`storage.File`) and `internal/core` types; epic 2's `journalv2test/raw` (2.13a, #3381).
+`storage.File`) and `internal/core` types; epic 2's `journaltest/raw` (2.13a, #3381).
 **Blocks:** epic 5 (segments are made of this epic's records) and epic 7 (recovery parses
 this epic's bytes and calls its probes).
 
@@ -22,7 +22,7 @@ this epic's bytes and calls its probes).
 - **Sources are the RFCs, the planning documents, and the code epics 1 and 2 landed.**
   Unlike epic 4, this epic builds on existing code: epic 1's `storage.FS` and `storage.File`
   (`internal/storage`), its `core` types (`Version`, `FileID`, `Extent`, `ShareTag`), and
-  the hand-built bytes of `journalv2test/raw`. No code of v1 (`pkg/block/journal`) is read
+  the hand-built bytes of `journaltest/raw`. No code of v1's journal (deleted by #3645) is read
   or reused (rule 7).
 - **`raw` is the independent oracle.** The encoders here never import `raw`, and `raw`
   never imports `internal/format` (E2-D9). A golden vector is checked against both where
@@ -64,10 +64,10 @@ turns no conformance test green and adds none to `known.yaml`.
 
 ### 1.1 In scope
 
-- `pkg/block/journalv2/internal/format`: the `format` file, segment header, seal marker,
+- `pkg/block/journal/internal/format`: the `format` file, segment header, seal marker,
   record (header, 14 kinds and their bodies), catalog entry and trailer codecs; CRC32C;
   segment file names; the footer reader; the slot scanner.
-- `pkg/block/journalv2/internal/platform`: files, sync, directory sync and allocation per
+- `pkg/block/journal/internal/platform`: files, sync, directory sync and allocation per
   OS; the barrier, copy-on-write, Btrfs subvolume and Windows cache-policy probes; the
   `E1-D6` `decision:` marker.
 
@@ -203,7 +203,7 @@ Copied verbatim from [the plan](rfc-1-journal-plan.md) §1.5, as its instruction
 6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   `pkg/block/journal`. The import test enforces it. v1 code is neither ported nor
+   v1's journal (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
    checks only whether v1 state exists, to refuse it at start (E10), and never reads
    v1's format.
@@ -241,11 +241,11 @@ applies differently.
 | 4. Profiling (leaks, allocations per op) | **Applies.** Every test runs under epic 2's profiler and fails on a leaked descriptor. Allocations per op are asserted, outside `-race`, only on `WriteAt`'s path: the record encoder (3.4). |
 | 5. Public and internals (test the consumer, `-race`) | **Applies.** The internal APIs are tested directly until epics 5 and 7 consume them (D8). Probes and the OS storage run under `-race` with concurrent callers. |
 | 6. Known failures shrink | **Does not apply.** Epic 3 turns no conformance test green and adds none (§1.2). |
-| 7. v2 ignores v1 | **Applies.** Nothing is read from `pkg/block/journal`; the import test covers both new packages. |
+| 7. v2 ignores v1 | **Applies.** Nothing is read from v1's journal (deleted by #3645); the import test covers both new packages. |
 | 8. Real storage for storage properties | **Applies to the platform.** Every sync, rename and allocation test runs on a real directory. Codecs are pure logic and test in memory. Probes test on recorded mount tables and device answers (3.11, 3.12). |
 | 9. Comment conventions | **Applies.** No epic, issue or plan ID in source. The markers each subtask places are listed in it. |
 | 10. A test must be able to fail | **Applies.** Golden bytes are literal offsets copied from the RFC tables, with field values whose bytes do not repeat, so a field moved, swapped or written big-endian fails. Each platform test asserts the call issued through D6's table, command included, and a table test pins each production entry to its `x/sys` function. |
-| 11. Export only what RFC 1 §3 uses | **Applies.** `journalv2` gains no symbol. Both packages are internal; their outcome classes are unexported or internal (D2, D7). |
+| 11. Export only what RFC 1 §3 uses | **Applies.** `journal` gains no symbol. Both packages are internal; their outcome classes are unexported or internal (D2, D7). |
 | 12. Create only what is declared | **Applies with D8.** Each package lands with its first subtask; no stub without a caller. |
 
 ---
@@ -369,7 +369,7 @@ alone. The unlink itself is epic 7's. Kept as P4 until the RFC says so.
 ## 4. Target tree
 
 ```text
-pkg/block/journalv2/
+pkg/block/journal/
   internal/format/                    imports core; stdlib only
     crc.go                            CRC32C plain and seeded                       (3.1, 3.3)
     formatfile.go                     format file codec                              (3.1)
@@ -393,7 +393,7 @@ pkg/block/journalv2/
 ```
 
 `new-package-tests.sh` requires a `_test.go` in every new directory; each has its own.
-`journalv2test/open_windows.go` already opens files with `FILE_SHARE_DELETE` under a
+`journaltest/open_windows.go` already opens files with `FILE_SHARE_DELETE` under a
 `decision:`; 3.10 does the same for segments and cites the same reason.
 
 ---
@@ -482,8 +482,8 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
 - **Owner:** A. **Depends on:** 3.3 (seeded CRC). `raw` builders for every body (2.13a) are
   not a gate: until they land, a kind's golden is checked against its hex file alone (P18).
 - **Deliverables:** `record.go` and `kinds.go`: the 96-byte header, both seeded checksums,
-  verification (magic, header checksum, segment id), kind classification, epoch check,
-  D9's bounds; the 14 kinds with their field rules, the `write` modification time, the
+  verification (magic, header checksum, segment id, own offset), kind classification, epoch
+  check, D9's bounds; the 14 kinds with their field rules, the `write` modification time, the
   fixed bodies of `loss` (16 bytes), `clone target` (56), `hold`, `unhold` and `stamp` (8),
   padding; the whole-payload verify function; one golden per kind; `FuzzRecord`. Each
   per-kind golden contains a full header, so there are no separate header goldens and no
@@ -507,7 +507,8 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
     carries the field.";
   - RFC 28 §2.3: "A record starts at a multiple of 8 bytes within its segment" and "A
     header verifies only if its magic matches, its checksum verifies under this journal's
-    identity, and its segment id is the segment it was read from.";
+    identity, and its segment id and own offset are the segment and offset it was read
+    at.";
   - RFC 1 §4.3: "**In this format version the epoch half MUST be zero**, on every record
     and in the floor" (decode half);
   - RFC 28 §4.2, row "record layout": "Encode a record of every kind; assert the bytes
@@ -521,9 +522,9 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
   - 14 goldens match the encoder and their hex files, and `raw.Record` for every kind
     2.13a builds, and decode back; the non-zero synced-through offset is checked against
     the hex file alone until 2.13a extends `raw` (P18);
-  - another identity, another segment id, kinds 0, 15 and 128, a non-zero epoch, and a
-    flipped byte of a `write`'s modification time each return their class, and a verifying
-    unknown kind is never stepped over;
+  - another identity, another segment id, another own offset, kinds 0, 15 and 128, a
+    non-zero epoch, and a flipped byte of a `write`'s modification time each return their
+    class, and a verifying unknown kind is never stepped over;
   - the verify function refuses a payload with any one byte changed and never returns part
     of it, and every encoded record ends on a multiple of 8;
   - a record with non-zero padding verifies and decodes.
@@ -720,7 +721,7 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
     `SetFileValidData`; the same case pins their entries (D6);
   - the contract test of `storage.FS` (3.7) passes on NTFS.
 - **Rules:** 2: does not apply, no parser. 9: the `FILE_SHARE_DELETE` `decision:` as in
-  `journalv2test/open_windows.go`.
+  `journaltest/open_windows.go`.
 
 ### 3.11 Probes, Linux: mount options, copy-on-write and Btrfs subvolume
 

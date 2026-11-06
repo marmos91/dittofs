@@ -10,7 +10,7 @@ grading; [the RFC index](../rfcs/rfc-index.md), "Test tiers" and "Test harness".
 (@didimelli), with the split given per subtask; @simonebaracchi coordinates and runs the
 review at the end.
 **Estimate:** 17 subtasks; sizes in §8.
-**Depends on:** epic 1's frozen public surface of `pkg/block/journalv2` (the end of
+**Depends on:** epic 1's frozen public surface of `pkg/block/journal` (the end of
 epic 1 is sync point **S1, interfaces frozen**).
 **Blocks:** all testing in epics 3–12. The end of this epic is sync point **S2, red suite
 in CI**.
@@ -48,11 +48,11 @@ At the end of the epic:
 ### 1.1 In scope
 
 - `pkg/sim`: `TestClock`, `Fault`, `FaultAction` and the seeded `Schedule`.
-- `pkg/block/journalv2/journalv2test`: the crash seam, the profiler, the fixture, the
+- `pkg/block/journal/journaltest`: the crash seam, the profiler, the fixture, the
   reference model and the hand-written byte builders.
-- `pkg/block/journalv2/conformance`: the conformance tests, the model-based test and its
+- `pkg/block/journal/conformance`: the conformance tests, the model-based test and its
   corpus.
-- `test/journalv2/`: the known-failure file and the traceability map with its check.
+- `test/journal/`: the known-failure file and the traceability map with its check.
 - `test/suites.yaml`: the `journal-conformance` suite, the `journal` group, and the new
   build tag added to `lint-go`'s vet line.
 - The catalogue of system scenarios, as §7 of this file, for epics 10 and 11 to write.
@@ -105,7 +105,7 @@ is named with the reason.
 6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   `pkg/block/journal`. The import test enforces it. v1 code is neither ported nor
+   v1's journal (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
    checks only whether v1 state exists, to refuse it at start (E10), and never reads
    v1's format.
@@ -138,13 +138,13 @@ is named with the reason.
 | 2. Fuzz | **Applies to the model.** A fuzz target drives operation sequences against the reference model alone, with the property that the model never panics and never reports bytes it was not given. Fuzzing the journal's parsers is epic 3's, where the parsers are. |
 | 3. Metrics and tracing | **Applies as checks, not as code.** RFC 1 §9.4 Group D's checks assert each `Stats` field and counter from the public surface (2.5b). Nothing here maintains a counter. |
 | 4. Profiling | **This epic builds it.** Every conformance test runs under the profiler through the fixture (2.3, 2.5a). The allocations-per-op assertion is out of scope (§1.2). |
-| 5. Public and internals | **Applies.** Conformance tests drive only the public surface of `journalv2` and observe the disk only through the seam and the byte builders: they test the consumer of every value. The components test their own APIs. |
-| 6. Known failures | **This epic builds it.** Every conformance test lands with its entry in `test/journalv2/known.yaml` (D1). No test turns green here. |
-| 7. v2 ignores v1 | **Applies.** The import test covers `journalv2test` and `conformance`. Nothing in this epic reads v1's code or format, and v1's test helpers (its fake clock) are not reused. |
+| 5. Public and internals | **Applies.** Conformance tests drive only the public surface of `journal` and observe the disk only through the seam and the byte builders: they test the consumer of every value. The components test their own APIs. |
+| 6. Known failures | **This epic builds it.** Every conformance test lands with its entry in `test/journal/known.yaml` (D1). No test turns green here. |
+| 7. v2 ignores v1 | **Applies.** The import test covers `journaltest` and `conformance`. Nothing in this epic reads v1's code or format, and v1's test helpers (its fake clock) are not reused. |
 | 8. Real storage | **Applies, and is the reason for the seam.** The seam wraps a real directory. The reference model is in memory but stands in only for the expected answer, never for storage. |
-| 9. Comments | **Applies.** Each conformance test's doc comment states the check in terms of the journal's behaviour, with no RFC section or epic number; the map from test to RFC row lives in `test/journalv2/trace.yaml` (D3). `decision:` markers for D5–D8 and D12 sit at their code sites. |
+| 9. Comments | **Applies.** Each conformance test's doc comment states the check in terms of the journal's behaviour, with no RFC section or epic number; the map from test to RFC row lives in `test/journal/trace.yaml` (D3). `decision:` markers for D5–D8 and D12 sit at their code sites. |
 | 10. Tests must be able to fail | **Applies, with D4's limit.** Every conformance test asserts the specific outcome its RFC row names, through `errors.Is` or `errors.As` against the named sentinel where it expects a refusal, so a stub's `ErrNotImplemented` never satisfies it. |
-| 11. Export only what RFC 1 §3 uses | **Applies to `journalv2` only.** This epic adds no exported symbol to the journal's public package. The segment-cap override is an unexported field reached through `internal/core` (D8). `pkg/sim` and `journalv2test` are test packages and export what their callers use. |
+| 11. Export only what RFC 1 §3 uses | **Applies to `journal` only.** This epic adds no exported symbol to the journal's public package. The segment-cap override is an unexported field reached through `internal/core` (D8). `pkg/sim` and `journaltest` are test packages and export what their callers use. |
 | 12. Create only what is declared | **Applies.** Each component lands with its first consumer: the clock with the schedule's delay, the schedule with the seam, the seam and profiler with the fixture's first tests, the byte builders with their own field-by-field tests against RFC 28 §2, which epic 3's golden vectors are checked against (2.13a). No system e2e scaffolding lands without a test (D11). |
 
 ---
@@ -159,7 +159,7 @@ known-failure reader.**
 RFC 29 §4.7 replaces the Markdown lists with one `known.yaml` per suite, and `dt` already
 reads and grades it (`test/harness/known`). A second matcher would drift from it.
 
-- *The file:* `test/journalv2/known.yaml`, named by the suite's `known:` field.
+- *The file:* `test/journal/known.yaml`, named by the suite's `known:` field.
 - *One entry per test, never a pattern.* `dt` judges a pattern on every result it matched
   and calls it an unexpected pass only when all of them pass, so a pattern would let one
   test turn green without its entry leaving the list.
@@ -187,8 +187,8 @@ turn `unit` red.
   ```yaml
   journal-conformance:
     format: go-json
-    cmd: go test -race -tags=journal_conformance -timeout=30m ./pkg/block/journalv2/conformance/...
-    known: test/journalv2/known.yaml
+    cmd: go test -race -tags=journal_conformance -timeout=30m ./pkg/block/journal/conformance/...
+    known: test/journal/known.yaml
     tier: pr
   ```
 
@@ -220,14 +220,14 @@ turn `unit` red.
   added to one fails CI until it is mapped. From those three only the named rows are, since
   the rest of those tables is other tiers' or other components' checks; for them the check
   fails only when a named row disappears.
-- *The map:* `test/journalv2/trace.yaml`. Each row maps to a list of tests, or to
+- *The map:* `test/journal/trace.yaml`. Each row maps to a list of tests, or to
   `owner: epic N` with a reason, or both when a row is split (D9 shows how). `owner:` names
   only an owner outside this epic (§6), or `parked`. A row whose test a subtask of this epic
   has not written yet carries `pending: 2.x` instead, and that subtask removes it when the
   test lands, so none is left at S2 (2.15); a split row whose own half is not written yet
   carries `owner:` and `pending:`.
   A row with tests that is still pending fails the check.
-- *The check:* `test/journalv2/trace_test.go`, run by `lint-repo` (and by `unit`, which runs `./test/...`). It parses the rows of the
+- *The check:* `test/journal/trace_test.go`, run by `lint-repo` (and by `unit`, which runs `./test/...`). It parses the rows of the
   scope above straight from the RFC files, and the conformance package's test functions
   with `go/parser`. It fails when an in-scope row has no entry, when an entry names a row
   that no longer exists, when a named test does not exist, or when a test of the suite is
@@ -332,12 +332,12 @@ is not a setting, and no exported symbol may be added for it (rule 11).
 - *How:* `core.Settings` gains an unexported field, set only through
   `core.SetSegmentCap(*Settings, int64)` in `internal/core`. The fixture, inside the
   journal's tree, sets it and passes the settings through the public `WithSettings`.
-  Code outside `pkg/block/journalv2/...` cannot reach `internal/core`, so the public
+  Code outside `pkg/block/journal/...` cannot reach `internal/core`, so the public
   surface does not change. The field is honoured once epic 5 implements segments.
 - *Default in the fixture:* 1 MiB. A check that names a size in the RFC (a 1 MiB record,
   a 64 KiB extent) keeps that size and states the cap it needs.
 
-**D9. RFC 28's bytes are written by hand from RFC 28 §2, in `journalv2test/raw`.**
+**D9. RFC 28's bytes are written by hand from RFC 28 §2, in `journaltest/raw`.**
 
 - *Why:* the format checks need on-disk bytes before the encoder exists, and an encoder
   checked against itself proves nothing. `raw` is written from the RFC tables alone, with
@@ -352,7 +352,7 @@ is not a setting, and no exported symbol may be added for it (rule 11).
   have an encoding half (epic 3) and a refusal half (here). `trace.yaml` lists both.
 
 **D10. Conformance tests reach the clock only through the fixture.**
-Epic 1's import rule allows `pkg/sim` in both `journalv2test` and `conformance`, and
+Epic 1's import rule allows `pkg/sim` in both `journaltest` and `conformance`, and
 `conformance` needs it: a check that fails a sync builds its `sim.Schedule` rules and
 `FaultAction`s. The clock is the exception. The fixture owns the one `TestClock` the
 journal and the seam read, and exposes `Advance`, `Jump` and `Now`, so a test cannot
@@ -391,9 +391,9 @@ so `goleak` is not available.
 pkg/sim/                         TestClock, Fault, FaultAction, Schedule        (2.2)
                                  node-wide (RFC 8 §2.1); imports nothing of the journal
   clock.go  fault.go  schedule.go  *_test.go
-pkg/block/journalv2/
+pkg/block/journal/
   internal/core/settings.go      unexported segment-cap field, SetSegmentCap    (2.5a, D8)
-  journalv2test/                 test components, inside the journal's tree
+  journaltest/                   test components, inside the journal's tree
     seam.go  hold.go             crash-simulating seam, holds                    (2.1, 2.2)
     prof.go                      profiler                                        (2.3)
     model/                       reference model                                 (2.4)
@@ -404,7 +404,7 @@ pkg/block/journalv2/
     rfc28_a_test.go  rfc28_b_test.go  rfc28_c_test.go  damage_test.go
     edge_test.go  model_test.go  counted_test.go  clock_test.go
     testdata/model/              hand-written sequences and shrunk failures      (2.6)
-test/journalv2/
+test/journal/
   known.yaml                     one entry per conformance test                  (2.5a onwards)
   trace.yaml  trace_test.go      RFC row → test or owner                         (2.14)
 test/suites.yaml                 journal-conformance suite, journal group, vet tag (2.5a)
@@ -436,7 +436,7 @@ Every conformance subtask also:
 ### 2.1 Crash-simulating storage seam
 
 - **Owner:** A. **Depends on:** epic 1's storage seam (`storage.FS`, `storage.File`).
-- **Deliverables:** in `journalv2test`, a `storage.FS` over a real directory that:
+- **Deliverables:** in `journaltest`, a `storage.FS` over a real directory that:
   - records, per file, every write, allocation and truncate since that file's last sync,
     and every create, rename and remove since the last directory sync;
   - on `Crash()`, discards exactly those: a file allocated and never synced comes back
@@ -537,7 +537,7 @@ Every conformance subtask also:
 ### 2.3 Profiling harness
 
 - **Owner:** A. **Depends on:** nothing.
-- **Deliverables:** in `journalv2test`, `prof.Watch(t, opts)` registering a cleanup that
+- **Deliverables:** in `journaltest`, `prof.Watch(t, opts)` registering a cleanup that
   checks goroutines, descriptors and heap growth, and writes profiles on failure (D12).
 - **Done when:**
   - a planted leaked goroutine, a planted open descriptor and a planted retained 64 MiB
@@ -552,7 +552,7 @@ Every conformance subtask also:
 ### 2.4 Reference model
 
 - **Owner:** B. **Depends on:** epic 1's value types.
-- **Deliverables:** `journalv2test/model`, a pure in-memory model of RFC 1 §2–§3 as the
+- **Deliverables:** `journaltest/model`, a pure in-memory model of RFC 1 §2–§3 as the
   journal's caller sees it:
   - per share tag, per file: each byte held or absent, its version, its offloaded bit,
     and the removal markers with their versions and settled state;
@@ -580,7 +580,7 @@ Every conformance subtask also:
 
 - **Owner:** B. **Depends on:** 2.1, 2.2, 2.3, epic 1.
 - **Deliverables:**
-  - **The fixture**, `journalv2test.New(t)`: a temporary directory on the real
+  - **The fixture**, `journaltest.New(t)`: a temporary directory on the real
     filesystem, the seam with an empty schedule, a `TestClock`, the profiler, `Init` and
     `Open` with `WithStorage`, `WithClock` and settings of two append streams and a 1 MiB
     segment cap (D8). It attaches two shares on request and offers `Crash()` (seam crash,
@@ -602,7 +602,7 @@ Every conformance subtask also:
     one may replace the other.
   - **Registration** (D1, D2): the `journal_conformance` tag, the `journal-conformance`
     suite and `journal` group in `test/suites.yaml`, the tag on `lint-go`'s vet line, and
-    `test/journalv2/known.yaml`.
+    `test/journal/known.yaml`.
 - **Done when:**
   - `dt run journal-conformance` is green, with every test graded `known`;
   - removing any one entry from `known.yaml` makes the run fail with that test as new;
@@ -610,7 +610,7 @@ Every conformance subtask also:
 - **Rules:**
   - 4: every test runs under the profiler through the fixture.
   - 6: the known list exists from this subtask on.
-  - 11: no exported symbol is added to `journalv2` for the fixture's own needs (D8); the
+  - 11: no exported symbol is added to `journal` for the fixture's own needs (D8); the
     stubs above are RFC 1 §3's.
   - 12: the fixture and the suite land with their first tagged tests, 2.5b's (one PR with
     2.5b is fine); 2.7–2.13b depend on this subtask only.
@@ -789,7 +789,7 @@ Every conformance subtask also:
 ### 2.13a RFC 28 bytes by hand: `raw`
 
 - **Owner:** A. **Depends on:** epic 1 only; it needs neither the fixture nor the seam.
-- **Deliverables:** **`journalv2test/raw`** (D9), with tests that its bytes match the
+- **Deliverables:** **`journaltest/raw`** (D9), with tests that its bytes match the
   RFC 28 §2 tables field by field (offsets, magics, sizes, checksum coverage).
 - **Done when:** `raw`'s tests are green and fail on a wrong offset, size or checksum
   range.
@@ -854,8 +854,8 @@ Every conformance subtask also:
 ### 2.14 Traceability
 
 - **Owner:** B. **Depends on:** 2.5a; filled as 2.5b–2.13b land, finished after them.
-- **Deliverables:** `test/journalv2/trace.yaml` with every row of D3's scope, and
-  `test/journalv2/trace_test.go` (D3).
+- **Deliverables:** `test/journal/trace.yaml` with every row of D3's scope, and
+  `test/journal/trace_test.go` (D3).
 - **Done when:**
   - every in-scope row maps to a test, to an owner, or to both, or carries `pending:`
     until its subtask's test lands, and every suite test,
@@ -977,8 +977,9 @@ and the verifier) as well. Epic 10's rows need only a `dfs` that starts.
   two refusals with their messages); a refused start writes nothing, leaving stores,
   devices and any v1 state byte-identical; a crash between journal init and the store's
   init, after which a start reports the store lost and a re-run of initialisation wipes
-  the devices and succeeds; a crash after the store's init, after which the next start
-  completes the journal records.
+  the devices and succeeds; a crash between the store's init and the journal records,
+  after which a start refuses the devices as not recorded, never as the store lost, and
+  once a re-run of initialisation completes the records, the next start serves.
 - **Process death against power loss:** `SIGKILL` and a power cut kept distinct, and a
   long soak with capacity below the data written (the soak itself is epic 12's).
 
@@ -1059,10 +1060,10 @@ or eleven to twenty checks, **L** more than twenty checks or a systematic sweep.
 
 ```text
 pkg/sim        ──► standard library
-journalv2test  ──► journalv2, internal/core, internal/storage, pkg/sim
-conformance    ──► journalv2, journalv2test, journalv2test/model, journalv2test/raw,
+journaltest    ──► journal, internal/core, internal/storage, pkg/sim
+conformance    ──► journal, journaltest, journaltest/model, journaltest/raw,
                    pkg/sim (fault rules only; the clock through the fixture, D10)
-test/journalv2 ──► standard library, gopkg.in/yaml.v3 (reads trace.yaml, the RFCs and
+test/journal   ──► standard library, gopkg.in/yaml.v3 (reads trace.yaml, the RFCs and
                    the conformance sources)
 ```
 

@@ -875,9 +875,10 @@ the journal closed and is retried ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20jour
 
 **The version floor.** The journal is opened with a floor supplied by its
 caller: the highest content version recorded in metadata for any file the journal
-may serve, across all its shares ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). It is one number, not one per file,
-and not a dependency. The next content version assigned **MUST** exceed both the
-floor and every one on disk ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)); without it a restored directory would
+may serve, across all its shares, or every such share's version limit if larger
+([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [§2.7](rfc-8-engine.md#2.7%20The%20version%20limit)): one number, the largest of them, not one per
+file or share, and not a dependency. The next content version assigned
+**MUST** exceed both the floor and every one on disk ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)); without it a restored directory would
 reissue versions already recorded for other content, and a reseed would mark new
 writes offloaded. The journal does not compare the floor with what it holds —
 released content leaves nothing on disk — and a restored directory shows up at
@@ -1196,19 +1197,20 @@ remote content or zeros where acknowledged writes were. Only the caller, once
 an operator has acknowledged the loss, runs the explicit initialisation step
 again ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 
-**A journal its caller has no record of means the metadata store is lost.**
-`expect` zero says the caller's metadata store records no journal for this
-directory. `Open` with `expect` zero **MUST** fail: on a directory holding a
+**A journal its caller has no record of means the metadata store is lost, or
+does not record this directory.** `expect` zero says the caller's metadata
+store records no journal for this directory. `Open` with `expect` zero **MUST** fail: on a directory holding a
 journal, with an error naming the journal identity and installation ID its
-`format` file holds ([§2.1](#2.1%20Layout)) — the journal of an installation whose metadata
-store is missing or was replaced, not a first start — and on one holding none,
-as uninitialised. It **MUST NOT** create a journal in either case. A start that
+`format` file holds ([§2.1](#2.1%20Layout)), which a first start never meets, and on one
+holding none, as uninitialised. It **MUST NOT** create a journal in either case. A start that
 reaches this cannot proceed until an operator says what happened: a store
-volume that mounted late, a store lost, or a device moved from another
-installation. The error also says whether the directory holds any segment.
+volume that mounted late, a store lost, a device moved from another
+installation, or a node identity or directory changed, which the installation
+ID the error names tells apart from a lost store
+([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1). The error also says whether the directory holds any segment.
 
-**The way out is to record the identity, then open with it.** Neither case
-needs a new journal, and none is created:
+**The way out is to record the identity, then open with it.** No case needs a
+new journal, and none is created:
 
 - **An interrupted `Init`.** `Init` writes the `format` file before its caller
   records the identity ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), so a crash between the two leaves a journal
@@ -1216,6 +1218,12 @@ needs a new journal, and none is created:
   whose own installation ID is the one the error names, and whose directory
   holds no segment, **MAY** record the identity and open with it as `expect`
   without an operator.
+- **A changed node identity or directory.** The error names the store's own
+  installation ID, so the store is not lost: it records the journal under
+  another node or directory. The caller refuses the journal until the store
+  records the identity the error names for this node and directory
+  ([RFC 16 §3.2](rfc-16-metadata-store.md#3.2%20How%20it%20is%20assembled), `RecordJournal`), and then opens with it as `expect`; no
+  `Restamp` is needed.
 - **A lost store.** Once an operator has acknowledged the loss and a recovery
   import has rebuilt the store ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)), the caller records the identity
   the error names for this directory and, since the rebuilt store carries a new

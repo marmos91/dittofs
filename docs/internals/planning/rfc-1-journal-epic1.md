@@ -31,7 +31,7 @@ It implements no behaviour. Every function body is a stub. At the end of the epi
 
 ### 1.1 In scope
 
-- the `pkg/block/journalv2` public package, with every symbol of RFC 1 §3, §4.3, §4.4 and
+- the `pkg/block/journal` public package, with every symbol of RFC 1 §3, §4.3, §4.4 and
   §7.2;
 - the value types, the error set and the observability contract (`Stats`, `Tracer`, the
   logger option);
@@ -39,7 +39,7 @@ It implements no behaviour. Every function body is a stub. At the end of the epi
   land with epic 3; the index, segments, durability, recovery and reclaim land as concrete
   types with epics 4–9, each with its first caller (§2, rule 12);
 - the journal's `Clock`: the subset of the set's clock (RFC 8 §2.1) that it uses;
-- the test packages epic 2 fills (`journalv2test`, `conformance`), created only when their
+- the test packages epic 2 fills (`journaltest`, `conformance`), created only when their
   first symbol lands (§2, rule 12);
 - the tests that can fail (§2, rule 10): the import rule, the RFC signature compile
   check, typed errors matching their sentinels, and `Version`'s byte order.
@@ -89,7 +89,7 @@ is named with the reason.
 6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   `pkg/block/journal`. The import test enforces it. v1 code is neither ported nor
+   v1's journal (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
    checks only whether v1 state exists, to refuse it at start (E10), and never reads
    v1's format.
@@ -124,7 +124,7 @@ is named with the reason.
 | 4. Profiling | **Does not apply.** There are no hot paths yet, and the profiler is epic 2's. |
 | 5. Public and internals | **Applies.** The import rule covers every package; the signature check covers the public package. |
 | 6. Known failures | **Does not apply.** No e2e test exists yet. The list is created in epic 2. |
-| 7. v2 ignores v1 | **Applies.** The import test forbids `pkg/block/journal` in every v2 package, test files included. |
+| 7. v2 ignores v1 | **Applies.** The import test forbade v1's `pkg/block/journal` in every v2 package, test files included, until #3645 deleted v1. |
 | 8. Real storage | **Does not apply.** Nothing touches storage. |
 | 9. Comments | **Applies.** Doc comments state contracts in terms of the code, with no RFC or epic numbers. The symbol-to-RFC map is in §6 of this file. Decisions taken here carry `decision:` markers at their declaration. |
 | 10. Tests must be able to fail | **Applies.** See rule 1. The surface test and the API golden file are not kept. |
@@ -138,12 +138,11 @@ is named with the reason.
 Each decision below is recorded at its code site with a `decision:` marker and is
 reviewed at the freeze (subtask 1.9).
 
-**D1. Package location and name: `pkg/block/journalv2`. The `v2` suffix stays in Go
-package and import paths only.**
-v1 keeps `pkg/block/journal` until the cutover deletes it with the rest of v1 (stage 7 of
-#3119). A sibling package lets v2 be built while v1 is still in the tree. v2's caller is the
+**D1. Package location and name: `pkg/block/journalv2` while v1 existed, `pkg/block/journal`
+since. The `v2` suffix was in Go package and import paths only.**
+v1 kept `pkg/block/journal` until #3645 deleted it with the rest of v1's engine and journal. A sibling package lets v2 be built while v1 is still in the tree. v2's caller is the
 stage-3 engine (epic 11), so no v1 caller is ported, and v1 and v2 never run in one binary.
-The cutover PR that deletes v1 renames `journalv2` to `journal`, and `enginev2` to `engine` (RFC 8 §2.8).
+The PR that deleted v1 (#3645) renamed `journalv2` to `journal`, and `enginev2` to `engine` (RFC 8 §2.8).
 
 - *Why the suffix stops at the package:* renaming a Go package later is cheap, because it
   touches only import paths inside this repository. Names users see are not. Metric
@@ -190,7 +189,7 @@ type Clock interface {
 
 **D4. The journal takes no `Fault` interface.**
 Faults are injected by the storage seam implementation, which epic 2 writes in
-`journalv2test` and which consults the set's fault schedule. The journal only ever sees
+`journaltest` and which consults the set's fault schedule. The journal only ever sees
 `storage.FS`. The fault interface lands in `pkg/sim` with epic 2's seam, its first
 consumer. `FaultAction` is node-wide, with `pkg/sim` as its one home (RFC 8 §2.1, epic 2
 D5).
@@ -253,14 +252,17 @@ RFC 0 §3 requires a type that cannot be reached by conversion.
 
 - Constants, private in `internal/core/limits.go`: segment cap 256 MiB, pins 64 per
   offer and 256 per journal, 4,096 floor buckets, idle-seal age 30 s. Only `SyncBound`
-  (1 s) is exported, because a caller's sync policy is stated in terms of it.
+  (1 s) is exported, because RFC 1 §5.2 states the journal's durability promise in terms of it.
 - Settings, declared once in `internal/core` and aliased publicly: `MaxBytes`, `Streams`,
   `ExtentLimit`, `HeadroomRecords`, `IdleSealBytes`, `SpareTarget`.
 - The segment cap is **not** a setting, and epic 1 declares no way to override it. The
   override lands with the first test that needs a journal of many segments in a
   temporary directory (§2, rule 12).
 
-**D11. `SyncPolicy`'s zero value is `Bounded`**, which RFC 1 §5.2 names as the default.
+**D11. There is no sync policy.** RFC 1 §5.2 syncs every record the same way on every share,
+and §3's `Share` takes no policy. An earlier text of the RFC had a per-share `SyncPolicy`
+(`Bounded`, `Standard`) with `Handle.SetSyncPolicy`; the code that declared them is removed by
+epic 6's T6.1, which also brings `Share` to `Share(tag, limit, floor)`.
 
 **D12. The descriptor budget is a value shared across journals:
 `NewDescriptorBudget(limit int) *DescriptorBudget`.**
@@ -276,7 +278,7 @@ first symbol, never as an empty placeholder (§2, rule 12). The set's clocks liv
 `pkg/clock` and `pkg/sim` (D3); the journal imports neither.
 
 ```text
-pkg/block/journalv2/
+pkg/block/journal/
   doc.go            package contract: what the journal is and is not
   journal.go        Journal; Init, Open, Restamp; Close; Share, Forget, Strand; Draw, SetVersionLimit
   handle.go         Handle and its operations
@@ -291,14 +293,14 @@ pkg/block/journalv2/
   trace.go          Tracer, SpanOp
   inspect.go        Inspector, IndexEntry, SegmentInfo, VerifyReport
   options.go        Option, WithClock, WithSettings, WithDescriptorBudget, WithStorage, WithTracer, WithLogger, SyncBound
-  imports_test.go          import rule for every package under journalv2
+  imports_test.go          import rule for every package under journal
   rfc_signatures_test.go   calls written exactly as RFC 1 writes them; a drifted signature stops the build
   errors_test.go           every typed error Is its own sentinel
   internal/core/        value types, Clock, Config, Settings, DescriptorBudget, limits.go (private constants)
   internal/storage/     FS, File
 ```
 
-`journalv2test` and `conformance` are created by epic 2, `internal/format` and
+`journaltest` and `conformance` are created by epic 2, `internal/format` and
 `internal/platform` by epic 3, and `internal/index`, `segment`, `durability`, `recovery`
 and `reclaim` by epics 4–9, each with its first symbol.
 
@@ -325,16 +327,16 @@ rule, not where the rule came from.
 - **Deliverables:**
   - the public package's `doc.go`. Every other package lands with the subtask that
     declares its first symbol;
-  - `imports_test.go`, covering every package under `pkg/block/journalv2/`. It is modelled
+  - `imports_test.go`, covering every package under `pkg/block/journal/`. It is modelled
     on v1's `foreign_imports_test.go`: it reads `go/build`, parses files built for other
     platforms, and checks test imports too. It allows:
-    - the standard library and the module's own `pkg/block/journalv2/...` packages,
+    - the standard library and the module's own `pkg/block/journal/...` packages,
       everywhere;
     - `golang.org/x/sys`, in `internal/platform` only (D6);
-    - `pkg/clock` and `pkg/sim`, in the test packages `journalv2test` and `conformance`
+    - `pkg/clock` and `pkg/sim`, in the test packages `journaltest` and `conformance`
       only.
 
-    It forbids `pkg/block/journal` everywhere.
+    It forbade v1's `pkg/block/journal` everywhere, until #3645 deleted v1.
 - **Done when:**
   - the import test fails on a planted `pkg/block/journal` import, on a planted
     third-party import in a non-platform package, and on a planted x/sys import outside
@@ -359,7 +361,6 @@ rule, not where the rule came from.
   | `ShareTag` | `uint32` |
   | `ShareID` | `[16]byte` |
   | `SnapshotCut` | `uint64` |
-  | `SyncPolicy` | `uint8`, with `Bounded` (the zero value, D11) and `Standard` |
   | `JournalID`, `InstallationID` | `[16]byte` |
   | `SegmentID` | `uint64`. `Seq` stays internal (rule 11) |
 
@@ -464,14 +465,13 @@ rule, not where the rule came from.
 - **Deliverables:** with the signatures exactly as RFC 1 gives them:
 
   - **`(*Journal)` methods:**
-    - `Share(tag ShareTag, limit int64, floor Version, policy SyncPolicy) (*Handle, error)`
+    - `Share(tag ShareTag, limit int64, floor Version) (*Handle, error)` (D11)
     - `Forget(tag ShareTag) error`
     - `Strand(tag ShareTag) error`
     - `Draw() (Version, error)`
     - `SetVersionLimit(mark Version)`
   - **`(*Handle)` methods:**
     - `Close() error`
-    - `SetSyncPolicy(SyncPolicy) error`
     - `Reserve(n int64, writes int) (*Reservation, error)`
     - `WriteAt(id FileID, off int64, p []byte, mtime int64) (Version, error)`
     - `Sync(ids ...FileID) error`
@@ -636,7 +636,7 @@ rule, not where the rule came from.
     §7.2, and checks the review rules: no stub panics (D8), nothing exported
     that RFC 1 §3 does not use (rule 11), no empty package or uncalled stub (rule 12).
 - **Done when:**
-  - `go test ./pkg/block/journalv2/...` is green;
+  - `go test ./pkg/block/journal/...` is green;
   - `go vet` is clean;
   - the team has approved;
   - the parent plan records S1, with the date.
@@ -659,7 +659,7 @@ freeze.
 | --- | --- | --- |
 | `Init`, `Open`, `Restamp` | RFC 1 §3; RFC 28 §3.4 | 1.4 |
 | `Journal.Share`, `Forget`, `Strand` | RFC 1 §3 | 1.5 |
-| `Handle.Close`, `SetSyncPolicy` | RFC 1 §3, §5.2 | 1.5 |
+| `Handle.Close` | RFC 1 §3 | 1.5 |
 | `Handle.Reserve`, `Reservation` | RFC 1 §6 | 1.5 |
 | `WriteAt`, `Sync` | RFC 1 §3.1 | 1.5 |
 | `ReadAt`, `Held` | RFC 1 §3.2 | 1.5 |
@@ -702,12 +702,12 @@ The first block is what epic 1 creates; the second is the rule the packages of e
 follow when they land.
 
 ```text
-journalv2     ──► internal/core, internal/storage
+journal       ──► internal/core, internal/storage
 core          ──► storage                          (Config holds the storage.FS)
-journalv2test ──► journalv2, internal/storage, pkg/clock, pkg/sim (epic 2)
-conformance   ──► journalv2, journalv2test, pkg/sim               (epic 2)
+journaltest   ──► journal, internal/storage, pkg/clock, pkg/sim (epic 2)
+conformance   ──► journal, journaltest, pkg/sim               (epic 2)
 
-journalv2  ──► internal/{format, index, segment, durability, recovery, reclaim}
+journal    ──► internal/{format, index, segment, durability, recovery, reclaim}
 reclaim    ──► index, segment, durability, core
 recovery   ──► format, storage, core          (lands records through Sink, not into index directly)
 durability ──► segment, core

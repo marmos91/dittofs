@@ -6,8 +6,9 @@ the metadata store, open state ([RFC 14](../rfcs/rfc-14-open-state.md), stage 1)
 ([RFC 8](../rfcs/rfc-8-engine.md), stage 3). Adapters call it through `vfs.Service`; they move onto
 it in stage 5.
 
-**Status:** draft for review. Pieces 1 and 2 have merged into `feat/storage-v2` (#3533, #3534),
-and so has piece 3's store side (#3532); piece 3 itself is in review (#3535).
+**Status:** draft for review. Pieces 1 to 7 have merged into `feat/storage-v2`: pieces 1 and
+2 (#3533, #3534), piece 3's store side (#3532) and piece 3 itself (#3535), and pieces 4 to 7
+(#3558, #3577, #3597, #3606).
 
 **Terms.** A bare §N is RFC 17's; this plan's own sections are "plan §N". Vnn is a row of RFC 17
 §6. Route B: the new service is built beside today's server, and nothing switches over until
@@ -308,7 +309,7 @@ The signatures are RFC 8 §12.1's: `Write(ctx, f, off, p []byte, o WriteOpts{Sus
 (Verifier, error)`, where `Done` releases the quota reservation, and `Commit(ctx, f, off, n)
 (Verifier, lossSeq uint64, error)`, whose loss sequence `Opens.Flushed` reads.
 
-Stage 2 writes the fake, since neither today's `engine.Store` nor `journalv2test/model` can stand
+Stage 2 writes the fake, since neither today's `engine.Store` nor `journaltest/model` can stand
 in for it.
 
 A check that any `Content` passes (verified bytes back, a version above the last drawn, nothing
