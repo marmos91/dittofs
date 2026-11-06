@@ -16,9 +16,15 @@ import (
 func (fr *failRig) failByTimer(t *testing.T, seg core.SegmentID) {
 	t.Helper()
 	fr.failSyncOf(t, seg, errors.New("sync boom"))
-	// The bound runs from when the worker first sees the record.
+	// The bound runs from when the worker first sees the record, and the worker
+	// arms its timer after it has stamped; the clock moves until the sync that
+	// the schedule fails has been issued.
 	fr.stamped(t, 0)
-	fr.clock.Advance(2 * core.SyncBound)
+	before := fr.d.Stats().SyncFailures
+	eventually(t, "the sync bound to issue the failing sync", func() bool {
+		fr.clock.Advance(2 * core.SyncBound)
+		return fr.d.Stats().SyncFailures > before
+	})
 }
 
 // wantNilSync fails unless a Sync of the files returns nil.

@@ -70,7 +70,10 @@ func TestALateSyncReportNeverSatisfiesAFailedWindow(t *testing.T) {
 	a = r.appendWrite(t, f, 0, "a")
 	r.failSyncOf(t, a.Segment, errors.New("sync boom"))
 	r.stamped(t, 0)
-	r.clock.Advance(2 * core.SyncBound)
+	eventually(t, "the sync bound to issue the failing sync", func() bool {
+		r.clock.Advance(2 * core.SyncBound)
+		return r.d.Stats().SyncFailures == 1
+	})
 	eventually(t, "the window to be resolved", func() bool {
 		return r.d.Stats().SyncFailures == 1 && len(r.windowsOf(0)) == 0
 	})
