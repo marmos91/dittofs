@@ -11,23 +11,33 @@ import (
 )
 
 // run is one stream's worker: on each wake it completes the entries a sync
-// covered, stamps the ones it has not seen and issues the sync a waiter asked
-// for, until Stop closes done.
+// covered, stamps the ones it has not seen, issues the sync a waiter asked for
+// or the sync bound's timer calls for, and arms the timer, until Stop closes
+// done.
 func (d *Durability) run(st *stream) {
 	defer d.wg.Done()
+	var fire <-chan struct{} // the one outstanding timer, nil when none is
 	for {
+		fired := false
 		select {
 		case <-d.done:
 			return
 		case <-st.kick:
+		case <-fire:
+			fire, fired = nil, true
 		}
 		d.complete(st)
 		d.stamp(st)
-		d.syncStep(st)
+		d.syncStep(st, fired)
+		if fire == nil {
+			fire = d.arm(st)
+		}
 	}
 }
 
-// syncStep issues the sync a waiter asked for, if one did, with no lock held.
+// syncStep issues the sync a waiter asked for, or, when the timer fired and the
+// oldest uncovered record is past the bound, the bound's sync, with no lock
+// held.
 // A failure is recorded against the segment that was active and is never
 // retried (R10): the segment's tracker froze at the failure and will not
 // report it again.
@@ -37,11 +47,18 @@ func (d *Durability) run(st *stream) {
 // one stream accepts in one sync's latency. Upgrade to a stream of its own for
 // a frequently flushing file when a check of mixed durability shows the
 // latency rising.
-func (d *Durability) syncStep(st *stream) {
+func (d *Durability) syncStep(st *stream, fired bool) {
+	var now time.Duration
+	if fired {
+		now = d.clock.Elapsed()
+	}
 	st.mu.Lock()
 	if !st.want {
-		st.mu.Unlock()
-		return
+		seen, ok := st.oldestLocked()
+		if !fired || !ok || now-seen < core.SyncBound {
+			st.mu.Unlock()
+			return
+		}
 	}
 	st.want = false
 	st.syncing = true
