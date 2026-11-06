@@ -2,6 +2,7 @@ package durability
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -69,14 +70,20 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	d.named[l.Seq] = struct{}{}
 	d.mu.Unlock()
 
-	var firstErr error
+	var recErr error
+	refused := false
 	if !l.Deferred {
-		firstErr = d.appendRecord(l)
+		if recErr = d.readOnly(); recErr != nil {
+			refused = true
+		} else {
+			recErr = d.appendRecord(l)
+		}
 		if d.afterAppend != nil {
 			d.afterAppend()
 		}
 	}
 
+	firstErr := recErr
 	if l.Synced {
 		if err := d.markLoss(l.File, l.Extent, l.Version); err != nil {
 			d.log.Error("a synced loss left no marker", "file", l.File, "err", err)
@@ -122,6 +129,21 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 		Deferred:  l.Deferred,
 	})
 	d.mu.Unlock()
+
+	// decision: a drop whose record could not be appended is never undone.
+	// The journal stops holding what it cannot produce, and a loss only errs
+	// toward fetching the extent again, so the caller's drop stands, the
+	// event is published and the sequence number joins the directory's
+	// failed list for the next open to name. A deferred loss is not on that
+	// list: its record is owed to the copy that retires the segment.
+	if recErr != nil {
+		d.dir.addFailed(l.Seq)
+		if refused || errors.Is(recErr, core.ErrNoSpace) {
+			d.log.Debug("a loss record was not appended", "file", l.File, "seq", l.Seq, "err", recErr)
+		} else {
+			d.log.Error("a loss record was not appended", "file", l.File, "seq", l.Seq, "err", recErr)
+		}
+	}
 	return ev, firstErr
 }
 
