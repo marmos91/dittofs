@@ -5,6 +5,8 @@ import (
 	"io"
 	"iter"
 	"log/slog"
+	"reflect"
+	"testing"
 	"time"
 )
 
@@ -121,3 +123,12 @@ var (
 	_ = []LossReason{LossCorrupt, LossStale, LossFailedWindow}
 	_ = TagConflict{File: FileID{}, Tags: [2]ShareTag{}}
 )
+
+// TestHandleHasNoSetSyncPolicy pins an absence the compile-time block above
+// cannot: the sync bound is one behaviour for every share, so a Handle has no
+// method that sets a sync policy.
+func TestHandleHasNoSetSyncPolicy(t *testing.T) {
+	if _, ok := reflect.TypeFor[*Handle]().MethodByName("SetSyncPolicy"); ok {
+		t.Fatal("Handle has a SetSyncPolicy method: the sync bound admits no per-share setting")
+	}
+}
