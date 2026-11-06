@@ -606,6 +606,32 @@ func TestAWindowAskedAgainCountsItsLastPass(t *testing.T) {
 	}
 }
 
+// A window asked again is counted by its last pass alone: a first pass that
+// met a hole and then a part whose applied is above asOf, and a second the
+// journal answers whole, once a write landed between them, is counted
+// journal, not hole.
+func TestAReaskCountsTheClassOfItsLastPass(t *testing.T) {
+	st := &stubContent{cover: func(call int, off, n int64) []entity.Span {
+		return []entity.Span{
+			{Extent: entity.Extent{Offset: 0, Length: 4 * kib}, Class: entity.Hole},
+			{Extent: entity.Extent{Offset: 4 * kib, Length: 4 * kib}, Class: entity.Uncarved, Applied: entity.VersionOf(unitLimit - 1)},
+		}
+	}}
+	var hook func()
+	c := afterFirstRead(&hook)
+	c.deps = []func(*engine.Deps){st.dep}
+	u := newUnitWith(t, c)
+	f := entity.NewFileID()
+	hook = func() { u.write(t, f, 0, fill(8*kib, 'b')) }
+	dst := make([]byte, 8*kib)
+	if n, err := u.e.Read(t.Context(), u.share.ID, f, 0, dst); n != 8*kib || err != nil || !bytes.Equal(dst, fill(8*kib, 'b')) {
+		t.Fatalf("Read = %d, %v; want the write's 8 KiB", n, err)
+	}
+	if st.calls != 1 || u.e.Reads("journal") != 1 || u.e.Reads("hole") != 0 {
+		t.Errorf("%d covering lookups, counted journal %d, hole %d; want 1 lookup, counted journal once", st.calls, u.e.Reads("journal"), u.e.Reads("hole"))
+	}
+}
+
 // A read asked again returns a state the file held, never bytes of two: the
 // journal holds b at [4k, 8k) over a hole at [0, 4k), and between the read's
 // journal step and its lookup d is written over b, then c over the hole, and
