@@ -4,6 +4,8 @@ package conformance
 
 import (
 	"bytes"
+	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -202,6 +204,120 @@ func TestRFC8A_AttachAboveTheFloor(t *testing.T) {
 
 		if c.Version.Counter <= imported.Counter() {
 			t.Errorf("the write's version %d is not above the imported %d", c.Version.Counter, imported.Counter())
+		}
+	}
+
+	if changes == 0 {
+		t.Error("the journal holds no change of the write")
+	}
+}
+
+// lostJournal reports whether f's engine raises journal_lost for its device.
+func lostJournal(f *enginetest.Fixture) bool {
+	for _, c := range f.E.Stats().Journals[f.Dir].Conditions {
+		if c.Name == "journal_lost" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// TestRFC8A_JournalGone, adapted: two shares written without offload, the
+// journal directory deleted, and a restart refuses both shares by name with
+// the device, raises journal_lost and creates no journal. The operator's
+// acknowledgement that serves them again is not built here.
+func TestRFC8A_JournalGone(t *testing.T) {
+	f := enginetest.New(t)
+	ctx := t.Context()
+	_, file := f.File("f")
+	write(t, f, file, 0, []byte("unoffloaded"))
+
+	if err := f.E.Bind(ctx, f.Second); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	opts := engine.WriteOpts{
+		Done: func() {
+		},
+	}
+
+	if _, err := f.E.Write(ctx, f.Second.ID, entity.NewFileID(), 0, []byte("second"), opts); err != nil {
+		t.Fatalf("write to the second share: %v", err)
+	}
+
+	f.RestartAfter(func() {
+		if err := os.RemoveAll(f.Dir); err != nil {
+			t.Fatalf("delete the journal: %v", err)
+		}
+	})
+
+	for _, sh := range []engine.Share{f.Share, f.Second} {
+		if got := f.E.Stats().Shares[sh.ID]; got.Device != f.Dir || got.Refused == nil {
+			t.Errorf("share %v: device %q, refused %v; want refused on %q", sh.ID, got.Device, got.Refused, f.Dir)
+		}
+	}
+
+	if !lostJournal(f) {
+		t.Error("journal_lost is not raised")
+	}
+
+	if _, err := os.Stat(f.Dir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the deleted journal directory: %v, want it still gone", err)
+	}
+}
+
+// TestRFC8A_AttachAfterDeviceLoss, adapted: the device's journal destroyed
+// and initialised again, its share is refused by name until the store
+// records the new journal, as the operator's step would, and then attaches
+// to it with its first version above the limit it had. The rewrite of the
+// shards' journal identity and a share whose removal reads offloaded are not
+// built here.
+func TestRFC8A_AttachAfterDeviceLoss(t *testing.T) {
+	f := enginetest.New(t)
+	ctx := t.Context()
+	_, file := f.File("f")
+	write(t, f, file, 0, []byte("lost"))
+
+	old, err := f.FS.Store.VersionLimit(ctx, f.Share.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var id journal.JournalID
+
+	f.RestartAfter(func() {
+		id = f.Reinit()
+	})
+
+	if got := f.E.Stats().Shares[f.Share.ID]; got.Device != f.Dir || got.Refused == nil {
+		t.Fatalf("before the journal is recorded: device %q, refused %v; want refused on %q", got.Device, got.Refused, f.Dir)
+	}
+
+	f.RestartAfter(func() {
+		if err := f.FS.Store.RecordJournal(ctx, id, f.Node, entity.JournalDir(f.Dir)); err != nil {
+			t.Fatalf("record the new journal: %v", err)
+		}
+	})
+
+	if got := f.E.Stats().Shares[f.Share.ID]; got.Refused != nil {
+		t.Fatalf("after the journal is recorded, the share is refused: %v", got.Refused)
+	}
+
+	_, again := f.File("again")
+	write(t, f, again, 0, []byte("after"))
+
+	changes := 0
+
+	for c, err := range f.Handle().Since(ctx, journal.NewFileID(again), journal.Version{}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		changes++
+
+		if c.Version.Counter <= old.Counter() {
+			t.Errorf("the first write's version %d is not above the old limit %d", c.Version.Counter, old.Counter())
 		}
 	}
 

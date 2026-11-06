@@ -11,6 +11,15 @@ import (
 // ErrNotStarted is the answer of a Bind while no journal is open.
 var ErrNotStarted = errNotStarted
 
+// The errors start answers and refuses shares with, for a test to match.
+var (
+	ErrUnbuilt      = errUnbuilt
+	ErrStarted      = errStarted
+	ErrJournalLost  = errJournalLost
+	ErrNotRecorded  = errNotRecorded
+	ErrUnidentified = errUnidentified
+)
+
 // SetJournalsForTest sets the journals the engine has open, as Start will.
 func (e *Engine) SetJournalsForTest(js ...Journal) {
 	e.mu.Lock()

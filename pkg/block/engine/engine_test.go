@@ -115,11 +115,11 @@ func TestApplyRefusesInvalidAndKeepsLast(t *testing.T) {
 // An unbuilt call answers one of the filesystem's errors, which its caller
 // already maps, never one of the engine's own.
 func TestUnbuiltIsUnavailable(t *testing.T) {
-	e, err := New(fullDeps())
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(ErrUnbuilt, vfserr.ErrUnavailable) {
+		t.Errorf("the unbuilt answer %v is not vfserr.ErrUnavailable", ErrUnbuilt)
 	}
-	if err := e.Start(context.Background(), nil); !errors.Is(err, vfserr.ErrUnavailable) {
-		t.Fatalf("Start = %v; want vfserr.ErrUnavailable", err)
+
+	if ErrUnbuilt == vfserr.ErrUnavailable {
+		t.Error("the unbuilt answer is vfserr.ErrUnavailable itself, so a test cannot tell it from an outage")
 	}
 }
