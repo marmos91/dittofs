@@ -62,6 +62,10 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 		return core.LossEvent{}, err
 	}
 
+	// A reason that names none is a caller bug refused here, before the seq
+	// is named, so every path refuses it alike.
+	toFormat(l.Reason)
+
 	d.mu.Lock()
 	if _, ok := d.named[l.Seq]; ok {
 		d.mu.Unlock()
@@ -172,8 +176,15 @@ func (d *Durability) appendRecord(l Loss) error {
 		Reason:    toFormat(l.Reason),
 	}}
 	s := d.streams.For(l.File)
-	if _, err := s.Append(h, body); err != nil {
+	placed, err := s.Append(h, body)
+	if err != nil {
 		return err
 	}
-	return s.Sync()
+	if d.beforeSync != nil {
+		d.beforeSync()
+	}
+	// The record's own segment is synced, not whatever the stream is on by
+	// now: a roll between the two would otherwise let the sync cover a
+	// successor and report the record durable.
+	return s.SyncAt(placed.Loc)
 }

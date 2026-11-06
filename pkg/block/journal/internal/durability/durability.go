@@ -48,6 +48,7 @@ type Durability struct {
 	// afterAppend and beforePublish are test hooks, nil in production.
 	afterAppend   func()
 	beforePublish func()
+	beforeSync    func()
 
 	mu                sync.Mutex
 	ring              [core.LossRingSize]core.LossEvent

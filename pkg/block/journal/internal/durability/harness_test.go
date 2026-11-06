@@ -1,6 +1,7 @@
 package durability_test
 
 import (
+	"log/slog"
 	"math"
 	"sync"
 	"testing"
@@ -43,7 +44,8 @@ type env struct {
 
 	mu      sync.Mutex
 	marks   []marked
-	markErr error // what MarkLoss returns, nil by default
+	markErr error        // what MarkLoss returns, nil by default
+	log     *slog.Logger // handed to the Durability the next newDurability builds
 }
 
 // newEnv builds the env over a fresh directory.
@@ -138,6 +140,7 @@ func (e *env) newDurabilityAt(dir string) *durability.Durability {
 		Dir:      dir,
 		Streams:  e.streams,
 		Counters: e.counters,
+		Log:      e.log,
 		MarkLoss: func(f core.FileID, x core.Extent, v core.Version) error {
 			e.mu.Lock()
 			defer e.mu.Unlock()

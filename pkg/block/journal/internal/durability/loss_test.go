@@ -3,6 +3,7 @@ package durability_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"sync"
 	"syscall"
@@ -745,5 +746,104 @@ func TestFailedHoldsASeqOnceAcrossDurabilities(t *testing.T) {
 
 	if got := e.d.Failed(); !slices.Equal(got, []core.Seq{7}) {
 		t.Errorf("Failed = %v, want [7]", got)
+	}
+}
+
+// TestLoseOfARecordWhoseSegmentWasEndedIsNotDurable catches a loss reported
+// durable because the stream rolled past the segment holding its record
+// before the sync: the sync then covers the new segment, not the record's.
+func TestLoseOfARecordWhoseSegmentWasEndedIsNotDurable(t *testing.T) {
+	e := newEnv(t)
+	st := e.streams.For(file(1))
+	e.d.SetBeforeSync(func() {
+		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, "*.seg", 1, syscall.EIO)); err != nil {
+			t.Errorf("Schedule: %v", err)
+		}
+		if _, err := st.Seal(false); err == nil {
+			t.Errorf("the seal did not fail")
+		}
+		// Another appender rolls the stream past the ended segment.
+		h := format.RecordHeader{Kind: format.KindLoss, File: file(1), Seq: 900, Tag: 7}
+		if _, err := st.Append(h, format.RecordBody{Loss: format.Loss{Dropped: 900, Reason: format.LossStale}}); err != nil {
+			t.Errorf("the rolling append: %v", err)
+		}
+	})
+
+	l := loss(42)
+	ev, err := e.d.Lose(context.Background(), l)
+
+	if err == nil {
+		t.Fatalf("Lose = nil, but its record's segment was ended and never made durable")
+	}
+	assertDropStands(t, e, ev, l)
+}
+
+// TestLoseOfAReasonThatNamesNoneIsRefusedOnEveryPath catches a deferred loss
+// publishing an event with no reason, where the appending path panics.
+func TestLoseOfAReasonThatNamesNoneIsRefusedOnEveryPath(t *testing.T) {
+	e := newEnv(t)
+	l := loss(3)
+	l.Reason = 0
+	l.Deferred = true
+
+	defer func() {
+		if recover() == nil {
+			t.Errorf("a deferred loss with no reason did not panic like an appending one")
+		}
+		if n := len(e.d.Stats().Losses); n != 0 {
+			t.Errorf("%d events published for a reasonless loss", n)
+		}
+	}()
+	_, _ = e.d.Lose(context.Background(), l)
+}
+
+// levelRecorder is a slog.Handler that keeps the level of every record.
+type levelRecorder struct {
+	mu     *sync.Mutex
+	levels *[]slog.Level
+}
+
+func (h levelRecorder) Enabled(context.Context, slog.Level) bool { return true }
+func (h levelRecorder) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	*h.levels = append(*h.levels, r.Level)
+	return nil
+}
+func (h levelRecorder) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h levelRecorder) WithGroup(string) slog.Handler      { return h }
+
+// TestLoseLogsAnExpectedRefusalAtDebugAndAnUnexpectedFailureAtError catches
+// a refused record logged as an error, or a device fault logged as routine.
+func TestLoseLogsAnExpectedRefusalAtDebugAndAnUnexpectedFailureAtError(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(e *env)
+		want  slog.Level
+	}{
+		{"read-only", func(e *env) { e.d.SetReadOnly(func() error { return errors.New("read-only") }) }, slog.LevelDebug},
+		{"write fault", func(e *env) {
+			if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, "*.seg", 1, syscall.EIO)); err != nil {
+				t.Fatalf("Schedule: %v", err)
+			}
+		}, slog.LevelError},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var levels []slog.Level
+			e := newEnv(t)
+			e.log = slog.New(levelRecorder{&mu, &levels})
+			e.d = e.newDurability()
+			c.setup(e)
+
+			_, _ = e.d.Lose(context.Background(), loss(5))
+
+			mu.Lock()
+			defer mu.Unlock()
+			if len(levels) != 1 || levels[0] != c.want {
+				t.Errorf("logged levels = %v, want exactly [%v]", levels, c.want)
+			}
+		})
 	}
 }
