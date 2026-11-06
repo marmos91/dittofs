@@ -451,7 +451,7 @@ func TestAFailedWindowLeavesWhatARecordStillInTheLedgerHeld(t *testing.T) {
 	fr.domains.mu.Lock()
 	taken := fr.domains.taken
 	fr.domains.mu.Unlock()
-	_ = fr.syncAsync(context.Background(), f)
+	told := fr.syncAsync(context.Background(), f)
 	eventually(t, "the worker to wait on h's domain", func() bool {
 		fr.domains.mu.Lock()
 		defer fr.domains.mu.Unlock()
@@ -471,6 +471,8 @@ func TestAFailedWindowLeavesWhatARecordStillInTheLedgerHeld(t *testing.T) {
 	}
 	open()
 	fr.awaitResolved(t)
+	// The waiting Sync is the one told of f's failed records.
+	wantSyncError(t, mustReturn(t, "Sync of the failed file", told), loc.Segment, f)
 	if err := fr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v12: %v", err)
 	}

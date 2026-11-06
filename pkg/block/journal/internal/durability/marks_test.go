@@ -16,6 +16,8 @@ import (
 func (fr *failRig) failByTimer(t *testing.T, seg core.SegmentID) {
 	t.Helper()
 	fr.failSyncOf(t, seg, errors.New("sync boom"))
+	// The bound runs from when the worker first sees the record.
+	fr.stamped(t, 0)
 	fr.clock.Advance(2 * core.SyncBound)
 }
 
