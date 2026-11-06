@@ -11,3 +11,7 @@ func (d *Durability) SetBeforePublish(f func()) { d.beforePublish = f }
 
 // SetReadOnly installs the read-only check Lose consults before it appends.
 func (d *Durability) SetReadOnly(f func() error) { d.readOnly = f }
+
+// SetBeforeSync installs a hook Lose runs between appending its record and
+// syncing the stream.
+func (d *Durability) SetBeforeSync(f func()) { d.beforeSync = f }
