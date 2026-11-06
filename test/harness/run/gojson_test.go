@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -241,6 +242,215 @@ func TestIntegrationRunsTheKMIPTests(t *testing.T) {
 	const keyProvider = "github.com/cubbit/dittofs/pkg/block/middleware/encryption/keyprovider"
 	if !slices.Contains(pkgs, keyProvider) {
 		t.Errorf("integration's packages leave out %s: %q", keyProvider, pkgs)
+	}
+}
+
+// changeModule is a module in a new repository whose first commit is the
+// branch base, and a function that checks out a new branch from base and
+// commits a change there: each file named written, or removed when its body
+// is "". The tests' patterns are ./pkg/...: the root package and other are
+// outside them.
+func changeModule(t *testing.T) (string, func(change map[string]string)) {
+	t.Helper()
+	// A git hook running the tests exports GIT_DIR and the like, which would
+	// point these commands, and dt's, at the repository being committed to.
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, "GIT_") {
+			t.Setenv(k, "")
+			_ = os.Unsetenv(k)
+		}
+	}
+	root := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		pre := []string{"-C", root, "-c", "user.name=dt", "-c", "user.email=dt@example.com", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=" + os.DevNull}
+		if out, err := exec.Command("git", append(pre, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(files map[string]string) {
+		t.Helper()
+		for name, body := range files {
+			p := filepath.Join(root, name)
+			if body == "" {
+				if err := os.Remove(p); err != nil {
+					t.Fatal(err)
+				}
+				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	write(map[string]string{
+		"go.mod":                goModule["go.mod"],
+		"m.go":                  "package m\n",
+		"pkg/a/a.go":            "package a\n",
+		"pkg/a/a_test.go":       "package a\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {}\n",
+		"pkg/a/testdata/in.txt": "in\n",
+		"pkg/a/e2e/e2e_test.go": "//go:build e2e\n\npackage e2e\n",
+		"pkg/a/old/old.go":      "package old\n",
+		"pkg/b/b.go":            "package b\n\nimport _ \"embed\"\n\n//go:embed files/x.txt\nvar X string\n",
+		"pkg/b/b_test.go":       "package b\n\nimport \"testing\"\n\nfunc TestB(t *testing.T) {}\n",
+		"pkg/b/files/x.txt":     "x\n",
+		"other/other.go":        "package other\n",
+	})
+	git("init", "-q", "-b", "base")
+	git("add", ".")
+	git("commit", "-q", "-m", "base")
+	return root, func(change map[string]string) {
+		t.Helper()
+		git("checkout", "-q", "-B", "change", "base")
+		write(change)
+		git("add", "-A")
+		git("commit", "-q", "--allow-empty", "-m", "change")
+	}
+}
+
+// --changed's packages are those of the patterns with a file changed since
+// the base: a Go file's own, the nearest above any other file, and every one
+// for a go.mod change or with no base. A package outside the patterns, one
+// whose files all need a tag, and one deleted aren't any.
+func TestChangedPackages(t *testing.T) {
+	root, commit := changeModule(t)
+	all := []string{"./pkg/..."}
+	a, b := "example.com/m/pkg/a", "example.com/m/pkg/b"
+	cases := []struct {
+		name     string
+		change   map[string]string
+		patterns []string
+		want     []string
+	}{
+		{"a Go file: its package", map[string]string{"pkg/a/a.go": "package a\n\nvar V int\n"}, all, []string{a}},
+		{"a testdata file: its package", map[string]string{"pkg/a/testdata/in.txt": "changed\n"}, all, []string{a}},
+		{"a Go file in testdata: its package", map[string]string{"pkg/a/testdata/fixture.go": "package fixture\n"}, all, []string{a}},
+		{"an embedded file below: the nearest package", map[string]string{"pkg/b/files/x.txt": "changed\n"}, all, []string{b}},
+		{"a moved file: both packages", map[string]string{"pkg/b/files/x.txt": "", "pkg/a/testdata/x.txt": "x\n"}, all, []string{a, b}},
+		{"go.mod: every package", map[string]string{"go.mod": goModule["go.mod"] + "\n// changed\n"}, all, all},
+		{"outside the patterns: none", map[string]string{"other/other.go": "package other\n\nvar V int\n"}, all, nil},
+		{"files that all need a tag: none", map[string]string{"pkg/a/e2e/e2e_test.go": "//go:build e2e\n\npackage e2e\n\nvar V int\n"}, all, nil},
+		{"a pattern naming a package whose files all need a tag: none", map[string]string{"pkg/a/e2e/e2e_test.go": "//go:build e2e\n\npackage e2e\n\nvar V int\n"}, []string{"./pkg/a/e2e"}, nil},
+		{"a deleted package: none", map[string]string{"pkg/a/old/old.go": ""}, all, nil},
+		{"nothing: none", nil, all, nil},
+		{"nothing, with the root package in the patterns: none", nil, []string{"./..."}, nil},
+	}
+	for _, c := range cases {
+		commit(c.change)
+		if got, err := changedPackages(root, "base", c.patterns); err != nil || !slices.Equal(got, c.want) {
+			t.Errorf("%s: got %q, %v, want %q", c.name, got, err, c.want)
+		}
+	}
+	if got, err := changedPackages(root, "", all); err != nil || !slices.Equal(got, all) {
+		t.Errorf("no base: got %q, %v, want %q", got, err, all)
+	}
+	if _, err := changedPackages(root, "nosuchref", all); err == nil || !strings.Contains(err.Error(), "git diff nosuchref...HEAD") {
+		t.Errorf("a base that isn't here: %v", err)
+	}
+}
+
+// changedRun runs the cells of g, or of its option, in a changeModule with
+// pkg/a changed, or nothing when change is false, and returns the outcome and
+// what the run printed.
+func changedRun(t *testing.T, change bool, option string, o Options) (report.Cell, string) {
+	t.Helper()
+	root, commit := changeModule(t)
+	if change {
+		commit(map[string]string{"pkg/a/a.go": "package a\n\nvar V int\n"})
+	} else {
+		commit(nil)
+	}
+	r, err := registry.Parse(root, []byte(head+`suites:
+  g:
+    cmd: go test {packages}
+    format: go-json
+    packages: { patterns: [./pkg/...] }
+    options:
+      own: { cmd: go test ./pkg/b }
+      mixed: { cmd: ["go test {packages}", go test ./pkg/b] }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cells, err := Select(root, r, "g", option, "pr", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	o.Root, o.Results, o.Out = root, filepath.Join(root, "results"), &out
+	rep, err := Run(context.Background(), cells, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Outcomes) != 1 {
+		t.Fatalf("outcomes %+v", rep.Outcomes)
+	}
+	return rep.Outcomes[0], out.String()
+}
+
+// ran lists the tests a cell passed, as package.Test, sorted.
+func ran(o report.Cell) []string {
+	var names []string
+	for _, tc := range o.Tests {
+		if tc.Status == report.Passed {
+			names = append(names, strings.Join(append(slices.Clone(tc.Suite), tc.Name), "."))
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// With --changed the cell tests the changed package alone, and without it
+// every package of the patterns, as written.
+func TestChangedNarrowsPackages(t *testing.T) {
+	if o, _ := changedRun(t, true, "", Options{Changed: true, Base: "base"}); o.Result != report.Passed || !slices.Equal(ran(o), []string{"example.com/m/pkg/a.TestA"}) {
+		t.Errorf("--changed: %+v", o)
+	}
+	o, out := changedRun(t, true, "", Options{Base: "base"})
+	if o.Result != report.Passed || !slices.Equal(ran(o), []string{"example.com/m/pkg/a.TestA", "example.com/m/pkg/b.TestB"}) {
+		t.Errorf("without --changed: %+v", o)
+	}
+	if !strings.Contains(out, " ./pkg/...\n") {
+		t.Errorf("without --changed, the patterns aren't the command's:\n%s", out)
+	}
+}
+
+// With nothing changed, the command is skipped and the cell passes with that
+// note, so the run exits 0, not 2 for having run nothing. No go test runs.
+func TestChangedNothingSkips(t *testing.T) {
+	o, out := changedRun(t, false, "", Options{Changed: true, Base: "base", CI: true})
+	skipped := []report.Test{{Name: "go test {packages}", Status: report.Skipped, Message: "no change to check"}}
+	if o.Result != report.Passed || o.Note != "no change to check: no package changed since base" || !reflect.DeepEqual(o.Tests, skipped) {
+		t.Errorf("outcome %+v", o)
+	}
+	if (Report{Outcomes: []report.Cell{o}}).Status() != 0 {
+		t.Error("the run doesn't exit 0")
+	}
+	if strings.Contains(out, "[dt] $ go test") || !strings.Contains(out, "[dt] skipped, no change to check: go test {packages}") {
+		t.Errorf("output:\n%s", out)
+	}
+}
+
+// --changed narrows only a cell whose every command takes {packages}: an
+// option with a command of its own runs whatever changed, and so does one
+// that mixes the two, whole.
+func TestChangedLeavesOtherCommands(t *testing.T) {
+	if o, _ := changedRun(t, false, "own", Options{Changed: true, Base: "base"}); o.Result != report.Passed || !slices.Equal(ran(o), []string{"example.com/m/pkg/b.TestB"}) {
+		t.Errorf("own command: %+v", o)
+	}
+	if o, _ := changedRun(t, false, "mixed", Options{Changed: true, Base: "base"}); o.Result != report.Passed || !slices.Equal(ran(o), []string{"example.com/m/pkg/a.TestA", "example.com/m/pkg/b.TestB", "example.com/m/pkg/b.TestB"}) {
+		t.Errorf("mixed commands: %+v", o)
+	}
+}
+
+// A base the checkout can't diff against leaves the cell not run, never
+// passed as if nothing changed.
+func TestChangedWithoutTheBase(t *testing.T) {
+	if o, _ := changedRun(t, true, "", Options{Changed: true, Base: "nosuchref"}); o.Result != report.NotRun || !strings.Contains(o.Note, "git diff nosuchref...HEAD") {
+		t.Errorf("outcome %+v", o)
 	}
 }
 

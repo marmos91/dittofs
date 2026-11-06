@@ -70,6 +70,7 @@ type Options struct {
 	Place    string    // --place: the place the run is on, which meets that place's host need, recorded in its results
 	Parallel int       // --parallel: how many cells run at once; below 2, one after another
 	Base     string    // --base: the ref {base} stands for; empty leaves it to the event (see base)
+	Changed  bool      // --changed: {packages} of patterns holds only the packages changed since the base
 }
 
 // minute is a variable so the tests can shorten a cell's limit.
@@ -364,8 +365,17 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	if c.Unit.Tests.File != "" {
 		lists["test-args"] = []string{""} // until each test's, from its line, fills it
 	}
-	if c.Unit.Packages != nil {
-		pkgs, err := goPackages(o.Root, c.Unit.Packages.Tag)
+	unchanged := false // --changed left {packages} empty
+	if p := c.Unit.Packages; p != nil {
+		pkgs := p.Patterns
+		var err error
+		switch {
+		case p.Tag != "":
+			pkgs, err = goPackages(o.Root, p.Tag)
+		case o.Changed && takesPackages(c.Unit):
+			pkgs, err = changedPackages(o.Root, o.base(), p.Patterns)
+			unchanged = len(pkgs) == 0
+		}
 		if err != nil {
 			return didntRun(err.Error())
 		}
@@ -405,6 +415,19 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	// Once the log exists, a cell that doesn't run still points at it.
 	didntRun = func(why string) report.Cell {
 		return report.Cell{Name: c.Name, Result: report.NotRun, Note: why, Log: logName}
+	}
+	// decision: with no package changed, the commands are skipped and the cell
+	// passes, as one whose every command needs a {base} it lacks does: a cell
+	// that ran nothing exits 2, which would fail every pull request that
+	// changes no package. The change has no file in a package the commands
+	// test, and a diff that fails leaves the cell not run.
+	if unchanged {
+		cell := report.Cell{Name: c.Name, Result: report.Passed, Note: "no change to check: no package changed since " + o.base(), Log: logName}
+		for _, cmd := range c.Unit.Cmd {
+			_, _ = fmt.Fprintf(w, "[dt] skipped, no change to check: %s%s\n", cmd.Line, cmd.Sh)
+			cell.Tests = append(cell.Tests, report.Test{Name: cmdName(cmd), Status: report.Skipped, Message: "no change to check"})
+		}
+		return cell
 	}
 
 	cellCtx, cancel := context.WithTimeout(ctx, time.Duration(c.TimeoutMinutes)*minute)
@@ -1066,6 +1089,15 @@ func belowOut(argv []string, out string) []string {
 func cmdName(c registry.Command) string {
 	first, _, _ := strings.Cut(strings.TrimSpace(c.Line+c.Sh), "\n")
 	return strings.TrimSpace(first)
+}
+
+// takesPackages reports whether every command of u fills {packages}, so
+// narrowing it narrows the whole cell. An option with a command of its own
+// keeps the suite's packages, and may not fill them.
+func takesPackages(u *registry.Suite) bool {
+	return len(u.Cmd) > 0 && !slices.ContainsFunc(u.Cmd, func(c registry.Command) bool {
+		return !slices.Contains(registry.Placeholders(c.Line+" "+c.Sh), "packages")
+	})
 }
 
 // some joins names, the first five and how many more.

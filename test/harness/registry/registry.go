@@ -112,9 +112,12 @@ type Fixture struct {
 	RPCBind     string   `yaml:"rpcbind"`
 }
 
-// Packages selects the Go packages whose tests a build tag changes.
+// Packages selects the Go packages {packages} holds: those whose tests a
+// build tag changes, or those the patterns match, which dt run --changed
+// narrows to the ones a change touched.
 type Packages struct {
-	Tag string `yaml:"tag"`
+	Tag      string   `yaml:"tag"`
+	Patterns []string `yaml:"patterns"`
 }
 
 // Timeout holds each test's limit and the whole cell's.
