@@ -22,6 +22,7 @@ type hookedHandle struct {
 	engine.Handle
 	e        *engine.Engine
 	truncate func() // run inside Truncate, after the journal's removal
+	settle   func() // run inside Settle, before the journal's
 	writes   atomic.Int32
 	mu       sync.Mutex
 	settles  []settled
@@ -51,6 +52,9 @@ func (h *hookedHandle) Settle(id journal.FileID, v journal.Version) {
 	f := entity.FileID(id.Bytes())
 	h.settles = append(h.settles, settled{v, h.e.GuardHeld(f), len(h.e.Pending(f))})
 	h.mu.Unlock()
+	if h.settle != nil {
+		h.settle()
+	}
 	h.Handle.Settle(id, v)
 }
 
