@@ -133,3 +133,29 @@ func TestAnEndingMarkIsNotLeftByAStaleWant(t *testing.T) {
 		t.Errorf("%d ending marks left for segments whose event was taken", n)
 	}
 }
+
+// TestAnEndingMarkOfAResolvedSegmentIsPrunedOnCompletion pins that a mark left
+// for a segment no entry or window names any longer (an empty window resolved
+// and dropped its failure, then a stale want marked the segment again) is
+// removed by the next completion that covers a record.
+func TestAnEndingMarkOfAResolvedSegmentIsPrunedOnCompletion(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := newRig(t, 1)
+	f := file(1)
+	a := r.appendWrite(t, f, 0, "a")
+	r.stamped(t, 0)
+	st := r.d.made[0]
+	gone := a.Segment + 1000
+	st.mu.Lock()
+	st.ending[gone] = struct{}{}
+	st.mu.Unlock()
+	if err := mustReturn(t, "Sync", r.syncAsync(context.Background(), f)); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the ledger to complete", func() bool { return r.ledgerLen(0) == 0 })
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if _, ok := st.ending[gone]; ok {
+		t.Error("ending mark of a segment nothing names was left after a completion")
+	}
+}
