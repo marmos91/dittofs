@@ -3,6 +3,7 @@ package durability
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +12,35 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
+
+// quietAfterFailures installs the hooks that let a model wait for the worker to
+// finish failing windows, and returns the wait. A failed window's loss records
+// are appended by the worker, and each one consumes a write or a sync the seam
+// has scheduled to fail, so a model lets the worker finish a window before it
+// schedules a fault or appends. It must run before the layer starts.
+func (r *rig) quietAfterFailures() func() {
+	var entered, exited atomic.Int64
+	r.d.beforeFail = func(*window) { entered.Add(1) }
+	r.d.afterFail = func() { exited.Add(1) }
+	return func() {
+		st := r.d.made[0]
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			st.mu.Lock()
+			idle := len(st.ends) == 0
+			for _, w := range st.windows {
+				for i := range w.entries {
+					idle = idle && !isContent(w.entries[i].w)
+				}
+			}
+			st.mu.Unlock()
+			if idle && entered.Load() == exited.Load() {
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
 
 // FuzzSyncInterleaving drives append, Sync, a Sync with a cancelled context
 // and a scheduled sync failure, and a seal of a clean segment, over two files on one stream, and checks what
@@ -30,7 +60,9 @@ func FuzzSyncInterleaving(f *testing.F) {
 		if len(ops) > 24 {
 			ops = ops[:24]
 		}
-		r := newRig(t, 1)
+		r := newRigUnstarted(t, 1)
+		quiet := r.quietAfterFailures()
+		r.d.Start(r.streams)
 		files := [2]core.FileID{file(1), file(2)}
 		var locs [2][]segment.Location
 		var off int64
@@ -43,10 +75,22 @@ func FuzzSyncInterleaving(f *testing.F) {
 		told := map[segment.Location]bool{}
 
 		for _, op := range ops {
+			quiet()
+			r.settlePool(t) // a loss record's roll takes a spare too
 			i := int(op>>2) & 1
 			switch op & 3 {
 			case 0:
-				last = r.appendWrite(t, files[i], off, "x")
+				h := format.RecordHeader{Kind: format.KindWrite, File: files[i], Extent: core.Extent{Off: off, Len: 1}, Version: core.Version{Counter: uint64(off + 1)}, Tag: 1}
+				p, err := r.streams.For(files[i]).Append(h, format.RecordBody{Payload: []byte("x"), MTime: 1})
+				if errors.Is(err, segment.ErrStreamStopped) {
+					// A second failed segment in a row stops the stream: the
+					// model ends there.
+					return
+				}
+				if err != nil {
+					t.Fatalf("Append: %v", err)
+				}
+				last = p.Loc
 				off += 8
 				appended = true
 				locs[i] = append(locs[i], last)
@@ -66,6 +110,13 @@ func FuzzSyncInterleaving(f *testing.F) {
 							hit = true
 							told[l] = true
 						}
+					}
+					// A file that lost a record may hear of a failure again: its
+					// loss record can sit in a failed segment's window as a
+					// header-only record, which fails every Sync naming the
+					// file until it is re-appended.
+					for _, l := range locs[i] {
+						hit = hit || maybeFailed[l.Segment]
 					}
 					if !hit {
 						t.Fatalf("Sync of file %d failed with no failure scheduled for it, or was told before: %v", i, err)
@@ -120,11 +171,14 @@ func FuzzFailedSyncWindow(f *testing.F) {
 	f.Add([]byte{0, 2, 1, 0, 2, 1, 0})       // the second refusal: a failure in the spare before a sync
 	f.Add([]byte{0, 1, 0, 3, 0, 1, 0, 5, 9}) // a failed append over a synced prefix
 	f.Add([]byte{0, 4, 8, 3, 0, 1, 5, 9})
+	f.Add([]byte("870027a9")) // a sync failure in the loss record of a failed window
 	f.Fuzz(func(t *testing.T, ops []byte) {
 		if len(ops) > 24 {
 			ops = ops[:24]
 		}
-		r := newRig(t, 1)
+		r := newRigUnstarted(t, 1)
+		quiet := r.quietAfterFailures()
+		r.d.Start(r.streams)
 		files := [3]core.FileID{file(1), file(2), file(3)}
 		type rec struct {
 			file   int
@@ -161,6 +215,7 @@ func FuzzFailedSyncWindow(f *testing.F) {
 		}
 
 		for _, op := range ops {
+			quiet()
 			i := int(op>>2) % 3
 			switch op & 3 {
 			case 0:
@@ -197,8 +252,10 @@ func FuzzFailedSyncWindow(f *testing.F) {
 				err := r.d.Sync(ctx, files[i])
 				cancel()
 				doomedFile := false // a failure is owed to the file
+				lossAtRisk := false
 				for _, x := range recs {
 					doomedFile = doomedFile || (x.file == i && x.doomed && !x.told)
+					lossAtRisk = lossAtRisk || (x.file == i && x.doomed)
 				}
 				switch {
 				case err == nil:
@@ -211,7 +268,13 @@ func FuzzFailedSyncWindow(f *testing.F) {
 						}
 					}
 				case errors.Is(err, core.ErrSyncFailed):
-					if !doomedFile {
+					// decision: a file that lost a record may hear of a failure
+					// again, since its loss record is appended into the stream's
+					// next segment, and a sync failure of that segment leaves
+					// the loss record, a header-only one, pending in its window
+					// until it is re-appended, which fails every Sync naming
+					// the file. Withdrawn once that re-append exists.
+					if !doomedFile && !lossAtRisk {
 						t.Fatalf("Sync of file %d failed with no failure scheduled for it, or was told before: %v", i, err)
 					}
 					// The armed failure fired if the file had an unsynced

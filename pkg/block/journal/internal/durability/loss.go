@@ -7,6 +7,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
 // Loss is one extent the journal stopped holding without being asked.
@@ -181,11 +182,13 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 // appendRecord appends the loss record to the file's stream and syncs it.
 //
 // ponytail: the sync is the segment's own, one per loss, outside the group
-// commit, and a failure here can consume the segment's write error before the
-// window's owner sees it, so the segment's no-further-append rule after a
-// failed sync rests on this error alone. Upgrade by moving the sync to the
-// group commit's Durable and WaitDurable, with the failed-window handling,
-// once those land.
+// commit, and a failure here consumes the segment's write error before the
+// stream's worker sees it, so this call ends the segment itself, as the worker
+// does for its own failed sync, and the failed window is taken from the end
+// event. That sync failure is not counted in the layer's sync counters, which
+// only the worker's syncs and a seal's feed. Upgrade by moving the sync to the
+// group commit's Durable and WaitDurable when a loss record's sync failure
+// shows up in a sync_failures reading.
 func (d *Durability) appendRecord(l Loss) error {
 	seq, err := d.counters.NextSeq()
 	if err != nil {
@@ -220,5 +223,13 @@ func (d *Durability) appendRecord(l Loss) error {
 	// The record's own segment is synced, not whatever the stream is on by
 	// now: a roll between the two would otherwise let the sync cover a
 	// successor and report the record durable.
-	return s.SyncAt(placed.Loc)
+	err = s.SyncAt(placed.Loc)
+	if err != nil && !errors.Is(err, segment.ErrSegmentEnded) && !errors.Is(err, segment.ErrStreamClosed) {
+		// The sync of the segment failed: no later sync claims its records,
+		// and the failed window is taken from the end this requests.
+		if eerr := s.End(placed.Loc.Segment, err); eerr != nil && !errors.Is(eerr, segment.ErrStreamClosed) {
+			d.log.Debug("journal could not end the segment a loss record's sync failed", "segment", placed.Loc.Segment, "err", eerr)
+		}
+	}
+	return err
 }
