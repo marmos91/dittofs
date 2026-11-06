@@ -131,7 +131,7 @@ func validShare(s Share) error {
 		why = "the tag is zero"
 	case s.Limit < 0:
 		why = "the journal limit is negative"
-	case s.SyncPolicy > journal.Standard:
+	case s.SyncPolicy != journal.Bounded && s.SyncPolicy != journal.Standard:
 		why = "the sync policy is unknown"
 	case s.State != Serving && s.State != Quiesced:
 		why = "the state is unknown"
@@ -217,9 +217,7 @@ func (e *Engine) attach(ctx context.Context, s Share, j Journal, raised bool) (*
 		return nil, storeErr(err)
 	}
 
-	if floor.Less(limits[s.ID]) {
-		floor = limits[s.ID]
-	}
+	floor = entity.MaxVersion(floor, limits[s.ID])
 
 	h, err := j.Share(s.Tag, s.Limit, journal.VersionFromBytes(floor), s.SyncPolicy)
 	if err != nil {

@@ -154,11 +154,6 @@ func isDelay(err error, c vfserr.DelayCause) bool {
 	return errors.As(err, &d) && d.Cause == c
 }
 
-// version is the store's version of counter n.
-func version(n uint64) entity.JournalVersion {
-	return entity.JournalVersion(journal.Version{Counter: n}.Bytes())
-}
-
 // commitAt commits existence for file id of the unit's share at v, so the
 // share's version floor is at least v.
 func (u *unit) commitAt(t *testing.T, id entity.FileID, v entity.JournalVersion) {
@@ -197,7 +192,7 @@ func TestBindPassesTheLargerOfFloorAndLimit(t *testing.T) {
 		{"the limit is larger", 1e12, 2e12, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			u := newUnit(t, unbound())
+			u := newUnitWith(t, unitConfig{unbound: true})
 			ctx := t.Context()
 			_, file := u.fs.Create(t, u.fs.Admin, u.fs.Root, "f", kvstore.Regular(0o644))
 
@@ -206,8 +201,8 @@ func TestBindPassesTheLargerOfFloorAndLimit(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			ex := version(base.Counter() + c.existence)
-			lim := version(base.Counter() + c.limit)
+			ex := entity.VersionOf(base.Counter() + c.existence)
+			lim := entity.VersionOf(base.Counter() + c.limit)
 			u.commitAt(t, file.ID, ex)
 
 			to := map[entity.ShareID]entity.JournalVersion{
@@ -264,7 +259,7 @@ func TestBindWritesTheShareLimitAtTheJournals(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got[u.share.ID] != version(unitLimit) {
+	if got[u.share.ID] != entity.VersionOf(unitLimit) {
 		t.Errorf("the share's limit is %d, want the journal's %d", got[u.share.ID].Counter(), uint64(unitLimit))
 	}
 }
@@ -299,7 +294,7 @@ func TestAFailedBindLeavesNothing(t *testing.T) {
 				limitsErr: c.limits,
 				raiseErr:  c.raise,
 			}
-			u := newUnit(t, unbound(), withDeps(func(d *engine.Deps) {
+			faults := func(d *engine.Deps) {
 				fl.Lifecycle = d.Lifecycle
 				d.Lifecycle = fl
 
@@ -309,7 +304,11 @@ func TestAFailedBindLeavesNothing(t *testing.T) {
 						err:     c.content,
 					}
 				}
-			}))
+			}
+			u := newUnitWith(t, unitConfig{
+				deps:    []func(*engine.Deps){faults},
+				unbound: true,
+			})
 
 			s := u.share
 			u.rec.closeErr = c.closeErr
@@ -362,7 +361,7 @@ func TestAFailedBindLeavesNothing(t *testing.T) {
 // bound like any other: Bind answers nil and binds it, opens its handle, and
 // writes no version limit for it.
 func TestBindOfAShareWithNoRecordBindsIt(t *testing.T) {
-	u := newUnit(t, unbound())
+	u := newUnitWith(t, unitConfig{unbound: true})
 	ctx := t.Context()
 	s := u.share
 	s.ID = entity.NewShareID()
@@ -519,9 +518,9 @@ func TestBindOfAServedShareRefusesAnIdentityChange(t *testing.T) {
 // until the share is bound again.
 func TestBindOfAServedShareKeepsItsLimitAndWarns(t *testing.T) {
 	logs := newLogRecorder()
-	u := newUnit(t, withDeps(func(d *engine.Deps) {
+	u := newUnit(t, func(d *engine.Deps) {
 		d.Logger = slog.New(logs)
-	}))
+	})
 
 	for _, c := range []struct {
 		limit int64
@@ -623,7 +622,7 @@ func (u *unit) shardOf(t *testing.T, id entity.ShardID) entity.Shard {
 // The first Bind of a shard this process has not raised opens a new grace
 // instance: GraceInstance equals the new incarnation.
 func TestAFirstBindAfterARestartTakesTheStartRaise(t *testing.T) {
-	u := newUnit(t, unbound())
+	u := newUnitWith(t, unitConfig{unbound: true})
 	before := u.shardOf(t, u.share.Shard)
 
 	if err := u.e.Bind(t.Context(), u.share); err != nil {
@@ -660,7 +659,7 @@ func TestABindOfARaisedShardKeepsItsGrace(t *testing.T) {
 // sees a Share.
 func TestBindNeedsExactlyOneJournal(t *testing.T) {
 	t.Run("none", func(t *testing.T) {
-		u := newUnit(t, unbound())
+		u := newUnitWith(t, unitConfig{unbound: true})
 		u.e.SetJournalsForTest()
 		u.fs.Counts.Take()
 
@@ -675,7 +674,7 @@ func TestBindNeedsExactlyOneJournal(t *testing.T) {
 	})
 
 	t.Run("two", func(t *testing.T) {
-		u := newUnit(t, unbound())
+		u := newUnitWith(t, unitConfig{unbound: true})
 		other := &recJournal{
 			FakeJournal: enginetest.NewFakeJournal(),
 		}
@@ -701,10 +700,10 @@ func TestBindNeedsExactlyOneJournal(t *testing.T) {
 // share's Bind completes.
 func TestASecondLifecycleCallOnTheShareIsDelayed(t *testing.T) {
 	fl := &faultLifecycle{}
-	u := newUnit(t, withDeps(func(d *engine.Deps) {
+	u := newUnit(t, func(d *engine.Deps) {
 		fl.Lifecycle = d.Lifecycle
 		d.Lifecycle = fl
-	}))
+	})
 	b := enginetest.AddShare(t, u.fs.Store, "b", 0)
 	c := enginetest.AddShare(t, u.fs.Store, "c", 0)
 
@@ -778,7 +777,7 @@ func TestAContentCallIgnoresTheLifecycleMutex(t *testing.T) {
 // Readers find their share through every Bind of 64 others, each of which
 // copies the table.
 func TestTheTableUnderReadersAndBinds(t *testing.T) {
-	u := newUnit(t, unbound())
+	u := newUnitWith(t, unitConfig{unbound: true})
 
 	if err := u.e.Bind(t.Context(), u.share); err != nil {
 		t.Fatal(err)

@@ -39,47 +39,25 @@ type unit struct {
 // unitLimit is the fake journal's version limit in a unit test.
 const unitLimit = 1 << 62
 
-// unitConfig is what a test asks of newUnit.
+// unitConfig is what a test asks of newUnitWith.
 type unitConfig struct {
-	deps    []func(*engine.Deps)
-	unbound bool
-	wrap    func(engine.Handle) engine.Handle
+	deps    []func(*engine.Deps)              // each changes the engine's Deps before New
+	unbound bool                              // leaves the share unbound: the test binds what it needs
+	wrap    func(engine.Handle) engine.Handle // hands the engine every handle the fake journal opens through it
 }
 
-// unitOption is one thing a test asks of newUnit.
-type unitOption func(*unitConfig)
+// newUnit is the unit with its share bound, each of deps changing the
+// engine's Deps before New.
+func newUnit(t *testing.T, deps ...func(*engine.Deps)) *unit {
+	t.Helper()
 
-// withDeps changes the engine's Deps before New.
-func withDeps(f func(*engine.Deps)) unitOption {
-	return func(c *unitConfig) {
-		c.deps = append(c.deps, f)
-	}
+	return newUnitWith(t, unitConfig{deps: deps})
 }
 
-// unbound leaves the share unbound: the test binds what it needs.
-func unbound() unitOption {
-	return func(c *unitConfig) {
-		c.unbound = true
-	}
-}
-
-// wrapHandles hands the engine every handle the fake journal opens through
-// wrap.
-func wrapHandles(wrap func(engine.Handle) engine.Handle) unitOption {
-	return func(c *unitConfig) {
-		c.wrap = wrap
-	}
-}
-
-func newUnit(t *testing.T, opts ...unitOption) *unit {
+// newUnitWith is the unit as c asks.
+func newUnitWith(t *testing.T, c unitConfig) *unit {
 	t.Helper()
 	prof.Watch(t, prof.Options{})
-
-	var c unitConfig
-
-	for _, o := range opts {
-		o(&c)
-	}
 
 	u := &unit{
 		j:     enginetest.NewFakeJournal(),

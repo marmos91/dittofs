@@ -34,12 +34,12 @@ func (s *noStore) arm() {
 // assertion: it fails the test at the very call that reached the store.
 func TestAWriteMakesNoStoreCall(t *testing.T) {
 	ns := &noStore{}
-	u := newUnit(t, withDeps(func(d *engine.Deps) {
+	u := newUnit(t, func(d *engine.Deps) {
 		ns.Existence = d.Existence
 		ns.Content = d.Content
 		d.Existence = ns
 		d.Content = ns
-	}))
+	})
 
 	if err := u.e.BindingOf(u.share.ID); err != nil {
 		t.Fatalf("the share is not bound before the store is armed: %v", err)
@@ -112,9 +112,11 @@ func (h ctxHandle) WriteAt(ctx context.Context, _ journal.FileID, _ int64, _ []b
 // A WriteAt that answers the context's error is answered with that error
 // itself, not as an unavailable journal, and leaves nothing pending.
 func TestAWriteCutShortAnswersTheContextsError(t *testing.T) {
-	u := newUnit(t, wrapHandles(func(h engine.Handle) engine.Handle {
-		return ctxHandle{h}
-	}))
+	u := newUnitWith(t, unitConfig{
+		wrap: func(h engine.Handle) engine.Handle {
+			return ctxHandle{h}
+		},
+	})
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	f := entity.NewFileID()
@@ -130,11 +132,13 @@ func TestAWriteCutShortAnswersTheContextsError(t *testing.T) {
 // A write samples its verifier once, before it is staged, and answers it.
 func TestAWriteSamplesItsVerifierFirst(t *testing.T) {
 	var h *countingHandle
-	u := newUnit(t, wrapHandles(func(x engine.Handle) engine.Handle {
-		h = &countingHandle{Handle: x}
+	u := newUnitWith(t, unitConfig{
+		wrap: func(x engine.Handle) engine.Handle {
+			h = &countingHandle{Handle: x}
 
-		return h
-	}))
+			return h
+		},
+	})
 	var staged int64 = -1
 	sampled := 0
 	want := vfserr.Verifier{7, 1, 2}
@@ -194,11 +198,13 @@ func TestARefusedWriteLeavesNothing(t *testing.T) {
 // calls no Done.
 func TestAWriteOfNothing(t *testing.T) {
 	var h *countingHandle
-	u := newUnit(t, wrapHandles(func(x engine.Handle) engine.Handle {
-		h = &countingHandle{Handle: x}
+	u := newUnitWith(t, unitConfig{
+		wrap: func(x engine.Handle) engine.Handle {
+			h = &countingHandle{Handle: x}
 
-		return h
-	}))
+			return h
+		},
+	})
 	f := entity.NewFileID()
 	n := 0
 	if _, err := u.e.Write(t.Context(), u.share.ID, f, 7, nil, engine.WriteOpts{Done: func() { n++ }}); err != nil {
@@ -281,7 +287,14 @@ func TestDrawIsTheJournalsNextVersion(t *testing.T) {
 // reflects an unstable write, its time and its size, and a file with nothing
 // pending answers pending false and the zero overlay without allocating.
 func TestOverlayReadsTheEntryAlone(t *testing.T) {
-	u := newUnit(t, func(d *engine.Deps) { d.Existence, d.Content = noStore{}, noStore{} })
+	ns := &noStore{}
+	u := newUnit(t, func(d *engine.Deps) {
+		ns.Existence = d.Existence
+		ns.Content = d.Content
+		d.Existence = ns
+		d.Content = ns
+	})
+	ns.arm()
 	f := entity.NewFileID()
 	at := u.clock.Now()
 	if _, err := u.e.Write(t.Context(), u.share.ID, f, 10, []byte("abcd"), engine.WriteOpts{Done: func() {}}); err != nil {
