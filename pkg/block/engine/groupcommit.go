@@ -529,7 +529,7 @@ func (e *Engine) syncAndCommit(ctx context.Context, batch []captured) (failed ma
 // call.
 func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExistence, failed map[entity.FileID]error, alone map[entity.FileID]bool) {
 	cctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
-	m, err := e.d.Existence.Commit(cctx, pending)
+	m, err := e.d.Existence.Commit(cctx, pending, nil)
 	cancel()
 	if err == nil {
 		for f, ferr := range m {

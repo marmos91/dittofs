@@ -17,7 +17,7 @@ func TestACrashedProcessChangesNothingInTheStore(t *testing.T) {
 	crashed.Store(true)
 	x, c := fencedExistence{crashed: crashed}, fencedContent{crashed: crashed}
 	ctx := t.Context()
-	if _, err := x.Commit(ctx, nil); !errors.Is(err, errCrashed) {
+	if _, err := x.Commit(ctx, nil, nil); !errors.Is(err, errCrashed) {
 		t.Errorf("Commit after the crash: %v, want errCrashed", err)
 	}
 	var share entity.ShareID

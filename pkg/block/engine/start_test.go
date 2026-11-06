@@ -539,7 +539,7 @@ func commitShareAt(t *testing.T, fs *kvstoretest.FS, share entity.ShareID, file 
 		},
 	}
 
-	failed, err := fs.Store.Existence().Commit(t.Context(), pending)
+	failed, err := fs.Store.Existence().Commit(t.Context(), pending, nil)
 	if err != nil || failed[file] != nil {
 		t.Fatalf("commit existence at %v: %v, %v", v, err, failed[file])
 	}

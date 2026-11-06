@@ -66,7 +66,7 @@ type Reservation interface {
 
 // Existence is block metadata's existence view, as the engine calls it.
 type Existence interface {
-	Commit(ctx context.Context, pending []kvstore.PendingExistence) (map[entity.FileID]error, error)
+	Commit(ctx context.Context, pending []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error)
 	Overwrites(ctx context.Context, share entity.ShareID, file entity.FileID, runs []entity.Extent) (bool, error)
 	Applied(ctx context.Context, share entity.ShareID, file entity.FileID) (entity.JournalVersion, error)
 	Allocation(ctx context.Context, share entity.ShareID, file entity.FileID, off int64) (run entity.Extent, hole bool, err error)

@@ -212,7 +212,7 @@ type stalledExistence struct {
 	release chan struct{}
 }
 
-func (x *stalledExistence) Commit(ctx context.Context, p []kvstore.PendingExistence) (map[entity.FileID]error, error) {
+func (x *stalledExistence) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
 	if x.stalled.Load() {
 		select {
 		case <-x.release:
@@ -220,7 +220,7 @@ func (x *stalledExistence) Commit(ctx context.Context, p []kvstore.PendingExiste
 			return nil, ctx.Err()
 		}
 	}
-	return x.Existence.Commit(ctx, p)
+	return x.Existence.Commit(ctx, p, marks)
 }
 
 // Under a store that commits nothing, an append's Commit still answers after

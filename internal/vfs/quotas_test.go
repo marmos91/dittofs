@@ -483,7 +483,7 @@ func TestAChownCommitsStagedBytesBeforeItReserves(t *testing.T) {
 	s.engine.existence = func(id entity.FileID) error {
 		_, err := s.fs.Store.Existence().Commit(ctx, []kvstore.PendingExistence{{Share: f.Share, File: id, Ops: []kvstore.PendingOp{
 			{Version: entity.VersionOf(f.Applied.Epoch() + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: int64(len(data))}, Mtime: f.Modify, Ctime: f.Modify},
-		}}})
+		}}}, nil)
 		return err
 	}
 	bobs := s.usage(t, s.bob.Principal)

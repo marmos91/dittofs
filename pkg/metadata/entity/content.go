@@ -51,6 +51,25 @@ func (v JournalVersion) Compare(o JournalVersion) int { return bytes.Compare(v[:
 
 func (v JournalVersion) Less(o JournalVersion) bool { return v.Compare(o) < 0 }
 
+// SyncMark is where a journal's append stream had proven its records synced
+// at one of its syncs: the stream, as its segments' headers number it, the
+// segment, the stream's synced-through offset there, and the end and
+// sequence number of the newest record that sync covered. The journal
+// returns them from its syncs, and the group commit records them in
+// metadata, keyed by stream.
+type SyncMark struct {
+	Stream   uint32
+	Segment  uint64
+	Through  int64
+	Offset   int64
+	Sequence uint64
+}
+
+// Covers reports that m, a recorded mark, proves the records r, a mark a sync
+// returned, names: both lie in one segment, and m is synced through r's
+// newest record. A mark proves nothing in another segment.
+func (m SyncMark) Covers(r SyncMark) bool { return m.Segment == r.Segment && m.Through >= r.Offset }
+
 func MaxVersion(a, b JournalVersion) JournalVersion {
 	if a.Less(b) {
 		return b

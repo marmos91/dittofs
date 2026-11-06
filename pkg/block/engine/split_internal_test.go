@@ -26,7 +26,7 @@ type splitStore struct {
 // errConflict is a conflict the store kept retrying until the call's bound.
 var errConflict = errors.Join(kvstore.ErrConflict, context.DeadlineExceeded)
 
-func (s *splitStore) Commit(_ context.Context, p []kvstore.PendingExistence) (map[entity.FileID]error, error) {
+func (s *splitStore) Commit(_ context.Context, p []kvstore.PendingExistence, _ *kvstore.MarksWrite) (map[entity.FileID]error, error) {
 	var call []string
 	failWhole := false
 	for _, pe := range p {

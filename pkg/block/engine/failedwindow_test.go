@@ -98,7 +98,7 @@ type durableAtCommit struct {
 	early []entity.FileID
 }
 
-func (x *durableAtCommit) Commit(ctx context.Context, p []kvstore.PendingExistence) (map[entity.FileID]error, error) {
+func (x *durableAtCommit) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
 	x.mu.Lock()
 	for _, pe := range p {
 		if !x.j.Durable(journal.NewFileID(pe.File)) {
@@ -106,7 +106,7 @@ func (x *durableAtCommit) Commit(ctx context.Context, p []kvstore.PendingExisten
 		}
 	}
 	x.mu.Unlock()
-	return x.Existence.Commit(ctx, p)
+	return x.Existence.Commit(ctx, p, marks)
 }
 
 // A failed window promises nothing durable, the other files' writes
