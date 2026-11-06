@@ -17,7 +17,7 @@ func nums(v, s uint64) Numbers { return Numbers{Version: ver(v), Seq: core.Seq(s
 // tag given. It is the one-line form of every arranged record in these tests.
 func noteRec(t *testing.T, fs *files, id core.FileID, seg core.SegmentID, e core.Extent, n Numbers) {
 	t.Helper()
-	err := fs.update(id, func(f *file) error { return f.recorded(seg, e, n, 1, id) })
+	_, err := fs.update(id, func(f *file) error { return f.recorded(seg, e, n, 1, id) })
 	if err != nil {
 		t.Fatalf("recorded: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestDropRangesAgainstExactOracle(t *testing.T) {
 		fi := rng.IntN(filesN)
 		seg := core.SegmentID(1 + rng.IntN(segsN))
 		if step%20 == 19 {
-			_ = fs.update(ids[fi], func(f *file) error { f.segmentGone(seg); return nil })
+			_, _ = fs.update(ids[fi], func(f *file) error { f.segmentGone(seg); return nil })
 			os[fi].forget(seg)
 		} else {
 			var e core.Extent
@@ -513,14 +513,14 @@ func TestSegmentGoneForgetsItsRanges(t *testing.T) {
 		t.Fatal("segment 2 does not have a lower record")
 	}
 	before := fs.dropRangeCount()
-	_ = fs.update(id, func(f *file) error { f.segmentGone(2); return nil })
+	_, _ = fs.update(id, func(f *file) error { f.segmentGone(2); return nil })
 	if fs.mayOutrank(id, 1, ext(0, 8), nums(4, 2)) {
 		t.Fatal("a gone segment keeps the removal")
 	}
 	if after, want := fs.dropRangeCount(), before-1; after != want {
 		t.Fatalf("gauge = %d after segmentGone, want %d", after, want)
 	}
-	_ = fs.update(id, func(f *file) error { f.segmentGone(2); return nil })
+	_, _ = fs.update(id, func(f *file) error { f.segmentGone(2); return nil })
 	if after, want := fs.dropRangeCount(), before-1; after != want {
 		t.Fatalf("gauge = %d after a second segmentGone, want %d", after, want)
 	}
@@ -539,7 +539,7 @@ func TestSegmentGoneClearsTheVacatedSlot(t *testing.T) {
 	}
 	// Remove a segment that is not the last: slots 1 and 2 swap, and the
 	// slot past the end must no longer hold the moved tail's array.
-	_ = fs.update(id, func(f *file) error { f.segmentGone(1); return nil })
+	_, _ = fs.update(id, func(f *file) error { f.segmentGone(1); return nil })
 	_ = fs.view(id, func(f *file) {
 		n := len(f.segs)
 		if n != 2 {
@@ -561,14 +561,14 @@ func TestSegmentGoneClearsTheVacatedSlot(t *testing.T) {
 func TestRecordWithoutExtentKeepsTag(t *testing.T) {
 	var fs files
 	id, seg := fid(1), core.SegmentID(3)
-	_ = fs.update(id, func(f *file) error {
+	_, _ = fs.update(id, func(f *file) error {
 		if err := f.recorded(seg, core.Extent{}, nums(1, 1), 7, id); err != nil {
 			return err
 		}
 		f.write(write(0, 8, rec(seg, 0), 5))
 		return nil
 	})
-	err := fs.update(id, func(f *file) error {
+	_, err := fs.update(id, func(f *file) error {
 		f.held.markOffloaded(ext(0, 8), ver(0), ver(5))
 		_, err := f.held.release(ext(0, 8), nil)
 		return err
@@ -619,7 +619,7 @@ func TestDropRangeGaugeAcrossEntryDrop(t *testing.T) {
 	noteRec(t, &fs, id, 1, ext(0, 8), nums(4, 1))
 	before := fs.dropRangeCount()
 	// The update that empties the file drops the entry whole, with its ranges.
-	_ = fs.update(id, func(f *file) error { f.segmentGone(1); return nil })
+	_, _ = fs.update(id, func(f *file) error { f.segmentGone(1); return nil })
 	if present(&fs, id) {
 		t.Fatal("entry kept with nothing held and no record on disk")
 	}
@@ -632,7 +632,7 @@ func TestDropRangeGaugeAcrossEntryDrop(t *testing.T) {
 	noteRec(t, &fs, id, 1, ext(16, 8), nums(4, 1))
 	func() {
 		defer func() { _ = recover() }()
-		_ = fs.update(id, func(f *file) error {
+		_, _ = fs.update(id, func(f *file) error {
 			_ = f.recorded(1, ext(0, 8), nums(2, 2), 1, id)
 			panic("fn")
 		})
@@ -689,17 +689,17 @@ func TestConcurrentDropRanges(t *testing.T) {
 			off := int64(w)
 			for r := range rounds {
 				seg := core.SegmentID(w*rounds + r + 1)
-				_ = fs.update(churn, func(f *file) error {
+				_, _ = fs.update(churn, func(f *file) error {
 					err := f.recorded(seg, ext(off, 4), nums(1, uint64(seg)), 1, churn)
 					f.held.fill(write(off, 4, rec(seg, 0), 1))
 					return err
 				})
-				_ = fs.update(churn, func(f *file) error {
+				_, _ = fs.update(churn, func(f *file) error {
 					_, err := f.held.release(ext(off, 4), nil)
 					f.segmentGone(seg)
 					return err
 				})
-				_ = fs.update(shared, func(f *file) error {
+				_, _ = fs.update(shared, func(f *file) error {
 					return f.recorded(core.SegmentID(1+r%3), ext(int64(w*rounds+r)*4, 4), nums(1, uint64(r+1)), 1, shared)
 				})
 			}

@@ -352,7 +352,7 @@ func (b *rebuilder) replayShard(s *rebuildShard) error {
 		// The buffer is freed as soon as the file is applied, so memory
 		// falls while Finish runs.
 		delete(bufs, id)
-		if err := b.fs.update(id, func(f *file) error {
+		if _, err := b.fs.update(id, func(f *file) error {
 			return b.replayFile(f, id, recs, byFile[id])
 		}); err != nil {
 			return err
@@ -363,7 +363,7 @@ func (b *rebuilder) replayShard(s *rebuildShard) error {
 	// the caller holds pieces for but fed no record of. It lands as the
 	// caller gave it: no mark of this replay reaches a retained piece.
 	for id, pieces := range byFile {
-		if err := b.fs.update(id, func(f *file) error {
+		if _, err := b.fs.update(id, func(f *file) error {
 			return b.replayFile(f, id, nil, pieces)
 		}); err != nil {
 			return err

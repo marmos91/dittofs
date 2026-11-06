@@ -56,7 +56,7 @@ func present(fs *files, id core.FileID) bool {
 func TestTagOutlivesChangeVersion(t *testing.T) {
 	var fs files
 	id, seg := fid(1), core.SegmentID(3)
-	err := fs.update(id, func(f *file) error {
+	_, err := fs.update(id, func(f *file) error {
 		if err := f.recorded(seg, ext(0, 16), nums(1, 1), 7, id); err != nil {
 			return err
 		}
@@ -73,7 +73,7 @@ func TestTagOutlivesChangeVersion(t *testing.T) {
 		}
 	})
 
-	err = fs.update(id, func(f *file) error {
+	_, err = fs.update(id, func(f *file) error {
 		f.held.markOffloaded(ext(0, 16), ver(0), ver(6))
 		_, err := f.held.release(ext(0, 16), nil)
 		return err
@@ -92,7 +92,7 @@ func TestTagOutlivesChangeVersion(t *testing.T) {
 		t.Fatal("entry dropped while a segment holds a record of the file")
 	}
 
-	if err := fs.update(id, func(f *file) error { f.segmentGone(seg); return nil }); err != nil {
+	if _, err := fs.update(id, func(f *file) error { f.segmentGone(seg); return nil }); err != nil {
 		t.Fatalf("segmentGone: %v", err)
 	}
 	if present(&fs, id) {
@@ -109,7 +109,7 @@ func TestTagOutlivesChangeVersion(t *testing.T) {
 func TestHeldContentKeepsEntryWithoutSegments(t *testing.T) {
 	var fs files
 	id := fid(1)
-	_ = fs.update(id, func(f *file) error {
+	_, _ = fs.update(id, func(f *file) error {
 		_ = f.recorded(2, ext(0, 4), nums(1, 1), 1, id)
 		f.write(write(0, 4, rec(2, 0), 9))
 		f.segmentGone(2)
@@ -135,7 +135,7 @@ func TestHeldContentKeepsEntryWithoutSegments(t *testing.T) {
 func TestRetainedKeepsEntryWithoutHeldOrSegments(t *testing.T) {
 	var fs files
 	id := fid(1)
-	_ = fs.update(id, func(f *file) error {
+	_, _ = fs.update(id, func(f *file) error {
 		f.write(write(0, 8, rec(1, 0), 1))
 		f.writeRetain(write(0, 8, rec(2, 0), 2))
 		f.held.cut(ext(0, 8))
@@ -148,7 +148,7 @@ func TestRetainedKeepsEntryWithoutHeldOrSegments(t *testing.T) {
 	}) {
 		t.Fatal("entry dropped while it retains content")
 	}
-	_ = fs.update(id, func(f *file) error {
+	_, _ = fs.update(id, func(f *file) error {
 		f.retained.drop(whole, bySuperseder(ver(2)), nil)
 		return nil
 	})
@@ -164,11 +164,11 @@ func TestRetainedKeepsEntryWithoutHeldOrSegments(t *testing.T) {
 func TestSegmentNotedTwiceIsGoneOnce(t *testing.T) {
 	var fs files
 	id := fid(1)
-	_ = fs.update(id, func(f *file) error {
+	_, _ = fs.update(id, func(f *file) error {
 		_ = f.recorded(4, ext(0, 4), nums(1, 1), 1, id)
 		return f.recorded(4, ext(0, 4), nums(1, 1), 1, id)
 	})
-	_ = fs.update(id, func(f *file) error { f.segmentGone(4); return nil })
+	_, _ = fs.update(id, func(f *file) error { f.segmentGone(4); return nil })
 	if present(&fs, id) {
 		t.Fatal("entry kept after the only segment holding its records was unlinked")
 	}
@@ -180,7 +180,7 @@ func TestSegmentNotedTwiceIsGoneOnce(t *testing.T) {
 func TestWriteNeverLowersChangeVersion(t *testing.T) {
 	var fs files
 	id := fid(1)
-	_ = fs.update(id, func(f *file) error {
+	_, _ = fs.update(id, func(f *file) error {
 		f.write(write(0, 4, rec(1, 0), 6))
 		f.write(write(8, 4, rec(1, 64), 5))
 		return nil
@@ -200,12 +200,12 @@ func TestWriteNeverLowersChangeVersion(t *testing.T) {
 func TestRecordedReportsOtherTagAndKeepsTheRecord(t *testing.T) {
 	var fs files
 	id := fid(1)
-	_ = fs.update(id, func(f *file) error { return f.recorded(1, ext(0, 4), nums(1, 1), 4, id) })
-	err := fs.update(id, func(f *file) error { return f.recorded(2, ext(0, 4), nums(1, 1), 5, id) })
+	_, _ = fs.update(id, func(f *file) error { return f.recorded(1, ext(0, 4), nums(1, 1), 4, id) })
+	_, err := fs.update(id, func(f *file) error { return f.recorded(2, ext(0, 4), nums(1, 1), 5, id) })
 	if !errors.Is(err, core.ErrOtherShare) {
 		t.Fatalf("recorded through another tag = %v, want ErrOtherShare", err)
 	}
-	_ = fs.update(id, func(f *file) error { f.segmentGone(1); return nil })
+	_, _ = fs.update(id, func(f *file) error { f.segmentGone(1); return nil })
 	if !present(&fs, id) {
 		t.Fatal("entry dropped while segment 2 holds a record of the file")
 	}
@@ -218,8 +218,8 @@ func TestRecordedReportsOtherTagAndKeepsTheRecord(t *testing.T) {
 func TestFileOfTwoTagsRefusesBoth(t *testing.T) {
 	var fs files
 	id := fid(1)
-	_ = fs.update(id, func(f *file) error { return f.recorded(1, ext(0, 4), nums(1, 1), 4, id) })
-	_ = fs.update(id, func(f *file) error { return f.recorded(2, ext(0, 4), nums(1, 1), 5, id) })
+	_, _ = fs.update(id, func(f *file) error { return f.recorded(1, ext(0, 4), nums(1, 1), 4, id) })
+	_, _ = fs.update(id, func(f *file) error { return f.recorded(2, ext(0, 4), nums(1, 1), 5, id) })
 	for _, c := range []struct{ tag, other core.ShareTag }{{4, 5}, {5, 4}} {
 		fs.view(id, func(f *file) {
 			var refusal *core.OtherShareError
@@ -227,7 +227,7 @@ func TestFileOfTwoTagsRefusesBoth(t *testing.T) {
 				t.Fatalf("check through tag %d = %v, want refused naming %d", c.tag, err, c.other)
 			}
 		})
-		err := fs.update(id, func(f *file) error { return f.claim(c.tag, id) })
+		_, err := fs.update(id, func(f *file) error { return f.claim(c.tag, id) })
 		if !errors.Is(err, core.ErrOtherShare) {
 			t.Fatalf("claim through tag %d = %v, want ErrOtherShare", c.tag, err)
 		}
@@ -242,13 +242,13 @@ func TestPanicLeavesFileUsable(t *testing.T) {
 	id := fid(1)
 	func() {
 		defer func() { _ = recover() }()
-		_ = fs.update(id, func(f *file) error { f.write(write(0, 4, rec(1, 0), 1)); panic("fn") })
+		_, _ = fs.update(id, func(f *file) error { f.write(write(0, 4, rec(1, 0), 1)); panic("fn") })
 	}()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		fs.view(id, func(*file) {})
-		_ = fs.update(id, func(*file) error { return nil })
+		_, _ = fs.update(id, func(*file) error { return nil })
 	}()
 	select {
 	case <-done:
@@ -267,7 +267,7 @@ func TestReadClaimsNothing(t *testing.T) {
 		t.Fatal("view reported an entry for an unknown file")
 	}
 	refused := errors.New("refused")
-	if err := fs.update(id, func(*file) error { return refused }); err != refused {
+	if _, err := fs.update(id, func(*file) error { return refused }); err != refused {
 		t.Fatalf("update = %v, want %v", err, refused)
 	}
 	if present(&fs, id) || fs.len() != 0 {
@@ -281,10 +281,10 @@ func TestReadClaimsNothing(t *testing.T) {
 func TestClaimRefusesOtherTag(t *testing.T) {
 	var fs files
 	id := fid(1)
-	_ = fs.update(id, func(f *file) error {
+	_, _ = fs.update(id, func(f *file) error {
 		return f.recorded(1, ext(0, 1), nums(1, 1), 4, id)
 	})
-	err := fs.update(id, func(f *file) error { return f.claim(5, id) })
+	_, err := fs.update(id, func(f *file) error { return f.claim(5, id) })
 	var other *core.OtherShareError
 	if !errors.As(err, &other) || !errors.Is(err, core.ErrOtherShare) {
 		t.Fatalf("claim by another tag = %v, want an OtherShareError", err)
@@ -292,7 +292,7 @@ func TestClaimRefusesOtherTag(t *testing.T) {
 	if other.File != id || other.Tag != 5 || other.Owner != 4 {
 		t.Fatalf("refusal = %+v, want file %v, tag 5, owner 4", other, id)
 	}
-	if err := fs.update(id, func(f *file) error { return f.claim(4, id) }); err != nil {
+	if _, err := fs.update(id, func(f *file) error { return f.claim(4, id) }); err != nil {
 		t.Fatalf("claim by the owner = %v, want nil", err)
 	}
 	fs.view(id, func(f *file) {
@@ -310,11 +310,11 @@ func TestReadOtherFileWhileWriting(t *testing.T) {
 	var fs files
 	a := fid(1)
 	b := sameShard(&fs, a)
-	_ = fs.update(a, func(f *file) error { f.write(write(0, 4, rec(1, 0), 1)); return nil })
+	_, _ = fs.update(a, func(f *file) error { f.write(write(0, 4, rec(1, 0), 1)); return nil })
 
 	inside, release := make(chan struct{}), make(chan struct{})
 	go func() {
-		_ = fs.update(b, func(f *file) error {
+		_, _ = fs.update(b, func(f *file) error {
 			f.write(write(0, 4, rec(1, 64), 2))
 			close(inside)
 			<-release
@@ -328,7 +328,7 @@ func TestReadOtherFileWhileWriting(t *testing.T) {
 	go func() {
 		defer close(done)
 		fs.view(a, func(f *file) { f.held.lookup(0) })
-		_ = fs.update(a, func(f *file) error { f.write(write(4, 4, rec(1, 128), 3)); return nil })
+		_, _ = fs.update(a, func(f *file) error { f.write(write(4, 4, rec(1, 128), 3)); return nil })
 	}()
 	select {
 	case <-done:
@@ -343,10 +343,10 @@ func TestWaiterHoldsNoShardLock(t *testing.T) {
 	var fs files
 	id := fid(1)
 	inside, release := make(chan struct{}), make(chan struct{})
-	go func() { _ = fs.update(id, func(*file) error { close(inside); <-release; return nil }) }()
+	go func() { _, _ = fs.update(id, func(*file) error { close(inside); <-release; return nil }) }()
 	<-inside
 	waiter := make(chan struct{})
-	go func() { defer close(waiter); _ = fs.update(id, func(*file) error { return nil }) }()
+	go func() { defer close(waiter); _, _ = fs.update(id, func(*file) error { return nil }) }()
 	time.Sleep(10 * time.Millisecond) // let the waiter reach the file's lock
 	close(release)
 	select {
@@ -365,7 +365,7 @@ func TestSameFileReadSeesWholeWrite(t *testing.T) {
 	id := fid(1)
 	const pieces, rounds = 4, 2000
 	writeAll := func(v uint64) {
-		_ = fs.update(id, func(f *file) error {
+		_, _ = fs.update(id, func(f *file) error {
 			for i := range int64(pieces) {
 				f.write(write(i*8, 4, rec(1, uint32(v*64+uint64(i)*8)), v))
 			}
@@ -433,7 +433,7 @@ func TestConcurrentFiles(t *testing.T) {
 			off := int64(w)
 			for r := range rounds {
 				seg := core.SegmentID(w*rounds + r + 1)
-				_ = fs.update(churn, func(f *file) error {
+				_, _ = fs.update(churn, func(f *file) error {
 					_ = f.recorded(seg, ext(off, 1), nums(1, uint64(seg)), 1, churn)
 					f.held.fill(write(off, 1, rec(seg, 0), 1))
 					return nil
@@ -444,12 +444,12 @@ func TestConcurrentFiles(t *testing.T) {
 					errs <- fmt.Errorf("writer %d: its write at %d is not held: it landed in a dropped entry", w, off)
 					return
 				}
-				_ = fs.update(churn, func(f *file) error {
+				_, _ = fs.update(churn, func(f *file) error {
 					_, err := f.held.release(ext(off, 1), nil)
 					f.segmentGone(seg)
 					return err
 				})
-				_ = fs.update(shared, func(f *file) error {
+				_, _ = fs.update(shared, func(f *file) error {
 					f.write(write(int64(w*rounds+r)*4, 4, rec(seg, 0), uint64(r+1)))
 					return nil
 				})
@@ -492,7 +492,7 @@ func TestViewAllocatesNothing(t *testing.T) {
 	}
 	var fs files
 	id := fid(1)
-	_ = fs.update(id, func(f *file) error { f.write(write(0, 4, rec(1, 0), 1)); return nil })
+	_, _ = fs.update(id, func(f *file) error { f.write(write(0, 4, rec(1, 0), 1)); return nil })
 	var got Placed
 	allocs := testing.AllocsPerRun(1000, func() {
 		fs.view(id, func(f *file) { got, _ = f.held.lookup(2) })

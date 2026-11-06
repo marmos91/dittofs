@@ -329,19 +329,21 @@ func (f *file) read(fn func(*file)) {
 // the entry's lifetimes are applied under the same lock: a file holding
 // nothing loses its change version, and one that also has no record on disk
 // leaves the map. So an update that leaves nothing behind leaves no entry.
-func (fs *files) update(id core.FileID, fn func(*file) error) error {
+// It returns the change the update made to the file's held state, whatever fn
+// returned.
+func (fs *files) update(id core.FileID, fn func(*file) error) (HeldDelta, error) {
 	return fs.commit(id, 0, fn)
 }
 
 // commit is update for an admitted op: admitted is the amount its admission
 // reserved in the count, which the commit's entry delta instead of adding
-// on top of. Everything else is as update.
+// on top of. Everything else is as update, the delta included.
 //
 // commit consumes the admission whether or not fn returns an error: the
 // admitted amount is already taken out of the delta. A caller whose I/O fails
 // before commit abandons the admission; one that commits must not abandon it
 // as well, or the count stands too low.
-func (fs *files) commit(id core.FileID, admitted int64, fn func(*file) error) error {
+func (fs *files) commit(id core.FileID, admitted int64, fn func(*file) error) (HeldDelta, error) {
 	s := fs.shard(id)
 	for {
 		s.mu.Lock()
@@ -373,13 +375,24 @@ func (fs *files) commit(id core.FileID, admitted int64, fn func(*file) error) er
 // decision: the counts are kept by the delta, not by a walk of the entry after
 // fn. A rebuild or an open builds a populated index through one update a
 // record, each about a walk of everything so far; the delta is O(1).
-func (f *file) apply(fs *files, s *fileShard, id core.FileID, before, admitted int64, fn func(*file) error) error {
+//
+// It returns the held-state delta of the update, measured from the file's
+// byte counters after settle and before the unlock.
+//
+// decision: the delta is returned whatever fn returned, not zeroed on error.
+// A refusal returns the zero delta because every mutator refuses before it
+// changes anything, which the per-mutator table test pins; reporting what the
+// update actually did, even beside an error, keeps the caller's counters
+// exact if a future fn errs after changing something.
+func (f *file) apply(fs *files, s *fileShard, id core.FileID, before, admitted int64, fn func(*file) error) (d HeldDelta, err error) {
 	rangesBefore := f.nranges
+	was := f.totals()
 	defer f.mu.Unlock()
+	defer func() { d = f.delta(id, was) }()
 	defer func() { fs.dropRanges.Add(int64(f.nranges - rangesBefore)) }()
 	defer f.counted(fs, before, admitted)
 	defer f.settle(fs, s, id)
-	return fn(f)
+	return HeldDelta{}, fn(f)
 }
 
 // counted adds to the count the change fn's entries made: the difference of
@@ -421,7 +434,8 @@ func (f *file) settle(fs *files, s *fileShard, id core.FileID) {
 	raise(&fs.buckets[bucketOf(id)], f.change.Counter)
 	f.change = core.Version{}
 	// Free the empty tree and its scratch for the tag-only life, keeping the
-	// accounting: a cut in a later update happens to this same set.
+	// accounting: a cut in a later update happens to this same set. An empty
+	// tree holds no bytes, so its byte counters are already zero.
 	f.held = heldSet{acct: f.held.acct}
 	if len(f.segs) > 0 || f.retained.len() > 0 {
 		return

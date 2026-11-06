@@ -688,7 +688,7 @@ func TestRebuildCountersAndBuckets(t *testing.T) {
 		if got := fs.asOf(fid(5)); got != ver(5) {
 			t.Fatalf("asOf of a file with no entry = %v, want 5, the fed maximum", got)
 		}
-		if err := fs.fill(id, write(0, 4, rec(2, 0), 0), ver(4)); !errors.Is(err, core.ErrStaleFill) {
+		if _, err := fs.fill(id, write(0, 4, rec(2, 0), 0), ver(4)); !errors.Is(err, core.ErrStaleFill) {
 			t.Fatalf("fill below the bucket start = %v, want ErrStaleFill", err)
 		}
 		fs.view(id, func(f *file) {

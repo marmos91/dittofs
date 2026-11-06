@@ -13,7 +13,7 @@ import (
 // on an error.
 func change(t *testing.T, fs *files, id core.FileID, fn func(*file) error) {
 	t.Helper()
-	if err := fs.update(id, fn); err != nil {
+	if _, err := fs.update(id, fn); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 }
@@ -148,7 +148,7 @@ func TestZeroLengthRemovalIsRefused(t *testing.T) {
 			var fs files
 			id := fid(1)
 			change(t, &fs, id, func(f *file) error { f.write(write(0, 16, rec(1, 0), 2)); return nil })
-			err := fs.update(id, apply)
+			_, err := fs.update(id, apply)
 			if !errors.Is(err, core.ErrZeroLength) {
 				t.Fatalf("err = %v, want ErrZeroLength", err)
 			}

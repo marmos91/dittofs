@@ -135,10 +135,15 @@ type heldSet struct {
 	// acct are the per-segment counters this set feeds: every piece put
 	// adds to its record's segment, and every piece cut subtracts. Nil keeps
 	// the set unaccounted, as the standalone sets of tests are.
-	acct    *segments
-	tree    btree[held]
-	scratch []Piece // the pieces cut is changing
-	work    []Piece // the pieces a mark, fill or repoint will put, or a removal will cut
+	acct *segments
+	tree btree[held]
+	// bytes is the sum of the held lengths and dirty the part of it whose
+	// offloaded bit is unset. They are kept by put and cut, the only places
+	// bytes enter or leave the tree, whether or not the set is accounted, and
+	// are read only under the file's lock.
+	bytes, dirty int64
+	scratch      []Piece // the pieces cut is changing
+	work         []Piece // the pieces a mark, fill or repoint will put, or a removal will cut
 }
 
 // len returns the number of entries.
@@ -415,8 +420,14 @@ func (s *heldSet) pieces(out []Piece) []Piece {
 // which selects a segment on a zero — see a live segment count zero. The double
 // count is transient and the totals agree once the update ends.
 func (s *heldSet) put(p Piece) {
-	if s.acct != nil && p.Extent.Len > 0 {
-		s.acct.add(p.Record.Segment, p.Extent.Len, 0)
+	if p.Extent.Len > 0 {
+		s.bytes += p.Extent.Len
+		if !p.Offloaded {
+			s.dirty += p.Extent.Len
+		}
+		if s.acct != nil {
+			s.acct.add(p.Record.Segment, p.Extent.Len, 0)
+		}
 	}
 	s.cut(p.Extent)
 	s.tree.set(uint64(p.Extent.Off), toHeld(p))
@@ -458,9 +469,12 @@ func (s *heldSet) cut(e core.Extent) {
 		// since the writes below do not account, so there is nothing to add
 		// back for them. A hook that subtracted p whole here would count the
 		// head and tail twice over.
-		if s.acct != nil {
-			n := min(pend, end) - max(p.Extent.Off, e.Off)
-			if n > 0 {
+		if n := min(pend, end) - max(p.Extent.Off, e.Off); n > 0 {
+			s.bytes -= n
+			if !p.Offloaded {
+				s.dirty -= n
+			}
+			if s.acct != nil {
 				s.acct.add(p.Record.Segment, -n, 0)
 			}
 		}

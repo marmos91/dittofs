@@ -139,7 +139,7 @@ func TestSegmentBytesMatchWalk(t *testing.T) {
 				off, n := inRange(512, 64)
 				retaining := rng.IntN(2) == 1
 				var r RecordAt
-				_ = fs.update(id, func(f *file) error {
+				_, _ = fs.update(id, func(f *file) error {
 					r = active(&activeSeg)
 					nextVersion++
 					if retaining {
@@ -158,11 +158,11 @@ func TestSegmentBytesMatchWalk(t *testing.T) {
 				id := ids[rng.IntN(len(ids))]
 				off, n := inRange(512, 64)
 				nextVersion++
-				_ = fs.fill(id, Placed{Extent: ext(off, n), Record: active(&activeSeg), Version: ver(nextVersion)}, ver(nextVersion))
+				_, _ = fs.fill(id, Placed{Extent: ext(off, n), Record: active(&activeSeg), Version: ver(nextVersion)}, ver(nextVersion))
 			case 3: // mark and release of offloaded spans; a refused one changes nothing
 				id := ids[rng.IntN(len(ids))]
 				off, n := inRange(512, 64)
-				_ = fs.update(id, func(f *file) error {
+				_, _ = fs.update(id, func(f *file) error {
 					f.held.markOffloaded(ext(off, n), ver(0), ver(nextVersion))
 					_, err := f.held.release(ext(off, n), nil)
 					return err
@@ -171,22 +171,22 @@ func TestSegmentBytesMatchWalk(t *testing.T) {
 				id := ids[rng.IntN(len(ids))]
 				size := rng.Int64N(512)
 				nextVersion++
-				_ = fs.update(id, func(f *file) error { f.truncate(size, ver(nextVersion)); return nil })
+				_, _ = fs.update(id, func(f *file) error { f.truncate(size, ver(nextVersion)); return nil })
 			case 5: // punch
 				id := ids[rng.IntN(len(ids))]
 				off, n := inRange(512, 64)
 				nextVersion++
-				_ = fs.update(id, func(f *file) error { return f.deallocate(ext(off, n), ver(nextVersion)) })
+				_, _ = fs.update(id, func(f *file) error { return f.deallocate(ext(off, n), ver(nextVersion)) })
 			case 6: // delete, then settle, so the marker leaves with the walk
 				id := ids[rng.IntN(len(ids))]
 				nextVersion++
-				_ = fs.update(id, func(f *file) error { f.delete(ver(nextVersion)); return nil })
+				_, _ = fs.update(id, func(f *file) error { f.delete(ver(nextVersion)); return nil })
 				fs.settleRemovals(id, ver(nextVersion))
 			case 7: // a window syncs: what its records retained leaves
 				wi := rng.IntN(2)
 				for _, id := range ids {
 					window := windows[wi]
-					_ = fs.update(id, func(f *file) error {
+					_, _ = fs.update(id, func(f *file) error {
 						for _, wr := range window {
 							if wr.id == id {
 								f.retained.drop(whole, bySuperseder(wr.w.Version), nil)
@@ -201,7 +201,7 @@ func TestSegmentBytesMatchWalk(t *testing.T) {
 				for _, id := range ids {
 					window := slices.Clone(windows[wi])
 					rng.Shuffle(len(window), func(i, j int) { window[i], window[j] = window[j], window[i] })
-					_ = fs.update(id, func(f *file) error {
+					_, _ = fs.update(id, func(f *file) error {
 						recs := make([]WindowRecord, 0, len(window))
 						for _, wr := range window {
 							if wr.id == id {
@@ -227,7 +227,7 @@ func TestSegmentBytesMatchWalk(t *testing.T) {
 				nextOff = 0
 				issued[to] = true
 				for _, id := range ids {
-					_ = fs.update(id, func(f *file) error {
+					_, _ = fs.update(id, func(f *file) error {
 						// Collect the records of src this file holds from either
 						// side, then move each whole, as repack does.
 						var froms []RecordAt
@@ -248,7 +248,7 @@ func TestSegmentBytesMatchWalk(t *testing.T) {
 						}
 						return nil
 					})
-					_ = fs.update(id, func(f *file) error {
+					_, _ = fs.update(id, func(f *file) error {
 						_ = f.recorded(to, ext(0, 0), Numbers{}, 1, id)
 						return nil
 					})
@@ -274,7 +274,7 @@ func TestSegmentBytesMatchWalk(t *testing.T) {
 				}
 				seg := empty[rng.IntN(len(empty))]
 				for _, id := range ids {
-					_ = fs.update(id, func(f *file) error { f.segmentGone(seg); return nil })
+					_, _ = fs.update(id, func(f *file) error { f.segmentGone(seg); return nil })
 				}
 				// The segment may never have entered the table — a fill can be
 				// masked or refused after its record was drawn — in which case
@@ -289,7 +289,7 @@ func TestSegmentBytesMatchWalk(t *testing.T) {
 			case 11: // release without a mark: refused and changes nothing
 				id := ids[rng.IntN(len(ids))]
 				off, n := inRange(512, 64)
-				_ = fs.update(id, func(f *file) error {
+				_, _ = fs.update(id, func(f *file) error {
 					_, err := f.held.release(ext(off, n), nil)
 					return err
 				})
@@ -316,7 +316,7 @@ func TestSegmentBytesMatchWalk(t *testing.T) {
 func TestRetireSegment(t *testing.T) {
 	var fs files
 	id := fid(1)
-	_ = fs.update(id, func(f *file) error {
+	_, _ = fs.update(id, func(f *file) error {
 		f.write(write(0, 8, rec(1, 0), 1))
 		f.write(write(8, 8, rec(2, 0), 2))
 		return nil
@@ -329,7 +329,7 @@ func TestRetireSegment(t *testing.T) {
 	}
 
 	// Empty segment 1 — release its piece — then retire it.
-	_ = fs.update(id, func(f *file) error {
+	_, _ = fs.update(id, func(f *file) error {
 		f.held.markOffloaded(ext(0, 8), ver(1), ver(1))
 		_, err := f.held.release(ext(0, 8), nil)
 		return err
@@ -389,7 +389,7 @@ func TestSegmentBytesConcurrentFiles(t *testing.T) {
 			<-start // released with all eight writers together
 			for r := range rounds {
 				seg := core.SegmentID(r%2*4 + 1) // every writer's round r targets the same segment
-				_ = fs.update(id, func(f *file) error {
+				_, _ = fs.update(id, func(f *file) error {
 					_ = f.recorded(seg, ext(0, 0), Numbers{}, 1, id)
 					f.write(write(int64((r+w)%8)*8, 8, rec(seg, uint32(r)*4), uint64(r+1)))
 					return nil
@@ -428,7 +428,7 @@ func TestSegmentBytesNeverDropsBelowWalkWhileAMutationRuns(t *testing.T) {
 	// needs to see only one such dip to name the ordering bug. A mark of the
 	// first piece does the same within one field.
 	const pieces = 64
-	_ = fs.update(id, func(f *file) error {
+	_, _ = fs.update(id, func(f *file) error {
 		for i := range int64(pieces) {
 			f.write(write(i*8, 8, rec(1, uint32(i)*8), 1))
 		}
@@ -442,7 +442,7 @@ func TestSegmentBytesNeverDropsBelowWalkWhileAMutationRuns(t *testing.T) {
 	// two steps' timing. One segment, so the read is one atomic and nothing
 	// tears.
 	seg2 := core.SegmentID(2)
-	_ = fs.update(id, func(f *file) error {
+	_, _ = fs.update(id, func(f *file) error {
 		f.write(write(65536, 8, rec(seg2, 0), 1))
 		f.writeRetain(write(65536, 8, rec(seg2, 100), 2)) // retains the piece at rec(2,0)
 		return nil
@@ -456,7 +456,7 @@ func TestSegmentBytesNeverDropsBelowWalkWhileAMutationRuns(t *testing.T) {
 				return
 			default:
 			}
-			_ = fs.update(id, func(f *file) error {
+			_, _ = fs.update(id, func(f *file) error {
 				f.held.put(Piece{Extent: ext(0, pieces*8), Record: rec(1, 4096), Version: ver(1)})
 				return nil
 			})
@@ -469,7 +469,7 @@ func TestSegmentBytesNeverDropsBelowWalkWhileAMutationRuns(t *testing.T) {
 				return
 			default:
 			}
-			_ = fs.update(id, func(f *file) error {
+			_, _ = fs.update(id, func(f *file) error {
 				f.held.markOffloaded(ext(0, 8), ver(1), ver(1))
 				return nil
 			})
@@ -482,7 +482,7 @@ func TestSegmentBytesNeverDropsBelowWalkWhileAMutationRuns(t *testing.T) {
 				return
 			default:
 			}
-			_ = fs.update(id, func(f *file) error {
+			_, _ = fs.update(id, func(f *file) error {
 				f.retained.repoint(ext(65536, 8), rec(seg2, 0), rec(seg2, 512), 0)
 				f.retained.repoint(ext(65536, 8), rec(seg2, 512), rec(seg2, 0), 0)
 				return nil
@@ -526,7 +526,7 @@ func TestFailWindowNeverDipsASegmentItDoesNotWrite(t *testing.T) {
 	id := fid(1)
 	// A in segment 1; a retaining write B in segment 2 over it. Failing B's
 	// window returns A to held, and segment 1 backs 8 bytes the whole time.
-	_ = fs.update(id, func(f *file) error {
+	_, _ = fs.update(id, func(f *file) error {
 		f.writeRetain(write(0, 8, rec(1, 0), 1))
 		f.writeRetain(write(0, 8, rec(2, 0), 2)) // supersedes all of A
 		return nil
@@ -540,7 +540,7 @@ func TestFailWindowNeverDipsASegmentItDoesNotWrite(t *testing.T) {
 				return
 			default:
 			}
-			_ = fs.update(id, func(f *file) error {
+			_, _ = fs.update(id, func(f *file) error {
 				f.failWindow([]WindowRecord{{Record: rec(2, 0), Version: ver(2)}}, nil)
 				f.writeRetain(write(0, 8, rec(2, 0), 2)) // re-supersede, as a retry does
 				return nil
@@ -578,7 +578,7 @@ func TestFailWindowSettleNeverDipsASegmentItDoesNotWrite(t *testing.T) {
 	var fs files
 	id := fid(1)
 	b := WindowRecord{Record: rec(2, 0), Version: ver(2)}
-	_ = fs.update(id, func(f *file) error {
+	_, _ = fs.update(id, func(f *file) error {
 		f.write(write(0, 8, rec(1, 0), 1))
 		f.writeRetain(write(0, 8, b.Record, 2)) // seg 1: 8 retained by v2
 		f.truncate(0, ver(3))                   // B no longer held; A stays retained
@@ -595,7 +595,7 @@ func TestFailWindowSettleNeverDipsASegmentItDoesNotWrite(t *testing.T) {
 				return
 			default:
 			}
-			_ = fs.update(id, func(f *file) error { f.failWindow([]WindowRecord{b}, nil); return nil })
+			_, _ = fs.update(id, func(f *file) error { f.failWindow([]WindowRecord{b}, nil); return nil })
 		}
 	})
 	wg.Go(func() {
@@ -630,14 +630,14 @@ func TestSegmentAccountingAllocatesNothing(t *testing.T) {
 	}
 	var fs files
 	id := fid(1)
-	_ = fs.update(id, func(f *file) error {
+	_, _ = fs.update(id, func(f *file) error {
 		f.write(write(0, 4, rec(1, 0), 1))
 		f.write(write(64, 4, rec(1, 8), 1))
 		return nil
 	})
 	v := uint64(2)
 	if got := testing.AllocsPerRun(1000, func() {
-		_ = fs.update(id, func(f *file) error {
+		_, _ = fs.update(id, func(f *file) error {
 			f.write(write(0, 4, rec(1, 64), v))
 			v++
 			return nil

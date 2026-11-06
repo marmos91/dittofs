@@ -77,7 +77,7 @@ func TestFloorBuckets(t *testing.T) {
 			t.Fatalf("delete of other file %d settled but its entry is kept", i)
 		}
 	}
-	if err := fs.fill(x, write(0, 4, rec(1, 0), 0), asOf); err != nil {
+	if _, err := fs.fill(x, write(0, 4, rec(1, 0), 0), asOf); err != nil {
 		t.Fatalf("fill of X after %d deletes in other buckets = %v, want accepted", others, err)
 	}
 	if ps := heldPieces(&fs, x); len(ps) != 1 || !ps[0].Offloaded {
@@ -100,7 +100,7 @@ func TestFloorBuckets(t *testing.T) {
 	}
 	recreated := write(0, 4, rec(2, 0), yd+1)
 	change(t, &fs, y, func(f *file) error { f.write(recreated); return nil })
-	if err := fs.fill(y, write(0, 8, rec(3, 0), 0), asOfY); !errors.Is(err, core.ErrStaleFill) {
+	if _, err := fs.fill(y, write(0, 8, rec(3, 0), 0), asOfY); !errors.Is(err, core.ErrStaleFill) {
 		t.Fatalf("fill of Y after its delete and recreate = %v, want ErrStaleFill", err)
 	}
 	want := []Piece{{Extent: ext(0, 4), Record: rec(2, 0), Version: ver(yd + 1)}}
@@ -126,10 +126,10 @@ func TestDeleteInTheSameBucketRefuses(t *testing.T) {
 		return nil
 	})
 	fs.settleRemovals(z, ver(8))
-	if err := fs.fill(x, write(0, 4, rec(1, 0), 0), asOf); !errors.Is(err, core.ErrStaleFill) {
+	if _, err := fs.fill(x, write(0, 4, rec(1, 0), 0), asOf); !errors.Is(err, core.ErrStaleFill) {
 		t.Fatalf("fill below the bucket's version = %v, want ErrStaleFill", err)
 	}
-	if err := fs.fill(x, write(0, 4, rec(1, 0), 0), ver(8)); err != nil {
+	if _, err := fs.fill(x, write(0, 4, rec(1, 0), 0), ver(8)); err != nil {
 		t.Fatalf("fill at the bucket's version = %v, want accepted", err)
 	}
 }
@@ -157,7 +157,7 @@ func TestStaleFill(t *testing.T) {
 		if present(&fs, id) {
 			t.Fatal("entry kept after everything the file held was released")
 		}
-		if err := fs.fill(id, write(0, 8, rec(2, 0), 0), asOf); !errors.Is(err, core.ErrStaleFill) {
+		if _, err := fs.fill(id, write(0, 8, rec(2, 0), 0), asOf); !errors.Is(err, core.ErrStaleFill) {
 			t.Fatalf("stale fill after release = %v, want ErrStaleFill", err)
 		}
 		if ps := heldPieces(&fs, id); len(ps) != 0 {
@@ -187,7 +187,7 @@ func TestStaleFill(t *testing.T) {
 		if !present(&fs, id) {
 			t.Fatal("entry dropped while the file still holds an extent")
 		}
-		if err := fs.fill(id, write(0, 4, rec(2, 0), 0), asOf); !errors.Is(err, core.ErrStaleFill) {
+		if _, err := fs.fill(id, write(0, 4, rec(2, 0), 0), asOf); !errors.Is(err, core.ErrStaleFill) {
 			t.Fatalf("stale fill beside a held extent = %v, want ErrStaleFill", err)
 		}
 		want := []Piece{{Extent: ext(8, 4), Record: rec(1, 64), Version: ver(6)}}
@@ -208,7 +208,7 @@ func TestStaleFill(t *testing.T) {
 			f.truncate(16, ver(2))
 			return nil
 		})
-		if err := fs.fill(id, write(4, 8, rec(1, 0), 0), asOf); !errors.Is(err, core.ErrStaleFill) {
+		if _, err := fs.fill(id, write(4, 8, rec(1, 0), 0), asOf); !errors.Is(err, core.ErrStaleFill) {
 			t.Fatalf("stale fill under unsettled truncates = %v, want ErrStaleFill", err)
 		}
 		if ps := heldPieces(&fs, id); len(ps) != 0 {
@@ -231,7 +231,7 @@ func TestStaleFill(t *testing.T) {
 		if present(&fs, id) {
 			t.Fatal("entry kept after its markers were settled with nothing held")
 		}
-		if err := fs.fill(id, write(4, 8, rec(1, 0), 0), asOf); !errors.Is(err, core.ErrStaleFill) {
+		if _, err := fs.fill(id, write(4, 8, rec(1, 0), 0), asOf); !errors.Is(err, core.ErrStaleFill) {
 			t.Fatalf("stale fill after settling = %v, want ErrStaleFill", err)
 		}
 		if ps := heldPieces(&fs, id); len(ps) != 0 {
@@ -250,10 +250,10 @@ func TestFillAtOrAboveTheChangeVersionIsAccepted(t *testing.T) {
 		var fs files
 		id := fid(1)
 		change(t, &fs, id, func(f *file) error { f.write(write(0, 4, rec(1, 0), 5)); return nil })
-		if err := fs.fill(id, write(4, 4, rec(1, 64), 5), ver(5)); err != nil {
+		if _, err := fs.fill(id, write(4, 4, rec(1, 64), 5), ver(5)); err != nil {
 			t.Fatalf("fill at the change version = %v, want accepted", err)
 		}
-		if err := fs.fill(id, write(8, 4, rec(1, 128), 6), ver(6)); err != nil {
+		if _, err := fs.fill(id, write(8, 4, rec(1, 128), 6), ver(6)); err != nil {
 			t.Fatalf("fill above the change version = %v, want accepted", err)
 		}
 	})
@@ -273,10 +273,10 @@ func TestFillAtOrAboveTheChangeVersionIsAccepted(t *testing.T) {
 		if present(&fs, id) {
 			t.Fatal("entry kept after its delete was settled")
 		}
-		if err := fs.fill(id, write(0, 4, rec(2, 0), 6), ver(6)); err != nil {
+		if _, err := fs.fill(id, write(0, 4, rec(2, 0), 6), ver(6)); err != nil {
 			t.Fatalf("fill at the bucket's version = %v, want accepted", err)
 		}
-		if err := fs.fill(id, write(4, 4, rec(2, 64), 7), ver(7)); err != nil {
+		if _, err := fs.fill(id, write(4, 4, rec(2, 64), 7), ver(7)); err != nil {
 			t.Fatalf("fill above the bucket's version = %v, want accepted", err)
 		}
 	})
@@ -293,7 +293,7 @@ func TestFillAtOrAboveTheChangeVersionIsAccepted(t *testing.T) {
 		var fs files
 		id := fid(1)
 		change(t, &fs, id, func(f *file) error { f.write(write(0, 4, rec(1, 0), 101)); return nil })
-		if err := fs.fill(id, write(4, 4, rec(1, 64), 0), epoch); !errors.Is(err, core.ErrStaleFill) {
+		if _, err := fs.fill(id, write(4, 4, rec(1, 64), 0), epoch); !errors.Is(err, core.ErrStaleFill) {
 			t.Fatalf("fill with an epoch asOf against change 101 = %v, want ErrStaleFill", err)
 		}
 
@@ -305,7 +305,7 @@ func TestFillAtOrAboveTheChangeVersionIsAccepted(t *testing.T) {
 			return nil
 		})
 		fs.settleRemovals(y, ver(101))
-		if err := fs.fill(x, write(0, 4, rec(3, 0), 0), epoch); !errors.Is(err, core.ErrStaleFill) {
+		if _, err := fs.fill(x, write(0, 4, rec(3, 0), 0), epoch); !errors.Is(err, core.ErrStaleFill) {
 			t.Fatalf("fill with an epoch asOf against bucket 101 = %v, want ErrStaleFill", err)
 		}
 	})
@@ -441,7 +441,7 @@ func TestDropRaisesTheBucketToTheEntryVersion(t *testing.T) {
 	if got := fs.asOf(c); got != ver(2) {
 		t.Fatalf("asOf in the tag-only life = %v, want the bucket's 2", got)
 	}
-	if err := fs.fill(c, write(0, 4, rec(9, 64), 0), ver(1)); !errors.Is(err, core.ErrStaleFill) {
+	if _, err := fs.fill(c, write(0, 4, rec(9, 64), 0), ver(1)); !errors.Is(err, core.ErrStaleFill) {
 		t.Fatalf("fill below the bucket in the tag-only life = %v, want ErrStaleFill", err)
 	}
 
@@ -467,7 +467,7 @@ func TestDropRaisesTheBucketToTheEntryVersion(t *testing.T) {
 	if got := fs.asOf(e); got != ver(2) {
 		t.Fatalf("asOf of a retained-only entry = %v, want the bucket's 2", got)
 	}
-	if err := fs.fill(e, write(0, 4, rec(10, 128), 0), ver(1)); !errors.Is(err, core.ErrStaleFill) {
+	if _, err := fs.fill(e, write(0, 4, rec(10, 128), 0), ver(1)); !errors.Is(err, core.ErrStaleFill) {
 		t.Fatalf("fill below the bucket of a retained-only entry = %v, want ErrStaleFill", err)
 	}
 
@@ -486,7 +486,7 @@ func TestDropRaisesTheBucketToTheEntryVersion(t *testing.T) {
 	if got := fs.buckets[bucketOf(d)].Load(); got != 13 {
 		t.Fatalf("bucket after a drop at v13 = %d, want 13", got)
 	}
-	if err := fs.fill(d, write(0, 4, rec(4, 0), 13), ver(13)); err != nil {
+	if _, err := fs.fill(d, write(0, 4, rec(4, 0), 13), ver(13)); err != nil {
 		t.Fatalf("fill at the bucket's version = %v, want accepted", err)
 	}
 	if !present(&fs, d) {
@@ -495,7 +495,7 @@ func TestDropRaisesTheBucketToTheEntryVersion(t *testing.T) {
 	if got := fs.asOf(d); got != ver(13) {
 		t.Fatalf("asOf of an entry holding only filled content = %v, want the bucket's 13", got)
 	}
-	if err := fs.fill(d, write(4, 4, rec(5, 0), 0), ver(11)); !errors.Is(err, core.ErrStaleFill) {
+	if _, err := fs.fill(d, write(4, 4, rec(5, 0), 0), ver(11)); !errors.Is(err, core.ErrStaleFill) {
 		t.Fatalf("fill below the bucket's version against a filled change-zero entry = %v, want ErrStaleFill", err)
 	}
 }
@@ -530,10 +530,10 @@ func TestOpenStartsEveryBucket(t *testing.T) {
 	if got := fs.asOf(id); got != ver(10) {
 		t.Fatalf("asOf of an entry written at v5 since open = %v, want 10", got)
 	}
-	if err := fs.fill(id, write(4, 4, rec(1, 64), 5), ver(5)); !errors.Is(err, core.ErrStaleFill) {
+	if _, err := fs.fill(id, write(4, 4, rec(1, 64), 5), ver(5)); !errors.Is(err, core.ErrStaleFill) {
 		t.Fatalf("fill below the open's start = %v, want ErrStaleFill", err)
 	}
-	if err := fs.fill(id, write(4, 4, rec(1, 64), 5), ver(10)); err != nil {
+	if _, err := fs.fill(id, write(4, 4, rec(1, 64), 5), ver(10)); err != nil {
 		t.Fatalf("fill at the open's start = %v, want accepted", err)
 	}
 
@@ -567,7 +567,7 @@ func TestRefusedFillLeavesNoEntry(t *testing.T) {
 	if present(&fs, id) {
 		t.Fatal("setup left the tested file an entry")
 	}
-	if err := fs.fill(id, write(0, 4, rec(1, 0), 0), ver(1)); !errors.Is(err, core.ErrStaleFill) {
+	if _, err := fs.fill(id, write(0, 4, rec(1, 0), 0), ver(1)); !errors.Is(err, core.ErrStaleFill) {
 		t.Fatalf("refused fill = %v, want ErrStaleFill", err)
 	}
 	if present(&fs, id) || fs.len() != 0 {
@@ -641,7 +641,7 @@ func TestBucketRaiseRacesReads(t *testing.T) {
 		dropping.Add(1)
 		go func() {
 			defer dropping.Done()
-			_ = fs.update(ids[i], func(f *file) error {
+			_, _ = fs.update(ids[i], func(f *file) error {
 				f.write(write(0, 4, rec(1, 0), uint64(2*i+1)))
 				f.delete(ver(uint64(2*i + 2)))
 				return nil
@@ -656,7 +656,7 @@ func TestBucketRaiseRacesReads(t *testing.T) {
 			defer reading.Done()
 			for range 100 {
 				_ = fs.asOf(victim)
-				_ = fs.fill(victim, write(0, 4, rec(2, 0), 2), ver(66))
+				_, _ = fs.fill(victim, write(0, 4, rec(2, 0), 2), ver(66))
 			}
 		}()
 	}
@@ -667,10 +667,10 @@ func TestBucketRaiseRacesReads(t *testing.T) {
 	if got := fs.buckets[bucket].Load(); got != highest {
 		t.Fatalf("bucket after %d drops = %d, want %d: a raise was lost", drops, got, highest)
 	}
-	if err := fs.fill(victim, write(0, 4, rec(3, 0), 3), ver(highest-1)); !errors.Is(err, core.ErrStaleFill) {
+	if _, err := fs.fill(victim, write(0, 4, rec(3, 0), 3), ver(highest-1)); !errors.Is(err, core.ErrStaleFill) {
 		t.Fatalf("fill below the bucket after every drop = %v, want ErrStaleFill", err)
 	}
-	if err := fs.fill(victim, write(0, 4, rec(3, 0), 3), ver(highest)); err != nil {
+	if _, err := fs.fill(victim, write(0, 4, rec(3, 0), 3), ver(highest)); err != nil {
 		t.Fatalf("fill at the bucket after every drop = %v, want accepted", err)
 	}
 }

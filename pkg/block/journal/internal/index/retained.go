@@ -51,9 +51,13 @@ type retainedSet struct {
 	// segment, never the superseder's — and every piece removed by an edit
 	// subtracts, wherever the edit sends it next. Nil keeps the set
 	// unaccounted, as the standalone sets of tests are.
-	acct   *segments
-	pieces []Retained
-	parts  []Retained // the pieces an edit puts back
+	acct *segments
+	// bytes is the sum of the retained lengths and dirty the part of it whose
+	// offloaded bit is unset, kept by add and edit whether or not the set is
+	// accounted, and read only under the file's lock.
+	bytes, dirty int64
+	pieces       []Retained
+	parts        []Retained // the pieces an edit puts back
 	// gone collects the (segment, length) of the pieces an edit matched, whose
 	// full length leaves the counters once the parts are back in: the
 	// subtraction happens after the re-add, so a reader between the two never
@@ -90,6 +94,10 @@ func (s *retainedSet) len() int { return len(s.pieces) }
 func (s *retainedSet) add(r Retained) {
 	if r.Extent.Len <= 0 {
 		return
+	}
+	s.bytes += r.Extent.Len
+	if !r.Offloaded {
+		s.dirty += r.Extent.Len
 	}
 	if s.acct != nil {
 		s.acct.add(r.Record.Segment, 0, r.Extent.Len)
@@ -164,6 +172,13 @@ func (s *retainedSet) edit(e core.Extent, match func(Retained) bool, fn func(Ret
 		if rend <= e.Off || r.Extent.Off >= end || !match(r) {
 			kept = append(kept, r)
 			continue
+		}
+		// The per-file counters drop at once, unlike the segment table's
+		// gone list: they are read only under the file's lock, so no reader
+		// sees the dip holdGone guards against.
+		s.bytes -= r.Extent.Len
+		if !r.Offloaded {
+			s.dirty -= r.Extent.Len
 		}
 		if s.acct != nil {
 			s.gone = append(s.gone, goneLen{r.Record.Segment, r.Extent.Len})

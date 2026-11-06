@@ -200,7 +200,7 @@ func TestSinceReadsAConsistentView(t *testing.T) {
 				return
 			default:
 			}
-			_ = fs.update(id, func(f *file) error {
+			_, _ = fs.update(id, func(f *file) error {
 				f.settleRemovals(ver(v))
 				f.write(write(0, 4, rec(core.SegmentID(v), 0), v))
 				f.write(write(4, 4, rec(core.SegmentID(v), 4), v))

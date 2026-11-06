@@ -34,7 +34,7 @@ func TestInspectRace(t *testing.T) {
 		wg.Go(func() {
 			for i := range 300 {
 				for _, id := range []core.FileID{own, shared} {
-					_ = fs.update(id, func(f *file) error {
+					_, _ = fs.update(id, func(f *file) error {
 						v := ver(counter.Add(1))
 						seg := core.SegmentID(counter.Load() % 8)
 						off := int64(i%16) * 4096

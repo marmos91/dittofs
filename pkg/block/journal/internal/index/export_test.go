@@ -100,7 +100,7 @@ func (m *ModelIndex) Write(tag core.ShareTag, id core.FileID, off int64, data []
 	}
 	r, n := m.place(v)
 	m.recs[r] = ModelRecord{Data: slices.Clone(data), Mtime: mtime}
-	err = m.fs.commit(id, adm, func(f *file) error {
+	_, err = m.fs.commit(id, adm, func(f *file) error {
 		if err := f.recorded(r.Segment, e, n, tag, id); err != nil {
 			return err
 		}
@@ -135,12 +135,13 @@ func (m *ModelIndex) Fill(tag core.ShareTag, id core.FileID, off int64, data []b
 	r, n := m.place(v)
 	e := core.Extent{Off: off, Len: int64(len(data))}
 	m.recs[r] = ModelRecord{Data: slices.Clone(data)}
-	if err := m.fs.fill(id, Placed{Extent: e, Record: r, Version: v}, asOf); err != nil {
+	if _, err := m.fs.fill(id, Placed{Extent: e, Record: r, Version: v}, asOf); err != nil {
 		return err
 	}
-	return m.fs.update(id, func(f *file) error {
+	_, err := m.fs.update(id, func(f *file) error {
 		return f.recorded(r.Segment, e, n, tag, id)
 	})
+	return err
 }
 
 // Mark reports offloaded the content inside e between versions oldest and
@@ -150,10 +151,11 @@ func (m *ModelIndex) Mark(tag core.ShareTag, id core.FileID, e core.Extent, olde
 		return err
 	}
 	r, n := m.place(newest)
-	return m.fs.update(id, func(f *file) error {
+	_, err := m.fs.update(id, func(f *file) error {
 		f.held.markOffloaded(e, oldest, newest)
 		return f.recorded(r.Segment, e, n, tag, id)
 	})
+	return err
 }
 
 // Release stops holding e, as the journal's Release does, and returns the
@@ -167,7 +169,7 @@ func (m *ModelIndex) Release(tag core.ShareTag, id core.FileID, e core.Extent) (
 		return nil, err
 	}
 	var out []core.Held
-	err = m.fs.commit(id, adm, func(f *file) error {
+	_, err = m.fs.commit(id, adm, func(f *file) error {
 		o, err := f.held.release(e, nil)
 		if err != nil {
 			return err
@@ -204,7 +206,7 @@ func (m *ModelIndex) Truncate(tag core.ShareTag, id core.FileID, size int64) (co
 		return core.Version{}, err
 	}
 	r, n := m.place(v)
-	err = m.fs.update(id, func(f *file) error {
+	_, err = m.fs.update(id, func(f *file) error {
 		e := toEnd(size)
 		if err := f.recorded(r.Segment, e, n, tag, id); err != nil {
 			return err
@@ -233,7 +235,7 @@ func (m *ModelIndex) Deallocate(tag core.ShareTag, id core.FileID, e core.Extent
 		return v, err
 	}
 	r, n := m.place(v)
-	err = m.fs.commit(id, adm, func(f *file) error {
+	_, err = m.fs.commit(id, adm, func(f *file) error {
 		if err := f.recorded(r.Segment, e, n, tag, id); err != nil {
 			return err
 		}
@@ -253,7 +255,7 @@ func (m *ModelIndex) Delete(tag core.ShareTag, id core.FileID) (core.Version, er
 		return core.Version{}, err
 	}
 	r, n := m.place(v)
-	err = m.fs.update(id, func(f *file) error {
+	_, err = m.fs.update(id, func(f *file) error {
 		if err := f.recorded(r.Segment, toEnd(0), n, tag, id); err != nil {
 			return err
 		}
