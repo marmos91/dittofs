@@ -164,7 +164,7 @@ retry channel with `vfserr.ErrFileOpen`, landed from `feat/enginev2-delete-retry
 | 3 Observability | T5.1, T5.3 | `engine_removals_pending` and `engine_removals_oldest_seconds`, per share under RFC 25 §2.5's worst-n rule, and `engine_removal_batches_total{result}` with `ok`, `conflict` or `error`, in unexported fields epic 7's `Stats` exposes; `removal_stalled` naming the file and the removal's kind, logged at `Warn` on entering and leaving; each batch a root span through `Deps.Tracer` (T5.3). A wait on a file's guard or its in-batch mark is a span event (T5.1) |
 | 4 Profiling | all | the unit composition calls `prof.Watch`; the loop's goroutine per journal is joined at `Close`, and a pending release's channel is buffered by one, so no sender is left blocked on it |
 | 5 Public and internal | all | the loop's stall count tested internally (T5.3); the removals through `*Engine`; `-race` in T5.1, T5.4 and T5.5. What phase 1 writes (the size, the merged hole, the removal record) is asserted over the real `kvstore` |
-| 6 Known failures | T5.2, T5.3, T5.5 | their rows over the real journal, §8.2 deallocate (T5.2), §8.1 removal wedge (T5.3), and §5.1 sync before existence's truncate half with the truncate-up crash (T5.5), enter `test/engine/known.yaml` naming this epic's issue, red until the journal's `Truncate`, `Deallocate`, `Delete`, `Settle` and crash seam exist |
+| 6 Known failures | T5.1, T5.2, T5.3, T5.5 | their rows over the real journal, §8.1 terminal failure (T5.1, T5.3), §8.2 deallocate (T5.2), §8.1 removal wedge and §8.1 phase 1 past the journal step (T5.3), and §5.1 sync before existence's truncate half with the truncate-up crash (T5.5), enter `test/engine/known.yaml` naming this epic's issue, red until the journal's `Truncate`, `Deallocate`, `Delete`, `Settle` and crash seam exist |
 | 7 v2 ignores v1 | none | no new import: T5.4's test over the real open-state table runs through E2's fixture, which composes it |
 | 8 Real dependencies | T5.1–T5.5 | every conformance row runs over the real journal and `kvstore`; the fake journal is for the unit tests, the interleavings and the hooks, none of which stands in for a row |
 | 9 Comments | all | the markers of §4 at their code sites, the removal loop's `ponytail:` among them |
@@ -215,8 +215,8 @@ one keeps its row.
 | R16 | A failed phase-2 batch or prune is retried, backed off, while the node serves the shard; five consecutive failures raise `removal_stalled` naming the file and the removal's kind, cleared by its next batch that commits | MUST | §8.1 | T5.3 (the scheduler's backoff: §9, point 3) |
 | R17 | A removal that keeps failing wedges no other | invariant | §8.1, §15.2 | T5.3 |
 | R18 | §8.1 removal wedge (adapted: batches that keep failing raise `removal_stalled` and wedge no other file; the undecodable ref is the second part's) | test row | §15.2 | T5.3 |
-| R31 | §8.1 phase 1 past the journal step (engine assertions over the fake journal, the guard's skip turned off), which also tests epic 4's R41 and R42 | test row | §15.2 | T5.3 |
-| R32 | §8.1 terminal failure (engine assertions over the fake journal; the restart's start step 3 is epic 6's) | test row | §15.2 | T5.1, T5.3 |
+| R31 | §8.1 phase 1 past the journal step, which also tests epic 4's R41 and R42 | test row | §15.2 | T5.3 |
+| R32 | §8.1 terminal failure (the restart's start step 3 is epic 6's) | test row | §15.2 | T5.1, T5.3 |
 
 **The release**
 
@@ -316,14 +316,14 @@ pkg/block/engine/
   unbuilt.go        T5.1, T5.2, T5.4  each built method leaves it
   export_test.go    T5.1–T5.5  hooks inside the journal's removals and between them and phase 1
   conformance/
-    rfc8_removal_test.go  T5.2, T5.3, T5.5  the rows of rule 6
+    rfc8_removal_test.go  T5.1, T5.2, T5.3, T5.5  the rows of rule 6
 pkg/vfs/vfserr/
   vfserr.go         T5.4  ErrFileOpen
 pkg/vfs/
   errors.go         T5.4  Errors() omits ErrFileOpen
 pkg/metadata/kvstore/
   existence.go      T5.1  Existence.Size (D4)
-test/engine/known.yaml  T5.2, T5.3, T5.5  their entries
+test/engine/known.yaml  T5.1, T5.2, T5.3, T5.5  their entries
 ```
 
 
@@ -353,7 +353,11 @@ listed test fails on the regression it names (after "catches").
   `groupcommit.go`, the capture's skip and `commitThrough`'s wait (D1, D2). The wait
   on T8.1a's admitted-write count (D2). `Existence.Size` in `kvstore` and `Deps` (D4);
   `kvstore`'s truncate above the File record's size (RFC 6 §6.2) and `kvstore.Refused`.
-- **Rows:** §8.1 terminal failure, the call's half (§3).
+- **Rows:** §8.1 terminal failure, the call's half, over the real journal, `kvstore` and E2's
+  fault-injecting `kv.KV` (T2.3); red until the journal's `Truncate` and `Settle` exist.
+  `TestATerminalRemovalCommitsTheExistenceBelowItBeforeItsSettle` and
+  `TestATerminalRemovalCommitsALossBelowItBeforeItsSettle` stay unit tests over the fake,
+  carrying the row's engine assertions.
 - **Tests,** over the fake and the real `kvstore`: a truncate's phase 1 writes the size and
   the removal record, then one `Settle` at *v* after the guard's release (catches a settle
   before the commit, or the guard held across it); the reservation counter at zero after a
@@ -414,7 +418,10 @@ listed test fails on the regression it names (after "catches").
   (T4.4), which epic 7's self-fence reads (its D7).
 - **Rows:** §8.1 removal wedge (adapted), over the real journal and E2's fault-injecting
   `kv.KV` (T2.3); red until the journal's `Truncate` and `Settle` exist. §8.1 phase 1 past
-  the journal step and §8.1 terminal failure, the retry's half (§3).
+  the journal step and §8.1 terminal failure, the retry's half, over the same, red until
+  the same calls exist. `TestAGroupCommitStopsAtARetriedRemoval`, the guard's skip turned
+  off, and `TestATerminalRemovalsFailedCommitIsRetried` stay unit tests over the fake,
+  carrying the rows' engine assertions.
 - **Tests,** over the fake's clock: five failures raise the condition and four do not
   (catches an off-by-one, or a count across files); a retry-uncounted answer leaves the
   count (catches epic 8's hold retries counted); a `Content` wrapper through `newUnit`'s
