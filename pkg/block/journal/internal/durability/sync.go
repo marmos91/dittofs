@@ -189,6 +189,14 @@ type stream struct {
 	// has not been taken yet: no waiter leads a sync for them and the timer
 	// skips them.
 	ending map[core.SegmentID]struct{}
+
+	// counted holds the segments whose failed sync the worker counted and
+	// whose end event has not been taken yet. failed alone cannot say so: the
+	// completion pass or a resolved window drops a failure nothing names, and
+	// a seal's EndSeal for that segment arriving after would count the one
+	// fsync again. takeWindow removes the mark with the event, the one every
+	// ended segment gets.
+	counted map[core.SegmentID]struct{}
 	// ends are the end events the stream's consumer queued for the worker.
 	ends []segment.EndEvent
 	// windows are the pending windows, in end order.
@@ -237,6 +245,7 @@ func newStream(d *Durability, no uint32) *stream {
 		synced:  map[core.SegmentID]int64{},
 		failed:  map[core.SegmentID]error{},
 		ending:  map[core.SegmentID]struct{}{},
+		counted: map[core.SegmentID]struct{}{},
 		kick:    make(chan struct{}, 1),
 		buckets: make([]atomic.Uint64, len(SyncDurationBounds)+1),
 	}

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -194,5 +196,88 @@ func TestRemovingAnOlderSegmentsEntriesKeepsTheStampedPrefixExact(t *testing.T) 
 	}
 	if st.stamped != 1 {
 		t.Errorf("stamped = %d after the older segment left, want 1: only one kept entry was stamped", st.stamped)
+	}
+}
+
+// TestASealEndAfterTheFailureWasPrunedDoesNotCountItAgain pins that one failed
+// fsync is one sync failure when the completion pass has already dropped the
+// segment's failure before the seal's EndSeal is taken: the dedupe cannot lean
+// on the failure map alone. The end event is held back by holding d.mu, which
+// onEnd takes, so the order is deterministic: failed sync, seal ends the
+// segment first, a later segment's completion prunes the failure, event taken.
+func TestASealEndAfterTheFailureWasPrunedDoesNotCountItAgain(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	resolved := make(chan core.SegmentID, 8)
+	r := newRigConfigured(t, 1, func(c *Config) {
+		c.Resolved = func(_ uint32, seg core.SegmentID) { resolved <- seg }
+	})
+	f := file(1)
+	var once sync.Once
+	var armed, sealed atomic.Bool
+	r.d.afterSync = func() {
+		if !armed.Load() {
+			return
+		}
+		once.Do(func() {
+			_, _ = r.streams.For(f).Seal(false)
+			sealed.Store(true)
+		})
+	}
+	r.d.Start(r.streams)
+	st := r.d.made[0]
+	a := r.appendWrite(t, f, 0, "a")
+	if err := mustReturn(t, "Sync", r.syncAsync(context.Background(), f)); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the ledger to complete", func() bool { return r.ledgerLen(0) == 0 })
+	// Hold the end event back: onEnd needs d.mu.
+	r.d.mu.Lock()
+	held := true
+	defer func() {
+		if held {
+			r.d.mu.Unlock()
+		}
+	}()
+	armed.Store(true)
+	// Two failures: the worker's sync and the seal's own fsync.
+	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 2, errors.New("sync boom"))); err != nil {
+		t.Fatal(err)
+	}
+	st.mu.Lock()
+	st.want = true
+	st.mu.Unlock()
+	st.wake()
+	eventually(t, "the failed sync to be counted", func() bool { return st.failures.Load() == 1 })
+	if !sealed.Load() {
+		t.Fatal("the seal never ran")
+	}
+	// A record of the next segment completes: the pass prunes the failure of
+	// the segment nothing names.
+	b := r.appendWrite(t, f, 0, "b")
+	if b.Segment == a.Segment {
+		t.Fatalf("the append stayed in segment %d", a.Segment)
+	}
+	st.mu.Lock()
+	st.want = true
+	st.mu.Unlock()
+	st.wake()
+	eventually(t, "the failure to be pruned", func() bool {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		_, kept := st.failed[a.Segment]
+		return !kept && len(st.ledger) == 0
+	})
+	r.d.mu.Unlock()
+	held = false
+	select {
+	case seg := <-resolved:
+		if seg != a.Segment {
+			t.Fatalf("resolved segment %d, want %d", seg, a.Segment)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the seal's end was never taken")
+	}
+	if got := r.d.Stats().SyncFailures; got != 1 {
+		t.Errorf("one failed fsync counted %d times", got)
 	}
 }

@@ -118,6 +118,7 @@ func (d *Durability) syncStep(st *stream, fired bool) {
 			failed = true
 			st.failures.Add(1)
 			st.lastFail.Store(&failStamp{SyncFailure: SyncFailure{Err: err, At: failedAt}, mono: failedMono})
+			st.counted[seg] = struct{}{}
 			// The failure belongs to the segment SyncSegment reported, which
 			// a roll after the sync cannot move. The first failure of a
 			// segment stands.

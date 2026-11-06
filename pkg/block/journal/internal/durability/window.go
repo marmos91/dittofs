@@ -135,9 +135,11 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	if !dup {
 		st.failed[ev.Segment] = ev.Err
 	}
+	_, wasCounted := st.counted[ev.Segment]
+	delete(st.counted, ev.Segment)
 	delete(st.ending, ev.Segment)
 	st.windows = append(st.windows, w)
-	if ev.Cause == segment.EndSeal && !dup {
+	if ev.Cause == segment.EndSeal && !dup && !wasCounted {
 		st.failures.Add(1)
 		st.lastFail.Store(&failStamp{SyncFailure: SyncFailure{Err: ev.Err, At: failedAt}, mono: failedMono})
 	}
