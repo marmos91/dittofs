@@ -180,6 +180,9 @@ requirement; read it there.
 | RFC 8 §8.1 first and second rules (the guard across the journal step and phase 1; pending existence committed and synced first), §6.4, E6, E19 | T5.1; a pending release's, T5.4 |
 | RFC 8 §8.1 steps 2–4, RFC 6 §6.2, RFC 1 §3.10 | T5.1; step 4 after a retried release, T5.4 |
 | RFC 8 §8.1 "Once its journal step is done, a removal does not fail" | T5.1; for a release, T5.4 |
+| RFC 8 §8.1's terminal failure, the file's other pending existence committed before the settle, RFC 1 §3.10 | T5.1; its retry, T5.3 |
+| RFC 8 §5.1 and §5.2's first rule, the group commit's stop at a removal whose phase 1 has not committed | epic 4's T4.3; tested in T5.3 |
+| RFC 8 §2.5 stop step 2, a file whose phase-1 retry was cancelled left for recovery | T5.3 |
 | RFC 8 §5.1 step 4's serialised commits, as a removal's phase 1 meets a batch in flight, RFC 6 §3.4 | T5.1 |
 | RFC 8 E17, the capture never waiting on a removal | T5.1 |
 | RFC 8 §6.4 and §9.1, a removal against a clone's registration | T5.1, with epic 8's T8.1b |
@@ -203,6 +206,8 @@ requirement; read it there.
 | §15.1 §8.2 deallocate | — | T5.2 |
 | §15.2 §8.1 removal wedge | a removal whose batches keep failing raises `removal_stalled` and wedges no other file; the undecodable ref is the second part's | T5.3 |
 | §15.1 §5.1 sync before existence | the truncate half, with a truncate up crashed before its group commit | T5.5 |
+| §15.2 §8.1 phase 1 past the journal step | engine assertions over the fake journal, the guard's skip turned off: `TestAGroupCommitStopsAtARetriedRemoval` | T5.3 |
+| §15.2 §8.1 terminal failure | engine assertions over the fake journal: `TestATerminalRemovalCommitsTheExistenceBelowItBeforeItsSettle`, `TestATerminalRemovalCommitsALossBelowItBeforeItsSettle` (T5.1), `TestATerminalRemovalsFailedCommitIsRetried` (T5.3); the restart's start step 3 is epic 6's | T5.1, T5.3 |
 
 ## 4. Decisions this epic takes
 
@@ -266,7 +271,7 @@ Only what the RFC leaves to the code. Ids are stable; a missing number became a 
   is done, a removal does not fail"; the retry is a loop item (D5) that keeps the guard.
 - **D10, terminal failures** (RFC 8 §8.1): `ErrStale` and `kvstore.Refused` end phase 1, in
   the call or in the loop. The loop ending or the share dropped ends a retried phase 1 too;
-  `Close`'s case changes with #3731 (§9, point 4).
+  at `Close`, as RFC 8 §2.5's stop step 2 gives.
 
 ## 5. Target tree
 
@@ -304,8 +309,9 @@ regression it names (after "catches").
 **Subtask T5.1 estimate: 4 man-days.**
 
 - **Track:** B. **Depends on:** epic 4's T4.3, T4.5 and T4.7; epic 8's T8.1a; T8.1b lands with it.
-- **Covers:** RFC 8 §8.1's first two rules, steps 2–4 and "Once its journal step is done, a
-  removal does not fail", for `Truncate`; truncate up (§8); E6, E17, E19.
+- **Covers:** RFC 8 §8.1's first two rules, steps 2–4, "Once its journal step is done, a
+  removal does not fail" and its terminal failure, for `Truncate`; truncate up (§8); E6,
+  E17, E19.
 - **Deliverables:** in `remove.go` and `file.go`, the guard (D1) and the in-flight mark's
   entry-lock section (D3), in which T8.1b puts the registration check; `Truncate`, up and
   down (D2, D4); the phase 1 the three removals share: the guard, epic 4's `waitBatch`, D8's
@@ -314,10 +320,11 @@ regression it names (after "catches").
   before the guard is released, the claimed operations and the removal's own removed from
   the entry; then the guard released, `Settle(id, v)` and the post to the loop. A phase 1
   failing after the journal step handed to the loop (D9), a terminal failure ending it
-  (D10). In `groupcommit.go`, the capture's skip and `commitThrough`'s wait (D1, D2). The wait
+  (D10), the file's other pending existence committed first as RFC 8 §8.1 gives. In
+  `groupcommit.go`, the capture's skip and `commitThrough`'s wait (D1, D2). The wait
   on T8.1a's admitted-write count (D2). `Existence.Size` in `kvstore` and `Deps` (D4);
   `kvstore`'s truncate above the File record's size (RFC 6 §6.2) and `kvstore.Refused`.
-- **Rows:** none of its own (§9, point 5).
+- **Rows:** §8.1 terminal failure, the call's half (§3).
 - **Tests,** over the fake and the real `kvstore`: a truncate's phase 1 writes the size and
   the removal record, then one `Settle` at *v* after the guard's release (catches a settle
   before the commit, or the guard held across it); the reservation counter at zero after a
@@ -339,7 +346,10 @@ regression it names (after "catches").
   once (catches a removal that does not wait out admitted writes); a `Commit` over a pending
   overwrite on a file whose phase 1 a hook holds, the clock pinned so `existence_age` never
   re-queues the file, answers after phase 1 commits, the group commit skipping the file at
-  most once (catches a `Commit` that spins).
+  most once (catches a `Commit` that spins);
+  `TestATerminalRemovalCommitsTheExistenceBelowItBeforeItsSettle` and
+  `TestATerminalRemovalCommitsALossBelowItBeforeItsSettle` (catch a settle before the
+  existence below it commits, a loss's included).
 
 ### T5.2 `Deallocate`
 
@@ -361,9 +371,11 @@ regression it names (after "catches").
 **Subtask T5.3 estimate: 3 man-days.**
 
 - **Track:** B. **Depends on:** T5.1; epic 4's T4.4 (the retrying-owner mark).
-- **Covers:** RFC 8 §8.1 step 5, the prune, the retry and `removal_stalled`; E40.
+- **Covers:** RFC 8 §8.1 step 5, the prune, the retry and `removal_stalled`, a terminal
+  failure's existence commit retried; §2.5's stop step 2; E40.
 - **Deliverables:** `removals.go`: the loop per journal (D5), joined at `Close`, which ends
-  its pending releases' channels with `ErrUnavailable`; phase 2 through `Content.Resume`, the
+  its pending releases' channels with `ErrUnavailable` and leaves a cancelled phase-1 retry's
+  file for recovery (RFC 8 §2.5 stop step 2); phase 2 through `Content.Resume`, the
   prune through `PruneRemovals(…, v)`; the stall count per loop item and `removal_stalled`;
   the three answers; `enqueue`, for epic 6's start step 4 and epic 8's clone items; the
   loop's part of epic 4's `dropShare(s)`, ending the share's items with their channels
@@ -371,14 +383,19 @@ regression it names (after "catches").
   root span; every store call the loop retries made under epic 4's retrying-owner mark
   (T4.4), which epic 7's self-fence reads (its D7).
 - **Rows:** §8.1 removal wedge (adapted), over the real journal and E2's fault-injecting
-  `kv.KV` (T2.3); red until the journal's `Truncate` and `Settle` exist.
+  `kv.KV` (T2.3); red until the journal's `Truncate` and `Settle` exist. §8.1 phase 1 past
+  the journal step and §8.1 terminal failure, the retry's half (§3).
 - **Tests,** over the fake's clock: five failures raise the condition and four do not
   (catches an off-by-one, or a count across files); a retry-uncounted answer leaves the
   count (catches epic 8's hold retries counted); a `Content` wrapper through `newUnit`'s
   options failing one file's batches: the other file's removal completes and the stalled one
   finishes once the fault clears (catches a loop that waits on a failing item). Over the real
   `kvstore`: no ref under the removal's mask after the loop, the record pruned (catches a
-  prune skipped).
+  prune skipped). `TestAGroupCommitStopsAtARetriedRemoval` (catches a capture past a
+  retried removal, epic 4's T4.3); `TestALoopEndingLeavesARetriedPhase1ForRecovery`
+  (catches the last group commit taking a cancelled retry's file);
+  `TestATerminalRemovalsFailedCommitIsRetried` (catches a settle before the retried commit,
+  or the guard released across it).
 
 ### T5.4 A release's contract with the service
 
@@ -473,13 +490,3 @@ RFC gaps go to the RFC, not here; each is listed until its RFC change merges.
    untested here.
 3. **Second-part blocker: the loop's backoff** (D5) is not RFC 8 §8.1's scheduler backoff
    between `offload.retry_min` and `retry_max`; the second part's scheduler brings it.
-4. **RFC change in review: [#3731](https://github.com/cubbit/dittofs/pull/3731).** It changes
-   RFC 8 §8.1's terminal failure (a file still there has its other pending existence
-   committed in a transaction of its own, retried with the guard held, the marker unsettled
-   until it commits), §5.1 and §5.2 (a group commit stops at a removal whose phase 1 has not
-   committed) and §2.5's stop step 2 (a file whose phase-1 retry was cancelled stays out of
-   `Close`'s last group commit), and its "phase 1 past the journal step" row. D10, T5.1's
-   capture skip and T5.3's join at `Close` follow it once it merges.
-5. **Planning gap: two RFC 8 §15.2 rows are in no epic,** "§8.1 phase 1 past the journal
-   step" and "§8.1 terminal failure". They exercise T5.1's D9 and D10 and belong in T5.1's
-   rows; adding them is a change to T5.1's scope for its owner to estimate.
