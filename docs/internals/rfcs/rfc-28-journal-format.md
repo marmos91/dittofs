@@ -818,7 +818,8 @@ one is not measured, because it would win by doing less:
 On open, the journal **MUST** reconstruct its placement index, including a
 removal marker for every truncate, deallocate and delete record on disk
 ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)), and the fill floor buckets, each at the highest content version on disk or in the floor ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill)). Settling is not persisted, so every
-rebuilt marker starts unsettled and the caller settles it again. Where two
+rebuilt marker, and every synced loss record on disk ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), starts
+unsettled and the caller settles it again. Where two
 records cover the same byte, precedence decides ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)).
 
 Recovery **MUST NOT** consult any component outside the journal, and **MUST NOT**
