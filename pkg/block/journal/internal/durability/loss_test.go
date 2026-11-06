@@ -2,10 +2,16 @@ package durability_test
 
 import (
 	"context"
+	"errors"
+	"slices"
+	"syscall"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
 
 // TestLoseAppendsItsRecordBeforeTheEventIsPublished catches an event a poller
@@ -417,5 +423,192 @@ func TestStatsReturnsACopyOfTheRing(t *testing.T) {
 	p.Losses[0].SeqNum = 999
 	if got := e.d.Stats().Losses[0].SeqNum; got != 1 {
 		t.Errorf("the ring's event changed to SeqNum %d through a Stats copy", got)
+	}
+}
+
+// assertDropStands checks what every failed append leaves: the caller's drop
+// is kept, so the event is published, the generation is raised, the seq is
+// on the directory's failed list and the synced loss is marked.
+func assertDropStands(t *testing.T, e *env, ev core.LossEvent, l durability.Loss) {
+	t.Helper()
+
+	if ev.SeqNum != 1 || ev.File != l.File || ev.Extent != l.Extent || ev.Reason != l.Reason {
+		t.Errorf("the event returned with the error is %+v, want the published loss of %+v", ev, l)
+	}
+	p := e.d.Stats()
+	if len(p.Losses) != 1 || p.Losses[0] != ev {
+		t.Errorf("the ring holds %+v, want the one event %+v", p.Losses, ev)
+	}
+	if p.LossGeneration != 1 {
+		t.Errorf("generation = %d, want 1: a drop whose record failed still raises it", p.LossGeneration)
+	}
+	if got := e.d.Failed(); !slices.Equal(got, []core.Seq{l.Seq}) {
+		t.Errorf("Failed() = %v, want [%d]", got, l.Seq)
+	}
+	if got := e.marked(); (len(got) == 1) != l.Synced {
+		t.Errorf("MarkLoss called %d times for a loss with Synced=%v", len(got), l.Synced)
+	}
+	if lh, _ := e.lossRecords(); len(lh) != 0 {
+		t.Errorf("%d loss records are durable, want none", len(lh))
+	}
+}
+
+// TestLoseWithNoHeadroomKeepsTheDropAndReportsNoSpace catches a drop undone
+// because its record could not be appended: the journal stops holding what
+// it cannot produce, whatever the headroom.
+func TestLoseWithNoHeadroomKeepsTheDropAndReportsNoSpace(t *testing.T) {
+	e := newEnvPinned(t, segment.Targets{})
+
+	l := loss(5)
+	l.Synced = true
+	ev, err := e.d.Lose(context.Background(), l)
+
+	if !errors.Is(err, core.ErrNoSpace) {
+		t.Fatalf("Lose = %v, want ErrNoSpace", err)
+	}
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) || ns.Limit != core.LimitHeadroom {
+		t.Fatalf("Lose = %v, want a *core.NoSpaceError naming the headroom", err)
+	}
+	assertDropStands(t, e, ev, l)
+}
+
+// TestLoseAppendsFromTheHeadroomWhenContentIsExhausted catches a loss record
+// refused while a headroom spare stood ready.
+func TestLoseAppendsFromTheHeadroomWhenContentIsExhausted(t *testing.T) {
+	e := newEnvPinned(t, segment.Targets{Headroom: 1})
+	if got := e.pool.Counters().HeadroomBytes; got != harnessCap {
+		t.Fatalf("the pool holds %d headroom bytes, want one spare of %d", got, harnessCap)
+	}
+
+	ev, err := e.d.Lose(context.Background(), loss(5))
+	if err != nil {
+		t.Fatalf("Lose with a headroom spare ready: %v", err)
+	}
+	if lh, _ := e.lossRecords(); len(lh) != 1 {
+		t.Errorf("%d loss records are durable, want 1", len(lh))
+	}
+	if got := e.pool.Counters().HeadroomBytes; got != 0 {
+		t.Errorf("the pool still holds %d headroom bytes: the record was not appended from the headroom", got)
+	}
+	if got := e.d.Failed(); len(got) != 0 {
+		t.Errorf("Failed() = %v, want empty after an appended record", got)
+	}
+	if ev.SeqNum != 1 {
+		t.Errorf("event %+v, want number 1", ev)
+	}
+}
+
+// errReadOnly is the sentinel the read-only check returns in tests.
+var errReadOnly = errors.New("the journal is read only")
+
+// TestLoseReadOnlyAppendsNothingAndKeepsTheDrop catches a loss record
+// written through a read-only journal, and a drop undone by the refusal.
+func TestLoseReadOnlyAppendsNothingAndKeepsTheDrop(t *testing.T) {
+	e := newEnv(t)
+	e.d.SetReadOnly(func() error { return errReadOnly })
+	writes := e.seam.Calls(journaltest.OpWrite)
+
+	l := loss(5)
+	l.Synced = true
+	ev, err := e.d.Lose(context.Background(), l)
+
+	if !errors.Is(err, errReadOnly) {
+		t.Fatalf("Lose = %v, want the read-only error", err)
+	}
+	if got := e.seam.Calls(journaltest.OpWrite); got != writes {
+		t.Errorf("%d writes reached the journal, want none", got-writes)
+	}
+	assertDropStands(t, e, ev, l)
+}
+
+// TestLoseAFailedWriteKeepsTheDrop catches a drop undone, or an unsynced
+// record trusted, when the device fails the record's write.
+func TestLoseAFailedWriteKeepsTheDrop(t *testing.T) {
+	e := newEnv(t)
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, "*.seg", 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+
+	l := loss(5)
+	l.Synced = true
+	ev, err := e.d.Lose(context.Background(), l)
+
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("Lose = %v, want EIO", err)
+	}
+	assertDropStands(t, e, ev, l)
+}
+
+// TestLoseDeferredAppendsNothingAndOwesNoFailedSeq catches a deferred loss
+// reported as one whose record failed: the retiring copy owes the record.
+func TestLoseDeferredAppendsNothingAndOwesNoFailedSeq(t *testing.T) {
+	e := newEnv(t)
+	writes := e.seam.Calls(journaltest.OpWrite)
+
+	l := loss(5)
+	l.Synced = true
+	l.Deferred = true
+	ev, err := e.d.Lose(context.Background(), l)
+	if err != nil {
+		t.Fatalf("Lose: %v", err)
+	}
+
+	if !ev.Deferred {
+		t.Errorf("event %+v, want Deferred", ev)
+	}
+	if got := e.seam.Calls(journaltest.OpWrite); got != writes {
+		t.Errorf("%d writes reached the journal, want none", got-writes)
+	}
+	if got := e.marked(); len(got) != 1 {
+		t.Errorf("MarkLoss called %d times, want 1 for a synced deferred loss", len(got))
+	}
+	p := e.d.Stats()
+	if p.LossGeneration != 1 || len(p.Losses) != 1 || !p.Losses[0].Deferred {
+		t.Errorf("state %+v, want generation 1 and one deferred event", p)
+	}
+	if got := e.d.Failed(); len(got) != 0 {
+		t.Errorf("Failed() = %v, want empty: the record is owed to the retiring copy", got)
+	}
+}
+
+// TestLoseDeferredUnsyncedMarksNothing catches a marker left for a loss that
+// was never synced.
+func TestLoseDeferredUnsyncedMarksNothing(t *testing.T) {
+	e := newEnv(t)
+
+	l := loss(5)
+	l.Deferred = true
+	if _, err := e.d.Lose(context.Background(), l); err != nil {
+		t.Fatalf("Lose: %v", err)
+	}
+	if got := e.marked(); len(got) != 0 {
+		t.Errorf("MarkLoss called %d times for an unsynced loss", len(got))
+	}
+}
+
+// TestFailedIsSortedAndACopy catches a failed list returned in arrival order,
+// or one the caller can write through.
+func TestFailedIsSortedAndACopy(t *testing.T) {
+	e := newEnv(t)
+	e.d.SetReadOnly(func() error { return errReadOnly })
+
+	for _, seq := range []core.Seq{9, 3, 6} {
+		if _, err := e.d.Lose(context.Background(), loss(seq)); !errors.Is(err, errReadOnly) {
+			t.Fatalf("Lose(%d) = %v", seq, err)
+		}
+	}
+	got := e.d.Failed()
+	if !slices.Equal(got, []core.Seq{3, 6, 9}) {
+		t.Fatalf("Failed() = %v, want [3 6 9]", got)
+	}
+	got[0] = 99
+	if again := e.d.Failed(); again[0] != 3 {
+		t.Errorf("Failed() aliases its list: %v", again)
+	}
+
+	// The list is the directory's: a Durability built later on it sees it.
+	if later := e.newDurability().Failed(); !slices.Equal(later, []core.Seq{3, 6, 9}) {
+		t.Errorf("a later Durability on the directory sees %v, want [3 6 9]", later)
 	}
 }

@@ -2,7 +2,10 @@ package durability
 
 import (
 	"path/filepath"
+	"slices"
 	"sync"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // registry holds the per-directory state for the life of the process.
@@ -19,15 +22,17 @@ var registry = struct {
 	dirs map[string]*dirState
 }{dirs: map[string]*dirState{}}
 
-// dirState is one directory's generation. Its mutex is a leaf: nothing is
-// called while it is held.
+// dirState is one directory's generation and the sequence numbers whose loss
+// record could not be appended. Its mutex is a leaf: nothing is called while
+// it is held.
 //
 // ponytail: an entry is one small struct per directory ever opened, and none
 // is ever freed. Upgrade to freeing it when a directory is forgotten if a
 // process ever opens thousands.
 type dirState struct {
-	mu  sync.Mutex
-	gen uint64
+	mu     sync.Mutex
+	gen    uint64
+	failed []core.Seq
 }
 
 // stateFor returns the state of dir, made on first use, keyed by its cleaned
@@ -62,4 +67,23 @@ func (s *dirState) load() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.gen
+}
+
+// addFailed records a dropped sequence number whose loss record could not be
+// appended. A number is recorded once.
+func (s *dirState) addFailed(seq core.Seq) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !slices.Contains(s.failed, seq) {
+		s.failed = append(s.failed, seq)
+	}
+}
+
+// failedSeqs returns a sorted copy of the failed list.
+func (s *dirState) failedSeqs() []core.Seq {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := slices.Clone(s.failed)
+	slices.Sort(out)
+	return out
 }

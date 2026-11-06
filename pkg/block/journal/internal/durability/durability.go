@@ -41,6 +41,10 @@ type Durability struct {
 	markLoss func(core.FileID, core.Extent, core.Version) error
 	log      *slog.Logger
 
+	// readOnly reports why the journal takes no append, or nil. It is nil
+	// until the read-only state installs one.
+	readOnly func() error
+
 	// afterAppend and beforePublish are test hooks, nil in production.
 	afterAppend   func()
 	beforePublish func()
@@ -76,6 +80,7 @@ func New(cfg Config) (*Durability, error) {
 		counters: cfg.Counters,
 		markLoss: cfg.MarkLoss,
 		log:      log,
+		readOnly: func() error { return nil },
 		named:    map[core.Seq]struct{}{},
 	}, nil
 }
@@ -86,6 +91,11 @@ func (d *Durability) Generation() uint64 { return d.dir.load() }
 // RaiseWindow raises the generation once for a failed sync window, however
 // many records the window held, and returns the new generation.
 func (d *Durability) RaiseWindow() uint64 { return d.dir.raise() }
+
+// Failed returns the sequence numbers, sorted, whose loss record could not be
+// appended, in the directory's life in this process. A later Durability on
+// the directory sees them too.
+func (d *Durability) Failed() []core.Seq { return d.dir.failedSeqs() }
 
 // Part is the loss share of the journal's statistics.
 type Part struct {

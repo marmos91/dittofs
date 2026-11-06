@@ -52,9 +52,29 @@ func newEnv(t *testing.T) *env {
 	return buildEnv(t)
 }
 
+// newEnvPinned builds the env over a pool of exactly the given spares: the
+// journal's maximum is the sum of the targets, so a spare a test takes or a
+// roll draws is never made again, and a class that targets nothing is dry
+// from the start.
+func newEnvPinned(t *testing.T, targets segment.Targets) *env {
+	t.Helper()
+	prof.Watch(t, prof.Options{})
+	max := int64(targets.Content+targets.Headroom) * harnessCap
+	if max == 0 {
+		max = harnessCap // the maker refuses a zero maximum; the targets still make nothing
+	}
+	return buildEnvWith(t, targets, max)
+}
+
 // buildEnv is newEnv without the leak watch, for a test that builds two envs
 // under the one watch it started itself.
 func buildEnv(t *testing.T) *env {
+	t.Helper()
+	return buildEnvWith(t, segment.Targets{Content: 2, Headroom: 1}, math.MaxInt64)
+}
+
+// buildEnvWith is buildEnv over the given spare targets and journal maximum.
+func buildEnvWith(t *testing.T, targets segment.Targets, max int64) *env {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -65,10 +85,10 @@ func buildEnv(t *testing.T) *env {
 	e := &env{t: t, dir: dir, seam: seam, counters: &index.Counters{}}
 
 	set := segment.NewSet(harnessCap, nil)
-	maker := segment.NewMaker(seam.FS(), set, math.MaxInt64, 0, nil)
+	maker := segment.NewMaker(seam.FS(), set, max, 0, nil)
 	cache := segment.NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(64))
 	e.cache = cache
-	e.pool = segment.NewPool(maker, segment.Targets{Content: 2, Headroom: 1}, nil)
+	e.pool = segment.NewPool(maker, targets, nil)
 
 	// Cleanups run last in, first out: the streams close before the pool's
 	// worker stops, and the cache's Shutdown runs last of all.
@@ -79,7 +99,7 @@ func buildEnv(t *testing.T) *env {
 	})
 	t.Cleanup(func() { e.pool.Stop() })
 	e.pool.Start()
-	awaitSpares(t, e.pool)
+	awaitSpares(t, e.pool, targets)
 	e.streams = segment.NewStreams(1, harnessIdentity, set, e.pool, cache)
 	t.Cleanup(func() { _ = e.streams.Close() })
 
@@ -137,15 +157,15 @@ func (e *env) marked() []marked {
 	return append([]marked(nil), e.marks...)
 }
 
-// awaitSpares waits for the pool's worker to ready both content spares and a
-// headroom spare.
-func awaitSpares(t *testing.T, p *segment.Pool) {
+// awaitSpares waits for the pool's worker to ready every spare the targets
+// name.
+func awaitSpares(t *testing.T, p *segment.Pool, targets segment.Targets) {
 	t.Helper()
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		c := p.Counters()
-		if c.Spares >= 2 && c.HeadroomBytes > 0 {
+		if c.Spares >= int64(targets.Content) && c.HeadroomBytes >= int64(targets.Headroom)*harnessCap {
 			return
 		}
 		if time.Now().After(deadline) {
