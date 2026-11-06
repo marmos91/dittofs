@@ -1084,12 +1084,17 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 		// met leaving it is the second in a row, and the next append would
 		// only take a further spare to meet a third — or when the failure
 		// itself carries EROFS, wherever the stream stands. The taken spare
-		// ends below with no event, for no record was ever reserved in it,
-		// and the old segment's own event was already handed over; the
-		// stream keeps its stopped error for the append loop's top to answer
-		// every later append with. Withdrawn together with the endTaken
-		// exemption the day a take unwinds a segment the stream had
-		// already appended to.
+		// ends below with no event, for no record was ever reserved in it.
+		// The old segment's own event may not have gone yet — the header
+		// write runs before the roll waits out the end's record, so an
+		// append still writing there holds it back — and then it carries
+		// Stopped, for the notifier reads the stream's stop when it
+		// snapshots; an event already handed over said Stopped false, and
+		// the stop reaches the consumer through every later append's
+		// ErrStreamStopped instead. The stream keeps its stopped error for
+		// the append loop's top to answer every later append with.
+		// Withdrawn together with the endTaken exemption the day a take
+		// unwinds a segment the stream had already appended to.
 		s.appendMu.Lock()
 		if errors.Is(err, syscall.EROFS) || leftEnded {
 			s.stopLocked(err)
