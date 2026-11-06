@@ -158,9 +158,30 @@ func TestExistenceCommitPerFileFailure(t *testing.T) {
 	})
 }
 
+// RFC 8 §5.2: a file whose record does not decode fails alone; the others
+// in its batch commit.
+func TestExistenceCommitUndecodableRecordFailsAlone(t *testing.T) {
+	f := newContentFix(t, nil)
+	good, bad := f.file(0), f.file(0)
+	if err := f.s.kv.Update(context.Background(), func(tx kv.Txn) error {
+		return tx.Set(fileKey(f.share, bad), []byte{0xff})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := f.s.Existence().Commit(context.Background(), []PendingExistence{
+		{Share: f.share, File: bad, Ops: []PendingOp{write(1, 0, mib)}},
+		{Share: f.share, File: good, Ops: []PendingOp{write(2, 0, mib)}},
+	})
+	if err != nil || failed[bad] == nil || failed[good] != nil {
+		t.Fatalf("Commit: %v %v, want only the undecodable file failed", failed, err)
+	}
+	if f.get(good).Size != mib {
+		t.Error("the good file was not committed")
+	}
+}
+
 // failGets fails a transaction's Get of key with err, the next n times, or
-// every time when n is negative. The tests using it can move to kvtest's
-// FaultKV once that exists.
+// every time when n is negative.
 type failGets struct {
 	kv.KV
 	key []byte
@@ -208,22 +229,27 @@ func TestExistenceCommitRetriesAConflictOnTheRecord(t *testing.T) {
 }
 
 // Any other store error reading a file's record fails the whole call, not
-// that file alone, and commits nothing.
+// that file alone, and commits nothing. A context error is a store stall,
+// never one file's own failure.
 func TestExistenceCommitFailsWholeOnAStoreError(t *testing.T) {
-	fg := &failGets{err: kv.ErrClosed}
-	f := newContentFix(t, func(db kv.KV) kv.KV { fg.KV = db; return fg })
-	a, b := f.file(0), f.file(0)
-	fg.key, fg.n = fileKey(f.share, b), -1
-	failed, err := f.s.Existence().Commit(context.Background(), []PendingExistence{
-		{Share: f.share, File: a, Ops: []PendingOp{write(1, 0, mib)}},
-		{Share: f.share, File: b, Ops: []PendingOp{write(2, 0, mib)}},
-	})
-	if !errors.Is(err, kv.ErrClosed) || failed != nil {
-		t.Fatalf("Commit: %v %v, want nil and the store error", failed, err)
-	}
-	fg.n = 0
-	if f.get(a).Size != 0 {
-		t.Error("a failed call committed the other file")
+	for _, storeErr := range []error{kv.ErrClosed, fmt.Errorf("fdb: %w", context.DeadlineExceeded), context.Canceled} {
+		t.Run(storeErr.Error(), func(t *testing.T) {
+			fg := &failGets{err: storeErr}
+			f := newContentFix(t, func(db kv.KV) kv.KV { fg.KV = db; return fg })
+			a, b := f.file(0), f.file(0)
+			fg.key, fg.n = fileKey(f.share, b), -1
+			failed, err := f.s.Existence().Commit(context.Background(), []PendingExistence{
+				{Share: f.share, File: a, Ops: []PendingOp{write(1, 0, mib)}},
+				{Share: f.share, File: b, Ops: []PendingOp{write(2, 0, mib)}},
+			})
+			if !errors.Is(err, storeErr) || failed != nil {
+				t.Fatalf("Commit: %v %v, want nil and the store error", failed, err)
+			}
+			fg.n = 0
+			if f.get(a).Size != 0 {
+				t.Error("a failed call committed the other file")
+			}
+		})
 	}
 }
 

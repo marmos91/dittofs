@@ -63,9 +63,11 @@ var ErrNotContent = errors.New("kvstore: file holds no content")
 //
 // Each file's existence fence and record are read tracked, so the commit
 // conflicts with a removal, a release or a takeover. A file that fails on its
-// own — released, holding no content, operations out of order — is reported
-// in the returned map and fails no other. A store error is no file's own: a
-// conflict retries the transaction, and any other fails the whole call.
+// own — released, its record undecodable, holding no content, operations out
+// of order — is reported in the returned map and fails no other. A store
+// error is no file's own: a conflict retries the transaction, and any other
+// fails the whole call, as does a removal, hole or overwrite record that does
+// not decode.
 //
 // ponytail: a single operation that alone needs more than the budget — a
 // write over 10^5 holes — still commits in one transaction, which the
