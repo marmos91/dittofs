@@ -267,7 +267,7 @@ func (fs *Filesystem) nameIn(ctx context.Context, d vfs.File, child entity.FileI
 // directory the open was made through, named by its entry there as renames
 // moved it. A directory changed through no such entry is reported under its
 // one name, in the parent its record names. It runs on a context the
-// call's end does not end, as changedIn does.
+// client dropping does not end, as changedIn does.
 //
 // decision: a regular file changed through no open, an open made by handle,
 // a delegation, or an open whose entry an unlink or a rename over it
@@ -286,7 +286,7 @@ func (fs *Filesystem) entryChanged(ctx context.Context, a *admitted, ref *vfs.Op
 	if set, _ := fs.watchers.on(f.Share, what); !set {
 		return
 	}
-	ctx, cancel := fs.detached(ctx)
+	ctx, cancel := fs.uncancelled(ctx)
 	defer cancel()
 	if ref != nil && (ref.Kind == openstate.RefOpened || ref.Kind == openstate.RefLocked) {
 		dir, name, err := fs.opens.Entry(ctx, a.who(), keyOf(f), *ref)
@@ -308,15 +308,16 @@ func (fs *Filesystem) entryChanged(ctx context.Context, a *admitted, ref *vfs.Op
 }
 
 // changedIn is changed for the directory dir names, once a watch taking ch
-// is set on its share, reading dir as system on a context the call's end
-// does not end: a change that committed is reported though its client
-// dropped, or its deadline passed, right after.
+// is set on its share, reading dir as system on a context the client
+// dropping does not end: a change that committed is reported though its
+// client dropped right after. The call's deadline still ends the report, so
+// a store that stops answering does not hold the call's locks past it.
 func (fs *Filesystem) changedIn(ctx context.Context, dir vfs.Handle, ch openstate.Change) {
 	share, _, _ := dir.Parse()
 	if set, _ := fs.watchers.on(share, ch.What); !set {
 		return
 	}
-	ctx, cancel := fs.detached(ctx)
+	ctx, cancel := fs.uncancelled(ctx)
 	defer cancel()
 	if d, err := fs.meta.Files().Get(ctx, system, dir); err == nil {
 		fs.changed(ctx, d, ch)

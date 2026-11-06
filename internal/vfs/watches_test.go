@@ -454,16 +454,19 @@ func (e *endingKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
 	return err
 }
 
-// A name change is reported once it commits, though the call's context
-// ends right after: a create, a rename and an unlink each reach the watch.
+// A change is reported once it commits, though the call's context ends
+// right after: a create, a rename and an unlink each reach the watch, and so
+// does a chmod of a directory, changed through no open.
 func TestACommittedChangeIsReportedThoughTheCallEnds(t *testing.T) {
 	db := &endingKV{}
 	s := startShares(t, newFixtureOver(t, Deps{}, kvstoretest.NewFS(t, func(tb testing.TB) kv.KV { db.KV = memKV(tb); return db })), nil)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
-	watcher, cb := s.connected(t, signedIn(alice.Principal, 1), smb("alice-pc", 1))
-	_, err := s.Watch(t.Context(), watcher, vfs.WatchSpec{Dir: s.fs.Root, Filter: ^openstate.ChangeMask(0)})
-	s.must(t, err)
 	admin := proven(s.fs.Admin.Principal, inLab)
+	d, err := s.Create(t.Context(), admin, s.fs.Root, []byte("d"), vfs.CreateArgs{Kind: vfs.CreateDir, Attrs: entity.Attrs{}.WithMode(0o755)})
+	s.must(t, err)
+	watcher, cb := s.connected(t, signedIn(alice.Principal, 1), smb("alice-pc", 1))
+	_, err = s.Watch(t.Context(), watcher, vfs.WatchSpec{Dir: s.fs.Root, Filter: ^openstate.ChangeMask(0)})
+	s.must(t, err)
 	ending := func(call func(ctx context.Context) error) {
 		t.Helper()
 		ctx, cancel := context.WithCancel(t.Context())
@@ -485,8 +488,12 @@ func TestACommittedChangeIsReportedThoughTheCallEnds(t *testing.T) {
 		_, err := s.Unlink(ctx, admin, vfs.Target{H: s.fs.Root}, []byte("g"))
 		return err
 	})
-	if got := notes(t, s, cb, 3); !reflect.DeepEqual(got, []string{"f", "f>g", "g"}) {
-		t.Errorf("the watch heard %q, want f, f>g and g", got)
+	ending(func(ctx context.Context) error {
+		_, err := s.SetAttr(ctx, admin, vfs.Target{H: d.Handle}, vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o700)})
+		return err
+	})
+	if got := notes(t, s, cb, 4); !reflect.DeepEqual(got, []string{"f", "f>g", "g", "d"}) {
+		t.Errorf("the watch heard %q, want f, f>g, g and d", got)
 	}
 }
 
