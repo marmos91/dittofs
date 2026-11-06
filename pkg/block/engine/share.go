@@ -33,7 +33,8 @@ type binding struct {
 	removed     bool
 }
 
-// bindings is the share table, read on every content call without a lock.
+// bindings is the share table, read on every content call without a lock. A
+// removed binding holds no journal or handle: a loop over the table skips it.
 //
 // decision: the share table is copy-on-write: a share's attach or removal
 // copies the whole table, up to 10⁴ entries, once per change, so the hot path

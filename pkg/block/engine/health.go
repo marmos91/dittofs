@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"maps"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -41,14 +42,8 @@ type JournalStats struct {
 // ShareStats is one share, as Stats reports it. Device and Refused are set
 // for a share refused at start: its device, and why.
 type ShareStats struct {
-	Conditions []Condition
-	Device     string
-	Refused    error
-}
-
-// NodeStats is the node's own conditions.
-type NodeStats struct {
-	Conditions []Condition
+	Device  string
+	Refused error
 }
 
 // newStats is an empty Stats, its maps made.
@@ -70,12 +65,7 @@ func (s Stats) clone() Stats {
 		}
 	}
 
-	for id, sh := range s.Shares {
-		sh.Conditions = slices.Clone(sh.Conditions)
-		out.Shares[id] = sh
-	}
-
-	out.Node.Conditions = slices.Clone(s.Node.Conditions)
+	maps.Copy(out.Shares, s.Shares)
 
 	return out
 }

@@ -52,35 +52,35 @@ func TestTheOpenFloorCountsEveryShare(t *testing.T) {
 	}
 }
 
-// The floor the journal opens with is the largest of every share's version
-// floor and version limit (RFC 8 §2.5 step 1, §2.7; RFC 28 §3.1). The
-// smallest, or the floors or the limits alone, reissue after a crash a
-// version a client already saw.
+// The floor the journal opens with is the largest of the shares' version
+// floor and every share's version limit (RFC 8 §2.5 step 1, §2.7; RFC 28
+// §3.1). The smallest, or the floor or the limits alone, reissue after a
+// crash a version a client already saw.
 func TestTheOpenFloorIsTheLargestOfAll(t *testing.T) {
 	a := entity.NewShareID()
 	b := entity.NewShareID()
 
 	for _, c := range []struct {
 		name   string
-		floors map[entity.ShareID]entity.JournalVersion
+		floor  uint64
 		limits map[entity.ShareID]entity.JournalVersion
 		want   uint64
 	}{
 		{
 			name:   "another share's limit is the largest",
-			floors: map[entity.ShareID]entity.JournalVersion{a: entity.VersionOf(5), b: entity.VersionOf(1)},
+			floor:  5,
 			limits: map[entity.ShareID]entity.JournalVersion{a: entity.VersionOf(7), b: entity.VersionOf(9)},
 			want:   9,
 		},
 		{
-			name:   "a floor above every limit",
-			floors: map[entity.ShareID]entity.JournalVersion{a: entity.VersionOf(12), b: entity.VersionOf(1)},
+			name:   "the floor is above every limit",
+			floor:  12,
 			limits: map[entity.ShareID]entity.JournalVersion{a: entity.VersionOf(7), b: entity.VersionOf(9)},
 			want:   12,
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			got := openFloor(c.floors, c.limits)
+			got := openFloor(entity.VersionOf(c.floor), c.limits)
 
 			if got != entity.VersionOf(c.want) {
 				t.Errorf("the open floor is %d, want %d", got.Counter(), c.want)

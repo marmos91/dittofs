@@ -64,19 +64,13 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 		return opened{}, fmt.Errorf("engine: start: read the version limits: %w", err)
 	}
 
-	floors := make(map[entity.ShareID]entity.JournalVersion, len(ids))
-
-	for _, s := range ids {
-		f, err := e.d.Content.VersionFloor(ctx, []entity.ShareID{s})
-		if err != nil {
-			return opened{}, fmt.Errorf("engine: start: read the version floor of %v: %w", s, err)
-		}
-
-		floors[s] = f
+	stored, err := e.d.Content.VersionFloor(ctx, ids)
+	if err != nil {
+		return opened{}, fmt.Errorf("engine: start: read the version floor: %w", err)
 	}
 
 	expect := journal.JournalID(id)
-	floor := journal.VersionFromBytes(openFloor(floors, limits))
+	floor := journal.VersionFromBytes(openFloor(stored, limits))
 
 	j, err := e.d.Open(ctx, dir, floor, expect)
 	if err != nil {
@@ -102,9 +96,8 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 			continue
 		}
 
-		at := journal.VersionFromBytes(entity.MaxVersion(floors[s.ID], limits[s.ID]))
-
-		h, err := j.Share(s.Tag, s.Limit, at, s.SyncPolicy)
+		// The journal's floor is at least the share's floor and limit.
+		h, err := j.Share(s.Tag, s.Limit, floor, s.SyncPolicy)
 		if err != nil {
 			return opened{}, fmt.Errorf("engine: start: open share %v on %s: %w", s.ID, dir, err)
 		}
@@ -255,6 +248,17 @@ func forgetFinished(ctx context.Context, j Journal, tags map[entity.ShareID]enti
 // journal's next version, as a tracked max-write in transactions of at most
 // K keys, and only once they have committed passes it to the journal (RFC 8
 // §2.7).
+//
+// decision: a share the store records as being removed, whose removal has
+// not reached its offload step, is attached, so its resumed removal can
+// unbind it and drop its tag, but the store skips its limit, and with no
+// other share served the journal is passed a limit no store key holds. That
+// is safe because such a share draws no version: admission refuses every
+// call into it from the removal's mark (RFC 16 §2.3.2, step 1), its unbind
+// admits nothing new (RFC 8 §2.3), and its tag's forget record carries no
+// version (RFC 28 §3.3). A share bound later writes the journal's limit as
+// its own before it draws one. Overturned if a share being removed can draw
+// a version: then the start write covers it too.
 func (e *Engine) writeLimits(ctx context.Context, j Journal, served []Share) error {
 	limit := startLimit(j.Stats().NextVersion)
 	to := make(map[entity.ShareID]entity.JournalVersion, len(served))
@@ -347,20 +351,17 @@ func floorShares(shares []Share, tags map[entity.ShareID]entity.TagRecord) []ent
 	return out
 }
 
-// openFloor is the floor the journal opens with: the largest of every
-// share's version floor and version limit (RFC 8 §2.5 step 1, RFC 28 §3.1).
+// openFloor is the floor the journal opens with: the largest of the shares'
+// version floor, which the store reads as one number over every share, and
+// every share's version limit (RFC 8 §2.5 step 1, RFC 28 §3.1).
 //
 // decision: the floor is the largest of them, one number for the journal,
 // above every version issued before a crash; the journal's own doc names the
 // smallest limit, which is also safe, while RFC 8 §2.5 and §2.7, RFC 28 §3.1
 // and RFC 1 §3 take the largest, which also covers a share whose limit was
 // raised ahead of the others. Overturned if those RFCs name another number.
-func openFloor(floors, limits map[entity.ShareID]entity.JournalVersion) entity.JournalVersion {
-	var top entity.JournalVersion
-
-	for _, v := range floors {
-		top = entity.MaxVersion(top, v)
-	}
+func openFloor(floor entity.JournalVersion, limits map[entity.ShareID]entity.JournalVersion) entity.JournalVersion {
+	top := floor
 
 	for _, v := range limits {
 		top = entity.MaxVersion(top, v)

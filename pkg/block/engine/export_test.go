@@ -14,6 +14,7 @@ var ErrNotStarted = errNotStarted
 // The errors start answers and refuses shares with, for a test to match.
 var (
 	ErrUnbuilt      = errUnbuilt
+	ErrStarted      = errStarted
 	ErrJournalLost  = errJournalLost
 	ErrNotRecorded  = errNotRecorded
 	ErrUnidentified = errUnidentified

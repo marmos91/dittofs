@@ -455,7 +455,7 @@ func journalLost(st engine.Stats) bool {
 	return false
 }
 
-// U1. Start opens the device's journal with the identity the store records
+// Start opens the device's journal with the identity the store records
 // for it and the floor the store's versions give: the larger of a share's
 // version floor and its version limit. This checks only what Open is handed;
 // that the journal then issues above it is the conformance row on a device
@@ -478,8 +478,8 @@ func TestStartOpensWithTheRecordedIdentityAndFloor(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			ex := version(base.Counter() + c.floor)
-			lim := version(base.Counter() + c.limit)
+			ex := entity.VersionOf(base.Counter() + c.floor)
+			lim := entity.VersionOf(base.Counter() + c.limit)
 			commitShareAt(t, s.fs, s.one.ID, file.ID, ex)
 
 			to := map[entity.ShareID]entity.JournalVersion{
@@ -543,13 +543,13 @@ func commitShareAt(t *testing.T, fs *kvstoretest.FS, share entity.ShareID, file 
 	}
 }
 
-// U2. A device whose recorded journal is missing, foreign or unidentifiable
+// A device whose recorded journal is missing, foreign or unidentifiable
 // has every share on it refused by name, with its device, a share the store
 // records and Start was not handed included, and journal_lost raised, and
 // Start succeeds. The directory is opened once and nothing else is done on
 // it. A refused share answers ErrDelay with DelayFrozen, never ErrStale, and
 // its refusal is logged at Warn with the share and the device; a share being
-// removed still answers ErrStale.
+// removed is not named refused and still answers ErrStale.
 func TestStartRefusesALostJournalByName(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -591,6 +591,12 @@ func TestStartRefusesALostJournalByName(t *testing.T) {
 
 				if !warned(s.logs, sh.ID, startDevice) {
 					t.Errorf("share %v: no Warn naming it and its device", sh.ID)
+				}
+			}
+
+			for _, id := range []entity.ShareID{forgotten, offloaded} {
+				if got, ok := st.Shares[id]; ok {
+					t.Errorf("removed share %v is named refused: %+v", id, got)
 				}
 			}
 
@@ -674,7 +680,7 @@ func warned(logs logRecorder, share entity.ShareID, device string) bool {
 	return false
 }
 
-// U3. With no journal recorded for the device and one in its directory, the
+// With no journal recorded for the device and one in its directory, the
 // device's shares are refused by name as not recorded, the refusal names the
 // identity and installation the directory holds, journal_lost is not raised,
 // and Start succeeds: the journal is foreign, or of this installation and
@@ -714,7 +720,7 @@ func TestStartRefusesAJournalNotRecorded(t *testing.T) {
 	}
 }
 
-// U4. With no journal recorded for the device and none in its directory,
+// With no journal recorded for the device and none in its directory,
 // Start fails as uninitialised, refusing nothing and attaching nothing, and
 // leaves the engine as built, so a later Start runs.
 func TestStartFailsOnAnUninitialisedDevice(t *testing.T) {
@@ -746,7 +752,7 @@ func TestStartFailsOnAnUninitialisedDevice(t *testing.T) {
 	}
 }
 
-// U5. With no journal recorded for the device and segments with no format
+// With no journal recorded for the device and segments with no format
 // file in its directory, the device's shares are refused by name and Start
 // succeeds: the device holds data no journal identifies, never an
 // uninitialised one.
@@ -769,7 +775,7 @@ func TestStartRefusesAnUnidentifiedDirectory(t *testing.T) {
 	}
 }
 
-// U6. An error Open meets in a check, rather than a refusal it makes, fails
+// An error Open meets in a check, rather than a refusal it makes, fails
 // Start, which refuses no share for it.
 func TestStartFailsOnACheckError(t *testing.T) {
 	s := newStarter(t)
@@ -789,7 +795,7 @@ func TestStartFailsOnACheckError(t *testing.T) {
 	}
 }
 
-// U7. A step of Start that fails returns its error, closes in reverse every
+// A step of Start that fails returns its error, closes in reverse every
 // handle and the journal it opened, and publishes nothing; a store read that
 // fails before Open fails Start before any journal is opened.
 func TestAFailedStartClosesInReverse(t *testing.T) {
@@ -881,7 +887,7 @@ func TestAFailedStartClosesInReverse(t *testing.T) {
 	}
 }
 
-// U8. A share whose removal reads forgotten has its tag forgotten before any
+// A share whose removal reads forgotten has its tag forgotten before any
 // share attaches, wherever the journal still names it; one whose removal
 // reads offloaded is not attached and not forgotten; both answer ErrStale.
 func TestStartForgetsFinishedRemovalsAndAttachesNoRemovedShare(t *testing.T) {
@@ -950,7 +956,7 @@ func startedWithRemovals(t *testing.T) (s *starter, forgotten, offloaded entity.
 	return s, forgotten, offloaded
 }
 
-// U9. A Bind of a share being removed answers ErrStale, opens no handle and
+// A Bind of a share being removed answers ErrStale, opens no handle and
 // changes nothing, never a state change that reports it served.
 func TestBindOfARemovedShareIsStale(t *testing.T) {
 	s, forgotten, offloaded := startedWithRemovals(t)
@@ -975,7 +981,7 @@ func TestBindOfARemovedShareIsStale(t *testing.T) {
 	}
 }
 
-// U10. While Start runs, Bind, Unbind and Drop answer ErrDelay with
+// While Start runs, Bind, Unbind and Drop answer ErrDelay with
 // DelayFrozen, the share not attached yet, and Bind attaches nothing.
 func TestLifecycleCallsDuringStartAreDelayed(t *testing.T) {
 	s := newStarter(t)
@@ -1016,7 +1022,7 @@ func TestLifecycleCallsDuringStartAreDelayed(t *testing.T) {
 	}
 }
 
-// U11. A second Start after one that succeeded is refused, and opens nothing.
+// A second Start after one that succeeded is refused, and opens nothing.
 func TestASecondStartIsRefused(t *testing.T) {
 	s := newStarter(t)
 
@@ -1026,8 +1032,8 @@ func TestASecondStartIsRefused(t *testing.T) {
 
 	table := s.e.TableForTest()
 
-	if err := s.start(t); err == nil {
-		t.Error("a second Start succeeded")
+	if err := s.start(t); !errors.Is(err, engine.ErrStarted) {
+		t.Errorf("a second Start = %v, want the already-started refusal", err)
 	}
 
 	if n := len(s.openCalls()); n != 1 {
@@ -1039,7 +1045,44 @@ func TestASecondStartIsRefused(t *testing.T) {
 	}
 }
 
-// U12. With more than one journal device Start fails as not built, as no
+// A Start while one runs is refused and opens nothing, and the first goes
+// on to serve.
+func TestAStartWhileOneRunsIsRefused(t *testing.T) {
+	s := newStarter(t)
+	g := newGate(t)
+	s.gate = g
+	done := make(chan error, 1)
+
+	go func() {
+		done <- s.start(t)
+	}()
+
+	select {
+	case <-g.entered:
+	case err := <-done:
+		t.Fatalf("Start returned %v before it opened the journal", err)
+	}
+
+	if err := s.start(t); !errors.Is(err, engine.ErrStarted) {
+		t.Errorf("a Start while one runs = %v, want the already-started refusal", err)
+	}
+
+	g.open()
+
+	if err := <-done; err != nil {
+		t.Fatalf("the first Start: %v", err)
+	}
+
+	if n := len(s.openCalls()); n != 1 {
+		t.Errorf("Open was called %d times, want once", n)
+	}
+
+	if err := s.e.BindingOf(s.one.ID); err != nil {
+		t.Errorf("share %v after the first Start: %v, want bound", s.one.ID, err)
+	}
+}
+
+// With more than one journal device Start fails as not built, as no
 // shard record names its share's journal yet, and opens nothing.
 func TestStartRefusesMoreThanOneDevice(t *testing.T) {
 	s := newStarter(t, withStartDeps(func(d *engine.Deps) {
@@ -1055,7 +1098,7 @@ func TestStartRefusesMoreThanOneDevice(t *testing.T) {
 	}
 }
 
-// U13. No share is served before its journal has its version limit: until
+// No share is served before its journal has its version limit: until
 // SetVersionLimit returns a write answers ErrDelay with DelayFrozen and
 // reaches no journal, and by then every served share's limit is committed
 // in the store, a block above the journal's next version. Each served share
