@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -16,6 +17,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // lifecycleStore is a store over an in-memory KV, wrapped by wrap if it is
@@ -523,4 +526,571 @@ func FuzzLifecycleValues(f *testing.F) {
 			}
 		}
 	})
+}
+
+// txnLog is what one transaction read: the key count of each GetMany, and
+// every key read by Get or GetMany.
+type txnLog struct {
+	update  bool
+	batches []int
+	keys    [][]byte
+}
+
+func (l *txnLog) read(key []byte) {
+	l.keys = append(l.keys, bytes.Clone(key))
+}
+
+func (l *txnLog) readMany(ks [][]byte) {
+	l.batches = append(l.batches, len(ks))
+
+	for _, k := range ks {
+		l.read(k)
+	}
+}
+
+// readLog is a KV that logs the reads of each transaction, so a test can
+// see how a call splits its reads. Only an Update's final attempt is logged,
+// as kv.Counting counts it.
+type readLog struct {
+	kv.KV
+
+	mu   sync.Mutex
+	txns []txnLog
+}
+
+func (l *readLog) View(ctx context.Context, fn func(kv.Reader) error) error {
+	rec := &txnLog{}
+	err := l.KV.View(ctx, func(r kv.Reader) error {
+		return fn(&logReader{
+			Reader: r,
+			log:    rec,
+		})
+	})
+	l.add(rec)
+
+	return err
+}
+
+func (l *readLog) Update(ctx context.Context, fn func(kv.Txn) error) error {
+	var rec *txnLog
+	err := l.KV.Update(ctx, func(tx kv.Txn) error {
+		rec = &txnLog{
+			update: true,
+		}
+
+		return fn(&logTxn{
+			Txn: tx,
+			log: rec,
+		})
+	})
+
+	if rec != nil {
+		l.add(rec)
+	}
+
+	return err
+}
+
+func (l *readLog) add(rec *txnLog) {
+	l.mu.Lock()
+
+	defer l.mu.Unlock()
+
+	l.txns = append(l.txns, *rec)
+}
+
+// take returns the transactions logged since the last take and forgets them.
+func (l *readLog) take() []txnLog {
+	l.mu.Lock()
+
+	defer l.mu.Unlock()
+
+	txns := l.txns
+	l.txns = nil
+
+	return txns
+}
+
+type logReader struct {
+	kv.Reader
+	log *txnLog
+}
+
+func (r *logReader) Get(key []byte) ([]byte, error) {
+	r.log.read(key)
+
+	return r.Reader.Get(key)
+}
+
+func (r *logReader) GetMany(ks [][]byte) ([][]byte, error) {
+	r.log.readMany(ks)
+
+	return r.Reader.GetMany(ks)
+}
+
+type logTxn struct {
+	kv.Txn
+	log *txnLog
+}
+
+func (t *logTxn) Get(key []byte) ([]byte, error) {
+	t.log.read(key)
+
+	return t.Txn.Get(key)
+}
+
+func (t *logTxn) GetMany(ks [][]byte) ([][]byte, error) {
+	t.log.readMany(ks)
+
+	return t.Txn.GetMany(ks)
+}
+
+// seedShards writes the records of shards 1 to n, shard i at incarnation
+// 10*i and grace instance 10*i - 5: each value its own, so a value read for
+// the wrong shard shows, and the grace instance below the incarnation, as an
+// attach leaves it.
+func seedShards(t *testing.T, s *Store, n int) {
+	t.Helper()
+
+	for i := 1; i <= n; i++ {
+		sh := entity.Shard{
+			ID:            entity.ShardID(i),
+			Incarnation:   uint64(10 * i),
+			GraceInstance: uint64(10*i - 5),
+		}
+		rows(t, s, shardKey(uint64(i)), encodeShard(sh))
+	}
+}
+
+// descending is shards n down to 1, so a call that does not sort them first
+// batches them in another order.
+func descending(n int) []entity.ShardID {
+	ids := make([]entity.ShardID, 0, n)
+
+	for i := n; i >= 1; i-- {
+		ids = append(ids, entity.ShardID(i))
+	}
+
+	return ids
+}
+
+// wantShardAt checks the incarnation and grace instance shard's record holds.
+func wantShardAt(t *testing.T, s *Store, id entity.ShardID, inc, grace uint64) {
+	t.Helper()
+
+	sh, err := s.Shard(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sh.Incarnation != inc || sh.GraceInstance != grace {
+		t.Errorf("shard %d: incarnation %d, grace instance %d; want %d, %d",
+			id, sh.Incarnation, sh.GraceInstance, inc, grace)
+	}
+}
+
+// RFC 8 §2.5 step 2 and E40: the start raises its shards in transactions of
+// at most K keys, so 3 * K + 1 shards take at least 4 Updates, none writing
+// more than K keys. Shards 4 and 5 are named twice: without the dedup before
+// the batches, shard 4 lands at the end of the first batch and the start of
+// the second, and is raised twice. Every shard comes back raised once, in the
+// map as in its record, whichever batch raised it.
+func TestRaiseAtStartWithinK(t *testing.T) {
+	const k, n = 4, 3*4 + 1
+	var c *kv.Counting
+	s := lifecycleStore(t, func(db kv.KV) kv.KV {
+		c = &kv.Counting{KV: db}
+
+		return c
+	})
+
+	s.SetKeyBudget(k)
+	seedShards(t, s, n)
+	in := append(descending(n), 4, 5)
+	c.TakeUpdates()
+
+	got, err := s.Lifecycle().RaiseAtStart(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	u := c.TakeUpdates()
+
+	if u.MostWrites > k {
+		t.Errorf("one Update wrote %d keys, past K = %d", u.MostWrites, k)
+	}
+
+	if u.Updates < 4 {
+		t.Errorf("%d shards raised in %d Updates, want at least 4", n, u.Updates)
+	}
+
+	if len(got) != n {
+		t.Errorf("RaiseAtStart returned %d shards, want %d", len(got), n)
+	}
+
+	for i := 1; i <= n; i++ {
+		id, want := entity.ShardID(i), uint64(10*i+1)
+
+		if got[id] != want {
+			t.Errorf("shard %d: returned %d, want %d", id, got[id], want)
+		}
+
+		wantShardAt(t, s, id, want, want)
+	}
+}
+
+// kv.Reader's GetMany costs one round trip to a remote store rather than one
+// per key, so each raise transaction reads its shards' records with one
+// GetMany of at most K keys, not one Get per shard.
+func TestRaiseAtStartReadsEachBatchOnce(t *testing.T) {
+	const k, n = 4, 3*4 + 1
+	var log *readLog
+	s := lifecycleStore(t, func(db kv.KV) kv.KV {
+		log = &readLog{
+			KV: db,
+		}
+
+		return log
+	})
+
+	s.SetKeyBudget(k)
+	seedShards(t, s, n)
+	log.take()
+
+	if _, err := s.Lifecycle().RaiseAtStart(context.Background(), descending(n)); err != nil {
+		t.Fatal(err)
+	}
+
+	read := 0
+
+	for i, txn := range log.take() {
+		if len(txn.batches) != 1 || txn.batches[0] > k || len(txn.keys) != txn.batches[0] {
+			t.Errorf(
+				"transaction %d: GetMany of %v keys, %d read; want one GetMany of at most %d",
+				i,
+				txn.batches,
+				len(txn.keys),
+				k,
+			)
+
+			continue
+		}
+
+		read += txn.batches[0]
+	}
+
+	if read != n {
+		t.Errorf("the raise read %d shard records with GetMany, want %d", read, n)
+	}
+}
+
+var errRaiseFailed = errors.New("injected raise failure")
+
+// RFC 8 §2.5 step 2 and §15.1: a raise whose second transaction fails leaves
+// the first batch's shards raised once and the rest as they were, and the
+// next call raises every shard again, each exactly one above its value after
+// the failed call. A raise that skipped the shards the failed call already
+// raised would leave them one short and repeat their grace instance.
+func TestRaiseAtStartFailedPartWay(t *testing.T) {
+	const k, n = 4, 3 * 4
+	ctx := context.Background()
+	var faults *kvtest.FaultKV
+	s := lifecycleStore(t, func(db kv.KV) kv.KV {
+		faults = kvtest.NewFaultKV(db)
+
+		return faults
+	})
+
+	s.SetKeyBudget(k)
+	seedShards(t, s, n)
+
+	sched, err := sim.NewSchedule(1, nil, sim.Rule{
+		Op:    kvtest.OpUpdate,
+		Key:   "*",
+		From:  2,
+		Count: 1,
+		Action: sim.FaultAction{
+			Err: errRaiseFailed,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	faults.SetFault(sched)
+
+	if _, err := s.Lifecycle().RaiseAtStart(ctx, descending(n)); !errors.Is(err, errRaiseFailed) {
+		t.Fatalf("a raise whose second transaction fails: %v, want the injected error", err)
+	}
+
+	for i := 1; i <= n; i++ {
+		if i <= k {
+			wantShardAt(t, s, entity.ShardID(i), uint64(10*i+1), uint64(10*i+1))
+		} else {
+			wantShardAt(t, s, entity.ShardID(i), uint64(10*i), uint64(10*i-5))
+		}
+	}
+
+	faults.SetFault(nil)
+
+	got, err := s.Lifecycle().RaiseAtStart(ctx, descending(n))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 1; i <= n; i++ {
+		id, want := entity.ShardID(i), uint64(10*i+1)
+
+		if i <= k {
+			want++
+		}
+
+		if got[id] != want {
+			t.Errorf("shard %d: returned %d after the second raise, want %d", id, got[id], want)
+		}
+
+		wantShardAt(t, s, id, want, want)
+	}
+}
+
+// RFC 14 §2.11: an installation numbers at most 2^24 shards, and a raise
+// naming one past that space refuses the whole call before any batch commits.
+// Checking each batch as it runs would commit the first batch, here shards 1
+// to 4, before the second meets the bad shard.
+func TestRaiseAtStartRefusesBeforeAnyBatch(t *testing.T) {
+	const k = 4
+	s := lifecycleStore(t, nil)
+	s.SetKeyBudget(k)
+	in := []entity.ShardID{1, 2, 3, 4, entity.ShardLimit}
+
+	if _, err := s.Lifecycle().RaiseAtStart(context.Background(), in); !isInvalid(err) {
+		t.Fatalf("a raise naming a shard past the shard space: %v, want invalid", err)
+	}
+
+	for i := 1; i <= k; i++ {
+		wantShardAt(t, s, entity.ShardID(i), 0, 0)
+	}
+}
+
+// RFC 16 §4.1: a batch of K items commits well inside the store's
+// transaction age, so Tags reads the shares in batches of at most K, each its
+// own View, every share whole in one View, and resumes after the last share
+// read. 3 * K + 1 shares, sorted by ShareID: the one being removed, with two
+// shards, ends the first batch, the retired one starts the second, and one
+// whose record is gone starts the third. Each share is read once, the one
+// with no record included, which counts toward K, and Tags answers every
+// share with a record with its own state. The rm rows of the share being
+// removed are read in the View that reads its record: reading the batch's
+// records in one View and each share's rm rows in another would give the
+// same answer from two snapshots, so a removal step between them would mix
+// two states of one share.
+func TestTagsInBatches(t *testing.T) {
+	const k, n = 4, 3*4 + 1
+	ctx := context.Background()
+	var log *readLog
+	s := lifecycleStore(t, func(db kv.KV) kv.KV {
+		log = &readLog{
+			KV: db,
+		}
+
+		return log
+	})
+
+	s.SetKeyBudget(k)
+	shares := make([]entity.Share, 0, n)
+
+	for i := range n {
+		shares = append(shares, namedShare(t, s, fmt.Sprintf("s%d", i)))
+	}
+
+	slices.SortFunc(shares, func(a, b entity.Share) int {
+		return bytes.Compare(a.ID[:], b.ID[:])
+	})
+
+	removing, retired, emptied := shares[k-1], shares[k], shares[2*k]
+
+	for _, sh := range []entity.Share{removing, retired, emptied} {
+		if err := s.ControlPlane().DeleteShare(ctx, sh.ID, entity.SnapshotsRefuse); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	lower := uint64(removing.Shard)
+	upper := lower + 1000 // above every shard the test's shares were given
+	rows(t, s,
+		keys.Uint64(shardsPrefix(removing.ID), upper), encodeEmpty(),
+		shardRemovalKey(lower), encodeRemovalStep(stepOffloaded),
+		shardRemovalKey(upper), encodeRemovalStep(stepForgotten),
+		shareKey(retired.ID, keys.SSt), encodeState(shareState{State: entity.ShareRetired}),
+		shardRemovalKey(uint64(retired.Shard)), encodeRemovalStep(stepDone),
+	)
+
+	err := s.kv.Update(ctx, func(tx kv.Txn) error {
+		return tx.Delete(shareKey(emptied.ID, keys.SInfo))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[entity.ShareID]entity.TagRecord{}
+
+	for _, sh := range shares {
+		if sh.ID != emptied.ID {
+			want[sh.ID] = entity.TagRecord{
+				Tag:   sh.Tag,
+				State: entity.TagServing,
+			}
+		}
+	}
+
+	want[removing.ID] = entity.TagRecord{
+		Tag:   removing.Tag,
+		State: entity.TagOffloaded,
+	}
+	want[retired.ID] = entity.TagRecord{
+		Tag:   retired.Tag,
+		State: entity.TagForgotten,
+	}
+
+	log.take()
+
+	got, err := s.Lifecycle().Tags(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != len(want) {
+		t.Errorf("Tags named %d shares, want %d", len(got), len(want))
+	}
+
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("share %v: %+v, want %+v", id, got[id], w)
+		}
+	}
+
+	records := map[string]bool{}
+
+	for _, sh := range shares {
+		records[string(shareKey(sh.ID, keys.SInfo))] = true
+	}
+
+	reads := map[string]int{}
+	removingView := -1
+	txns := log.take()
+
+	for i, txn := range txns {
+		inView := 0
+
+		for _, key := range txn.keys {
+			if records[string(key)] {
+				reads[string(key)]++
+				inView++
+			}
+
+			if bytes.Equal(key, shareKey(removing.ID, keys.SInfo)) {
+				removingView = i
+			}
+		}
+
+		if inView > k {
+			t.Errorf("View %d read %d share records, past K = %d", i, inView, k)
+		}
+	}
+
+	for _, sh := range shares {
+		if r := reads[string(shareKey(sh.ID, keys.SInfo))]; r != 1 {
+			t.Errorf("share %v: record read %d times, want once", sh.ID, r)
+		}
+	}
+
+	if removingView < 0 {
+		t.Fatal("the record of the share being removed was never read")
+	}
+
+	for _, shard := range []uint64{lower, upper} {
+		if !slices.ContainsFunc(txns[removingView].keys, func(key []byte) bool {
+			return bytes.Equal(key, shardRemovalKey(shard))
+		}) {
+			t.Errorf("rm row of shard %d not read in the View that read its share's record", shard)
+		}
+	}
+}
+
+// RFC 16 §4.1: a batch of K items commits well inside the store's transaction
+// age, so VersionLimits reads the named shares' limits in batches of at most
+// K, each its own View with one GetMany, and answers every share: 3 * K + 1
+// shares, the last batch holding one, each limit its own value, and one share
+// with none written, which reads zero.
+func TestVersionLimitsInBatches(t *testing.T) {
+	const k, n = 4, 3*4 + 1
+	ctx := context.Background()
+	var log *readLog
+	s := lifecycleStore(t, func(db kv.KV) kv.KV {
+		log = &readLog{
+			KV: db,
+		}
+
+		return log
+	})
+
+	s.SetKeyBudget(k)
+	ids := make([]entity.ShareID, 0, n)
+	want := map[entity.ShareID]entity.JournalVersion{}
+
+	for i := range n {
+		ids = append(ids, namedShare(t, s, fmt.Sprintf("s%d", i)).ID)
+		want[ids[i]] = entity.VersionOf(uint64(100 + i))
+	}
+
+	want[ids[n-1]] = entity.JournalVersion{}
+	to := maps.Clone(want)
+	delete(to, ids[n-1])
+
+	if err := s.Lifecycle().RaiseVersionLimits(ctx, to); err != nil {
+		t.Fatal(err)
+	}
+
+	log.take()
+
+	got, err := s.Lifecycle().VersionLimits(ctx, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	read := 0
+
+	for i, txn := range log.take() {
+		one := len(txn.batches) == 1 && txn.batches[0] <= k && len(txn.keys) == txn.batches[0]
+
+		if txn.update || !one {
+			t.Errorf(
+				"transaction %d: update %v, GetMany of %v keys, %d read; "+
+					"want a View with one GetMany of at most %d",
+				i,
+				txn.update,
+				txn.batches,
+				len(txn.keys),
+				k,
+			)
+
+			continue
+		}
+
+		read += txn.batches[0]
+	}
+
+	if read != n {
+		t.Errorf("VersionLimits read %d limits with GetMany, want %d", read, n)
+	}
+
+	if len(got) != n {
+		t.Errorf("VersionLimits answered %d shares, want %d", len(got), n)
+	}
+
+	for id, w := range want {
+		if v, ok := got[id]; !ok || v != w {
+			t.Errorf("share %v: limit %d, answered %v; want %d", id, v.Counter(), ok, w.Counter())
+		}
+	}
 }

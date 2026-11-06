@@ -175,8 +175,9 @@ func (t *failTxn) Set(k, v []byte) error {
 	return t.Txn.Set(k, v)
 }
 
-// RFC 14 §4.4: a start raises its shards in one transaction, so a failure
-// part way leaves every shard where it was.
+// RFC 14 §4.4: a start raises its shards in transactions of at most K keys,
+// each all or none: three shards fit in one, so a failure part way through it
+// leaves every shard where it was.
 func testRaiseAtStartAllOrNone(t *testing.T, kvo Opener) {
 	f := &failSets{KV: kvo(t)}
 	must(t, kvstore.Init(ctx, f, uuid.New()))
