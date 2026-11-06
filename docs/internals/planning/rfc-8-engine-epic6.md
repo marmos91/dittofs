@@ -295,11 +295,17 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   long `Unbind` never holds up another share's `Bind` (RFC 8 §2.3: a change to one share
   changes one binding). A set of the shares with a lifecycle call in progress, kept under
   the same mutex, answers a second `Bind`, `Unbind` or `Drop` naming one of them with
-  `ErrDelay`, which its caller retries. `Close`'s step 1 sets the engine's closed state
+  `ErrDelay`, which its caller retries (RFC 8 §2.3). `Close`'s step 1 sets the engine's closed state
   (R39) under the same mutex, and every publish, by `Bind` or the late attach, checks it
   under the mutex and, when it is set, publishes nothing and undoes in reverse; `Close`
   waits for the set to drain, within the stop bound (D7), before it closes anything, so no
-  handle is published on, or left open over, a journal stop step 4 closes. A binding's state
+  handle is published on, or left open over, a journal stop step 4 closes. After the set
+  drains, `Close` also joins every handle marked closing, within the stop bound (D7); past
+  it, that handle and its journal are left open and reported in the error. Closing every
+  handle skips such a handle, since a failed `Bind` leaves the set before its handle's
+  `Close` returns. For the same reason a `Bind`, `Unbind` or `Drop` of a share whose tag has
+  a handle marked closing waits, outside the mutex, for that `Close` to return (RFC 8
+  §2.3). A binding's state
   (serving, quiesced, removing) is an atomic in the binding, so a state change swaps
   nothing; attach and removal copy the table, as RFC 8 §1.1's `decision:` says. Epic 3's
   T3.1 already declares the table, `atomic.Pointer[bindings]` in `engine.go` read through
@@ -563,7 +569,10 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   - A content call never waits on the lifecycle mutex.
   - A `Bind` that fails at any step leaves no handle open that it opened, and the table
     unchanged; a handle it took over from the metadata reconcile is handed back to it
-    (RFC 8 §2.5), closed outside the lifecycle mutex.
+    (RFC 8 §2.5), closed outside the lifecycle mutex. It leaves the set of shares with a
+    lifecycle call in progress in the hold of the mutex where it clears the mark (and,
+    if the visit has ended, marks the handle closing), so a retried `Bind` waits for that
+    `Close` rather than answering `ErrDelay` (RFC 8 §2.3).
   - A share bound above a floor of 9·10⁸ gets a first version above it from the real
     journal.
 - **Tests:** a content call on share A while a `Bind` of share B holds the lifecycle mutex
@@ -587,7 +596,11 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   "shared journal": two shares, one filled to its limit, the other's writes accepted (R11);
   with epic 3's R5, two shares bound through `Bind`, one saturated with writes: the other's
   write latency stays within its baseline and no `engine_lock_wait_seconds` area grows with
-  the loaded share's rate (§15.2's "no cross-share slowdown", the write half).
+  the loaded share's rate (§15.2's "no cross-share slowdown", the write half); §15.1's
+  "`Bind` takes over the reconcile's handle", a retried `Bind` after a failed one waiting
+  for its handle's `Close` rather than answering `ErrDelay` included, written with T6.2 or
+  the engine subtask that builds the metadata reconcile, whichever lands last, since no
+  engine epic plans the reconcile yet.
 
 ### T6.3 Start step 1: open the journals
 
@@ -805,7 +818,8 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   left for start; the last group commit per journal, then each journal's group commit
   goroutines (epic 4's T4.3) stopped and joined, so no batch runs on a journal step 4
   closes; cancel and join the version-limit raise and the retried open; wait for D1's set
-  of lifecycle calls in progress to drain; close every handle, then every journal, in
+  of lifecycle calls in progress to drain, then join every handle marked closing, within
+  the stop bound; close every other handle, then every journal, in
   reverse, only after every join; a join past the stop bound (D7), the context's deadline
   or, with none, the default, leaving its components open, the journal and every handle on
   it, and reported in the error.
@@ -836,7 +850,13 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   settles it (R48); a `Served` stub that never returns: `Close` returns within its deadline,
   the wait's goroutine is gone and the clone `Removal` is still listed at the next start
   (catches a `Close` hung on a shard never served, R49), written with T6.8 or T8.6,
-  whichever lands last; `prof.Watch` finds no goroutine left.
+  whichever lands last; a `Bind` that took over a handle, failed, its handle's `Close`
+  held by a hook, then `Close` called: `Journal.Close` does not start before the handle's
+  `Close` returns, and the handle is closed once (catches a `Close` that joins only the
+  lifecycle set, R42), and the same with the hook never releasing the handle's `Close`:
+  `Close` returns its error within the stop bound with that handle and its journal still
+  open (catches an unbounded wait on a handle marked closing, R43), written with T6.8 or the subtask that builds the metadata
+  reconcile, whichever lands last; `prof.Watch` finds no goroutine left.
 
 ### T6.9 `Unbind` and `Drop`
 
@@ -1044,7 +1064,9 @@ and PR 4.
    T6.4 and T6.7 depend on it, and its days stay in E2's estimate.
 8. **A read-only journal reopened in place** (RFC 8 §2.5, E42, and §15.2's read-only row) is
    in no epic of this part. It needs RFC 1 §5.4's read-only state, which `journal` does not
-   have yet; once it does, it is a subtask of this epic or of the second part.
+   have yet; once it does, it is a subtask of this epic or of the second part. That subtask
+   also adds the drain's closing mark to epic 4's group commit (RFC 8 §2.5) and passes
+   §15.2's "the marks fence is per open" row.
 9. **`Unbind` with `keepHolds`** is refused: no snapshot exists in this part. A removal that
    keeps snapshots is RFC 12's, out.
 10. **No row over the real journal turns green in this epic** until `journal`'s `Init`,

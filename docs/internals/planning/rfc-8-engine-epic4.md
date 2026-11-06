@@ -251,7 +251,7 @@ subtasks and tests can cite them.
 | R23 | A file that still fails alone is backed off by itself and raises `existence_commit_failing` naming it; its stability points answer `ErrDelay` meanwhile, and no other file waits on it | MUST | §5.2, §11.1 | T4.4 |
 | R24 | A metadata conflict is retried under the caller's deadline and never reaches a client as an I/O error; one unresolved at the deadline answers `ErrDelay` with `DelayConflict` | MUST, MUST NOT | §11.3 | T4.4 |
 | R25 | A failed existence commit is retried by the next group commit, and fails a reply only through R11's rule | invariant | §5.1 | T4.4 |
-| R26 | §5.2 group commit: 64 writers flushing while `chmod` hits random files of the journal; one file's File record undecodable, and another's removal record (an adaptation: §15.2's row names the File record only; the existence fence is checked for presence, never decoded); §5.2 sync marks ride in one batch | test row | §15.2 | T4.4 |
+| R26 | §5.2 group commit: 64 writers flushing while `chmod` hits random files of the journal; one file's File record undecodable, and another's removal record (an adaptation: §15.2's row names the File record only; the existence fence is checked for presence, never decoded); §5.2 sync marks ride in one batch; §5.2 sync marks are keyed by stream | test row | §15.2 | T4.4 |
 
 **Losses**
 
@@ -313,7 +313,7 @@ subtasks and tests can cite them.
   file's transactions are done. Each existence commit runs under its own bound,
   `conflictBound`, 1 s, because `kv.Update` retries a conflict until its context ends; a
   whole-call error splits the batch (T4.4) unless it is store-wide: the bound expiring with
-  no conflict (a stalled store) or the store closed. A file's removal records (its masks) or the
+  no conflict (a stalled store) or the store closed (RFC 8 §5.2). A file's removal records (its masks) or the
   hole and overwrite records a commit loads that do not decode reach the engine as a whole-call error, so the split is what isolates them
   (RFC 8 §5.2's "any other per-file failure"). On return the committed operations leave their entries, the
   in-batch mark is cleared and its waiters woken. A batch wakes the waiters on every file it
@@ -505,9 +505,13 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   the due set and waits for the batch in flight, built here and called by epic 6's `Drop`,
   which tests it (T6.9). `kvstore`'s `PendingOp` split (D6), with its own test.
   `kvstore`'s marks write (RFC 6 §10.1): `Existence.Commit`'s `marks *MarksWrite`, its
-  tracked `og` check, `ErrOpenGenMoved` and `ErrSyncMarks`, with its own test. E2's fake
+  tracked `og` check, `ErrOpenGenMoved`, and `ErrSyncMarks` only for a marks-only
+  transaction, a conflict beside files being the files' (it names no keys), each mark keyed by its `Stream`
+  and none deleted, as RFC 6 §10.1 and RFC 8 §5.2 say, with its own test. E2's fake
   journal gains sync marks: `Sync` returns a mark per stream covering what it synced, and
-  `MarksRecorded` logs what it is handed.
+  `Stats().SyncMarks` keeps each stream's latest mark, merged by `Stream`, as RFC 1 §3.7
+  says and the journal's epic 2 fixture (`journaltest.New`) reads them, since the group commit builds its marks write from `Stats().SyncMarks` (RFC 8
+  §5.2); `MarksRecorded` logs what it is handed.
 - **Acceptance criteria:**
   - a file with pending writes and no stability point is committed within `existence_age`,
     by the test clock;
@@ -571,7 +575,8 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
     entry gone, on `lostWhole` and on `dropShare`.
 - **Tests:** the split's table over a stub `Existence`: each failure shape (a file in the
   map, a whole-call error, two failing files, every file failing, each on a batch that
-  carries the marks) against the expected calls
+  carries the marks; the marks pulled out on a whole-call error and sent alone once; the
+  marks alone failing with a store error, retried alone with backoff) against the expected calls
   (catches a committed file resubmitted, or a failing one resubmitted with the rest). Over
   the real `kvstore` over a `kv.KV` wrapper, through `newUnitOver`, making one file's File
   record undecodable: the other files' overwrite `Commit`s succeed, that file's answers `ErrDelay`,
@@ -581,7 +586,10 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   does one file's removal record made undecodable over the real `kvstore` (the
   other files commit, that file fails alone: catches a split on conflicts only, RFC 8
   §5.2); a store stalled past the bound, or closed, does not split (catches 2G−1 bounded
-  calls on a store-wide failure, or a commit left retrying until the caller's deadline); the condition cleared on `dropShare` and on `lostWhole`
+  calls on a store-wide failure, or a commit left retrying until the caller's deadline);
+  §15.2's "sync marks are keyed by stream" row over the fake and the real `kvstore` (R26);
+  the "sync marks ride in one batch" row's case of a store naming the marks keys through
+  `newUnitOver`'s `kv.KV` wrapper, since the real `kvstore` names none; the condition cleared on `dropShare` and on `lostWhole`
   (catches a condition naming a file nothing will commit); a `kv.KV` wrapper through
   `newUnitOver` that records the mark on each call sees it on every group-commit call and on
   no `Existence.Overwrites` call of a `Commit` (catches a retried call left unmarked, which
