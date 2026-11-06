@@ -473,13 +473,17 @@ flight.
   past a floor while the pool cannot take it is not held, and is answered
   `STATUS_INSUFFICIENT_RESOURCES` at once (§16.5), which MS-SMB2
   3.3.4.2 allows when asynchronous processing would exceed the server's
-  resources, and nothing is held for it. Waiting locks (§7) and change
-  notifications are not counted: they hold no data and no worker, and end only
-  as RFC 14's waiter or the watch does. They are parked instead, and a
-  connection parks at most **511**, one fewer than the credit target, past which
-  a new one is answered `STATUS_INSUFFICIENT_RESOURCES` at once
+  resources, and nothing is held for it. Waiting locks (§7), change
+  notifications and `READ`s of an empty named pipe are not counted against the
+  floor: they hold no write data and no worker, and end only as RFC 14's waiter,
+  the watch or the pipe does. They are parked instead
   ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
-  `Park`).
+  `Park`), and keep at most a small-class reply: a notification whose changes
+  do not fit is answered `STATUS_NOTIFY_ENUM_DIR`, and a pipe `READ` returns
+  what fits with `STATUS_BUFFER_OVERFLOW`, the client reading the rest.
+- **A connection has at most 511 requests pending**, held and parked together,
+  one fewer than the credit target, as `MaxAsyncCredits` minus one bounds them
+  today; past it a new one is answered `STATUS_INSUFFICIENT_RESOURCES` at once.
 
 > ponytail: one credit target and one hold floor per connection, neither a
 > setting, over RFC 17's one hold pool per node. 512 credits keep a client's
@@ -2521,6 +2525,22 @@ step 2 refuses it. A write a user's own `read` grant refuses is `ErrAccess`,
 > the share, not at file modes, as NFS's `NFS4ERR_ROFS` tells them. Withdraw the status,
 > answering `STATUS_ACCESS_DENIED`, if a Windows application is found that
 > mishandles the write-protected status.
+
+**Chains and `core`'s own refusals.** In a related chain, only a `CREATE` held
+on a lease or oplock break goes pending before the last member (`HoldCodec.Pends`
+true, MS-SMB2 3.3.5.2.7); every other `ErrDelay` there is answered at once with
+its row's status. `core`'s refusals
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+`Errors()`) map as: `ErrNotSupported` and `ErrVersion` to `STATUS_NOT_SUPPORTED`;
+`ErrNoSession` to `STATUS_USER_SESSION_DELETED`; `ErrNoTree` to
+`STATUS_NETWORK_NAME_DELETED`; `ErrExpired` to `STATUS_NETWORK_SESSION_EXPIRED`;
+`ErrNotLast` to `STATUS_INTERNAL_ERROR`; `ErrTooManyPending` to
+`STATUS_INSUFFICIENT_RESOURCES`; `ErrDraining` to no reply (§14's Witness move
+comes first). A parked request ended by a drain is answered as one ended by the
+server: `STATUS_NOTIFY_CLEANUP` for a notification, `STATUS_CANCELLED` for a
+waiting lock that `CancelLock` reports not granted. `ErrNotNegotiated`,
+`ErrNoFH` and `ErrTooLong` are settled against MS-SMB2 when the table is
+built; the totality test fails until they have rows.
 
 ### 16.6 Testing
 

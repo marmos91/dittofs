@@ -2453,6 +2453,16 @@ its room ([RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%2
 it meets an XFS project quota. A user or group quota is `DQUOT`, what
 `rquota` reports against.
 
+**`core`'s own refusals** ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+`Errors()`) map as: `ErrNotSupported` to `NFS4ERR_NOTSUPP` (v4) or
+`PROC_UNAVAIL` (v3); `ErrVersion` to `NFS4ERR_MINOR_VERS_MISMATCH` or
+`PROG_MISMATCH`; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrTooLong` to
+`NFS4ERR_TOO_MANY_OPS`; `ErrDraining` to `NFS4ERR_MOVED` for NFSv4 and to no
+reply for NFSv3, MOUNT and NLM, which have no move signal. `ErrNotLast` and
+`ErrTooManyPending` never reach NFS, which parks nothing, and map to its fault.
+`ErrNotNegotiated`, `ErrNoSession`, `ErrNoTree` and `ErrExpired` are settled
+with the session and GSS tables; the totality test fails until they have rows.
+
 ### 11.6 Testing
 
 The translations are tested as RFC 20 §7 says, as pure functions with no
