@@ -10,7 +10,7 @@ and §5.8, for `Done` and the verifier the service hands its clients.
 **Track:** B.
 **Package paths:** `feat/storage-v2`'s, after #3645 renamed `enginev2` to `engine` and
 `journalv2` to `journal`.
-**Epic 4 estimate: 7 subtasks, 22 man-days.**
+**Epic 4 estimate: 7 subtasks, 23 man-days.**
 **Depends on:** sync point **S2, red suite in CI**: E1's surface (`Commit`, `LossSeq`,
 `WriteOpts.Done`, `Settings`, `Deps.Existence`) and E2's fake journal; epic 3, built:
 T3.1's per-file entries and their drop of an empty entry marked dead, T3.2's `Write`, which
@@ -216,7 +216,7 @@ row.
 | R21b | A stability point never waits for an offload. Nothing in this part offloads, so it holds by construction; the second part's offload commit carries its test | MUST NOT | §5.1 | none here |
 | R40 | Once a transaction commits a file's pending existence, `Settle(id, v)` at the newest version it committed for the file, never above it | MUST, MUST NOT | §5.1 "A committed file's journal is settled", RFC 1 §3.10 | T4.3 |
 | R41 | A group commit commits a file's operations in version order and stops at a removal, a clone's destination included, whose phase 1 has not committed: neither `applied` nor `Settle` reaches its version | MUST | §5.1, §5.1 step 5, §5.2 first rule | T4.3; tested in epic 5's T5.3 |
-| R48 | Every existence commit passes each write with the runs where it overlaps an earlier pending write of the file, computed from the pending writes the engine holds, never asked of the journal | MUST | §5.1 "A commit carries supersession within itself" | none yet (§9, point 6); the removal's, clone's and recovery's commits are epics 5, 8 and 6's |
+| R48 | Every existence commit passes each write with the runs where it overlaps an earlier pending write of the file, computed from the pending writes the engine holds, never asked of the journal | MUST | §5.1 "A commit carries supersession within itself" | T4.3; the removal's and clone's phase 1 are epic 5's T5.1 and epic 8's T8.2, over T4.3's computation; recovery's re-apply is epic 6's |
 
 **The sync marks**
 
@@ -304,7 +304,10 @@ Only what the RFC leaves to the code. Ids are stable; a missing number became a 
   place of `Time`; `Existence.Commit` sets `Mtime` from the newest operation with a non-zero
   one and `Ctime` from the newest operation, and the batch fills them from each claimed
   operation's time and `setsMtime` (epic 3's D10). `kvstore`'s `Remove` and `Clone` read
-  `Ctime` where they read `Time`. A new kind, `kvstore.OpLost`, commits an extent uncarved,
+  `Ctime` where they read `Time`. `PendingOp` also gains `Over`, the runs where a write
+  overlaps an earlier pending write of the file (R48), over which `Existence.Commit`
+  writes an overwrite record; `Remove` and `Clone` commit pending operations through it.
+  A new kind, `kvstore.OpLost`, commits an extent uncarved,
   holding nothing, and changes neither `Charged` nor the usage counters.
 - **D7, the failing file's backoff** (RFC 8 §5.2). A file failing alone goes back on the due
   set at once, held by a doubling backoff from 100 ms to 30 s. A `ponytail:` marker: a fixed
@@ -365,7 +368,7 @@ pkg/block/engine/
   conformance/
     rfc8_commit_test.go  T4.1–T4.4, T4.6  the rows of rule 6
 pkg/metadata/kvstore/
-  existence.go      T4.3  PendingOp's Mtime and Ctime (D6), the marks write
+  existence.go      T4.3  PendingOp's Mtime, Ctime and Over (D6), the marks write
                     T4.5  OpLost (D6)
 test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
 ```
@@ -424,13 +427,14 @@ listed test fails on the regression it names (after "catches").
 
 ### T4.3 The group commit per journal
 
-**Subtask T4.3 estimate: 5 man-days.**
+**Subtask T4.3 estimate: 6 man-days.**
 
 - **Track:** B. **Depends on:** S2; epic 3's T3.1 and T3.2, built.
-- **Covers:** R10, R14–R21a, R36 (the commit's path), R40, R41, R42, R43–R45.
+- **Covers:** R10, R14–R21a, R36 (the commit's path), R40, R41, R42, R43–R45, R48.
   RFC 8 §5.1's "A stability point joins the group commit", "Existence is
   otherwise committed lazily", "A committed file's journal is settled", the commit's `Done`,
-  the sync before every existence commit and step 5 (not the stamp); §5.2's first three rules;
+  the sync before every existence commit and step 5 (not the stamp), "A commit carries
+  supersession within itself"; §5.2's first three rules;
   E15, E19, E40.
 - **Deliverables:** in `groupcommit.go`, per journal: the due set and its timer (D4); the
   batch goroutine (D5) and `closeGroupCommits`; the capture, whose claim is a count here and
@@ -446,7 +450,10 @@ listed test fails on the regression it names (after "catches").
   `commitNow`, `commitThrough` and `commitAll` (D10); `dropShare(s)`, which removes a share's
   files from the due set and waits for the batch in flight, called and tested by epic 6's
   `Drop` (T6.9). `kvstore`'s `PendingOp` split (D6) and its marks write (RFC 6 §10.1), each with its own
-  test. E2's fake journal gains sync marks: `Sync` returns them, `MarksRecorded` logs them.
+  test. The superseded runs: one function computing each write's `Over` from the entry's
+  pending writes, which `PendingExistence` calls and epic 5's T5.1 and epic 8's T8.2 reuse,
+  and `kvstore.PendingOp`'s `Over` (D6), with `Existence.Commit` writing an overwrite record
+  over it. E2's fake journal gains sync marks: `Sync` returns them, `MarksRecorded` logs them.
 - **Rows:** §5.1 sync before existence, the write and `Commit` half; red until the journal's
   crash seam and `Sync` exist.
 - **Tests,** over the fake with a call log: `Sync` before `Existence.Commit` in every batch
@@ -465,7 +472,9 @@ listed test fails on the regression it names (after "catches").
   on every transaction, or on none).
   Under `-race`, a hook between `lockFor`'s lookup and its lock in which the commit drops the
   entry: the write lands in a live entry, `Overlay` reflects it, the next batch commits it
-  and its `Done` runs once (catches an orphaned write).
+  and its `Done` runs once (catches an orphaned write). Over the real `kvstore`, a write and
+  an overwrite of part of it, committed in one batch, leave an overwrite record over the
+  overlapped runs (catches supersession left out of the commit).
 
 ### T4.4 The split and the failing file
 
@@ -632,7 +641,7 @@ T4.7: `Done` runs exactly once on this epic's four paths.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T4.1, T4.3 | 7 | — | the verifier and the group commit, with the per-file commit the other epics call; T4.1 needs nothing of T4.3 and can open alone, as a 2 man-day pull request, leaving T4.3 as a 5 man-day one |
+| 1 | T4.1, T4.3 | 8 | — | the verifier and the group commit, with the per-file commit the other epics call; T4.1 needs nothing of T4.3 and can open alone, as a 2 man-day pull request, leaving T4.3 as a 6 man-day one |
 | 2 | T4.5, T4.2 | 7 | PR 1 | the sync function and its drain, and the stability point that syncs through it |
 | 3 | T4.4, T4.6, T4.7 | 8 | PR 2 | the split, the failed window and `Done` |
 
@@ -666,8 +675,3 @@ RFC gaps go to the RFC, not here; each is listed until its RFC change merges.
    `WriteAt` and its insert) and, for a gap, from the journal's `Since(id, 0)` loss records.
    It needs a `kvstore` call and an RFC 6 line; #3734 decides whether a **Lost** extent counts
    in `Charged`.
-6. **Planning gap: R48 has no subtask.** RFC 8 §5.1's "A commit carries supersession within
-   itself" came after this breakdown. T4.3's `PendingExistence` build is where the group
-   commit's half lands, with a test over the real `kvstore` that an overwrite of a pending
-   write commits an overwrite record for the runs it supersedes; its estimate is not yet in
-   T4.3's figure.

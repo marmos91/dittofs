@@ -13,7 +13,7 @@ admits before the call and how it holds a call behind a clone;
 the clone `Removal` record and the two phases `kvstore`'s `Existence.Clone` and
 `Content.Resume` already implement.
 **Track:** A.
-**Epic 8 estimate: 7 subtasks, 19.5 man-days.**
+**Epic 8 estimate: 7 subtasks, 19.75 man-days.**
 **Depends on:** epic 3, built: T3.1's per-file entries, T3.2's `Write`, T3.4's replay and
 T3.5's read resolution, which a clone copies through and resolves its source with; epic 4's
 per-file existence commit (T4.3) and the one sync function (T4.5), which commits the source's pending existence before
@@ -207,6 +207,7 @@ table, and a withdrawn one keeps its row.
 | R16 | A source run neither held nor carved at `asOf` is carried as uncarved and reads **Lost**, never zeros | MUST NOT | §9.1 "A Lost source run is carried as Lost", E34 | T8.2 |
 | R17 | A clone never waits on the remote tier: it fetches nothing | invariant | §9.1, E34 | T8.2 |
 | R41 | A clone is a pending operation of its destination at *v*: no group commit commits past it before phase 1 commits, so neither the destination's `applied` nor its `Settle` reaches *v* while phase 1 retries (the stop is epic 4's R41) | invariant | §9.1 "A clone is a pending operation of its destination", §5.1 | T8.2 |
+| R42 | Phase 1 passes each pending write of the destination it commits with the runs where it overlaps an earlier pending write of the file, computed from the pending writes the engine holds, never asked of the journal (the group commit's half is epic 4's R48) | MUST | §5.1 "A commit carries supersession within itself", §9.1 | T8.2 |
 
 **Phase 2 and the hold on the source**
 
@@ -453,14 +454,14 @@ listed test fails on the regression it names (after "catches").
 
 ### T8.2 Reservation, journal step, copies and phase 1
 
-**Subtask T8.2 estimate: 5 man-days.**
+**Subtask T8.2 estimate: 5.25 man-days.**
 
 - **Track:** A. **Depends on:** T8.1a, T8.1b; epic 4's T4.3 (the per-file existence commit and
   `waitBatch`) and T4.5 (the one sync function); epic 5's T5.1 (the guard, phase 1's order)
   and T5.4 (the retry channel).
 - **Covers:** R4 (the reservation, a source past its end), R10 (the source's release),
   R11–R17, R24, R26 (a store error), R33 (the stall before phase 1), R35 (the refused
-  reservation), R38, R41.
+  reservation), R38, R41, R42.
   RFC 8 §9.1 steps 1–4, "Journal-held source bytes are copied and synced before
   phase 1", "A Lost source run is carried as Lost", the source's release answered pending,
   "A clone removes exactly the destination extent" before phase 1, and a store error after
@@ -472,7 +473,8 @@ listed test fails on the regression it names (after "catches").
   destination's guard and epic 4's `waitBatch`, `CloneTarget` with the spec, the clone
   operation in the entry (D13), the copies of every held run through the reservation with
   the clock's time, the sync through epic 4's one sync function, the reservation's `Close`,
-  `Existence.Clone` with every pending operation of the destination but the copies (D15), the
+  `Existence.Clone` with every pending operation of the destination but the copies (D15),
+  each write's superseded runs from epic 4's T4.3 computation, the
   committed operations and the copies removed from the entry under its lock, the guard
   released, `Settle(dst, v)`; `kvstore`'s `Clone` changed as D15 says; D8's retry; RFC 8
   §9.1's `decision:` on copying through the journal at the copy step. T5.4's `ErrDelay`
@@ -521,7 +523,10 @@ listed test fails on the regression it names (after "catches").
   destination: phase 1 starts only after it returns (catches a phase 1 that overtakes the
   batch); a write outside the extent staged between the journal step and phase 1, growing the
   file past a hole: after phase 1 the File record's size and holes include it, and a later
-  group commit changes nothing (catches `Clone` setting `applied` over the write, D15).
+  group commit changes nothing (catches `Clone` setting `applied` over the write, D15); a
+  write to the destination outside the extent and an overwrite of part of it, both pending
+  below *v*: after phase 1 an overwrite record covers the overlapped runs (catches phase 1
+  passing the destination's writes without their superseded runs).
 
 ### T8.3 The clone-kind open and phase 2
 
@@ -693,7 +698,7 @@ over the fake journal. T8.4 and T8.6 can run in parallel once T8.3 and epic 6 ha
 | --- | --- | --- | --- | --- |
 | 1 | T8.1a | 2.5 | epic 3 | admission and the registrations, which epic 5's T5.1 reads |
 | — | T8.1b | 1 | lands in epic 5's PR 1 | the removal checks, in T5.1's entry-lock section |
-| 2 | T8.2 | 5 | PR 1; epic 5's PR 1 and PR 2 (T5.1, T5.4); epic 4's T4.3 and T4.5 | the clone up to phase 1 and the fake's clone calls |
+| 2 | T8.2 | 5.25 | PR 1; epic 5's PR 1 and PR 2 (T5.1, T5.4); epic 4's T4.3 and T4.5 | the clone up to phase 1 and the fake's clone calls |
 | 3 | T8.3, T8.4 | 6.5 | PR 2; T5.3, T6.8, T6.9 | phase 2 and the clone's answer: the hold, the join, the deadline |
 | 4 | T8.5, T8.6 | 4.5 | PR 3; T6.5, T6.6 | `Copy` and the restart, each a consumer of the finished clone |
 

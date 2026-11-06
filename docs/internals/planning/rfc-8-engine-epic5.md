@@ -13,12 +13,13 @@ on it.
 **Track:** B.
 **Package paths:** `feat/storage-v2`'s, after #3645 renamed `enginev2` to `engine` and
 `journalv2` to `journal`.
-**Epic 5 estimate: 5 subtasks, 15.25 man-days.**
+**Epic 5 estimate: 5 subtasks, 15.5 man-days.**
 **Depends on:** sync point **S2, red suite in CI**: E1's surface (`Truncate`, `Deallocate`,
 `Delete`, `Deps.Existence.Remove`, `Deps.Content.Resume` and `PruneRemovals`) and E2's fake
 journal; epic 3, built: T3.1's per-file entries, whose pending-operation kinds for truncate
 and deallocate T3.4 to T3.6 already replay; epic 4's T4.3 (the capture this epic's guard
-makes skip a file, the in-batch mark phase 1 waits out, and `dropShare`), T4.5 (the one sync
+makes skip a file, the superseded runs phase 1 passes, the in-batch mark phase 1 waits
+out, and `dropShare`), T4.5 (the one sync
 function phase 1 syncs through) and T4.7 (the claim phase 1 takes a file's pending writes
 with, and the reservation counter), and T4.4 (the retrying-owner mark T5.3's loop sets); epic 8's T8.1a (admission and registrations), built, whose
 registrations T5.1's entry-lock section checks; epic 8's T8.1b (the removal checks) lands
@@ -197,6 +198,7 @@ one keeps its row.
 | R28 | Once its journal step is done, a removal fails only terminally: a truncate or deallocate whose phase 1 its call cannot commit answers `ErrDelay` and its phase 1 is retried with the guard held | MUST | §8.1 "Once its journal step is done, a removal does not fail" | T5.1, T5.3 |
 | R29 | A terminal failure leaves the removal's own operation out, commits the file's other pending existence first, a loss's included, then releases the guard and settles the marker without the removal; a failure of that commit is retried with the guard held and the marker unsettled | MUST | §8.1, RFC 1 §3.10 | T5.1, T5.3 |
 | R30 | `Close`'s last group commit leaves out a file whose phase-1 retry was cancelled, its pending operations left for recovery | MUST | §2.5 stop step 2 | T5.3 |
+| R33 | Phase 1 passes each write it commits with the runs where it overlaps an earlier pending write of the file, computed from the pending writes the engine holds, never asked of the journal (the group commit's half is epic 4's R48) | MUST | §5.1 "A commit carries supersession within itself", §8.1 | T5.1 |
 
 **Deallocate**
 
@@ -335,17 +337,19 @@ listed test fails on the regression it names (after "catches").
 
 ### T5.1 The removals through phase 1
 
-**Subtask T5.1 estimate: 4 man-days.**
+**Subtask T5.1 estimate: 4.25 man-days.**
 
 - **Track:** B. **Depends on:** epic 4's T4.3, T4.5 and T4.7; epic 8's T8.1a; T8.1b lands with it.
-- **Covers:** R2–R10, R28, R29, R32 (the call's half).
+- **Covers:** R2–R10, R28, R29, R32 (the call's half), R33.
   RFC 8 §8.1's first two rules, steps 2–4, "Once its journal step is done, a
-  removal does not fail" and its terminal failure, for `Truncate`; truncate up (§8); E6,
+  removal does not fail" and its terminal failure, for `Truncate`; §5.1's "A commit carries
+  supersession within itself" for phase 1; truncate up (§8); E6,
   E17, E19.
 - **Deliverables:** in `remove.go` and `file.go`, the guard (D1) and the in-flight mark's
   entry-lock section (D3), in which T8.1b puts the registration check; `Truncate`, up and
   down (D2, D4); the phase 1 the three removals share: the guard, epic 4's `waitBatch`, D8's
-  claim, the sync through epic 4's sync function, `Existence.Remove`, `Done` for each claimed
+  claim, the sync through epic 4's sync function, `Existence.Remove` with each claimed write's
+  superseded runs from epic 4's T4.3 computation, `Done` for each claimed
   write once it commits, the claim released on failure; then, under the entry's lock and
   before the guard is released, the claimed operations and the removal's own removed from
   the entry; then the guard released, `Settle(id, v)` and the post to the loop. A phase 1
@@ -380,7 +384,10 @@ listed test fails on the regression it names (after "catches").
   once (catches a removal that does not wait out admitted writes); a `Commit` over a pending
   overwrite on a file whose phase 1 a hook holds, the clock pinned so `existence_age` never
   re-queues the file, answers after phase 1 commits, the group commit skipping the file at
-  most once (catches a `Commit` that spins);
+  most once (catches a `Commit` that spins); over the real `kvstore`, a write and an
+  overwrite of part of it, both pending below a truncate that keeps them, leave an overwrite
+  record over the overlapped runs after phase 1 (catches phase 1 passing its claimed writes
+  without their superseded runs);
   `TestATerminalRemovalCommitsTheExistenceBelowItBeforeItsSettle` and
   `TestATerminalRemovalCommitsALossBelowItBeforeItsSettle` (catch a settle before the
   existence below it commits, a loss's included).
@@ -510,7 +517,7 @@ start step 4 and epic 8's phase 2 can enqueue.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T5.1, T5.2, epic 8's T8.1b | 5 (+1, epic 8's T8.1b, counted there) | epic 4's PR 2 and PR 3; epic 8's PR 1 (T8.1a) | the three removals' phase 1 with the guard and the mark, and the registration check T8.1b builds in T5.1's entry-lock section |
+| 1 | T5.1, T5.2, epic 8's T8.1b | 5.25 (+1, epic 8's T8.1b, counted there) | epic 4's PR 2 and PR 3; epic 8's PR 1 (T8.1a) | the three removals' phase 1 with the guard and the mark, and the registration check T8.1b builds in T5.1's entry-lock section |
 | 2 | T5.3, T5.4 | 7.5 | PR 1 | the loop and the release that retries from it |
 | 3 | T5.5 | 2.75 | PR 2 | the interleavings and the crashes, once every removal exists |
 
