@@ -1,6 +1,7 @@
 package kvstore
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -155,6 +156,75 @@ func TestExistenceCommitPerFileFailure(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// failGets fails a transaction's Get of key with err, the next n times, or
+// every time when n is negative. The tests using it can move to kvtest's
+// FaultKV once that exists.
+type failGets struct {
+	kv.KV
+	key []byte
+	err error
+	n   int
+}
+
+func (f *failGets) Update(ctx context.Context, fn func(kv.Txn) error) error {
+	return f.KV.Update(ctx, func(tx kv.Txn) error { return fn(failGetsTxn{tx, f}) })
+}
+
+type failGetsTxn struct {
+	kv.Txn
+	f *failGets
+}
+
+func (t failGetsTxn) Get(key []byte) ([]byte, error) {
+	if t.f.n != 0 && bytes.Equal(key, t.f.key) {
+		t.f.n--
+		return nil, t.f.err
+	}
+	return t.Txn.Get(key)
+}
+
+// A conflict reading a file's record retries the transaction rather than
+// failing the file, and the retry commits the whole batch.
+func TestExistenceCommitRetriesAConflictOnTheRecord(t *testing.T) {
+	fg := &failGets{err: kv.ErrConflict}
+	f := newContentFix(t, func(db kv.KV) kv.KV { fg.KV = db; return fg })
+	a, b := f.file(0), f.file(0)
+	fg.key, fg.n = fileKey(f.share, b), 1
+	failed, err := f.s.Existence().Commit(context.Background(), []PendingExistence{
+		{Share: f.share, File: a, Ops: []PendingOp{write(1, 0, mib)}},
+		{Share: f.share, File: b, Ops: []PendingOp{write(2, 0, mib)}},
+	})
+	if err != nil || len(failed) != 0 {
+		t.Fatalf("Commit: %v %v, want no failure", failed, err)
+	}
+	if fg.n != 0 {
+		t.Fatal("the conflict was never injected")
+	}
+	if f.get(a).Size != mib || f.get(b).Size != mib {
+		t.Error("the retry did not commit both files")
+	}
+}
+
+// Any other store error reading a file's record fails the whole call, not
+// that file alone, and commits nothing.
+func TestExistenceCommitFailsWholeOnAStoreError(t *testing.T) {
+	fg := &failGets{err: kv.ErrClosed}
+	f := newContentFix(t, func(db kv.KV) kv.KV { fg.KV = db; return fg })
+	a, b := f.file(0), f.file(0)
+	fg.key, fg.n = fileKey(f.share, b), -1
+	failed, err := f.s.Existence().Commit(context.Background(), []PendingExistence{
+		{Share: f.share, File: a, Ops: []PendingOp{write(1, 0, mib)}},
+		{Share: f.share, File: b, Ops: []PendingOp{write(2, 0, mib)}},
+	})
+	if !errors.Is(err, kv.ErrClosed) || failed != nil {
+		t.Fatalf("Commit: %v %v, want nil and the store error", failed, err)
+	}
+	fg.n = 0
+	if f.get(a).Size != 0 {
+		t.Error("a failed call committed the other file")
+	}
 }
 
 // RFC 8 §5.2: a file whose pending existence needs more than K keys commits
