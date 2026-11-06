@@ -299,7 +299,10 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   (R39) under the same mutex, and every publish, by `Bind` or the late attach, checks it
   under the mutex and, when it is set, publishes nothing and undoes in reverse; `Close`
   waits for the set to drain, within the stop bound (D7), before it closes anything, so no
-  handle is published on, or left open over, a journal stop step 4 closes. A binding's state
+  handle is published on, or left open over, a journal stop step 4 closes. After the set
+  drains, `Close` also waits for every handle marked closing to finish its `Close`, as a
+  retried `Bind` does, and closing every handle skips it, since a failed `Bind` leaves the
+  set before its handle's `Close` returns. A binding's state
   (serving, quiesced, removing) is an atomic in the binding, so a state change swaps
   nothing; attach and removal copy the table, as RFC 8 §1.1's `decision:` says. Epic 3's
   T3.1 already declares the table, `atomic.Pointer[bindings]` in `engine.go` read through
@@ -590,7 +593,11 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   "shared journal": two shares, one filled to its limit, the other's writes accepted (R11);
   with epic 3's R5, two shares bound through `Bind`, one saturated with writes: the other's
   write latency stays within its baseline and no `engine_lock_wait_seconds` area grows with
-  the loaded share's rate (§15.2's "no cross-share slowdown", the write half).
+  the loaded share's rate (§15.2's "no cross-share slowdown", the write half); §15.1's
+  "`Bind` takes over the reconcile's handle", a retried `Bind` after a failed one waiting
+  for its handle's `Close` rather than answering `ErrDelay` included, written with T6.2 or
+  the engine subtask that builds the metadata reconcile, whichever lands last, since no
+  engine epic plans the reconcile yet.
 
 ### T6.3 Start step 1: open the journals
 
@@ -808,7 +815,8 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   left for start; the last group commit per journal, then each journal's group commit
   goroutines (epic 4's T4.3) stopped and joined, so no batch runs on a journal step 4
   closes; cancel and join the version-limit raise and the retried open; wait for D1's set
-  of lifecycle calls in progress to drain; close every handle, then every journal, in
+  of lifecycle calls in progress to drain, then for every handle marked closing to finish
+  its own `Close`; close every other handle, then every journal, in
   reverse, only after every join; a join past the stop bound (D7), the context's deadline
   or, with none, the default, leaving its components open, the journal and every handle on
   it, and reported in the error.
@@ -839,7 +847,10 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   settles it (R48); a `Served` stub that never returns: `Close` returns within its deadline,
   the wait's goroutine is gone and the clone `Removal` is still listed at the next start
   (catches a `Close` hung on a shard never served, R49), written with T6.8 or T8.6,
-  whichever lands last; `prof.Watch` finds no goroutine left.
+  whichever lands last; a `Bind` that took over a handle, failed, its handle's `Close`
+  held by a hook, then `Close` called: `Journal.Close` does not start before the handle's
+  `Close` returns, and the handle is closed once (catches a `Close` that joins only the
+  lifecycle set, R42); `prof.Watch` finds no goroutine left.
 
 ### T6.9 `Unbind` and `Drop`
 

@@ -2524,10 +2524,11 @@ serves, with the headroom a spare short, counted by `Stats.HeadroomSparesShort`,
 retirement, by repack or an open, tries the remake again until the count is zero. Failing the open would stop `Start` on the full
 device this fallback is for. Repeated opens with no retirement between take at
 most one spare per damage event, or per re-count after a crash during `Reconciled`: an open appends a `reconcile` record only where no
-unsettled one is on disk that no per-range `reconciled` record follows ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), so
-a crash that keeps only some of `Reconciled`'s per-range records lets the next open
-count the rest again and take another, and `Reconciled` can settle it at once, so
-a later open with new damage takes another, and each stays counted in
+unsettled one is on disk that no per-range `reconciled` record follows ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)).
+A crash that keeps only some of `Reconciled`'s per-range records lets the next open
+count the rest again, and that open takes another spare. `Reconciled` can also settle
+a `reconcile` record at once, so a later open with new damage takes another. Each
+spare taken stays counted in
 `Stats.HeadroomSparesShort` until a retirement remakes it. It is
 accounted to the journal, like the spare pool.
 
