@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -219,6 +220,13 @@ func (s *Store) RecordJournal(
 // every row is at forgotten or later, Offloaded when every row is at
 // offloaded or later, and Serving otherwise, a shard with no row included.
 //
+// It walks the shares in ShareID order in batches of K, each its own View,
+// so no transaction reads every share, and each batch resumes after the last
+// share the one before it read. A share is read whole in one View, its record
+// and its shards' rm rows from one snapshot. Every share the walk visits
+// counts toward K, one with no record included, so a run of such shares
+// cannot make one View read past K of them.
+//
 // decision: start learns the removals and the installation's tags from this
 // one store read, keyed by ShareID because a resumed removal's Drop names only
 // the share, rather than from the node handing them to Start: the source
@@ -228,57 +236,86 @@ func (s *Store) RecordJournal(
 // ponytail: seeks once per share in the store and reads each one's shard
 // rows, as nothing indexes the share records by tag. Nothing writes an rm row
 // yet, as only a removal's mark runs, so every share reads Serving until the
-// removal's per-shard steps record their progress there in this format. One
-// View reads every share, so on a backend whose transactions have an age
-// limit (FoundationDB's five seconds) an installation with enough shares
-// fails it, and start fails with it; read in batches of shares, each its own
-// View, once one does.
+// removal's per-shard steps record their progress there in this format.
 func (l Lifecycle) Tags(ctx context.Context) (map[entity.ShareID]entity.TagRecord, error) {
-	var out map[entity.ShareID]entity.TagRecord
-	err := l.s.kv.View(ctx, func(r kv.Reader) error {
-		out = map[entity.ShareID]entity.TagRecord{}
-		prefix := []byte{keys.KindS}
-		var after []byte
+	out := map[entity.ShareID]entity.TagRecord{}
+	var after []byte
 
-		for {
-			id, found, err := nextShare(r, prefix, after)
-			if err != nil {
-				return err
-			}
+	for {
+		var (
+			batch map[entity.ShareID]entity.TagRecord
+			next  []byte
+			done  bool
+		)
 
-			if !found {
-				return nil
-			}
+		err := l.s.kv.View(ctx, func(r kv.Reader) error {
+			var err error
+			batch, next, done, err = tagsBatch(r, after, max(1, l.s.k))
 
-			after = shareKey(id, 0xFF) // past every key of the share: no sub-kind is 0xFF
-
-			b, ok, err := get(r, shareKey(id, keys.SInfo))
-			if err != nil {
-				return err
-			}
-
-			if !ok {
-				continue
-			}
-
-			sh, err := decodeShareInfo(id, b)
-			if err != nil {
-				return err
-			}
-
-			state, err := tagState(r, id)
-			if err != nil {
-				return err
-			}
-
-			out[id] = entity.TagRecord{
-				Tag:   sh.Tag,
-				State: state,
-			}
+			return err
+		})
+		if err != nil {
+			return nil, err
 		}
-	})
 
-	return out, err
+		maps.Copy(out, batch)
+
+		if done {
+			return out, nil
+		}
+
+		after = next
+	}
+}
+
+// tagsBatch reads the tags of at most n shares past after, and returns where
+// the next batch resumes and whether no share is left.
+func tagsBatch(
+	r kv.Reader,
+	after []byte,
+	n int,
+) (batch map[entity.ShareID]entity.TagRecord, next []byte, done bool, err error) {
+	batch = map[entity.ShareID]entity.TagRecord{}
+	prefix := []byte{keys.KindS}
+
+	for range n {
+		id, found, err := nextShare(r, prefix, after)
+		if err != nil {
+			return nil, nil, false, err
+		}
+
+		if !found {
+			return batch, nil, true, nil
+		}
+
+		after = shareKey(id, 0xFF) // past every key of the share: no sub-kind is 0xFF
+
+		b, ok, err := get(r, shareKey(id, keys.SInfo))
+		if err != nil {
+			return nil, nil, false, err
+		}
+
+		if !ok {
+			continue
+		}
+
+		sh, err := decodeShareInfo(id, b)
+		if err != nil {
+			return nil, nil, false, err
+		}
+
+		state, err := tagState(r, id)
+		if err != nil {
+			return nil, nil, false, err
+		}
+
+		batch[id] = entity.TagRecord{
+			Tag:   sh.Tag,
+			State: state,
+		}
+	}
+
+	return batch, after, false, nil
 }
 
 // nextShare is the first share with a key under prefix past after.
@@ -345,38 +382,65 @@ func tagState(r kv.Reader, share entity.ShareID) (entity.TagState, error) {
 }
 
 // VersionLimits is each share's version limit, for the floor the engine's
-// Open is given; zero for a share none was written for.
-//
-// ponytail: one View reads every named share's limit: Tags' age-limit ceiling.
+// Open is given; zero for a share none was written for. It reads the shares
+// in batches of K, each its own View reading its limits with one GetMany, so
+// no transaction reads every share and a batch costs one round trip.
 func (l Lifecycle) VersionLimits(
 	ctx context.Context,
 	shares []entity.ShareID,
 ) (map[entity.ShareID]entity.JournalVersion, error) {
-	var out map[entity.ShareID]entity.JournalVersion
-	err := l.s.kv.View(ctx, func(r kv.Reader) error {
-		out = make(map[entity.ShareID]entity.JournalVersion, len(shares))
+	out := make(map[entity.ShareID]entity.JournalVersion, len(shares))
 
-		for _, id := range shares {
-			b, ok, err := get(r, versionLimitKey(id))
-			if err != nil {
-				return err
-			}
+	for chunk := range slices.Chunk(shares, max(1, l.s.k)) {
+		var batch map[entity.ShareID]entity.JournalVersion
 
-			var v entity.JournalVersion
+		err := l.s.kv.View(ctx, func(r kv.Reader) error {
+			var err error
+			batch, err = versionLimitsIn(r, chunk)
 
-			if ok {
-				if v, err = decodeVersion(b); err != nil {
-					return err
-				}
-			}
-
-			out[id] = v
+			return err
+		})
+		if err != nil {
+			return nil, err
 		}
 
-		return nil
-	})
+		maps.Copy(out, batch)
+	}
 
-	return out, err
+	return out, nil
+}
+
+// versionLimitsIn reads the limits of shares with one GetMany.
+func versionLimitsIn(
+	r kv.Reader,
+	shares []entity.ShareID,
+) (map[entity.ShareID]entity.JournalVersion, error) {
+	ks := make([][]byte, len(shares))
+
+	for i, id := range shares {
+		ks[i] = versionLimitKey(id)
+	}
+
+	vs, err := r.GetMany(ks)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[entity.ShareID]entity.JournalVersion, len(shares))
+
+	for i, id := range shares {
+		var v entity.JournalVersion
+
+		if vs[i] != nil {
+			if v, err = decodeVersion(vs[i]); err != nil {
+				return nil, err
+			}
+		}
+
+		out[id] = v
+	}
+
+	return out, nil
 }
 
 // RaiseVersionLimits raises each share's version limit to its value in to,
@@ -466,11 +530,20 @@ func raiseVersionLimitIn(tx kv.Txn, share entity.ShareID, v entity.JournalVersio
 	return tx.Set(versionLimitKey(share), encodeVersion(v))
 }
 
-// RaiseAtStart raises each named shard's incarnation by one, in one
-// transaction, before the node answers any open-state request for them, so
-// no incarnation and no grace instance repeats across starts. A shard named
-// twice is raised once; one past the 24-bit shard space refuses the call. It
-// returns the incarnation it wrote for each shard.
+// RaiseAtStart raises each named shard's incarnation by one, before the
+// node answers any open-state request for them, so no incarnation and no
+// grace instance repeats across starts. A shard named twice is raised once;
+// one past the 24-bit shard space refuses the call before anything is
+// written. It returns the incarnation it wrote for each shard.
+//
+// The shards go in batches of K, sorted, each its own transaction (RFC 8
+// §2.5, RFC 16 §3), which reads its records with one GetMany. A batch holds K
+// shards, not fewer: each shard reads and writes the same key, the budget's
+// cost of a key already counts the conflict range of reading it, and K bounds
+// the keys a transaction writes. A batch that fails leaves the earlier ones
+// raised and the call returns its error; the next start raises every shard
+// again, those already raised included, which is safe because a raise only
+// goes up.
 //
 // decision: this raise also opens a new grace instance, GraceInstance =
 // Incarnation, because the shard's open state is lost: a single node's start
@@ -480,12 +553,6 @@ func raiseVersionLimitIn(tx kv.Txn, share entity.ShareID, v entity.JournalVersio
 // state this process holds is raised by RaiseAtAttach instead, which keeps the
 // grace instance, or every client of the shard would reclaim for nothing.
 // Revisit when a handover ships the table, which keeps it too.
-//
-// ponytail: every shard goes in one transaction, with no split by the key
-// budget, and it raises nothing else. The start transaction also raises the
-// node epoch: move this raise into it when the node record lands. Splitting it
-// once a node serves more shards than one transaction holds needs the
-// one-transaction start rule changed first.
 func (l Lifecycle) RaiseAtStart(
 	ctx context.Context,
 	shards []entity.ShardID,
@@ -502,30 +569,63 @@ func (l Lifecycle) RaiseAtStart(
 		}
 	}
 
-	var out map[entity.ShardID]uint64
-	err := l.s.kv.Update(ctx, func(tx kv.Txn) error {
-		out = make(map[entity.ShardID]uint64, len(ids))
+	out := make(map[entity.ShardID]uint64, len(ids))
 
-		for _, id := range ids {
-			sh, err := shardIn(tx, id)
-			if err != nil {
-				return err
-			}
+	for chunk := range slices.Chunk(ids, max(1, l.s.k)) {
+		var raised map[entity.ShardID]uint64
 
-			sh.Incarnation++
-			sh.GraceInstance = sh.Incarnation
+		err := l.s.kv.Update(ctx, func(tx kv.Txn) error {
+			var err error
+			raised, err = raiseAtStartIn(tx, chunk)
 
-			if err := tx.Set(shardKey(uint64(id)), encodeShard(sh)); err != nil {
-				return err
-			}
-
-			out[id] = sh.Incarnation
+			return err
+		})
+		if err != nil {
+			return nil, err
 		}
 
-		return nil
-	})
+		maps.Copy(out, raised)
+	}
+
+	return out, nil
+}
+
+// raiseAtStartIn raises each of shards by one in tx and sets its grace
+// instance to it, reading every record with one GetMany, and returns the
+// incarnations written. A shard with no record starts at zero.
+func raiseAtStartIn(tx kv.Txn, shards []entity.ShardID) (map[entity.ShardID]uint64, error) {
+	ks := make([][]byte, len(shards))
+
+	for i, id := range shards {
+		ks[i] = shardKey(uint64(id))
+	}
+
+	vs, err := tx.GetMany(ks)
 	if err != nil {
 		return nil, err
+	}
+
+	out := make(map[entity.ShardID]uint64, len(shards))
+
+	for i, id := range shards {
+		sh := entity.Shard{
+			ID: id,
+		}
+
+		if vs[i] != nil {
+			if sh, err = decodeShard(id, vs[i]); err != nil {
+				return nil, err
+			}
+		}
+
+		sh.Incarnation++
+		sh.GraceInstance = sh.Incarnation
+
+		if err := tx.Set(ks[i], encodeShard(sh)); err != nil {
+			return nil, err
+		}
+
+		out[id] = sh.Incarnation
 	}
 
 	return out, nil
