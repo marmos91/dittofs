@@ -79,50 +79,79 @@ func TestAWriteRefusedByOpenStateChangesNothing(t *testing.T) {
 }
 
 // V7: a write holds its file's admission lock from open state's check to
-// the bytes staged, so a mandatory lock, taken under that lock as every lock
-// is, is ordered wholly before the write, which it then refuses, or wholly
-// after it.
+// the bytes staged, and a lock takes it too, so a mandatory lock is ordered
+// wholly before the write, which it then refuses, or wholly after it: a lock
+// asked while the write stages is granted only once the write has answered.
 func TestALockIsOrderedWhollyBeforeOrAfterAWrite(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
 	h := s.file(t, "f", s.alice.Principal, 0o666)
-	id := fileOf(h)
 	pc := s.smb(t, "pc", s.alice.Principal)
 	ref := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
-	key := keyOf(s.record(t, h))
-	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
 	lock := func(name string) error {
-		defer s.Admission(id)()
-		_, err := s.tab.Locks().Lock(ctx, who, key, openstate.LockReq{
-			Owner: openstate.LockOwner{Client: pc.Client, Name: []byte(name), Stack: true}, Open: ref,
-			Ranges: []openstate.LockRange{{ByteRange: openstate.ByteRange{Offset: 0, Length: 10}, Exclusive: true}},
+		_, err := s.Lock(ctx, pc, ref, vfs.LockReq{
+			Owner:  vfs.LockOwner{Client: pc.Client, Name: []byte(name), Stack: true},
+			Ranges: []vfs.LockRange{{ByteRange: vfs.ByteRange{Offset: 0, Length: 10}, Exclusive: true}},
 		})
 		return err
 	}
 	bob := proven(s.bob.Principal, inLab)
 
-	// After: as the write stages its bytes it still holds the admission
-	// lock every lock is taken under, which a take that may not wait finds
-	// held; the lock is granted once the write has answered.
-	gone, cancel := context.WithCancel(ctx)
-	cancel()
+	// After: a lock asked while the write stages its bytes waits for the
+	// write to stage them, and is granted then.
+	var locked chan error
+	var staged atomic.Bool
 	s.engine.writing = func(entity.FileID) {
-		if unlock, err := s.locks.Take(gone, lockorder.Set{Admit: []lockorder.Key{lockorder.Key(id)}}); err == nil {
-			unlock()
-			t.Error("the admission lock was free between the write's check and its bytes staged")
-		}
+		locked = make(chan error, 1)
+		go func() {
+			err := lock("after")
+			if !staged.Load() {
+				err = errors.New("granted before the write staged")
+			}
+			locked <- err
+		}()
+		time.Sleep(20 * time.Millisecond)
+		staged.Store(true)
 	}
-	if _, err := s.Write(ctx, bob, vfs.Anonymous(h), 0, []byte("x"), vfs.Unstable); err != nil {
+	_, err := s.Write(ctx, bob, vfs.Anonymous(h), 0, []byte("x"), vfs.Unstable)
+	if err != nil {
 		t.Fatalf("the write before the lock: %v", err)
 	}
 	s.engine.writing = nil
-	s.must(t, lock("after"))
+	if err := <-locked; err != nil {
+		t.Fatalf("the lock asked during the write: %v", err)
+	}
+
+	// The lock holds the admission lock while open state grants it, so no
+	// write can start between its check and its grant.
+	gone, cancel := context.WithCancel(ctx)
+	cancel()
+	s.lockState = probedLocks{Locks: s.lockState, probe: func() {
+		if unlock, err := s.locks.Take(gone, lockorder.Set{Admit: []lockorder.Key{lockorder.Key(fileOf(h))}}); err == nil {
+			unlock()
+			t.Error("the admission lock was free while open state granted the lock")
+		}
+	}}
+	if _, err := s.Lock(ctx, pc, ref, vfs.LockReq{Owner: vfs.LockOwner{Client: pc.Client, Name: []byte("probed"), Stack: true}, Ranges: span(20, 1, true)}); err != nil {
+		t.Fatalf("the probed lock: %v", err)
+	}
 
 	// Before: the lock held, the write meets it and stages nothing.
 	s.engine.writing = func(entity.FileID) { t.Error("a write under a mandatory lock was staged") }
 	if _, err := s.Write(ctx, bob, vfs.Anonymous(h), 0, []byte("y"), vfs.Unstable); !errors.Is(err, vfs.ErrLocked) {
 		t.Errorf("a write under another's exclusive lock: %v, want ErrLocked", err)
 	}
+}
+
+// probedLocks is open state's locks running probe before each Lock.
+type probedLocks struct {
+	openstate.Locks
+	probe func()
+}
+
+func (p probedLocks) Lock(ctx context.Context, who openstate.Caller, f openstate.FileKey, r openstate.LockReq) (openstate.LockResult, error) {
+	p.probe()
+	return p.Locks.Lock(ctx, who, f, r)
 }
 
 // A read and a deallocate hold the file's admission lock from open state's

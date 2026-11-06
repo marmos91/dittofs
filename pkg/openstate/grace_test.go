@@ -576,6 +576,46 @@ func TestUnservedShardMintsNothing(t *testing.T) {
 	f.mustOpen(t, c, in(9), OpenRequest{Access: rd})
 }
 
+// Entry answers the entry an open was made through as a rename moved it,
+// for the open and for a lock state under it; nothing for an open made by
+// handle, or once its entry is removed; and NotYours to another client.
+func TestEntryIsTheOpensNameAsRenamed(t *testing.T) {
+	f := newFixture(t)
+	p := f.caller(t, smb("p-pc"))
+	file, d1, d2 := anyFile(), entity.NewFileID(), entity.NewFileID()
+	o := f.mustOpen(t, p, file, OpenRequest{Via: d1, Name: []byte("a"), Access: rd})
+	if err := f.Opens().Renamed(ctx, file, d1, []byte("a"), d2, []byte("b")); err != nil {
+		t.Fatal(err)
+	}
+	if dir, name, err := f.Opens().Entry(ctx, p, file, refOf(o)); err != nil || dir != d2 || string(name) != "b" {
+		t.Errorf("the renamed open's entry: %v %q %v, want b in the directory it moved to", dir, name, err)
+	}
+	owner := LockOwner{Client: p.Client, Name: []byte("lo")}
+	res, err := f.Locks().Lock(ctx, p, file, LockReq{Owner: owner, Open: refOf(o), Ranges: []LockRange{{ByteRange: ByteRange{Length: 1}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ls := res.Ref
+	ls.Seq = 0
+	if dir, name, err := f.Opens().Entry(ctx, p, file, OpenRef{Kind: RefLocked, State: ls}); err != nil || dir != d2 || string(name) != "b" {
+		t.Errorf("the lock state's entry: %v %q %v, want its open's", dir, name, err)
+	}
+	byHandle := f.mustOpen(t, p, anyFile(), OpenRequest{Access: rd})
+	if dir, name, err := f.Opens().Entry(ctx, p, FileKey{ID: byHandle.File}, refOf(byHandle)); err != nil || !dir.IsZero() || name != nil {
+		t.Errorf("an open made by handle has entry %v %q %v, want none", dir, name, err)
+	}
+	q := f.caller(t, smb("q-pc"))
+	if _, _, err := f.Opens().Entry(ctx, q, file, refOf(o)); !errors.Is(err, ErrNotYours) {
+		t.Errorf("another client's Entry: %v, want NotYours", err)
+	}
+	if err := f.Opens().Renamed(ctx, file, d2, []byte("b"), entity.FileID{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if dir, name, err := f.Opens().Entry(ctx, p, file, refOf(o)); err != nil || !dir.IsZero() || name != nil {
+		t.Errorf("the open's entry once its name is removed: %v %q %v, want none", dir, name, err)
+	}
+}
+
 // A rename of the entry an open was made through moves the open's name, so
 // the deferred unlink removes the entry's current name, and the directory
 // it was made through follows it.

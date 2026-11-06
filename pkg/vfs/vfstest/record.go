@@ -368,18 +368,18 @@ func (rec *Recorder) Lock(ctx context.Context, c vfs.Call, ref vfs.OpenRef, r vf
 	return result[vfs.StateRef](rec, ret, 0), result[error](rec, ret, 1)
 }
 
-func (rec *Recorder) CancelLock(ctx context.Context, c vfs.Call, ref vfs.OpenRef, r vfs.ByteRange) (bool, error) {
-	ret := rec.call(vfs.OpCancelLock, ctx, c, ref, r)
+func (rec *Recorder) CancelLock(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o vfs.LockOwner, r vfs.ByteRange) (bool, error) {
+	ret := rec.call(vfs.OpCancelLock, ctx, c, ref, o, r)
 	return result[bool](rec, ret, 0), result[error](rec, ret, 1)
 }
 
-func (rec *Recorder) TestLock(ctx context.Context, c vfs.Call, ref vfs.OpenRef, r vfs.ByteRange, exclusive bool) (*vfs.Lock, error) {
-	ret := rec.call(vfs.OpTestLock, ctx, c, ref, r, exclusive)
+func (rec *Recorder) TestLock(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o vfs.LockOwner, r vfs.ByteRange, exclusive bool) (*vfs.Lock, error) {
+	ret := rec.call(vfs.OpTestLock, ctx, c, ref, o, r, exclusive)
 	return result[*vfs.Lock](rec, ret, 0), result[error](rec, ret, 1)
 }
 
-func (rec *Recorder) Unlock(ctx context.Context, c vfs.Call, ref vfs.OpenRef, rs []vfs.ByteRange, q vfs.Seqs) (uint32, error) {
-	ret := rec.call(vfs.OpUnlock, ctx, c, ref, rs, q)
+func (rec *Recorder) Unlock(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o vfs.LockOwner, rs []vfs.ByteRange, q vfs.Seqs, replay *vfs.LockSequence) (uint32, error) {
+	ret := rec.call(vfs.OpUnlock, ctx, c, ref, o, rs, q, replay)
 	return result[uint32](rec, ret, 0), result[error](rec, ret, 1)
 }
 

@@ -59,6 +59,7 @@ type (
 	ByteRange    = openstate.ByteRange
 	LockRange    = openstate.LockRange
 	Lock         = openstate.Lock
+	LockedError  = openstate.LockedError
 	LockSequence = openstate.LockSequence
 	LockWaiter   = openstate.LockWaiter
 	WaitKind     = openstate.WaitKind

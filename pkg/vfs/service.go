@@ -151,12 +151,18 @@ type Data interface {
 type Locking interface {
 	// Lock answers the lock state's reference, its new Seq included; zero
 	// where the protocol names none.
+	// A conflict is ErrLocked, and a *LockedError naming the holder; a
+	// request recorded as waiting is ErrBlocked, answered through
+	// Callbacks.LockWaitOver.
 	Lock(ctx context.Context, c Call, ref OpenRef, r LockReq) (StateRef, error)
-	CancelLock(ctx context.Context, c Call, ref OpenRef, r ByteRange) (granted bool, err error)
-	TestLock(ctx context.Context, c Call, ref OpenRef, r ByteRange, exclusive bool) (*Lock, error)
-	// Unlock releases rs in order, stopping at the first range not held with
-	// ErrRangeNotLocked, and answers the lock state's new seqid.
-	Unlock(ctx context.Context, c Call, ref OpenRef, rs []ByteRange, q Seqs) (uint32, error)
+	// CancelLock drops o's waiter for r, or reports its lock granted first.
+	CancelLock(ctx context.Context, c Call, ref OpenRef, o LockOwner, r ByteRange) (granted bool, err error)
+	// TestLock is the lock that would refuse o's lock of r, or nil.
+	TestLock(ctx context.Context, c Call, ref OpenRef, o LockOwner, r ByteRange, exclusive bool) (*Lock, error)
+	// Unlock releases o's rs in order, stopping at the first range not
+	// held with ErrRangeNotLocked, and answers the lock state's new seqid;
+	// replay is its place in its open's lock replay, as LockReq.Replay.
+	Unlock(ctx context.Context, c Call, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs, replay *LockSequence) (uint32, error)
 	// AckRecall answers a recall of g; to GrantNone returns it.
 	AckRecall(ctx context.Context, c Call, g GrantID, to GrantKind) error
 	Watch(ctx context.Context, c Call, w WatchSpec) (WatchID, error)

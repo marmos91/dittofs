@@ -287,7 +287,9 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 			return vfs.WCC{}, err
 		}
 	}
-	return fs.wcc(ctx, c, a, t.H, f), nil
+	w := fs.wcc(ctx, c, a, t.H, f)
+	fs.entryChanged(ctx, a, t.Open, f, changeOf(ch.Attrs))
+	return w, nil
 }
 
 // moved is whom a change of f's owner or group moves its charge to, the
@@ -564,7 +566,9 @@ func (fs *Filesystem) change(ctx context.Context, c vfs.Call, t vfs.Target, op v
 	if err := do(a, f); err != nil {
 		return vfs.WCC{}, err
 	}
-	return fs.wcc(ctx, c, a, t.H, f), nil
+	w := fs.wcc(ctx, c, a, t.H, f)
+	fs.entryChanged(ctx, a, t.Open, f, what)
+	return w, nil
 }
 
 // hold admits a change to t's file, takes the file's admission and accept

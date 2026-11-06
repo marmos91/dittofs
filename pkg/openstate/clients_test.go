@@ -756,8 +756,12 @@ func TestStartAndStop(t *testing.T) {
 			_, err := g.Opens().Reconnect(ctx, Caller{Client: id}, 1, ReconnectMatch{}, entity.SessionRef{})
 			return err
 		},
-		"Flushed":         func() error { return g.Opens().Flushed(ctx, Caller{Client: id}, 1, 0) },
-		"Renamed":         func() error { return g.Opens().Renamed(ctx, file, entity.FileID{}, nil, entity.FileID{}, nil) },
+		"Flushed": func() error { return g.Opens().Flushed(ctx, Caller{Client: id}, 1, 0) },
+		"Renamed": func() error { return g.Opens().Renamed(ctx, file, entity.FileID{}, nil, entity.FileID{}, nil) },
+		"Entry": func() error {
+			_, _, err := g.Opens().Entry(ctx, Caller{Client: id}, file, OpenRef{Kind: RefAnonymous})
+			return err
+		},
 		"ServeShard":      func() error { return g.Recovery().ServeShard(ctx, f.fs.Share.ID, 0, 1) },
 		"ReclaimComplete": func() error { return g.Recovery().ReclaimComplete(ctx, Caller{Client: id}, nil) },
 	}

@@ -70,7 +70,8 @@ var grantRetry = 10 * time.Second
 // down are seen missing their grants or holding goroutines.
 var grantResendFor = 90 * time.Second
 
-// ClientEnded tells the client its state ended, then drops its path.
+// ClientEnded tells the client its state ended, then drops its path and
+// its watches.
 //
 // ponytail: on one node the table has already released the client's state
 // everywhere, so the client is only told; with peers, end it at each primary
@@ -80,6 +81,7 @@ func (fs *Filesystem) ClientEnded(c entity.ClientID, shards []openstate.ShardID,
 		cb.Revoked(ctx, vfs.Revocation{Client: c, Reason: why})
 	})
 	fs.reg.unregister(c)
+	fs.watchers.drop(c, entity.ShareID{})
 }
 
 // LockWaitOver tells the waiting owner's client, and hands its answer to a
@@ -203,18 +205,22 @@ func (fs *Filesystem) RecallAny(c entity.ClientID, keep int) {
 	})
 }
 
+// Revoked tells the client its state ended. The watches it ended stop
+// delivering at once: a share's on a removed share's revocation, a shard's
+// on its lost state's, none on a single grant's, and every one of the
+// client's on any other.
 func (fs *Filesystem) Revoked(r openstate.Revocation) {
+	switch r.Reason {
+	case openstate.RevokedGrant:
+	case openstate.RevokedShare:
+		fs.watchers.drop(r.Client, r.Share)
+	case openstate.RevokedShardState:
+		fs.watchers.dropShard(r.Client, r.Shard)
+	default:
+		fs.watchers.drop(r.Client, entity.ShareID{})
+	}
 	fs.deliver(fs.latest("Revoked", r.Client), func(ctx context.Context, cb vfs.Callbacks) { cb.Revoked(ctx, r) })
 }
-
-// Notify delivers nothing yet.
-//
-// decision: a watch's changes are not delivered until Watch is built, since
-// delivery must first drop a watch no longer held and check that the watch's
-// holder may traverse to each change, and nothing records a watch to check
-// against. Nothing raises one meanwhile, as no watch can be set. Deliver it
-// with Watch.
-func (fs *Filesystem) Notify(c entity.ClientID, w openstate.WatchID, ch []openstate.Change) {}
 
 // deliver runs send in the background with the Callbacks path finds there,
 // under a context ending at callbackDeadline or at Stop. With none found, or
