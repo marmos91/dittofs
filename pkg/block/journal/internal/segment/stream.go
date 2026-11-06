@@ -1385,6 +1385,11 @@ func (s *Stream) SyncSegment() (id core.SegmentID, issued bool, err error) {
 	return id, true, nil
 }
 
+// syncAtGapHook is the test hook in SyncAt between its checks and its sync,
+// where a seal and a roll can still end and leave the segment. A check that
+// sets it must nil it before it returns.
+var syncAtGapHook func()
+
 // SyncAt makes the record at loc durable, not merely the active segment's: a
 // segment the stream has left was either sealed, which made its every record
 // durable, or ended by a failure, which made none of them known durable, and
@@ -1404,6 +1409,9 @@ func (s *Stream) SyncAt(loc Location) error {
 		return nil
 	}
 	s.appendMu.Unlock()
+	if syncAtGapHook != nil {
+		syncAtGapHook()
+	}
 	if err := s.Sync(); err != nil {
 		return err
 	}
