@@ -60,6 +60,8 @@ func TestLoadRules(t *testing.T) {
 		{"placeholders side by side are each checked", ok + "suites:\n  a: { cmd: 'run {out}{nope}' }\n", "unknown placeholder {nope}"},
 		{"tiers are known", ok + "suites:\n  a: { cmd: true, tier: weekly }\n", `tier "weekly"`},
 		{"an option isn't named like a dt run flag", ok + "suites:\n  a: { cmd: true, options: { ci: { cmd: false } } }\n", "dt run has a flag of that name"},
+		{"packages gives a tag or patterns", ok + "suites:\n  a: { cmd: true, packages: { tag: x, patterns: [./...] } }\n  b: { cmd: true, packages: {} }\n",
+			"a: packages: a tag or patterns, one of the two\nb: packages: a tag or patterns, one of the two"},
 		{"needs are known", ok + "suites:\n  a: { cmd: true, needs: [linx] }\n", `unknown need "linx"`},
 		{"services are known", ok + "suites:\n  a: { cmd: true, needs: [\"service:nosuch\"] }\n", `unknown need "service:nosuch"`},
 		{"a matrix axis has values", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [] } }\n", `axis "p" has no values`},

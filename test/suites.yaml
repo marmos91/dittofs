@@ -69,7 +69,8 @@ suites:
     parallel: true
     format: go-json
     # Its coverage profile goes beside the cell's results, for the coverage report.
-    cmd: go test -race {args} -timeout=25m -coverprofile={out}/coverage.txt ./pkg/... ./internal/... ./cmd/... ./test/...
+    cmd: go test -race {args} -timeout=25m -coverprofile={out}/coverage.txt {packages}
+    packages: { patterns: [./pkg/..., ./internal/..., ./cmd/..., ./test/...] }   # dt run --changed narrows them
     args: { pr: "-short" }
     tier: pr
     options:

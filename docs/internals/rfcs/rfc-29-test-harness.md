@@ -492,7 +492,8 @@ suites:
 
   unit:
     format: go-json
-    cmd: go test -race {args} -timeout=25m -coverprofile={out}/coverage.txt ./pkg/... ./internal/... ./cmd/... ./test/...   # the profile Codecov gets (§4.8)
+    cmd: go test -race {args} -timeout=25m -coverprofile={out}/coverage.txt {packages}   # the profile Codecov gets (§4.8)
+    packages: { patterns: [./pkg/..., ./internal/..., ./cmd/..., ./test/...] }   # dt run --changed narrows them (§4.4)
     args: { pr: "-short" }              # pull requests run the short suite, as today
     tier: pr
     options:
@@ -758,7 +759,7 @@ suites:
 | `image` | A container image to run `cmd` in, on the network the fixture's server is on: the host's (`--network host`) on Linux, or `dtc`'s (`--network container:NAME`) when `dtc` runs on a bridge network, as on Docker Desktop | none: the host, or `dtc` |
 | `volumes` | Mounts into `image`, host path to container path | none |
 | `templates` | Files filled in with the placeholders into `{out}/config` before the first test: a tool's own configuration, such as WPTS's. They use the same `{x}` placeholders as commands, in place of the `${X}` that `envsubst` fills today. WPTS's become: `${DITTOFS_HOST}` and `${CLIENT_IP}`, `{server}`, since WPTS runs on the server's network and its own address is the server's, as both are loopback today; `${ADMIN_USER}`, `{user}`; `${TEST_USER}`, `{user2}`; `${TEST_PASSWORD}`, `{password}` | none |
-| `packages` | `{ tag: T }`: the Go packages whose tests the build tag `T` changes, found with `go list` | none |
+| `packages` | `{ tag: T }`: the Go packages whose tests the build tag `T` changes, found with `go list`; or `{ patterns: [P, ...] }`: Go package patterns, as `go test` takes them, which `dt run --changed` narrows (§4.4) | none |
 | `env` | Environment variables, for every tier, or per tier under the tier's name | none |
 | `args` | Text per tier, put where `{args}` appears | empty |
 | `names` | What `{names}` holds when a run names no tests, for a tool that finds its own tests and takes their names as arguments, as pynfs takes `all` or test codes | none |
@@ -785,7 +786,7 @@ fixture are filled before the first test, when neither has a value.
 | `{bin}` | a directory with `dfs` and `dfsctl` built from the checkout, as the user; a root suite gets it as `DITTOFS_E2E_BIN` (§3) |
 | `{tools}` | the pinned test tools (pjdfstest, pynfs, cthon04, nfstest) at the revisions `flake.lock` pins: built with `nix build .#NAME` on Linux runners and laptops with Nix, as CI does today, or the copies in the `dtc` image (§4.5). Only Linux cells use them. A suite gets the tools it names under `{tools}`, and only those are built and laid out; it names each by its path there, as pynfs does with `{tools}/pynfs/bin/pynfs-4.{minor}`. Each tool is one link, but for cthon04: `{tools}/pjdfstest` is pjdfstest's `share/pjdfstest` tree, its binary beside its `tests`, where pjdfstest's `misc.sh` looks for it, `{tools}/pynfs` is pynfs's tree, with its `bin`, `{tools}/cthon04` is a copy of cthon04's built tree that the user `dt` runs as can write, as the scripts' copy is, since its general tests `cp` their sources to the mount, keeping their modes, and Nix's store holds them read-only, and `{tools}/nfstest` holds a `bin` with a program per module, on Python 3.12, since nfstest's remote execution, which its lock and delegation modules set up first, breaks from 3.13 on |
 | `{out}` | the cell's results directory, as an absolute path: a tool may change directory, as pynfs's wrappers do. Before a command runs, `dt` makes the directories of each path below `{out}` that one of its arguments names, so a test named by its path, as `fio-verify`'s `bench/workloads/seq-write.fio`, can write `{out}/{test}.json`. A `{ sh: "..." }` command makes its own, since its values are quoted |
-| `{packages}` | the package list `packages` gives |
+| `{packages}` | the package list `packages` gives; with `dt run --changed`, of its patterns only the packages a change touched (§4.4) |
 | `{server}`, `{nfs-port}`, `{smb-port}`, `{mount}`, `{bucket}`, `{share}`, `{user}`, `{user2}`, `{password}`, `{realm}`, `{krb5-conf}`, `{client2}` | from the fixture (§4.2) |
 
 For the pynfs cell `badger-s3/1`, for example:
@@ -1056,7 +1057,7 @@ dt plan --tier T [--base REF] [--shard I/N]    the cells a tier runs, each with 
    [--json]                                    --base REF compares the branch with REF for docs-only PRs and `paths`
    [--estimate [--ci] [--last N]]              and the tier's runner-minutes, from dt history
 dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] run, grade and write results; exit status below
-   [--tier T] [--only A,B] [--skip A,B] [--parallel N] [--base REF]
+   [--tier T] [--only A,B] [--skip A,B] [--parallel N] [--base REF] [--changed]
 dt run --tier T --place P                      the cells of tier T that dt plan gives place P (the dedicated host)
 dt report [RUN] [--format text|md|json]        show a run; CI appends --format md to the job summary
 dt report [RUN...] --failures                  only the new failures; --post CELL,... posts them, given a tier
@@ -1190,6 +1191,7 @@ workflow's.
 | `--in host\|container\|auto` | where the whole run happens: `host` here; `container` in `dtc`, which runs the same command with `--in host`, and whose exit status is the run's, any but 1 to 3 as 2; `auto`, the default, moves to `dtc` when Docker, which `dtc` runs in, is here, a cell needs what the host lacks and the container gives, and no cell needs what the host has and the container lacks, such as macOS. A cell `dtc` can't run, as one whose fixture has `users: self`, which refuses root, counts for neither, unless it runs here, which keeps the run here. With `--ci` the default is `host`: in CI the plan picks the place. Inside `dtc` the run stays there whatever `--in` says |
 | `--results DIR` | where results go (default `test/harness/results/`, gitignored) |
 | `--base REF` | the ref `{base}` stands for in the commands that use it, instead of the base dt finds (`origin/develop` here, the event's in CI); a ref that names no commit in the checkout stops the run before any cell starts |
+| `--changed` | where a cell's `packages` gives patterns and each of its commands takes `{packages}`, `{packages}` holds only the packages they match with a file changed since `{base}` (`git diff BASE...HEAD`): a Go file counts for its own directory's package, and any other file, or one under `testdata`, for the nearest package above it, as an embedded file does. A package outside the patterns, one the change deletes or one whose files all need a build tag isn't tested; every package is, with no `{base}` or with `go.mod`, `go.sum` or `go.work` changed. With none changed, the commands are skipped and the cell passes, as without `{base}` (§4.8); a diff that fails leaves it not run. A change to a package doesn't test the packages that import it: the full run after the merge does |
 
 | Exit status | Meaning |
 |---|---|

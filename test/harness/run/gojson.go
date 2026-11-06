@@ -11,6 +11,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -550,20 +551,84 @@ func goPackages(root, tag string) ([]string, error) {
 
 // testFiles maps each package of the module at root to its test files.
 func testFiles(root string, flags ...string) (map[string]string, error) {
-	cmd := exec.Command("go", slices.Concat([]string{"list"}, flags, []string{"-f", "{{.ImportPath}}\t{{.TestGoFiles}} {{.XTestGoFiles}}", "./..."})...)
-	cmd.Dir = root
-	out, err := cmd.Output()
+	out, err := output(root, "go", slices.Concat([]string{"list"}, flags, []string{"-f", "{{.ImportPath}}\t{{.TestGoFiles}} {{.XTestGoFiles}}", "./..."})...)
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exit.Stderr)))
-		}
 		return nil, fmt.Errorf("go list %s: %w", strings.Join(flags, " "), err)
 	}
 	files := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		pkg, list, _ := strings.Cut(line, "\t")
 		files[pkg] = list
 	}
 	return files, nil
+}
+
+// unbuilt matches a path through a directory go never builds as a package of
+// a pattern: testdata, or one whose name begins with . or _.
+var unbuilt = regexp.MustCompile(`(^|/)(testdata|[._][^/]+)(/|$)`)
+
+// changedPackages lists the packages the patterns match that hold a file
+// changed between base and HEAD: a Go file counts for the package of its own
+// directory, and any other file, or one under a directory go doesn't build,
+// for the nearest package above it, as an embedded or testdata file does. A
+// package whose files all need a build tag, or that the change deletes, isn't
+// one. Without a base, or with go.mod, go.sum or go.work changed, it's the
+// patterns themselves: every package.
+//
+// decision: a package is tested for a change to its own files only, not to a
+// package it imports, so a change that breaks the tests of a package that
+// imports it passes here and fails the full run after the merge. Add the
+// importers, from go list's Deps, if that lets breaks through.
+func changedPackages(root, base string, patterns []string) ([]string, error) {
+	if base == "" {
+		return patterns, nil
+	}
+	diff, err := output(root, "git", "diff", "--name-only", "--no-renames", "-z", base+"...HEAD", "--")
+	if err != nil {
+		return nil, fmt.Errorf("git diff %s...HEAD: %w", base, err)
+	}
+	files := strings.FieldsFunc(diff, func(r rune) bool { return r == 0 })
+	if slices.ContainsFunc(files, func(f string) bool { return f == "go.mod" || f == "go.sum" || f == "go.work" }) {
+		return patterns, nil
+	}
+	list, err := output(root, "go", slices.Concat([]string{"list", "-e", "-f", "{{if or .GoFiles .CgoFiles .TestGoFiles .XTestGoFiles .InvalidGoFiles}}{{.Root}}\t{{.Dir}}\t{{.ImportPath}}{{end}}"}, patterns)...)
+	if err != nil {
+		return nil, fmt.Errorf("go list %s: %w", strings.Join(patterns, " "), err)
+	}
+	pkgs := map[string]string{} // each package's import path, by its directory relative to the module's
+	for _, line := range strings.Split(list, "\n") {
+		if f := strings.Split(line, "\t"); len(f) == 3 {
+			if rel, err := filepath.Rel(f[0], f[1]); err == nil {
+				pkgs[filepath.ToSlash(rel)] = f[2]
+			}
+		}
+	}
+	var changed []string
+	for _, f := range files {
+		goFile := strings.HasSuffix(f, ".go") && !unbuilt.MatchString(path.Dir(f))
+		for dir := path.Dir(f); ; dir = path.Dir(dir) {
+			if pkg, ok := pkgs[dir]; ok {
+				changed = append(changed, pkg)
+				break
+			}
+			if goFile || dir == "." {
+				break
+			}
+		}
+	}
+	slices.Sort(changed)
+	return slices.Compact(changed), nil
+}
+
+// output runs name with args in dir and returns its standard output, or an
+// error that carries its standard error.
+func output(dir, name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exit.Stderr)))
+	}
+	return string(out), err
 }

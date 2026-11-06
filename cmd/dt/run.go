@@ -29,7 +29,7 @@ func (e exitStatus) Error() string { return fmt.Sprintf("exit status %d", int(e)
 func newRun() *cobra.Command {
 	var tier, results, place, in, base string
 	var only, skip []string
-	var ci bool
+	var ci, changed bool
 	var retry, parallel int
 	options := map[string]bool{}
 	cmd := &cobra.Command{
@@ -92,7 +92,7 @@ func newRun() *cobra.Command {
 				}
 				return dtc(cmd, root, again(cmd, args))
 			}
-			return runCells(cmd, root, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier, Retry: retry, Place: place, Parallel: parallel, Base: base})
+			return runCells(cmd, root, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier, Retry: retry, Place: place, Parallel: parallel, Base: base, Changed: changed})
 		},
 	}
 	cmd.Flags().StringVar(&tier, "tier", "pr", "run at tier T, or at a suite's own tier when wider: it sets args, env and select")
@@ -104,6 +104,7 @@ func newRun() *cobra.Command {
 	cmd.Flags().StringVar(&results, "results", "", "where results go, relative to the checkout's root (default test/harness/results)")
 	cmd.Flags().StringVar(&place, "place", "", "run the cells of the tier that dt plan gives place P, as the dedicated host does; that place's host need is met")
 	cmd.Flags().StringVar(&base, "base", "", "compare the branch with REF wherever a command uses {base}, instead of the base dt finds: origin/develop, or in CI the event's")
+	cmd.Flags().BoolVar(&changed, "changed", false, "where a suite's packages gives patterns, test only the packages changed since the base: every one without a base, or when go.mod, go.sum or go.work changed")
 	cmd.Flags().StringVar(&in, "in", "", "where the run happens: host, container (dtc) or auto, which moves it to dtc when a cell needs what only the container gives (default auto, host with --ci)")
 	// Each suite's options are flags: dt run smbtorture --kerberos.
 	if _, r, err := load(); err == nil {

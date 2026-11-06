@@ -30,7 +30,7 @@ var (
 
 	// runFlags are dt run's flags, the planned ones included, which no option
 	// may share a name with.
-	runFlags = set("ci", "tier", "only", "skip", "parallel", "retry", "in", "results", "help")
+	runFlags = set("ci", "tier", "only", "skip", "parallel", "retry", "in", "results", "changed", "help")
 
 	nameRE = regexp.MustCompile(`^[a-z0-9-]+$`)
 	// PlaceholderRE matches a {name}, or a shell's ${VAR}, which Placeholders
@@ -180,6 +180,9 @@ func checkUnit(root string, u *Suite) []error {
 		if _, err := filepath.Match(strings.TrimSuffix(g, "/**"), ""); err != nil {
 			fail("paths %q: %v", g, err)
 		}
+	}
+	if p := u.Packages; p != nil && (p.Tag == "") == (len(p.Patterns) == 0) {
+		fail("packages: a tag or patterns, one of the two")
 	}
 
 	// Paths the suite reads must exist.
