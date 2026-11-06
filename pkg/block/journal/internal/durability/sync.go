@@ -184,9 +184,6 @@ type stream struct {
 	ends []segment.EndEvent
 	// windows are the pending windows, in end order.
 	windows []*window
-	// refused is set by the worker once it handed the stream's stop to the
-	// read-only entry; the worker alone touches it.
-	refused bool
 	// lastSeg is the newest segment the stream is known to have reached: the
 	// segment of a tracked record or of a sync, whichever is later.
 	lastSeg  core.SegmentID
