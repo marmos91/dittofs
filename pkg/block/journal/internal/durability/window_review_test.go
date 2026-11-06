@@ -128,12 +128,20 @@ func TestADurableRecordIsNotInTheWindow(t *testing.T) {
 
 // TestAnEndingMarkIsNotLeftByAStaleWant pins that a sync the worker issues from
 // a want that predates the segment's end event leaves no ending mark behind.
+//
+// The want is planted only once the worker has armed its timer, the last step
+// of the pass a's Track woke: a worker still in that pass would take the want
+// at once, sync a's segment and cover a, so the window would be empty and
+// resolved as soon as it was taken. Planted while the worker is idle, with no
+// wake, the want is first read in the pass the end event wakes, after that
+// pass took the window.
 func TestAnEndingMarkIsNotLeftByAStaleWant(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
 	f, g := file(1), file(2)
+	before := r.clock.Pending()
 	a := r.appendWrite(t, f, 0, "a")
-	r.stamped(t, 0)
+	r.armed(t, before)
 	st := r.d.made[0]
 	st.mu.Lock()
 	st.want = true
