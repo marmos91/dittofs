@@ -1120,13 +1120,14 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	// successor's tracker or catalog — the completion would complete and
 	// charge a record the successor never reserved — and the wait costs the
 	// in-flight writes of the ended segment alone, on the failure path
-	// only. The wait carries the appends' in-flight count too, for the
-	// notifier that clears the record waits for the same completions under
-	// the same cond, so one wake serves both. Withdrawn the day completions
+	// only. The record is all the roll waits on: the notifier that clears it
+	// first waits out every reservation and every sync in flight, and an
+	// ended segment takes no new one, so a cleared record means the segment
+	// holds none. Withdrawn the day completions
 	// stop touching the stream's shared tracker and catalog — per-segment
 	// trackers, for instance — for a late completion of an ended segment
 	// would then be harmless to a successor installed at once.
-	for (s.ending != nil || s.apending > 0) && !s.closed {
+	for s.ending != nil && !s.closed {
 		s.drained.Wait()
 	}
 	// A close that landed during the wait itself unwinds the taken spare: a
@@ -1137,9 +1138,6 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	if s.closed {
 		s.appendMu.Unlock()
 		return s.endTaken(id, ref, ErrStreamClosed)
-	}
-	if s.apending != 0 {
-		panic("segment: a roll installs a successor over reservations the ended segment still holds")
 	}
 	s.id, s.ref = id, ref
 	s.next = format.SegmentHeaderSize
