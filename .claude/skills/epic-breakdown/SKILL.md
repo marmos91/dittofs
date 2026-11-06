@@ -79,7 +79,7 @@ epic's document already exists and the user did not ask to replace it.
 | 1 | Plan path and epic number | **required**, from the request |
 | 2 | Output path | default `docs/internals/planning/rfc-<n>-<slug>-epic<k>.md`. **If the file exists, stop and ask** whether to replace it, revise it in place, or write elsewhere. Never overwrite it on your own: someone may be working from it |
 | 3 | Track | A, B, C or the team, from the plan's §2 (Step 1 has the fallback for an older plan); never ask for names |
-| 4 | Existing epic issue | `gh issue list -R "$R" --state all --label epic --label rfc-<n>-epic-<k>`, with `-R` as Step 6.1 says (both labels must match; a text search for "epic <k>" also returns other epics). `<k>` keeps its letter: for epic 7a the label is `rfc-<n>-epic-7a`, and the unsplit epic 7's issue is not this part's (6.6 says what happens to it). If one exists, note its number; when issues are created (Step 6), there must not be a second one |
+| 4 | Existing epic issue | `gh issue list -R "$R" --state all --label epic --label rfc-<n>-epic-<k>`, with `-R` as Step 6.1 says (both labels must match; a text search for "epic <k>" also returns other epics). `<k>` keeps its letter: for epic 7a the label is `rfc-<n>-epic-7a`, and the unsplit epic 7's issue is not this part's. If one exists, note its number; when issues are created (Step 6), there must not be a second one |
 
 Ask for whatever is missing with `AskUserQuestion`, in one batch, before reading further.
 If you cannot ask (for example when running as a subagent), stop and report the missing
@@ -516,7 +516,7 @@ Then attach it under its roadmap epic as a sub-issue (6.5).
 ### 6.4 One issue per subtask
 
 **Match the existing sub-issues first**, of this epic's issue and, for a split epic, of
-every other part's (6.6) (`--paginate`, since the endpoint returns 30 per page):
+every other part's, since a subtask can move between parts (`--paginate`, since the endpoint returns 30 per page):
 ```bash
 gh api --paginate "repos/$R/issues/<epic-number>/sub_issues" --jq '.[] | "\(.number) \(.state) \(.title)"'
 ```
@@ -583,15 +583,6 @@ subtasks come long after the epic issue.
 - An epic changes release only by moving under the other release's roadmap epic (the user
   creates it if the RFC has none there yet); then update the milestone copy on the epic
   issue and its open sub-issues. Closed ones keep the release they shipped in.
-- **An epic splits** (7 → 7a, 7b): each part gets its own epic issue and its own label,
-  `rfc-<n>-epic-7a`, under the roadmap epic of the release it ships in. The original epic
-  issue is closed as not planned, with a comment linking the parts; its open sub-issues move
-  under the part that now holds their subtask; and every `known.yaml` `issue:` naming it is
-  retargeted, in the pull request that splits the plan, to the part that turns the test
-  green. The original's `rfc-<n>-epic-7` label stays on the closed issues as history. Since
-  the parts share subtask ids, a subtask can move from one part to the other: when matching
-  sub-issues for one part (6.4), search the other parts' epic issues too, and move a match
-  rather than create a second issue.
 
 ### 6.7 Report
 

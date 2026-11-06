@@ -30,8 +30,9 @@ becomes epic `7a`, `7b`, …: the headings read `### Epic 7a — …`, the estim
 `**Epic 7a estimate: …**`, the §2 rows `E7a`, the labels `rfc-<n>-epic-7a`, and the epic
 documents `…-epic7a.md`. The parts keep epic 7's subtask ids and share one numbering, so a
 subtask of epic 7a is `T7.<n>`, never `T7a.<n>`, and no `T7.<n>` appears in two parts. The
-checks of both skills accept the letter. What a split does to the existing issues is in
-`epic-breakdown` Step 6.6.
+checks of both skills accept the letter. A split is an exceptional operation, done by hand
+in a pull request of its own: neither skill describes how the existing epic issue, its
+label and the `known.yaml` entries naming it follow the split.
 
 So the two skills' templates use two placeholders for an epic. **`<k>` is the epic as
 written, letter included (`7a`)**, and names headings, estimate lines, labels, files and
