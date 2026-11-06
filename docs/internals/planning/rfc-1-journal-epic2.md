@@ -591,7 +591,8 @@ Every conformance subtask also:
   - **`internal/core`:** the unexported segment-cap field and `SetSegmentCap` (D8).
   - **Stubs for what #3518 and #3511 add to RFC 1 §3**, each call returning
     `ErrNotImplemented` and each field zero: `SyncMark`, `Stats.SyncMarks` and `Open`'s
-    `marks []SyncMark` (#3518); `SegmentRange`, `Journal.Acknowledge`,
+    `marks []SyncMark`, `Sync`'s `marks` result (nil), `Journal.MarksRecorded` and
+    `Journal.Reconciled` (#3518); `SegmentRange`, `Journal.Acknowledge`,
     `AcknowledgeUnreadable` and `Stats.SuspectSegments` (#3511); `Handle.DropSuperseded`
     (#3511) and `Handle.DropOlder` (#3518). The surface is frozen at S1, so they follow
     epic 1's change process: the team agrees, `rfc_signatures_test.go` and every caller
@@ -830,7 +831,7 @@ Every conformance subtask also:
     `rename` recycling the row's dead segment is held (D6), since RFC 28 §3.3 retires that
     segment after the scan and before any copy; the second target's failed sync is the
     second refusal in a row of RFC 1 §5.4);
-    and the refusal halves of kind values (kinds 15 and 128 fail the open), segment header
+    and the refusal halves of kind values (kinds 17 and 128 fail the open), segment header
     and seal marker (a foreign header is foreign, not damaged; a seal marker copied into a
     payload does not stop a scan), and `format` file (55 or 57 bytes, a bad checksum and
     version 2 fail the open; a crash on either side of the `format.tmp` rename leaves old

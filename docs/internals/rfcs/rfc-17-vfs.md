@@ -1391,7 +1391,7 @@ recall missed).
 ```go
 type Delay struct {
 	Cause DelayCause
-	Until time.Time  // DelayFrozen: the freeze's bound; zero otherwise
+	Until time.Time  // DelayFrozen: the freeze's bound; zero for one with no bound, an administrator's quiesce included, and for every other cause
 	Moved bool       // DelayFrozen: the share's namespace has moved away; the address is the RevokedShare revocation's Addr
 }
 
@@ -1401,7 +1401,7 @@ const (
 	DelayRecall    DelayCause = iota // a caching grant is being recalled (§3.2)
 	DelayClone                       // a running clone or copy chunk holds the extent past the call's hold (§5.9)
 	DelayConflict                    // a metadata conflict still unresolved at the call's deadline (RFC 0 §9.2), or an open-state owner's own numbered request in flight (RFC 14 §2.8)
-	DelayFrozen                      // the share is quiesced, frozen for a move, or moved away; or a share not attached here (RFC 8 §12.1), or an open-state shard not yet served here (RFC 14 §11.3)
+	DelayFrozen                      // the share is quiesced, frozen for a move, or moved away; or a share not attached here (RFC 8 §12.1), or an open-state shard not yet served here (RFC 14 §11.3); or its journal's content not yet reconciled after damage (RFC 8 §2.5)
 	DelayCapacity                    // the journal's capacity or a share's journal limit (RFC 8 §10.2)
 	DelayCommit                      // a metadata commit is not landing: a stalled store, the version limit's raise, or (cluster) quota slack spent (RFC 8 §11.2, §5.6); or a stable write's sync may have lost it (§5.8)
 	DelayResources                   // a node memory pool is spent: the share cap or the open-state pool; an adapter builds the same for a reply reservation past its deadline (RFC 24 §4.2)
@@ -1727,7 +1727,7 @@ it, long enough for a lease break to run out and be revoked.
 | 4 | reserve the charge the write adds: the bytes it lands in holes below the size its staged writes leave, read from the engine's `Allocation` over its range under the admission lock, and the bytes it writes past that size; the gap a write leaves past the size stays a hole and is not reserved. A write that adds no charge, an overwrite of data, reserves nothing | §5.6 |
 | 5 | `ErrPerm` for an immutable file, or an append-only one below its size, releasing step 4's reservation, before anything changes; then, for a caller not privileged — the owner included — on a setuid file, or setgid with group execute, clear those bits in a committed mode change. The same step runs for a truncate, a deallocate and a copy or clone's destination | [RFC 7 §7.8](rfc-7-namespace-metadata.md#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint), [§9.6](rfc-7-namespace-metadata.md#9.6%20setuid%20and%20setgid%20are%20cleared%20when%20an%20unprivileged%20caller%20changes%20the%20file) |
 | 6 | under the file's accept lock: check step 5's flags again against the overlay's size; capture `WCC.Before`; the engine's `Write`, passing the times the open has suspended; `WCC.After`; release the lock; for a stable write, the engine's `Commit` over the extent. Every other change of a file draws its version from `Draw` under the same lock; a change refused `ErrVersionBehind` is redrawn and retried within the deadline, never surfaced, and `DelayConflict` at it | [RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more), [RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps), [§9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward), [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open) |
-| 7 | reply: a stable write once the journal has synced it **and**, if it overwrites committed content, its existence commit has landed; a stable append or hole fill waits only for the sync. A stable write whose `Commit` answers a verifier other than its `Write`'s is `ErrDelay` (`DelayCommit`) instead (§5.8). The group commit records existence, usage and `mtime`, and releases the reservation | [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) |
+| 7 | reply: a stable write once the journal has synced it **and**, if it overwrites committed content, its existence commit has landed; one whose extent covers committed content also waits for a recorded sync mark ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)); a stable write of only appends past the committed size or fills of committed holes waits only for the sync. A stable write whose `Commit` answers a verifier other than its `Write`'s is `ErrDelay` (`DelayCommit`) instead (§5.8). The group commit records existence, usage and `mtime`, and releases the reservation | [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) |
 
 Steps 3–6 run at the primary as one step (§4.8), except across a hold (§5.0).
 The lock never spans a sync or a group commit.
