@@ -1,9 +1,18 @@
 package durability
 
-import "github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
+)
 
 // run is one stream's worker: on each wake it completes the entries a sync
-// covered and stamps the ones it has not seen, until Stop closes done.
+// covered, stamps the ones it has not seen and issues the sync a waiter asked
+// for, until Stop closes done.
 func (d *Durability) run(st *stream) {
 	defer d.wg.Done()
 	for {
@@ -14,7 +23,68 @@ func (d *Durability) run(st *stream) {
 		}
 		d.complete(st)
 		d.stamp(st)
+		d.syncStep(st)
 	}
+}
+
+// syncStep issues the sync a waiter asked for, if one did, with no lock held.
+// A failure is recorded against the segment that was active and is never
+// retried (R10): the segment's tracker froze at the failure and will not
+// report it again.
+//
+// ponytail: a sync covers the whole active segment, so a file that syncs
+// often waits for what another writer appended. The cost is bounded by what
+// one stream accepts in one sync's latency. Upgrade to a stream of its own for
+// a frequently flushing file when a check of mixed durability shows the
+// latency rising.
+func (d *Durability) syncStep(st *stream) {
+	st.mu.Lock()
+	if !st.want {
+		st.mu.Unlock()
+		return
+	}
+	st.want = false
+	st.syncing = true
+	st.mu.Unlock()
+
+	var end func(error)
+	if d.tracer != nil {
+		_, end = d.tracer(context.Background(), core.SpanSync, slog.Uint64("stream", uint64(st.no)))
+	}
+	start := d.clock.Elapsed()
+	err := st.s.Sync()
+	took := d.clock.Elapsed() - start
+	if errors.Is(err, segment.ErrStreamClosed) {
+		err = core.ErrClosed
+	}
+
+	st.mu.Lock()
+	st.syncs++
+	st.sum += took
+	st.buckets[bucketOf(took)]++
+	if err != nil {
+		st.failures++
+		if st.haveLast {
+			st.failed[st.lastSeg] = err
+		}
+		d.log.Error("journal sync failed", "stream", st.no, "err", err)
+	}
+	st.syncing = false
+	st.notifyLocked()
+	st.mu.Unlock()
+	if end != nil {
+		end(err)
+	}
+}
+
+// bucketOf returns the histogram bucket a sync of duration d falls in.
+func bucketOf(d time.Duration) int {
+	for i, b := range SyncDurationBounds {
+		if d <= b {
+			return i
+		}
+	}
+	return len(SyncDurationBounds)
 }
 
 // complete drops every covered entry from the ledger (R87): each is marked

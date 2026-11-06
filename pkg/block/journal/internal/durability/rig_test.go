@@ -46,20 +46,27 @@ type rig struct {
 	seam    *journaltest.Seam
 	clock   journaltest.DrivenClock
 	domains *testDomains
+	pool    *segment.Pool
+	spares  int64
 }
 
 // newRig builds n streams whose sinks are the layer's, and starts the layer.
 // The cleanups run in reverse: the layer stops first, then the streams close,
 // then the cache shuts down and the pool stops. One rig per test: the
 // profiler's watches must not overlap.
-func newRig(t *testing.T, n int) *rig {
+func newRig(t *testing.T, n int) *rig { return newRigStarted(t, n, nil) }
+
+func newRigStarted(t *testing.T, n int, tracer core.Tracer) *rig {
 	t.Helper()
-	r := newRigUnstarted(t, n)
+	r := newRigTracing(t, n, tracer)
 	r.d.Start(r.streams)
 	return r
 }
 
-func newRigUnstarted(t *testing.T, n int) *rig {
+func newRigUnstarted(t *testing.T, n int) *rig { return newRigTracing(t, n, nil) }
+
+// newRigTracing is newRigUnstarted with a tracer on the layer.
+func newRigTracing(t *testing.T, n int, tracer core.Tracer) *rig {
 	t.Helper()
 
 	seam, err := journaltest.NewSeam(t.TempDir())
@@ -84,11 +91,11 @@ func newRigUnstarted(t *testing.T, n int) *rig {
 	})
 	clock := journaltest.NewStopwatchClock()
 	domains := &testDomains{}
-	d := New(Config{Clock: clock, Domains: domains})
+	d := New(Config{Clock: clock, Domains: domains, Tracer: tracer})
 	streams := segment.NewStreams(n, rigIdentity, set, pool, cache, d.Sink)
 	t.Cleanup(func() { _ = streams.Close() })
 	t.Cleanup(d.Stop)
-	return &rig{d: d, streams: streams, seam: seam, clock: clock, domains: domains}
+	return &rig{d: d, streams: streams, seam: seam, clock: clock, domains: domains, pool: pool, spares: int64(2 * n)}
 }
 
 // file returns a file id distinguished by b.
@@ -137,6 +144,13 @@ func (r *rig) ledgerLen(no int) int {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return len(st.ledger)
+}
+
+// settlePool waits until the pool has refilled its spares, so the directory
+// syncs its background work issues are over.
+func (r *rig) settlePool(t *testing.T) {
+	t.Helper()
+	eventually(t, "the pool to refill its spares", func() bool { return r.pool.Counters().Spares >= r.spares })
 }
 
 // eventually polls cond for up to five seconds of real time: a failure
