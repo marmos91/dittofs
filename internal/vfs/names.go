@@ -199,7 +199,7 @@ func (fs *Filesystem) createLocked(ctx context.Context, a *admitted, c vfs.Call,
 		return vfs.CreateResult{}, storeErr(err)
 	}
 	r.Dir.After = fs.attrs(ctx, a, dir)
-	fs.changed(ctx, r.Dir.After, openstate.Change{What: openstate.ChangeAddEntry, Name: name})
+	fs.changedIn(ctx, dir, openstate.Change{What: openstate.ChangeAddEntry, Name: name})
 	return r, nil
 }
 
@@ -244,7 +244,7 @@ func (fs *Filesystem) Link(ctx context.Context, c vfs.Call, dir vfs.Handle, name
 	}
 	r.File = fs.attrs(ctx, a, target)
 	r.Dir.After = fs.attrs(ctx, a, dir)
-	fs.changed(ctx, r.Dir.After, openstate.Change{What: openstate.ChangeAddEntry, Name: name})
+	fs.changedIn(ctx, dir, openstate.Change{What: openstate.ChangeAddEntry, Name: name})
 	return r, nil
 }
 
@@ -329,7 +329,7 @@ func (fs *Filesystem) unlinkLocked(ctx context.Context, a *admitted, c vfs.Call,
 		return vfs.UnlinkResult{}, false, err
 	}
 	r.Dir.After = fs.attrs(ctx, a, dir.H)
-	fs.changed(ctx, r.Dir.After, openstate.Change{What: openstate.ChangeRemove, Name: name})
+	fs.changedIn(ctx, dir.H, openstate.Change{What: openstate.ChangeRemove, Name: name})
 	fs.entryGone(ctx, f, fileOf(dir.H), name)
 	fs.releaseOrphan(ctx, f, orphan)
 	return r, false, nil
@@ -467,10 +467,10 @@ func (fs *Filesystem) renameLocked(ctx context.Context, a *admitted, c vfs.Call,
 		r.Moved = &vfs.WCC{After: fs.attrs(ctx, a, srcH)}
 	}
 	if fd == td {
-		fs.changed(ctx, r.From.After, openstate.Change{What: openstate.ChangeRename, Name: fromName, To: toName})
+		fs.changedIn(ctx, from.H, openstate.Change{What: openstate.ChangeRename, Name: fromName, To: toName})
 	} else {
-		fs.changed(ctx, r.From.After, openstate.Change{What: openstate.ChangeRemove, Name: fromName})
-		fs.changed(ctx, r.To.After, openstate.Change{What: openstate.ChangeAddEntry, Name: toName})
+		fs.changedIn(ctx, from.H, openstate.Change{What: openstate.ChangeRemove, Name: fromName})
+		fs.changedIn(ctx, to, openstate.Change{What: openstate.ChangeAddEntry, Name: toName})
 	}
 	if err := fs.opens.Renamed(ctx, keyOf(src), fileOf(from.H), fromName, fileOf(to), toName); err != nil {
 		// The rename committed; an open's stale name only defers a delete

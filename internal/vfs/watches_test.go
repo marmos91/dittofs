@@ -1,13 +1,17 @@
 package vfs
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/vfs"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
@@ -393,5 +397,68 @@ func TestAFailedChangeIsReportedNowhere(t *testing.T) {
 	s.touch(t, s.fs.Root, "g")
 	if got := notes(t, s.shares, cb, 1); got[0] != "g" {
 		t.Errorf("heard %q first, want the later create of g", got)
+	}
+}
+
+// endingKV is a store whose reads honour their context, and which runs
+// after, once set, when an update has committed, then clears it.
+type endingKV struct {
+	kv.KV
+	mu    sync.Mutex
+	after func()
+}
+
+func (e *endingKV) View(ctx context.Context, fn func(kv.Reader) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return e.KV.View(ctx, fn)
+}
+
+func (e *endingKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
+	err := e.KV.Update(ctx, fn)
+	e.mu.Lock()
+	after := e.after
+	e.after = nil
+	e.mu.Unlock()
+	if err == nil && after != nil {
+		after()
+	}
+	return err
+}
+
+// A name change is reported once it commits, though the call's context
+// ends right after: a create, a rename and an unlink each reach the watch.
+func TestACommittedChangeIsReportedThoughTheCallEnds(t *testing.T) {
+	db := &endingKV{}
+	s := startShares(t, newFixtureOver(t, Deps{}, kvstoretest.NewFS(t, func(tb testing.TB) kv.KV { db.KV = memKV(tb); return db })), nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	watcher, cb := s.connected(t, signedIn(alice.Principal, 1), smb("alice-pc", 1))
+	_, err := s.Watch(t.Context(), watcher, vfs.WatchSpec{Dir: s.fs.Root, Filter: ^openstate.ChangeMask(0)})
+	s.must(t, err)
+	admin := proven(s.fs.Admin.Principal, inLab)
+	ending := func(call func(ctx context.Context) error) {
+		t.Helper()
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		db.mu.Lock()
+		db.after = cancel
+		db.mu.Unlock()
+		s.must(t, call(ctx))
+	}
+	ending(func(ctx context.Context) error {
+		_, err := s.Create(ctx, admin, s.fs.Root, []byte("f"), vfs.CreateArgs{Kind: vfs.CreateRegular, Attrs: entity.Attrs{}.WithMode(0o666)})
+		return err
+	})
+	ending(func(ctx context.Context) error {
+		_, err := s.Rename(ctx, admin, vfs.Target{H: s.fs.Root}, []byte("f"), s.fs.Root, []byte("g"), false)
+		return err
+	})
+	ending(func(ctx context.Context) error {
+		_, err := s.Unlink(ctx, admin, vfs.Target{H: s.fs.Root}, []byte("g"))
+		return err
+	})
+	if got := notes(t, s, cb, 3); !reflect.DeepEqual(got, []string{"f", "f>g", "g"}) {
+		t.Errorf("the watch heard %q, want f, f>g and g", got)
 	}
 }
