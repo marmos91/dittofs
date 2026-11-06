@@ -1808,3 +1808,75 @@ func TestStreamAppendRefusesRecordsItCannotEncode(t *testing.T) {
 		t.Fatalf("the Sync after the refusals: %v", err)
 	}
 }
+
+// TestStreamSyncAtOfASegmentTheStreamSealedAndLeftIsDurable catches a SyncAt
+// that answers a left segment with an error, or with a sync of the successor:
+// a clean seal made every record of the segment durable.
+func TestStreamSyncAtOfASegmentTheStreamSealedAndLeftIsDurable(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
+	defer func() { _ = e.s.Close() }()
+
+	h1, b1 := streamWriteHeader(streamFileID(1), 0, streamTestBody(64, 0x11), 7, core.Version{Counter: 1})
+	first := streamAppendWrite(t, e, h1, b1)
+	if _, err := e.s.Seal(false); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	h2, b2 := streamWriteHeader(streamFileID(1), 64, streamTestBody(64, 0x22), 7, core.Version{Counter: 2})
+	second := streamAppendWrite(t, e, h2, b2)
+	if second.Loc.Segment == first.Loc.Segment {
+		t.Fatalf("the append after the seal stayed in segment %d, want a roll", first.Loc.Segment)
+	}
+
+	// A sync of the successor would be a sync call on its file: none may be
+	// made on the strength of the first record's location.
+	syncs := e.seam.CallsFor(journaltest.OpSync, streamSegName(second.Loc.Segment))
+	if err := e.s.SyncAt(first.Loc); err != nil {
+		t.Fatalf("SyncAt of a sealed, left segment = %v, want nil", err)
+	}
+	if got := e.seam.CallsFor(journaltest.OpSync, streamSegName(second.Loc.Segment)); got != syncs {
+		t.Errorf("SyncAt synced the successor: %d sync calls, want still %d", got, syncs)
+	}
+}
+
+// TestStreamSyncAtRefusesASegmentThatEndsBetweenItsChecksAndItsSync catches a
+// SyncAt that reports a record durable because Sync returned nil, when a
+// failed seal ended the record's segment and a roll moved the stream on in
+// the gap: Sync then synced the successor, which says nothing of the record.
+func TestStreamSyncAtRefusesASegmentThatEndsBetweenItsChecksAndItsSync(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
+	defer func() { _ = e.s.Close() }()
+
+	h1, b1 := streamWriteHeader(streamFileID(1), 0, streamTestBody(64, 0x11), 7, core.Version{Counter: 1})
+	first := streamAppendWrite(t, e, h1, b1)
+
+	ran := false
+	segment.SetSyncAtGapHook(func() {
+		segment.SetSyncAtGapHook(nil)
+		ran = true
+		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, streamSegName(1), 1, syscall.EIO)); err != nil {
+			t.Errorf("Schedule: %v", err)
+		}
+		if _, err := e.s.Seal(false); err == nil {
+			t.Errorf("the seal did not fail")
+		}
+		if err := e.seam.Schedule(); err != nil {
+			t.Errorf("disarming the sync fault: %v", err)
+		}
+		h2, b2 := streamWriteHeader(streamFileID(1), 64, streamTestBody(64, 0x22), 7, core.Version{Counter: 2})
+		if _, err := e.s.Append(h2, b2); err != nil {
+			t.Errorf("the rolling append: %v", err)
+		}
+	})
+	defer segment.SetSyncAtGapHook(nil)
+
+	if err := e.s.SyncAt(first.Loc); !errors.Is(err, segment.ErrSegmentEnded) {
+		t.Fatalf("SyncAt = %v, want ErrSegmentEnded", err)
+	}
+	if !ran {
+		t.Fatal("the gap hook never ran")
+	}
+}
