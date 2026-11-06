@@ -890,6 +890,8 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 				Version:    h.Version,
 				File:       h.File,
 				Kind:       h.Kind,
+				Extent:     h.Extent,
+				Tag:        h.Tag,
 				PayloadCRC: format.RecordPayloadCRC(buf),
 			}
 			if !hasPayload {

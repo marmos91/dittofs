@@ -15,6 +15,10 @@ type Written struct {
 	Version core.Version
 	File    core.FileID
 	Kind    format.Kind
+	// Extent and Tag are the record's header fields too: the file range the
+	// record names and the share it counts against.
+	Extent core.Extent
+	Tag    core.ShareTag
 	// PayloadCRC is the seeded payload checksum as written on disk.
 	PayloadCRC uint32
 	// Bytes is the whole encoded record, header, body and padding, for a

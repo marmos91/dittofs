@@ -134,6 +134,10 @@ func TestSinkTracksEveryRecordOnce(t *testing.T) {
 			t.Errorf("record %d: Track saw seq %d version %v file %v kind %v, the record holds %d %v %v %v",
 				i, w.Seq, w.Version, w.File, w.Kind, hdr.Seq, hdr.Version, hdr.File, hdr.Kind)
 		}
+		if w.Extent != hdr.Extent || w.Tag != hdr.Tag || w.Tag != 7 {
+			t.Errorf("record %d: Track saw extent %+v tag %d, the record holds %+v and %d, written with tag 7",
+				i, w.Extent, w.Tag, hdr.Extent, hdr.Tag)
+		}
 		if w.PayloadCRC != hdr.PayloadCRC {
 			t.Errorf("record %d: Track saw checksum %#x, the record holds %#x", i, w.PayloadCRC, hdr.PayloadCRC)
 		}
