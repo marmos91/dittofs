@@ -242,7 +242,7 @@ row.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R27 | Each file has a loss sequence, in memory and monotonic for the life of the process, raised by each loss event that drops an acknowledged, unoffloaded write of the file (the metadata reconcile's raise at start is epic 6's) | MUST | §5.1 "Each file has a loss sequence" | T4.5 |
+| R27 | Each file has a loss sequence, in memory and monotonic for the life of the process, raised by each loss event that drops an acknowledged, unoffloaded write of the file (the metadata reconcile's raise at start: §9, point 6) | MUST | §5.1 "Each file has a loss sequence" | T4.5 |
 | R28 | `Commit` returns the loss sequence read after its sync; `LossSeq` returns it without one | MUST | §5.1, §12.1 | T4.2, T4.5 |
 | R29 | A loss generation above the last one applied drains the loss ring before any existence commit that follows; events the ring missed raise every file of that journal | MUST | §5.1, RFC 1 §3.8 | T4.5 |
 | R30 | A journal device lost whole under the running process raises every attached file's sequence (a start past an acknowledged loss is epic 6's) | MUST | §5.1 | T4.5 |
@@ -675,3 +675,10 @@ RFC gaps go to the RFC, not here; each is listed until its RFC change merges.
    `WriteAt` and its insert) and, for a gap, from the journal's `Since(id, 0)` loss records.
    It needs a `kvstore` call and an RFC 6 line; #3734 decides whether a **Lost** extent counts
    in `Charged`.
+6. **Planning gap: the metadata reconcile's raise of the loss sequence has no subtask.**
+   [RFC 8 §5.1](../rfcs/rfc-8-engine.md) raises a file's sequence "each time the metadata
+   reconcile finds content of the file superseded where only an overwrite record knew the
+   newer bytes, whether `DropOlder` drops it or a snapshot hold keeps it retained". R27
+   leaves that raise to epic 6, whose reconcile it belongs to, but epic 6's document has no
+   subtask that builds it. Listed here until epic 6 names one; T4.5's sequence is what it
+   raises.
