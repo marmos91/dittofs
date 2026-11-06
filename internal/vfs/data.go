@@ -168,7 +168,7 @@ func (fs *Filesystem) Commit(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 	if off < 0 || length < 0 {
 		return vfs.Verifier{}, vfs.ErrInvalid
 	}
-	a, unlock, release, err := fs.opened(ctx, c, ref)
+	a, unlock, release, err := fs.opened(ctx, c, ref, false)
 	if err != nil {
 		return vfs.Verifier{}, err
 	}
@@ -291,7 +291,7 @@ func (fs *Filesystem) io(ctx context.Context, c vfs.Call, ref vfs.OpenRef, op vf
 	if off < 0 || n < 0 {
 		return nil, vfs.File{}, nil, nil, vfs.ErrInvalid
 	}
-	a, unlock, release, err := fs.opened(ctx, c, ref)
+	a, unlock, release, err := fs.opened(ctx, c, ref, false)
 	if err != nil {
 		return nil, vfs.File{}, nil, nil, err
 	}

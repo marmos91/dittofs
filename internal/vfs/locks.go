@@ -17,14 +17,16 @@ import (
 // answered ErrBlocked at once, and its end reaches the client through
 // LockWaitOver.
 //
-// decision: a lock under no open, NLM's, is decided as the caller's own
-// right to the I/O it guards: read data for a shared range or a test, write
-// data for an exclusive one, as a lock daemon opens the file to lock it.
-// Through an open or a lock state, open state's opener check is the whole
-// check, as the open was authorised for its access when granted; an unlock
-// or a cancel decides no right, as it only gives up what the owner holds.
-// Overturned if a client is seen locking through an open a range of access
-// the open was not granted.
+// decision: a lock under no open, NLM's, is decided as RFC 19 §3.8's: read
+// data or ownership of the file, within the caller's share access, for a
+// shared range, an exclusive one or a test alike. Asking write data for an
+// exclusive range would refuse the lock-then-write of a file opened for read
+// and later reopened for write. Through an open or a lock state, open state's
+// opener check is the whole check, as the open was authorised for its access
+// when granted; an unlock or a cancel decides no right, as it only gives up
+// what the owner holds. The no-open rule moves only with RFC 19 §3.8's; the
+// rest is overturned if a client is seen locking through an open a range of
+// access the open was not granted.
 
 // Lock takes every range of r, or none, for r's owner on the file ref
 // names, and answers the lock state's reference. A conflict is ErrLocked
@@ -36,11 +38,7 @@ func (fs *Filesystem) Lock(ctx context.Context, c vfs.Call, ref vfs.OpenRef, r v
 		return vfs.StateRef{}, err
 	}
 	defer done()
-	exclusive := false
-	for _, x := range r.Ranges {
-		exclusive = exclusive || x.Exclusive
-	}
-	a, key, unlock, release, err := fs.lockable(ctx, c, ref, vfs.OpLock, exclusive)
+	a, key, unlock, release, err := fs.lockable(ctx, c, ref, vfs.OpLock)
 	if err != nil {
 		return vfs.StateRef{}, err
 	}
@@ -64,7 +62,7 @@ func (fs *Filesystem) CancelLock(ctx context.Context, c vfs.Call, ref vfs.OpenRe
 		return false, err
 	}
 	defer done()
-	a, key, unlock, release, err := fs.lockable(ctx, c, ref, vfs.OpCancelLock, false)
+	a, key, unlock, release, err := fs.lockable(ctx, c, ref, vfs.OpCancelLock)
 	if err != nil {
 		return false, err
 	}
@@ -82,7 +80,7 @@ func (fs *Filesystem) TestLock(ctx context.Context, c vfs.Call, ref vfs.OpenRef,
 		return nil, err
 	}
 	defer done()
-	a, key, unlock, release, err := fs.lockable(ctx, c, ref, vfs.OpTestLock, false)
+	a, key, unlock, release, err := fs.lockable(ctx, c, ref, vfs.OpTestLock)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +99,7 @@ func (fs *Filesystem) Unlock(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 		return 0, err
 	}
 	defer done()
-	a, key, unlock, release, err := fs.lockable(ctx, c, ref, vfs.OpUnlock, false)
+	a, key, unlock, release, err := fs.lockable(ctx, c, ref, vfs.OpUnlock)
 	if err != nil {
 		return 0, err
 	}
@@ -114,20 +112,22 @@ func (fs *Filesystem) Unlock(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 // lockable admits a lock call for op through ref, takes the file's
 // admission lock and reads the file, answering it as open state keys it. A
 // directory holds no byte-range locks: ErrIsDir.
-// Under no open, a lock or a test is decided as read data, or write data
-// when exclusive; a cancel or an unlock decides nothing.
+// Under no open, a lock or a test is decided as read data, or for the file's
+// owner as its share access alone; a cancel or an unlock decides nothing.
 //
 // decision: a cancel or an unlock reads the file as system, not as the
 // caller, so a caller whose share grant is gone still gives up its locks:
 // the store's read authorizes its caller against the grant, and an NLM
 // lock, which has no open to close, would otherwise block every other
 // client until its host restarts (RFC 19 §3.1's release-only calls).
-// Admission still runs, share state, flavour and client rules included, and
-// open state still refuses a caller that is not the lock's owner. The read
-// answers only the file's kind and key. Withdraw it if either call is made
-// to return file data.
-func (fs *Filesystem) lockable(ctx context.Context, c vfs.Call, ref vfs.OpenRef, op vfs.Op, exclusive bool) (*admitted, openstate.FileKey, func(), func(), error) {
-	a, unlock, release, err := fs.opened(ctx, c, ref)
+// Admission still runs, share state, flavour and resolution included, though
+// not the client rules' refusal, as for any call that only releases state
+// (check), and open state still refuses a caller that is not the lock's
+// owner. The read answers only the file's kind and key. Withdraw it if either
+// call is made to return file data.
+func (fs *Filesystem) lockable(ctx context.Context, c vfs.Call, ref vfs.OpenRef, op vfs.Op) (*admitted, openstate.FileKey, func(), func(), error) {
+	releases := op == vfs.OpUnlock || op == vfs.OpCancelLock
+	a, unlock, release, err := fs.opened(ctx, c, ref, releases)
 	if err != nil {
 		return nil, openstate.FileKey{}, nil, nil, err
 	}
@@ -137,7 +137,7 @@ func (fs *Filesystem) lockable(ctx context.Context, c vfs.Call, ref vfs.OpenRef,
 		return nil, openstate.FileKey{}, nil, nil, err
 	}
 	as := a.caller.Identity
-	if op == vfs.OpUnlock || op == vfs.OpCancelLock {
+	if releases {
 		as = system
 	}
 	f, err := fs.meta.Files().Get(ctx, as, ref.Handle)
@@ -148,9 +148,12 @@ func (fs *Filesystem) lockable(ctx context.Context, c vfs.Call, ref vfs.OpenRef,
 		return fail(vfs.ErrIsDir)
 	}
 	if ref.Kind == openstate.RefAnonymous && (op == vfs.OpLock || op == vfs.OpTestLock) {
+		// The owner asks only what every caller is granted, so its decision
+		// is the share grant's alone. Ownership is judged on the squashed
+		// principal, so root squashed to nobody needs read data of its own file.
 		want := entity.ReadData
-		if exclusive {
-			want = entity.WriteData
+		if f.Owner == a.caller.Principal {
+			want = entity.ReadAttributes
 		}
 		if err := fs.authz.Decide(ctx, a.caller, op, ref.Handle, nil, nil, want); err != nil {
 			return fail(storeErr(err))

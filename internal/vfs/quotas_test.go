@@ -611,7 +611,7 @@ func TestACreateWhoseLookupFailsReservesNothing(t *testing.T) {
 	a.limit(t, kvstore.QuotaTarget{Principal: alice.Principal}, entity.Limit{Files: a.usage(t, alice.Principal).Files + 1})
 	boom := errors.New("disk gone")
 	db.failing(func(update bool) error {
-		if !update && inLookup() {
+		if !update && onStack("kvstore.Namespace.Lookup") {
 			return boom
 		}
 		return nil
@@ -627,13 +627,13 @@ func TestACreateWhoseLookupFailsReservesNothing(t *testing.T) {
 	}
 }
 
-// inLookup reports whether the store's Namespace.Lookup is on the stack.
-func inLookup() bool {
+// onStack reports whether a function whose name ends in fn is on the stack.
+func onStack(fn string) bool {
 	pc := make([]uintptr, 64)
 	frames := runtime.CallersFrames(pc[:runtime.Callers(2, pc)])
 	for {
 		f, more := frames.Next()
-		if strings.HasSuffix(f.Function, "kvstore.Namespace.Lookup") {
+		if strings.HasSuffix(f.Function, fn) {
 			return true
 		}
 		if !more {

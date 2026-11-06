@@ -42,7 +42,7 @@ func TestCheckRunsItsStepsInOrder(t *testing.T) {
 		{"proof below", entity.ExportPolicy{MinProof: entity.ProofSecret, Clients: refuseAll}, id(lab, vfs.ProofClaimed, 0), vfs.ErrWrongSecurity},
 		{"protection below", krb5i, id(lab, vfs.ProofTicket, vfs.ProtectionNone), vfs.ErrWrongSecurity},
 		{"both met", krb5i, id(lab, vfs.ProofTicket, vfs.ProtectionPrivacy), nil},
-		{"rule refuses", entity.ExportPolicy{Clients: refuseAll}, id(lab, vfs.ProofTicket, 0), vfs.ErrAccess},
+		{"rule refuses", entity.ExportPolicy{Clients: refuseAll}, id(lab, vfs.ProofTicket, 0), ErrClientRule},
 	} {
 		_, err := Check(ctx, c.p, c.id, ng)
 		if c.want == nil && err != nil || c.want != nil && !errors.Is(err, c.want) {
@@ -86,7 +86,7 @@ func TestClientRules(t *testing.T) {
 		{"host name refuses everybody", on(group("lab", entity.AccessNone), cidr("0.0.0.0/0", entity.AccessReadWrite)), office, true, false},
 	} {
 		ro, err := Check(ctx, c.p, id(c.at, vfs.ProofNone, 0), ng)
-		if c.refused != errors.Is(err, vfs.ErrAccess) || ro != c.readOnly {
+		if c.refused != errors.Is(err, ErrClientRule) || ro != c.readOnly {
 			t.Errorf("%s: readOnly %v, %v; want refused %v, readOnly %v", c.name, ro, err, c.refused, c.readOnly)
 		}
 	}

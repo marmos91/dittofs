@@ -411,7 +411,7 @@ func (fs *Filesystem) Downgrade(ctx context.Context, c vfs.Call, ref vfs.OpenRef
 		return 0, err
 	}
 	defer done()
-	a, unlock, release, err := fs.opened(ctx, c, ref)
+	a, unlock, release, err := fs.opened(ctx, c, ref, false)
 	if err != nil {
 		return 0, err
 	}
@@ -429,7 +429,7 @@ func (fs *Filesystem) ConfirmOpen(ctx context.Context, c vfs.Call, ref vfs.OpenR
 		return 0, err
 	}
 	defer done()
-	a, unlock, release, err := fs.opened(ctx, c, ref)
+	a, unlock, release, err := fs.opened(ctx, c, ref, false)
 	if err != nil {
 		return 0, err
 	}
@@ -449,7 +449,7 @@ func (fs *Filesystem) Close(ctx context.Context, c vfs.Call, ref vfs.OpenRef, q 
 		return nil, err
 	}
 	defer done()
-	a, unlock, release, err := fs.opened(ctx, c, ref)
+	a, unlock, release, err := fs.opened(ctx, c, ref, true)
 	if err != nil {
 		return nil, err
 	}
@@ -465,7 +465,8 @@ func (fs *Filesystem) Close(ctx context.Context, c vfs.Call, ref vfs.OpenRef, q 
 // opened admits a call through the open ref names to the share of the
 // handle it carries, and takes that file's admission lock. It answers the
 // lock's release, then the call's uncount: a pseudo directory's handle holds
-// no open, BadState. Open state refuses the open to any client but its own
+// no open, BadState. releases is a call that only releases state, as admit
+// takes it. Open state refuses the open to any client but its own
 // and any principal but its opener, NotYours.
 //
 // decision: an NFSv4.0 call quoting an NFSv4.1 client's open is not refused
@@ -476,11 +477,11 @@ func (fs *Filesystem) Close(ctx context.Context, c vfs.Call, ref vfs.OpenRef, q 
 // service never reads those bytes. What the service refuses is a delegation
 // presented on no session (onSession). Overturned if a second NFSv4 adapter
 // is ever written that does not read them.
-func (fs *Filesystem) opened(ctx context.Context, c vfs.Call, ref vfs.OpenRef) (*admitted, func(), func(), error) {
+func (fs *Filesystem) opened(ctx context.Context, c vfs.Call, ref vfs.OpenRef, releases bool) (*admitted, func(), func(), error) {
 	if err := onSession(c, &ref); err != nil {
 		return nil, nil, nil, err
 	}
-	a, release, err := fs.admitHandle(ctx, c, ref.Handle)
+	a, release, err := fs.admitHandleFor(ctx, c, ref.Handle, releases)
 	if err == nil && a == nil {
 		err = &vfs.StateError{Kind: vfs.StateBadState}
 	}
