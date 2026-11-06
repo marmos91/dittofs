@@ -2513,8 +2513,7 @@ func (s *Filesystem) createLocked(ctx context.Context, c Caller, dir Handle, nam
 
 ```go
 func (s *Filesystem) lockAt(ctx context.Context, c Caller, ref OpenRef, r LockReq) (StateRef, error) {
-	exclusive := slices.ContainsFunc(r.Ranges, func(x LockRange) bool { return x.Exclusive })
-	if err := s.authz.LockState(ctx, c, ref, exclusive); err != nil { // below: under no open, the I/O the lock guards
+	if err := s.authz.LockState(ctx, c, ref); err != nil { // below: under no open, read data or ownership
 		return StateRef{}, err
 	}
 	// RFC 14 §11.3: every range in one step, all or none, and only a single range
@@ -2535,25 +2534,27 @@ func (s *Filesystem) lockAt(ctx context.Context, c Caller, ref OpenRef, r LockRe
 A waiting lock holds no worker and has no deadline; it ends only as RFC 14's
 waiter does ([RFC 14 §2.10](rfc-14-open-state.md#2.10%20Lock%20waiters)).
 
-**`authz.LockState` decides a lock under no open as the I/O it guards.**
-`Lock` and `TestLock` call it; a `LockReq` is exclusive when any of its ranges
-is. Through an open, a lock state or a delegation it decides nothing more: open state's
+**`authz.LockState` decides a lock under no open as
+[RFC 19 §3.8](rfc-19-authorization.md#3.8%20Locks%20outside%20an%20open)
+does.** `Lock` and `TestLock` call it. Through an open, a lock state or a delegation it decides nothing more: open state's
 opener check, the call's principal against the open's
 ([§3.1](#3.1%20Operations)), is the whole check, as the open was authorised
 for its access when it was granted. Under no open — an anonymous `OpenRef`,
 NLM's — it calls `Files.Authorize` for the caller afresh, with no parent,
-wanting read data for a shared lock or a test and write data for an exclusive
-lock, as a lock daemon opens the file to lock it. `CancelLock` and `Unlock`
-do not call it: they decide no right, as they only give up what the owner
-holds.
+wanting read data, and a caller who owns the file **MUST** be admitted without
+it. An exclusive lock asks no more than a shared one, and a test is decided as
+a shared lock. `CancelLock` and `Unlock` do not call it: they decide no right,
+as they only give up what the owner holds.
 
-> decision: a lock under no open is decided as the caller's own right to the
-> I/O it guards: read data for a shared range or a test, write data for an
-> exclusive one. Through an open or a lock state, open state's opener check is
-> the whole check, as the open was authorised for its access when granted; an
-> unlock or a cancel decides no right, as it only gives up what the owner
-> holds. Overturned if a client is seen locking through an open a range of
-> access the open was not granted.
+> decision: a lock under no open is decided as RFC 19 §3.8's: read data or
+> ownership of the file, for a shared range, an exclusive one or a test alike.
+> Asking write data for an exclusive range would refuse the lock-then-write of
+> a file opened for read and later reopened for write. Through an open or a
+> lock state, open state's opener check is the whole check, as the open was
+> authorised for its access when granted; an unlock or a cancel decides no
+> right, as it only gives up what the owner holds. The no-open rule moves only
+> with RFC 19 §3.8's; the rest is overturned if a client is seen locking
+> through an open a range of access the open was not granted.
 
 ## 6. Invariants, and the test of each
 
