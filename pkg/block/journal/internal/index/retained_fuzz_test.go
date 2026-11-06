@@ -174,7 +174,7 @@ func retainedOps(t *testing.T, data []byte) {
 			for _, r := range f.retained.list(nil) {
 				bys = append(bys, r.By)
 			}
-			got, covers := f.failWindow(win, nil)
+			got, covers, _ := f.failWindow(win, nil)
 			inWindow := func(v core.Version) bool {
 				return slices.ContainsFunc(window, func(w WindowRecord) bool { return w.Version == v })
 			}

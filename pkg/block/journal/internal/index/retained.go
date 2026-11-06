@@ -273,7 +273,8 @@ func (f *file) writeRetain(p Placed) {
 // It also returns the covering versions it handed parts to, sorted and
 // distinct, leaving out the window's own. A returned version may name no part
 // by the time the call returns, since a later record's pass can drop what an
-// earlier one handed over.
+// earlier one handed over. Last it returns the held pieces the window's
+// records stopped holding, each as it was held, in the order they were cut.
 //
 // decision: a covering version's sync drops what it was handed only if that
 // sync is still to come. A covering write can sit in a later segment that
@@ -293,7 +294,7 @@ func (f *file) writeRetain(p Placed) {
 // a copy of the window. A failed window is rare and short; pass each record's
 // extent with it, and index the window's versions, when a failed window over
 // files with many extents shows these in a profile.
-func (f *file) failWindow(window []WindowRecord, out []Retained) ([]Retained, []core.Version) {
+func (f *file) failWindow(window []WindowRecord, out []Retained) ([]Retained, []core.Version, []Piece) {
 	// Failing a window moves superseded bytes between retained and held across
 	// several edits. The subtractions those edits collect stay pending until
 	// the pass has re-held and re-retained everything, so a concurrent reader
@@ -310,6 +311,7 @@ func (f *file) failWindow(window []WindowRecord, out []Retained) ([]Retained, []
 	order := slices.Clone(window)
 	slices.SortFunc(order, func(a, b WindowRecord) int { return b.Version.Compare(a.Version) })
 	var was []core.Extent
+	var dropped []Piece
 	var back, gaps []Retained
 	var covers []core.Version
 	for _, w := range order {
@@ -317,6 +319,7 @@ func (f *file) failWindow(window []WindowRecord, out []Retained) ([]Retained, []
 		f.held.visit(whole, func(p Piece) bool {
 			if p.Record == w.Record {
 				was = append(was, p.Extent)
+				dropped = append(dropped, p)
 			}
 			return true
 		})
@@ -373,7 +376,7 @@ func (f *file) failWindow(window []WindowRecord, out []Retained) ([]Retained, []
 		return slices.ContainsFunc(window, func(w WindowRecord) bool { return w.Version == v })
 	})
 	slices.SortFunc(covers, core.Version.Compare)
-	return out, slices.Compact(covers)
+	return out, slices.Compact(covers), dropped
 }
 
 // supersede retains again the parts of r that held content newer than r
