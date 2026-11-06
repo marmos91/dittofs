@@ -489,10 +489,10 @@ store's lifecycle view (T6.1)`):
 The boundary matters: a bare `epic 4.1` also matches 4.10 to 4.19. **If the epic has
 sub-issues but none matches any subtask, stop and report the titles**: a fourth title form is
 more likely than an epic whose every issue is missing. Create issues only for the subtasks
-with no match. A sub-issue whose title carries no subtask id in these forms (a follow-up, a
-bug found on the way) is left alone: never closed, retitled or rewritten. One whose id the
-document no longer has (a withdrawn subtask, or a split subtask's old issue) is closed as
-6.6 says. A matched older issue keeps its title form;
+with no match. A subtask issue whose id the document no longer has (a withdrawn subtask, or
+a split subtask's old issue) is obsolete and closed, as 6.6 says. Sub-issues that did not
+come from the epic document (bugs, follow-ups) are not its subject: they are the team's.
+A matched older issue keeps its title form;
 if its body copies the specification (`Covers:`, `Done when`, a checklist), it is rewritten
 to the pointer form below.
 
@@ -604,8 +604,7 @@ Before handing over, check:
   the first issue was created. An existing epic issue whose body was still the plan's
   pointer now points at the epic document and keeps its `Part of`/`Plan:` lines; its
   sub-issues were matched by id in all three title forms before any was created, and a
-  sub-issue with no subtask id was left alone, while one whose id the document no longer
-  has was closed. Issues that were created carry
+  subtask issue whose id the document no longer has was closed. Issues that were created carry
   the labels, a pointer body with no copied specification, the sub-issue links (subtask under
   epic, epic under its RFC's roadmap epic), the project, the roadmap epic's milestone and, on
   subtasks only, the `Estimate` field.
