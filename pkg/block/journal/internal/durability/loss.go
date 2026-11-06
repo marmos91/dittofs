@@ -10,6 +10,12 @@ import (
 )
 
 // Loss is one extent the journal stopped holding without being asked.
+//
+// Extent is the piece lost, not necessarily the whole dropped record: a
+// reconcile can drop one piece of a record and keep the rest under the same
+// Seq. A caller hands Lose each piece it drops, and each piece is reported
+// on its own; the loss record, which names the whole dropped record, is
+// appended once per Seq unless the reason is superseded.
 type Loss struct {
 	Share   core.ShareTag
 	File    core.FileID
@@ -29,6 +35,11 @@ type Loss struct {
 
 	// AtOpen marks an open's own loss.
 	AtOpen bool
+
+	// Raised says the caller already raised the generation for this loss, as
+	// the read path does before it hands the loss on. Lose then counts and
+	// publishes it but raises nothing.
+	Raised bool
 
 	// Deferred appends no record: the copy that retires the dropped
 	// record's segment writes it.
@@ -57,8 +68,10 @@ func toFormat(r core.LossReason) format.LossReason {
 // index's marker for a synced loss, raises the generation by the reason's
 // rule, counts the loss, and publishes its event, in that order. The event
 // is published last, so a reader that sees it is already owed the record.
-// A Seq already named by an earlier Lose or Place does nothing and returns
-// the zero event.
+// A piece (Seq and Extent) already taken by an earlier Lose or Place does
+// nothing and returns the zero event. Another piece of a Seq a loss record
+// already names is reported and marked, and appends no record of its own,
+// unless its reason is superseded, whose record excludes only its own extent.
 func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return core.LossEvent{}, err
@@ -69,16 +82,21 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	toFormat(l.Reason)
 
 	d.mu.Lock()
-	if _, ok := d.named[l.Seq]; ok {
+	k := piece{l.Seq, l.Extent}
+	if _, ok := d.pieces[k]; ok {
 		d.mu.Unlock()
 		return core.LossEvent{}, nil
 	}
-	d.named[l.Seq] = struct{}{}
+	d.pieces[k] = struct{}{}
+	_, alreadyNamed := d.named[l.Seq]
+	if l.Reason != core.LossSuperseded {
+		d.named[l.Seq] = struct{}{}
+	}
 	d.mu.Unlock()
 
 	var recErr error
 	refused := false
-	if !l.Deferred {
+	if !l.Deferred && (!alreadyNamed || l.Reason == core.LossSuperseded) {
 		if recErr = d.readOnly(); recErr != nil {
 			refused = true
 		} else {
@@ -100,11 +118,12 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	}
 
 	// decision: the generation is raised by the reason and the offloaded bit
-	// alone, never by what the caller asks: a corrupt or acknowledged extent
+	// alone, never by what the caller asks, bar a raise it already made and
+	// says so with Raised: a corrupt or acknowledged extent
 	// whose bytes are not offloaded is data a client may have been told was
 	// stored and is now gone, and anything else can be fetched again. A
 	// failed window raises it once, for the window, through RaiseWindow.
-	if (l.Reason == core.LossCorrupt || l.Reason == core.LossAcknowledged) && !l.Offloaded {
+	if (l.Reason == core.LossCorrupt || l.Reason == core.LossAcknowledged) && !l.Offloaded && !l.Raised {
 		d.dir.raise()
 	}
 
