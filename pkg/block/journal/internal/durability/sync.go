@@ -106,6 +106,8 @@ func (d *Durability) changes() <-chan struct{} {
 	return d.change
 }
 
+// notifyAll wakes every waiter of every stream. It is called with a stream's
+// mu held, which is safe since cmu is a leaf.
 func (d *Durability) notifyAll() {
 	d.cmu.Lock()
 	close(d.change)
@@ -198,11 +200,6 @@ func (st *stream) wake() {
 	}
 }
 
-// notifyLocked wakes every waiter. The caller holds mu.
-func (st *stream) notifyLocked() {
-	st.d.notifyAll()
-}
-
 // covered reports whether a sync has reached the end of the record. The caller
 // holds mu.
 func (st *stream) covered(loc segment.Location) bool {
@@ -240,7 +237,7 @@ func (d *Durability) Sink(no uint32) segment.Sink {
 			st.reported = true
 			// A waiter is released here without waiting for the worker: a
 			// seal's sync covers records no worker sync of its own follows.
-			st.notifyLocked()
+			d.notifyAll()
 			st.mu.Unlock()
 			st.wake()
 		},
@@ -331,7 +328,7 @@ func (d *Durability) Stop() {
 		for _, st := range made {
 			st.mu.Lock()
 			st.closed = true
-			st.notifyLocked()
+			d.notifyAll()
 			st.mu.Unlock()
 		}
 	})

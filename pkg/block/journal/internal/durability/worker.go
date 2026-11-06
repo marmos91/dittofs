@@ -113,7 +113,7 @@ func (d *Durability) syncStep(st *stream, fired bool) {
 		st.lastSeg, st.haveLast = seg, true
 	}
 	st.syncing = false
-	st.notifyLocked()
+	d.notifyAll()
 	st.mu.Unlock()
 	if end != nil {
 		end(err)
