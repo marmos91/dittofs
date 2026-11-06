@@ -133,8 +133,10 @@ func TestClosedStreamIsNotAFailedSync(t *testing.T) {
 // segment holding no tracked record does not make the timer or a Sync waiter
 // sync that segment over and over: a record of the older segment whose seal
 // failed is not covered by any sync of the new one, so what the worker counts
-// as the active segment must not move back to it. The count of syncs and of
-// failures must stay bounded while the clock runs past the sync bound.
+// as the active segment must not move back to it. The sync calls made on the
+// stream, counted where the worker makes them, stay bounded while the clock
+// runs past the sync bound: a refused call moves neither Stats counter, so the
+// counters alone cannot show the spin.
 func TestRollToAnUntrackedSegmentDoesNotSpin(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRigUnstarted(t, 1)
@@ -160,6 +162,8 @@ func TestRollToAnUntrackedSegmentDoesNotSpin(t *testing.T) {
 	if n := r.ledgerLen(0); n != 1 {
 		t.Fatalf("the ledger holds %d entries, want only r1", n)
 	}
+	var calls atomic.Int64
+	r.d.afterSync = func() { calls.Add(1) }
 	r.d.Start(r.streams)
 
 	r.clock.Advance(core.SyncBound)
@@ -170,12 +174,10 @@ func TestRollToAnUntrackedSegmentDoesNotSpin(t *testing.T) {
 	_ = r.d.Sync(ctx, f)
 	r.clock.Advance(core.SyncBound)
 	time.Sleep(50 * time.Millisecond)
-	first := r.d.Stats()
+	c1 := calls.Load()
 	time.Sleep(100 * time.Millisecond)
-	second := r.d.Stats()
-	if second.Syncs != first.Syncs || second.SyncFailures != first.SyncFailures || second.Syncs > 5 || second.SyncFailures > 5 {
-		t.Fatalf("syncs went %d then %d and failures %d then %d with the clock frozen",
-			first.Syncs, second.Syncs, first.SyncFailures, second.SyncFailures)
+	if c2 := calls.Load(); c2 != c1 || c2 > 5 {
+		t.Fatalf("the stream was asked to sync %d then %d times with the clock frozen", c1, c2)
 	}
 }
 
