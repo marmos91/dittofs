@@ -1039,6 +1039,30 @@ func TestLoseOfASupersededPieceAfterACorruptOneAppendsItsOwnRecord(t *testing.T)
 	}
 }
 
+// TestLoseOfASyncedSupersededPieceLeavesNoMarker catches a superseded loss
+// that leaves a marker Since would yield: it reports no write lost, so it
+// needs no Settle.
+func TestLoseOfASyncedSupersededPieceLeavesNoMarker(t *testing.T) {
+	e := newEnv(t)
+	l := piece(9, 0, 3)
+	l.Reason = core.LossSuperseded
+	l.Synced = true
+	ev, err := e.d.Lose(context.Background(), l)
+	if err != nil || ev.Reason != core.LossSuperseded {
+		t.Fatalf("Lose = %+v, %v, want the published superseded event", ev, err)
+	}
+	if got := len(e.d.Stats().Losses); got != 1 {
+		t.Errorf("%d events, want 1", got)
+	}
+	lh, lb := e.lossRecords()
+	if len(lh) != 1 || lb[0].Reason != format.LossSuperseded || !lb[0].Synced {
+		t.Errorf("loss records %+v %+v, want one synced superseded record", lh, lb)
+	}
+	if got := e.marked(); len(got) != 0 {
+		t.Errorf("MarkLoss called %d times for a superseded loss, want none", len(got))
+	}
+}
+
 // TestPlaceKeysOnTheDroppedSeqAndTheExtent catches a Place that reports only
 // the first piece of a record dropped in two.
 func TestPlaceKeysOnTheDroppedSeqAndTheExtent(t *testing.T) {
