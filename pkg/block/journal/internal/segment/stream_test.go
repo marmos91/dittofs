@@ -991,7 +991,7 @@ func TestStreamReadAtARefusedSegmentMakesOneAttempt(t *testing.T) {
 	}
 	// A closed stream refuses reads, so a second stream over the same cache
 	// reads the retired segment.
-	reader := segment.NewStream(2, streamIdentity, e.set, e.pool, e.cache)
+	reader := segment.NewStream(2, streamIdentity, e.set, e.pool, e.cache, nopSink())
 	if _, err := reader.ReadAt(1, buf, p.Loc.Off); !errors.Is(err, segment.ErrSegmentGone) {
 		t.Fatalf("the ReadAt of a closed segment = %v, want ErrSegmentGone", err)
 	}
