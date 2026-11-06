@@ -18,12 +18,13 @@ import (
 // watch is held, and only where its holder may traverse to it.
 
 // watcher is a watch set here: its client, its holder as admitted when it
-// was set, and the directory it watches.
+// was set, the directory it watches and the changes it takes.
 type watcher struct {
 	client    entity.ClientID
 	caller    authz.Caller
 	dir       vfs.Handle
 	recursive bool
+	filter    openstate.ChangeMask
 }
 
 // watchers is every watch set here and not yet ended.
@@ -52,14 +53,14 @@ func (ws *watchers) held(c entity.ClientID, w vfs.WatchID) (watcher, bool) {
 	return h, ok && h.client == c
 }
 
-// on reports whether a watch is set on share, and whether a recursive one
-// is.
-func (ws *watchers) on(share entity.ShareID) (set, recursive bool) {
+// on reports whether a watch taking a change of what is set on share, and
+// whether a recursive one is.
+func (ws *watchers) on(share entity.ShareID, what openstate.ChangeMask) (set, recursive bool) {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	for _, h := range ws.set {
 		s, _, _ := h.dir.Parse()
-		if s == share {
+		if s == share && h.filter&what != 0 {
 			set, recursive = true, recursive || h.recursive
 		}
 	}
@@ -134,7 +135,7 @@ func (fs *Filesystem) Watch(ctx context.Context, c vfs.Call, w vfs.WatchSpec) (v
 	if err != nil {
 		return vfs.WatchID{}, openErr(err)
 	}
-	fs.watchers.set[id] = watcher{client: c.Client, caller: a.caller, dir: w.Dir, recursive: w.Recursive}
+	fs.watchers.set[id] = watcher{client: c.Client, caller: a.caller, dir: w.Dir, recursive: w.Recursive, filter: w.Filter}
 	return id, nil
 }
 
@@ -216,14 +217,15 @@ func (fs *Filesystem) reaches(ctx context.Context, h watcher, ch openstate.Chang
 // changed reports ch, a change committed in directory d, to d's watches,
 // and to those of each directory above d up to its share's root, as a
 // change below it named by its path from there, while a recursive watch is
-// set on the share. With no watch set on the share it reports nothing.
+// set on the share. With no watch on the share taking ch it reports
+// nothing.
 //
 // ponytail: a directory's name in its parent is found by listing the
 // parent, O(entries) a level, for each change below a recursively watched
 // share. Keep each directory's name beside its parent in the store if a
 // large directory under a recursive watch shows the listing in a profile.
 func (fs *Filesystem) changed(ctx context.Context, d vfs.File, ch openstate.Change) {
-	set, recursive := fs.watchers.on(d.Share)
+	set, recursive := fs.watchers.on(d.Share, ch.What)
 	if !set || d.ID.IsZero() {
 		return
 	}
@@ -281,7 +283,7 @@ func (fs *Filesystem) entryChanged(ctx context.Context, a *admitted, ref *vfs.Op
 	if what == 0 {
 		return
 	}
-	if set, _ := fs.watchers.on(f.Share); !set {
+	if set, _ := fs.watchers.on(f.Share, what); !set {
 		return
 	}
 	ctx, cancel := fs.detached(ctx)
@@ -305,13 +307,13 @@ func (fs *Filesystem) entryChanged(ctx context.Context, a *admitted, ref *vfs.Op
 	}
 }
 
-// changedIn is changed for the directory dir names, once a watch is set on
-// its share, reading dir as system on a context the call's end does not
-// end: a change that committed is reported though its client dropped, or
-// its deadline passed, right after.
+// changedIn is changed for the directory dir names, once a watch taking ch
+// is set on its share, reading dir as system on a context the call's end
+// does not end: a change that committed is reported though its client
+// dropped, or its deadline passed, right after.
 func (fs *Filesystem) changedIn(ctx context.Context, dir vfs.Handle, ch openstate.Change) {
 	share, _, _ := dir.Parse()
-	if set, _ := fs.watchers.on(share); !set {
+	if set, _ := fs.watchers.on(share, ch.What); !set {
 		return
 	}
 	ctx, cancel := fs.detached(ctx)

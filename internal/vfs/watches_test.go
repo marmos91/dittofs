@@ -512,3 +512,31 @@ func TestAnExclusiveCreatesRetryIsNotReported(t *testing.T) {
 		t.Errorf("the watch heard %q, want f then g", got)
 	}
 }
+
+// A write on a share whose only watch takes names reads the store no more
+// than one on a share with no watch: no report is looked for that no
+// filter takes.
+func TestAChangeNoFilterTakesCostsNothing(t *testing.T) {
+	db := &kv.Counting{}
+	s := startShares(t, newFixtureOver(t, Deps{}, kvstoretest.NewFS(t, func(tb testing.TB) kv.KV { db.KV = memKV(tb); return db })), nil)
+	ctx := t.Context()
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	pc, _ := s.connected(t, signedIn(alice.Principal, 1), smb("alice-pc", 1))
+	_, err := s.Create(ctx, proven(s.fs.Admin.Principal, inLab), s.fs.Root, []byte("f"), vfs.CreateArgs{Kind: vfs.CreateRegular, Attrs: entity.Attrs{}.WithMode(0o666)})
+	s.must(t, err)
+	o, err := s.Open(ctx, pc, byName(s.fs.Root, "f", vfs.OpenExisting, entity.ReadData|entity.WriteData))
+	s.must(t, err)
+	write := func() kv.Counts {
+		db.Take()
+		_, err := s.Write(ctx, pc, o.Ref, 0, []byte("x"), vfs.Unstable)
+		s.must(t, err)
+		return db.Take()
+	}
+	write()
+	unwatched := write()
+	_, err = s.Watch(ctx, pc, vfs.WatchSpec{Dir: s.fs.Root, Recursive: true, Filter: openstate.ChangeAddEntry | openstate.ChangeRemove | openstate.ChangeRename})
+	s.must(t, err)
+	if watched := write(); watched != unwatched {
+		t.Errorf("a write under a watch for names alone read %+v, want %+v as with none", watched, unwatched)
+	}
+}
