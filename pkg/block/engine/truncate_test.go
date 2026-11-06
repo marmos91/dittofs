@@ -149,3 +149,50 @@ func TestATruncatesOverlayBeforeItsPhase1(t *testing.T) {
 		t.Errorf("overlay before phase 1: %+v pending %v; want size 4, set", o, pending)
 	}
 }
+
+// readInTruncate is a journal handle that runs read, once set, when its
+// Truncate has stopped holding the extent, before the truncate's operation
+// is inserted.
+type readInTruncate struct {
+	engine.Handle
+	read *armed
+}
+
+func (h readInTruncate) Truncate(ctx context.Context, id journal.FileID, size int64) (journal.Version, error) {
+	v, err := h.Handle.Truncate(ctx, id, size)
+	h.read.run()
+	return v, err
+}
+
+// A read started between a truncate's journal step and the insert of its
+// operation waits for the insert: it reads the truncated file, never the
+// committed run past the new size as lost.
+func TestAReadInATruncatesJournalStepIsNeverLost(t *testing.T) {
+	read := &armed{}
+	u := newUnitWith(t, unitConfig{wrap: func(h engine.Handle) engine.Handle { return readInTruncate{h, read} }})
+	f := u.create(t, "a")
+	u.write(t, f, 0, fill(8*kib, 'a'))
+	u.commit(t, f)
+	u.e.ClearOps(f)
+	type result struct {
+		n   int
+		err error
+	}
+	done := make(chan result, 1)
+	read.set(func() {
+		go func() {
+			n, err := u.e.Read(context.Background(), u.share.ID, f, 0, make([]byte, 8*kib))
+			done <- result{n, err}
+		}()
+		deadline := time.Now().Add(time.Second)
+		for u.e.FileStateWaiting() == 0 && len(done) == 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+	})
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4*kib); err != nil {
+		t.Fatal(err)
+	}
+	if r := <-done; r.n != 4*kib || r.err != nil {
+		t.Errorf("a read in the truncate's journal step: %d, %v; want a short read of 4 KiB", r.n, r.err)
+	}
+}
