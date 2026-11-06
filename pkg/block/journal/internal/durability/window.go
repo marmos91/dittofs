@@ -110,11 +110,19 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 		// Nothing is held from the segment, so there is nothing to fail.
 		d.resolve(st, w)
 	}
+	// The segment that stopped the stream is the second refusal: it hands the
+	// failure over once, whichever later event also finds the stream stopped.
+	if ev.Stopped && !st.refused {
+		st.refused = true
+		if d.readOnly != nil {
+			d.readOnly(ev.Err)
+		}
+	}
 }
 
 // resolve marks the window's records no longer pending: it drops the window
-// and the failure kept for its segment once nothing else names it. It runs on
-// the worker.
+// and the failure kept for its segment once nothing else names it, then
+// announces the segment through Config.Resolved (R19). It runs on the worker.
 //
 // decision: in this layer only a window with no records is resolved, at the
 // moment it is taken. A window that holds records stays pending, and every
@@ -138,4 +146,7 @@ func (d *Durability) resolve(st *stream, w *window) {
 	}
 	st.d.notifyAll()
 	st.mu.Unlock()
+	if d.resolved != nil {
+		d.resolved(st.no, w.seg)
+	}
 }

@@ -24,6 +24,10 @@ type Config struct {
 	Domains Domains      // required
 	Tracer  core.Tracer  // optional
 	Log     *slog.Logger // optional; nil means discard
+	// Resolved, when set, is told that a failed segment's window is resolved
+	// (R19): no record of it is pending any more. It runs on the stream's
+	// worker with no lock held, so it must not wait on a Sync.
+	Resolved func(stream uint32, seg core.SegmentID)
 }
 
 // SyncDurationBounds are the upper bounds of the sync duration histogram's
@@ -56,6 +60,19 @@ type Durability struct {
 	domains Domains
 	tracer  core.Tracer
 	log     *slog.Logger
+
+	// resolved is Config.Resolved: the announcement of a resolved window.
+	resolved func(stream uint32, seg core.SegmentID)
+
+	// readOnly is the journal's read-only entry, handed the failure that
+	// stopped a stream. It is set before Start.
+	//
+	// decision: nil until the code that turns the journal read-only installs
+	// it. While it is nil a stopped stream stays stopped, and its appends fail
+	// with segment.ErrStreamStopped wrapping the cause, and nothing more
+	// happens: the stream is refused, not the journal. Withdrawn once the
+	// entry is wired, when a stopped stream must always reach it.
+	readOnly func(cause error)
 
 	// mu guards made, started and stopped, and is never held across a stream
 	// call.
@@ -99,13 +116,14 @@ func New(cfg Config) *Durability {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &Durability{
-		clock:   cfg.Clock,
-		domains: cfg.Domains,
-		tracer:  cfg.Tracer,
-		log:     log,
-		made:    map[uint32]*stream{},
-		done:    make(chan struct{}),
-		change:  make(chan struct{}),
+		clock:    cfg.Clock,
+		domains:  cfg.Domains,
+		tracer:   cfg.Tracer,
+		log:      log,
+		resolved: cfg.Resolved,
+		made:     map[uint32]*stream{},
+		done:     make(chan struct{}),
+		change:   make(chan struct{}),
 	}
 }
 
@@ -165,6 +183,9 @@ type stream struct {
 	ends []segment.EndEvent
 	// windows are the pending windows, in end order.
 	windows []*window
+	// refused is set by the worker once it handed the stream's stop to the
+	// read-only entry; the worker alone touches it.
+	refused bool
 	// lastSeg is the newest segment the stream is known to have reached: the
 	// segment of a tracked record or of a sync, whichever is later.
 	lastSeg  core.SegmentID

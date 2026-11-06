@@ -241,3 +241,190 @@ func TestARecordStillWritingWhenTheSyncFailsIsInTheWindow(t *testing.T) {
 	}
 	wantSyncError(t, mustReturn(t, "Sync of the held record", r.syncAsync(context.Background(), f)), first.Segment, f)
 }
+
+// recorder collects what the layer announces.
+type recorder[T any] struct {
+	mu  sync.Mutex
+	got []T
+}
+
+func (c *recorder[T]) add(v T) {
+	c.mu.Lock()
+	c.got = append(c.got, v)
+	c.mu.Unlock()
+}
+
+func (c *recorder[T]) all() []T {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.got)
+}
+
+type resolvedAt struct {
+	stream uint32
+	seg    core.SegmentID
+}
+
+// TestAnEmptyWindowIsAnnouncedResolvedAtOnce covers R19 for a window that
+// holds nothing: a failed append over a segment a sync already covered has no
+// record to fail, so the segment is announced at once.
+func TestAnEmptyWindowIsAnnouncedResolvedAtOnce(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	var got recorder[resolvedAt]
+	r := newRigConfigured(t, 1, func(c *Config) {
+		c.Resolved = func(stream uint32, seg core.SegmentID) { got.add(resolvedAt{stream, seg}) }
+	})
+	r.d.Start(r.streams)
+	f := file(1)
+	a := r.appendWrite(t, f, 0, "a")
+	if err := mustReturn(t, "Sync", r.syncAsync(context.Background(), f)); err != nil {
+		t.Fatalf("Sync = %v", err)
+	}
+	r.failNextWrite(t, a.Segment, errors.New("write boom"))
+	r.appendFailing(t, f, 1)
+
+	eventually(t, "the empty window to be announced", func() bool { return len(got.all()) == 1 })
+	if want := (resolvedAt{0, a.Segment}); got.all()[0] != want {
+		t.Errorf("announced %+v, want %+v", got.all()[0], want)
+	}
+	if w := r.windowsOf(0); len(w) != 0 {
+		t.Errorf("an empty window is still pending: %+v", w)
+	}
+}
+
+// TestAResolvedWindowIsAnnouncedOnceAndItsRecordsAreNotPending covers R19 and
+// the clean-up of resolve: the segment is announced once, the window and the
+// failure kept for its segment are gone, and its records are not pending.
+func TestAResolvedWindowIsAnnouncedOnceAndItsRecordsAreNotPending(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	var got recorder[resolvedAt]
+	r := newRigConfigured(t, 1, func(c *Config) {
+		c.Resolved = func(stream uint32, seg core.SegmentID) { got.add(resolvedAt{stream, seg}) }
+	})
+	r.d.Start(r.streams)
+	f := file(1)
+	a := r.appendWrite(t, f, 0, "a")
+	r.failNextWrite(t, a.Segment, errors.New("write boom"))
+	r.appendFailing(t, f, 1)
+	r.waitWindow(t, 0)
+	if n := len(got.all()); n != 0 {
+		t.Fatalf("a window holding a record was announced before it was resolved: %d", n)
+	}
+
+	st := r.d.made[0]
+	st.mu.Lock()
+	w := st.windows[0]
+	if !st.pending(a) {
+		t.Error("the record of a pending window is not pending")
+	}
+	st.mu.Unlock()
+	r.d.resolve(st, w)
+
+	if g := got.all(); len(g) != 1 || g[0] != (resolvedAt{0, a.Segment}) {
+		t.Fatalf("announced %+v, want the segment once", g)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.pending(a) {
+		t.Error("the record of a resolved window is still pending")
+	}
+	if _, ok := st.failed[a.Segment]; ok {
+		t.Error("the resolved segment's failure was kept")
+	}
+	if len(st.windows) != 0 || !w.resolved {
+		t.Errorf("windows = %d, resolved = %v", len(st.windows), w.resolved)
+	}
+}
+
+// leaveAFailedSegment drives the segment a stream took to leave a failed one: it
+// fails a sync of f, then appends g's record in the spare. The two files are
+// distinct so a Sync of g does not meet the failed segment's window.
+func (r *rig) leaveAFailedSegment(t *testing.T, f, g core.FileID) (first, spare segment.Location) {
+	t.Helper()
+	first = r.appendWrite(t, f, 0, "a")
+	r.failSyncOf(t, first.Segment, errors.New("first boom"))
+	wantSyncError(t, mustReturn(t, "Sync", r.syncAsync(context.Background(), f)), first.Segment, f)
+	r.waitWindow(t, 0)
+	r.settlePool(t)
+	spare = r.appendWrite(t, g, 1, "b")
+	if spare.Segment == first.Segment {
+		t.Fatal("the append after the failed sync did not leave the failed segment")
+	}
+	return first, spare
+}
+
+// TestAFailureInTheSpareBeforeItsFirstSyncStopsTheStream covers R24 and R28:
+// the second refusal reaches the read-only entry once, with the second
+// failure, and the stream takes no third spare.
+func TestAFailureInTheSpareBeforeItsFirstSyncStopsTheStream(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	var ro recorder[error]
+	r := newRigConfigured(t, 1, func(*Config) {})
+	r.d.readOnly = ro.add
+	r.d.Start(r.streams)
+	f, g := file(1), file(2)
+	_, spare := r.leaveAFailedSegment(t, f, g)
+	second := errors.New("second boom")
+	r.failSyncOf(t, spare.Segment, second)
+	r.settlePool(t)
+	spares := r.pool.Counters().Spares
+	wantSyncError(t, mustReturn(t, "Sync in the spare", r.syncAsync(context.Background(), g)), spare.Segment, g)
+
+	eventually(t, "the read-only entry to be called", func() bool { return len(ro.all()) == 1 })
+	if got := ro.all()[0]; !errors.Is(got, second) {
+		t.Errorf("the read-only entry got %v, want the second failure", got)
+	}
+	h := format.RecordHeader{Kind: format.KindWrite, File: g, Extent: core.Extent{Off: 2, Len: 1}, Version: core.Version{Counter: 3}, Tag: 1}
+	_, err := r.streams.For(g).Append(h, format.RecordBody{Payload: []byte("c"), MTime: 1})
+	if !errors.Is(err, segment.ErrStreamStopped) || !errors.Is(err, second) {
+		t.Errorf("the append after the second refusal = %v, want ErrStreamStopped wrapping the failure", err)
+	}
+	if got := r.pool.Counters().Spares; got < spares {
+		t.Errorf("spares went from %d to %d: a third spare was taken", spares, got)
+	}
+	if n := len(ro.all()); n != 1 {
+		t.Errorf("the read-only entry was called %d times, want once", n)
+	}
+}
+
+// TestAFailureAfterTheSparesFirstSyncRollsOn covers the variant: a spare whose
+// first sync succeeded and a later one failed is an ordinary failed segment.
+func TestAFailureAfterTheSparesFirstSyncRollsOn(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	var ro recorder[error]
+	r := newRigConfigured(t, 1, func(*Config) {})
+	r.d.readOnly = ro.add
+	r.d.Start(r.streams)
+	f, g := file(1), file(2)
+	_, spare := r.leaveAFailedSegment(t, f, g)
+	if err := mustReturn(t, "Sync in the spare", r.syncAsync(context.Background(), g)); err != nil {
+		t.Fatalf("the spare's first Sync = %v", err)
+	}
+	r.appendWrite(t, g, 2, "c")
+	r.failSyncOf(t, spare.Segment, errors.New("later boom"))
+	wantSyncError(t, mustReturn(t, "later Sync", r.syncAsync(context.Background(), g)), spare.Segment, g)
+	r.waitWindowOf(t, 0, spare.Segment)
+	r.settlePool(t)
+	if next := r.appendWrite(t, g, 3, "d"); next.Segment == spare.Segment {
+		t.Error("the stream did not roll out of the failed spare")
+	}
+	if n := len(ro.all()); n != 0 {
+		t.Errorf("the read-only entry was called %d times for a failure after a sync", n)
+	}
+}
+
+// waitWindowOf waits for stream no to hold a pending window of seg.
+func (r *rig) waitWindowOf(t *testing.T, no int, seg core.SegmentID) windowView {
+	t.Helper()
+	var got windowView
+	eventually(t, "the worker to take the segment's window", func() bool {
+		for _, w := range r.windowsOf(no) {
+			if w.seg == seg {
+				got = w
+				return true
+			}
+		}
+		return false
+	})
+	return got
+}
