@@ -235,6 +235,31 @@ func TestAllocationReadsAgainAfterACommitBetweenItsReads(t *testing.T) {
 	u.allocations(t, f, run{4 * kib, 8 * kib, false})
 }
 
+// AddPending's drop leaves the entry as a commit does, so an Allocation pass
+// it cuts across is read again: committed data [0, 4k), a pending write
+// [4k, 12k) committed and dropped between the two reads. Read as one pass,
+// Allocation(4k) would answer the end of file at 4k.
+func TestAllocationReadsAgainAfterAPendingDrop(t *testing.T) {
+	ce := &committingExistence{}
+	u := newUnit(t, func(d *engine.Deps) { ce.Existence = d.Existence; d.Existence = ce })
+	_, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "f", kvstore.Regular(0o644))
+	f, v := made.ID, made.Version.Counter()
+	if failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: []kvstore.PendingOp{
+		{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: 4 * kib}, Time: time.Now()},
+	}}}); err != nil || failed[f] != nil {
+		t.Fatalf("commit: %v, %v", err, failed[f])
+	}
+	drop := u.e.AddPending(f, 4*kib, 8*kib)
+	ce.after = func() {
+		ops := []kvstore.PendingOp{{Version: entity.VersionOf(v + 2), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: 4 * kib, Length: 8 * kib}, Time: time.Now()}}
+		if failed, err := u.fs.Store.Existence().Commit(context.Background(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: ops}}); err != nil || failed[f] != nil {
+			t.Errorf("commit: %v, %v", err, failed[f])
+		}
+		drop()
+	}
+	u.allocations(t, f, run{4 * kib, 8 * kib, false})
+}
+
 // A write staged after a truncate applies after it, and only extends the end
 // of file: a truncate to 1k then a write [3k, 8k) leave a hole [1k, 3k); a
 // write [18k, 22k) then [12k, 19k) leave the file ending at 22k.

@@ -54,7 +54,8 @@ func (e *Engine) HoldEntry(f entity.FileID) func() {
 }
 
 // AddPending adds a pending write of [off, off+n) to f's entry, and returns
-// the function that drops it again, as a commit would.
+// the function that drops it again, as a commit would, bumping the removal
+// counter.
 func (e *Engine) AddPending(f entity.FileID, off, n int64) (drop func()) {
 	fe := e.files.lockFor(f)
 	fe.ops = append(fe.ops, pendingOp{kind: opWrite})
@@ -67,6 +68,7 @@ func (e *Engine) AddPending(f entity.FileID, off, n int64) (drop func()) {
 		}
 		if len(fe.ops) > 0 {
 			fe.ops = fe.ops[1:]
+			e.files.removals.Add(1)
 		}
 		e.files.unlock(f, fe)
 	}
