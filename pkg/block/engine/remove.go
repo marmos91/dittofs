@@ -398,7 +398,7 @@ func terminal(err error) bool {
 // operations commit, and the guard is released. A phase 1 that ended on a
 // terminal failure, err, settles the journal's marker without the removal
 // (RFC 8 §8.1), so no later start re-applies it, and logs the loss when the
-// file still exists. One its loop's end cut short, err nil, leaves the marker
+// file still exists; err nil, as a clone's loop end passes, leaves the marker
 // for the next start's recovery.
 func (e *Engine) unstage(r *removal, err error) {
 	fe := e.files.lockFor(r.f)

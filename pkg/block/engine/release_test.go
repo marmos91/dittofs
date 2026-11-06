@@ -183,24 +183,31 @@ func TestAnAbortKeepsTheWritesAboveIt(t *testing.T) {
 	}
 }
 
-// A phase 1 still retried when the loop ends leaves the guard released and
-// the truncate's operation out of the entry.
-func TestALoopEndingDropsARetriedPhase1(t *testing.T) {
-	x := &stalling{}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+// A truncate whose retried phase 1 Close's stop of the work queue cuts short
+// stays out of the last group commit: the write staged above it is not
+// committed, nor the write below, no Settle reaches the truncate's version,
+// and the entry keeps every operation, the truncate's included, for the next
+// start's recovery. Dropping the truncate's operation at the loop's end lets
+// the last group commit commit the write above it, and settle past it.
+func TestALoopEndingLeavesARetriedPhase1ForRecovery(t *testing.T) {
+	x := &conflictingRemove{}
+	u, h := newHookedUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
 	f := u.create(t, "a")
-	u.write(t, f, 0, fill(16, 'a'))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
-		t.Fatal(err)
+	u.write(t, f, 0, fill(16, 'a')) // due, and below the truncate
+	tv := u.retriedTruncate(t, x, f, 3, 8, 4)
+	u.e.StopRemovalLoops()
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	_ = u.e.CommitAll(ctx, u.rec) // the last group commit
+	cancel()
+	if applied, _ := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, f); !applied.IsZero() {
+		t.Errorf("the last group commit committed the file at %v", applied)
 	}
-	x.on.Store(true)
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-	defer cancel()
-	if err := u.e.Truncate(ctx, u.share.ID, f, 4); err == nil {
-		t.Fatal("a stalled truncate answered nil")
+	for _, s := range h.settleLog() {
+		if s.v.Compare(tv) >= 0 {
+			t.Errorf("settled at %v, at or above the cut-short truncate's %v", s.v, tv)
+		}
 	}
-	u.e.CloseGroupCommits()
-	if u.e.GuardHeld(f) || len(u.e.Pending(f)) != 0 {
-		t.Errorf("after the loop ended: guard %v, pending %+v; want neither", u.e.GuardHeld(f), u.e.Pending(f))
+	if p := u.e.Pending(f); len(p) != 3 || p[1].Version != tv {
+		t.Errorf("after the loop ended the entry holds %+v, want both writes and the truncate", p)
 	}
 }
