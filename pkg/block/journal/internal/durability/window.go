@@ -75,10 +75,10 @@ func (d *Durability) takeWindows(st *stream) {
 }
 
 // removeLocked drops the ledger entries drop selects, in Track order, and
-// hands each to take, which may be nil. It is the one compaction of the ledger, shared by the
-// completion pass and the window: it recounts stamped over what stays, so the
-// stamped prefix stays the entries the worker has stamped, and clears the
-// references the tail still holds. st.mu must be held.
+// hands each to take, which may be nil. It is the one compaction of the
+// ledger, shared by the completion pass and the window: it recounts stamped
+// over what stays, so the stamped prefix stays the entries the worker has
+// stamped, and clears the references the tail still holds. st.mu must be held.
 func (st *stream) removeLocked(drop func(*entry) bool, take func(entry)) {
 	kept := st.ledger[:0]
 	stamped := 0

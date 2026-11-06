@@ -34,11 +34,17 @@ func TestASealThatFindsAFailedSyncDoesNotCountItAgain(t *testing.T) {
 		t.Errorf("one failed fsync counted %d times", got)
 	}
 	// The sync's own error stands: the seal's EndSeal carries another one.
-	if se := r.d.Stats().LastSyncError; se == nil || !strings.Contains(se.Err.Error(), "sync boom") {
+	// The seal's error wraps ErrSegmentEnded and says a sync failed; the
+	// sync's own does neither.
+	ownError := func(err error) bool {
+		return err != nil && strings.Contains(err.Error(), "sync boom") &&
+			!errors.Is(err, segment.ErrSegmentEnded) && !strings.Contains(err.Error(), "a sync of the segment failed")
+	}
+	if se := r.d.Stats().LastSyncError; se == nil || !ownError(se.Err) {
 		t.Errorf("LastSyncError = %+v, want the sync's own error", se)
 	}
 	var se *core.SyncError
-	if err := mustReturn(t, "later Sync", r.syncAsync(context.Background(), f)); !errors.As(err, &se) || !strings.Contains(se.Err.Error(), "sync boom") {
+	if err := mustReturn(t, "later Sync", r.syncAsync(context.Background(), f)); !errors.As(err, &se) || !ownError(se.Err) {
 		t.Errorf("SyncError.Err = %v, want the sync's own error", err)
 	}
 }
