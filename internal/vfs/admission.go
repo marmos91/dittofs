@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"strconv"
 
@@ -30,6 +31,12 @@ func (a *admitted) root() vfs.Handle { return entity.NewHandle(a.share.ID, a.sha
 // names no share and is admitted to none, answering nil. The release, never
 // nil, uncounts the call; it is called once the call has answered.
 func (fs *Filesystem) admitHandle(ctx context.Context, c vfs.Call, h vfs.Handle) (*admitted, func(), error) {
+	return fs.admitHandleFor(ctx, c, h, false)
+}
+
+// admitHandleFor is admitHandle for a call that, with releases, only
+// releases state, as admit runs it.
+func (fs *Filesystem) admitHandleFor(ctx context.Context, c vfs.Call, h vfs.Handle, releases bool) (*admitted, func(), error) {
 	if pseudofs.IsHandle(h) {
 		return nil, func() {}, nil
 	}
@@ -37,14 +44,16 @@ func (fs *Filesystem) admitHandle(ctx context.Context, c vfs.Call, h vfs.Handle)
 	if err != nil {
 		return nil, func() {}, vfs.ErrStale
 	}
-	return fs.admit(ctx, c, share, true)
+	return fs.admit(ctx, c, share, true, releases)
 }
 
 // admit runs admission for the call c reaching share: it counts the call
 // against the share, then runs the share's state, its security minimums and
 // its client rules, then admit.Resolve resolves its Identity on the share.
 // secure false skips the minimums alone, for the one call whose answer is the
-// remedy for failing them. A share never created is ErrStale, as a handle naming it is.
+// remedy for failing them. releases true is a call that only releases state,
+// which check exempts from the client rules' refusal. A share never created
+// is ErrStale, as a handle naming it is.
 //
 // ponytail: admission's steps 1-4 run on every call, uncached; cache them
 // per (share, identity) with every version §4.9 lists in the key once a
@@ -53,14 +62,14 @@ func (fs *Filesystem) admitHandle(ctx context.Context, c vfs.Call, h vfs.Handle)
 // decision: the share cap on the node's request buffers, admission's last
 // step, is not run: no request-buffer pool exists to charge. Add it, refusing
 // with DelayResources except for a call that only releases or reclaims
-// state, with the pools.
-func (fs *Filesystem) admit(ctx context.Context, c vfs.Call, share entity.ShareID, secure bool) (*admitted, func(), error) {
+// state, releases among them, with the pools.
+func (fs *Filesystem) admit(ctx context.Context, c vfs.Call, share entity.ShareID, secure, releases bool) (*admitted, func(), error) {
 	release := fs.count(share)
 	if _, err := fs.tree(ctx); err != nil {
 		release()
 		return nil, func() {}, err
 	}
-	a, err := fs.check(ctx, c, share, secure, false)
+	a, err := fs.check(ctx, c, share, secure, false, releases)
 	if err == nil {
 		err = fs.servedShard(ctx, a.share)
 	}
@@ -100,8 +109,19 @@ func (fs *Filesystem) servedShard(ctx context.Context, sh entity.Share) error {
 // whether a call would be admitted. Once the share is read, the admission it
 // answers holds it and its policy, refused or not. With paused, a quiesced
 // share is admitted as an enabled one would be, and ErrDelay answered only
-// once every later step admits the call.
-func (fs *Filesystem) check(ctx context.Context, c vfs.Call, share entity.ShareID, secure, paused bool) (*admitted, error) {
+// once every later step admits the call. With releases, a call that only
+// releases state, the client rules' refusal is not answered: the call is
+// admitted narrowed to read-only, as a client rule narrows one.
+//
+// decision: a call that only releases state is exempt from the client rules'
+// refusal, as RFC 17 §4.9 step 5 and RFC 19 §3.1 ask, so a client the rules
+// stop admitting can still give up the locks and opens it holds, which would
+// otherwise block every other client until its lease or host ends. The share's
+// state, the minimums and resolution still gate it, and open state still
+// refuses a caller that does not own the state. Close, Unlock and CancelLock
+// are the calls that pass it; another release-only call passes it once it is
+// written.
+func (fs *Filesystem) check(ctx context.Context, c vfs.Call, share entity.ShareID, secure, paused, releases bool) (*admitted, error) {
 	if fs.beforeShareRead != nil {
 		fs.beforeShareRead()
 	}
@@ -122,6 +142,9 @@ func (fs *Filesystem) check(ctx context.Context, c vfs.Call, share entity.ShareI
 		in.MinProof, in.MinProtection = entity.ProofNone, entity.ProtectionNone
 	}
 	byClient, err := admit.Check(ctx, in, c.Identity, netgroups{fs.meta.ShareIndex()})
+	if releases && errors.Is(err, vfs.ErrAccess) {
+		byClient, err = true, nil
+	}
 	if err != nil {
 		return a, storeErr(err)
 	}

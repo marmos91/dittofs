@@ -155,7 +155,7 @@ func (fs *Filesystem) pseudoLookup(ctx context.Context, c vfs.Call, dir vfs.Hand
 	if n.Share == nil {
 		return n.Handle(), pseudoFile(t, n), nil
 	}
-	a, release, err := fs.admit(ctx, c, *n.Share, true)
+	a, release, err := fs.admit(ctx, c, *n.Share, true, false)
 	if err != nil {
 		return nil, vfs.File{}, err
 	}

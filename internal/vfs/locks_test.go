@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"errors"
+	"net/netip"
 	"reflect"
 	"testing"
 	"time"
@@ -309,8 +310,9 @@ func TestDrainLeavesAPendingBreak(t *testing.T) {
 // V12: lock, unlock and test-lock of a file, and a watch of the share's
 // root, meet admission whatever path their handle came by: a quiesced
 // share is ErrDelay, a flavour it refuses ErrWrongSecurity, a client
-// outside its rules ErrAccess; a lock of a directory is ErrIsDir; and a
-// user disabled after it was admitted is refused its next lock.
+// outside its rules ErrAccess, except for the unlock, which only releases
+// state; a lock of a directory is ErrIsDir; and a user disabled after it was
+// admitted is refused its next lock.
 func TestLockingIsAdmittedOnEveryEntryPath(t *testing.T) {
 	s := newShares(t, nil, nil)
 	ctx := t.Context()
@@ -370,12 +372,13 @@ func TestLockingIsAdmittedOnEveryEntryPath(t *testing.T) {
 		state   entity.ShareState
 		outside bool
 		want    error
+		unlock  error
 	}{
-		{"admitted", entity.ExportPolicy{}, entity.ShareEnabled, false, nil},
-		{"quiesced", entity.ExportPolicy{}, entity.ShareQuiesced, false, vfs.ErrDelay},
-		{"proof", entity.ExportPolicy{MinProof: entity.ProofSecret}, entity.ShareEnabled, false, vfs.ErrWrongSecurity},
+		{"admitted", entity.ExportPolicy{}, entity.ShareEnabled, false, nil, nil},
+		{"quiesced", entity.ExportPolicy{}, entity.ShareQuiesced, false, vfs.ErrDelay, vfs.ErrDelay},
+		{"proof", entity.ExportPolicy{MinProof: entity.ProofSecret}, entity.ShareEnabled, false, vfs.ErrWrongSecurity, vfs.ErrWrongSecurity},
 		{"client rules", entity.ExportPolicy{Clients: []entity.ClientRule{{Match: entity.ClientMatch{Netgroup: "lab"}, Access: entity.AccessReadWrite}}},
-			entity.ShareEnabled, true, vfs.ErrAccess},
+			entity.ShareEnabled, true, vfs.ErrAccess, nil},
 	} {
 		// Each path's handles, the root's and its file's, are taken while
 		// the share admits them, as a client holds one before the share
@@ -393,12 +396,15 @@ func TestLockingIsAdmittedOnEveryEntryPath(t *testing.T) {
 		s.must(t, s.cp.SetShareState(ctx, s.share, entity.ShareEnabled, c.state))
 		for name, hs := range handles {
 			for op, call := range ops {
-				h := hs[1]
-				if op == "watch" {
+				h, want := hs[1], c.want
+				switch op {
+				case "watch":
 					h = hs[0]
+				case "unlock":
+					want = c.unlock
 				}
-				if err := call(at(c.outside), h); c.want == nil && err != nil || c.want != nil && !errors.Is(err, c.want) {
-					t.Errorf("%s, %s by %s: %v, want %v", c.name, op, name, err, c.want)
+				if err := call(at(c.outside), h); want == nil && err != nil || want != nil && !errors.Is(err, want) {
+					t.Errorf("%s, %s by %s: %v, want %v", c.name, op, name, err, want)
 				}
 			}
 		}
@@ -461,6 +467,63 @@ func TestARevokedCallerStillReleasesItsLocks(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if got := waitOvers(hostCB); got["waits"] {
 		t.Errorf("the cancelled waiter was granted: %v", hostCB.Calls())
+	}
+}
+
+// V12: a client the share's rules stop admitting is refused a lock, a
+// test-lock and a watch, while its unlock of a lock it holds, its cancel of
+// a waiting lock and its close of an open taken before the rules changed all
+// succeed, as they only release state; another client then takes the range
+// it unlocked.
+func TestAReleaseIsNotRefusedByClientRules(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	h := s.file(t, "f", s.alice.Principal, 0o666)
+	host, _ := s.connected(t, proven(s.bob.Principal, inLab), nlmHost("build01", 1))
+	other, _ := s.connected(t, proven(s.alice.Principal, inLab), nlmHost("build02", 1))
+	pc, _ := s.connected(t, signedIn(s.bob.Principal, 1), smb("bob-pc", 1))
+	nlm := func(c vfs.Call, name string) vfs.LockOwner {
+		return vfs.LockOwner{Client: c.Client, Name: []byte(name)}
+	}
+	if _, err := s.Lock(ctx, host, vfs.Anonymous(h), vfs.LockReq{Owner: nlm(host, "held"), Ranges: span(0, 10, true)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Lock(ctx, other, vfs.Anonymous(h), vfs.LockReq{Owner: nlm(other, "o"), Ranges: span(20, 10, true)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Lock(ctx, host, vfs.Anonymous(h), vfs.LockReq{Owner: nlm(host, "waits"), Ranges: span(20, 10, true), Wait: openstate.WaitCallback}); !errors.Is(err, vfs.ErrBlocked) {
+		t.Fatalf("the host's waiting lock: %v, want ErrBlocked", err)
+	}
+	ref := s.opener(t, pc, "f", entity.ReadData)
+	s.must(t, s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Clients: []entity.ClientRule{
+		{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("192.168.0.0/16")}, Access: entity.AccessReadWrite},
+	}}))
+
+	if _, err := s.Lock(ctx, host, vfs.Anonymous(h), vfs.LockReq{Owner: nlm(host, "new"), Ranges: span(40, 1, false)}); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("a lock by a client outside the rules: %v, want ErrAccess", err)
+	}
+	if _, err := s.TestLock(ctx, host, vfs.Anonymous(h), nlm(host, "new"), vfs.ByteRange{Offset: 40, Length: 1}, false); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("a test-lock by a client outside the rules: %v, want ErrAccess", err)
+	}
+	if _, err := s.Watch(ctx, pc, vfs.WatchSpec{Dir: s.fs.Root, Filter: openstate.ChangeAddEntry}); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("a watch by a client outside the rules: %v, want ErrAccess", err)
+	}
+	if granted, err := s.CancelLock(ctx, host, vfs.Anonymous(h), nlm(host, "waits"), vfs.ByteRange{Offset: 20, Length: 10}); err != nil || granted {
+		t.Errorf("the cancel of a waiting lock by a client outside the rules: %v, %v; want cancelled", granted, err)
+	}
+	if _, err := s.Unlock(ctx, host, vfs.Anonymous(h), nlm(host, "held"), []vfs.ByteRange{{Offset: 0, Length: 10}}, vfs.Seqs{}, nil); err != nil {
+		t.Errorf("the unlock by a client outside the rules: %v", err)
+	}
+	if _, err := s.Close(ctx, pc, ref, vfs.Seqs{}); err != nil {
+		t.Errorf("the close by a client outside the rules: %v", err)
+	}
+
+	s.must(t, s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share}))
+	if _, err := s.Lock(ctx, other, vfs.Anonymous(h), vfs.LockReq{Owner: nlm(other, "o"), Ranges: span(0, 10, true)}); err != nil {
+		t.Errorf("another host's lock of the range the outside client unlocked: %v", err)
+	}
+	if _, err := s.Close(ctx, pc, ref, vfs.Seqs{}); !stateKind(err, vfs.StateBadState) {
+		t.Errorf("a second close of the closed open: %v, want BadState", err)
 	}
 }
 

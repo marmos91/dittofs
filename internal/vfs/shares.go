@@ -47,7 +47,7 @@ func (fs *Filesystem) Root(ctx context.Context, c vfs.Call, ref vfs.ShareRef) (v
 	if err != nil {
 		return nil, vfs.ShareInfo{}, storeErr(err)
 	}
-	a, release, err := fs.admit(ctx, c, share, true)
+	a, release, err := fs.admit(ctx, c, share, true, false)
 	if err != nil {
 		return nil, vfs.ShareInfo{}, err
 	}
@@ -120,7 +120,7 @@ func (fs *Filesystem) ListShares(ctx context.Context, c vfs.Call) ([]vfs.ShareIn
 // its policy as read; secure false skips the minimums, as admit's does. It
 // counts nothing, and errs wherever admission failed rather than refused.
 func (fs *Filesystem) wouldAdmit(ctx context.Context, c vfs.Call, share entity.ShareID, secure bool) (*admitted, bool, error) {
-	a, err := fs.check(ctx, c, share, secure, true)
+	a, err := fs.check(ctx, c, share, secure, true, false)
 	switch {
 	case err == nil, errors.Is(err, vfs.ErrDelay):
 		return a, true, nil
@@ -169,7 +169,7 @@ func (fs *Filesystem) SecInfo(ctx context.Context, c vfs.Call, dir vfs.Handle, n
 		share = (*[16]byte)(&in)
 	}
 	if share != nil {
-		a, release, err := fs.admit(ctx, c, *share, false)
+		a, release, err := fs.admit(ctx, c, *share, false, false)
 		if err != nil {
 			return nil, err
 		}

@@ -120,12 +120,14 @@ func (fs *Filesystem) Unlock(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 // the store's read authorizes its caller against the grant, and an NLM
 // lock, which has no open to close, would otherwise block every other
 // client until its host restarts (RFC 19 §3.1's release-only calls).
-// Admission still runs, share state, flavour and client rules included, and
-// open state still refuses a caller that is not the lock's owner. The read
-// answers only the file's kind and key. Withdraw it if either call is made
-// to return file data.
+// Admission still runs, share state, flavour and resolution included, though
+// not the client rules' refusal, as for any call that only releases state
+// (check), and open state still refuses a caller that is not the lock's
+// owner. The read answers only the file's kind and key. Withdraw it if either
+// call is made to return file data.
 func (fs *Filesystem) lockable(ctx context.Context, c vfs.Call, ref vfs.OpenRef, op vfs.Op) (*admitted, openstate.FileKey, func(), func(), error) {
-	a, unlock, release, err := fs.opened(ctx, c, ref)
+	releases := op == vfs.OpUnlock || op == vfs.OpCancelLock
+	a, unlock, release, err := fs.opened(ctx, c, ref, releases)
 	if err != nil {
 		return nil, openstate.FileKey{}, nil, nil, err
 	}
@@ -135,7 +137,7 @@ func (fs *Filesystem) lockable(ctx context.Context, c vfs.Call, ref vfs.OpenRef,
 		return nil, openstate.FileKey{}, nil, nil, err
 	}
 	as := a.caller.Identity
-	if op == vfs.OpUnlock || op == vfs.OpCancelLock {
+	if releases {
 		as = system
 	}
 	f, err := fs.meta.Files().Get(ctx, as, ref.Handle)
