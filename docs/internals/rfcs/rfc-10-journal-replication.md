@@ -711,7 +711,8 @@ of the primary leaves metadata describing an operation no surviving journal hold
 
 **A client's flush** ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)) is answered once every node of the replica set
 has synced the file's operations and the existence of those that overwrite
-committed content is committed; appends and hole fills keep the bounded age of
+committed content is committed, and, where its extent covers committed content,
+once the primary's recorded sync mark covers the sync; appends and hole fills keep the bounded age of
 [RFC 0 §5.1](rfc-0-data-lifecycle.md#5.1%20Write), so the store need not yet reflect them.
 
 **The committed point** ([§2.1](#2.1%20Terms)) rides on every batch. A replica persists it
@@ -786,7 +787,21 @@ under. **The receiver enforces it:**
   or a torn record raises the journal's loss generation
   ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)) — it **MUST** record, durably in its
   install record, the lowest version it lost for the shard, its **loss point**,
-  and report it with its committed point in every answer from then on. A replica
+  and report it with its committed point in every answer from then on. A loss
+  that names no record ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) names no shard or version, so it sets a loss
+  point on every shard the journal holds a replica of, a learner's included, at the lowest
+  version a write can carry, so a gather counts it below every point until it rejoins. A
+  shard with no install record needs none, as it answers only `ErrAmnesiac` until it
+  rejoins ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). The open that found such a
+  range may remove its evidence before the point is durable, so the point is also set at
+  every open that finds an unsettled `reconcile` record no per-range `reconciled` record follows,
+  and the engine calls `Reconciled` only once these points are durable ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). A takeover's repair
+  ([§9.2](#9.2%20Takeover)) of such a point has no file or version to pull for, so it pulls every operation
+  of the shard a kept replica holds that is not yet offloaded, whatever its version.
+  `ponytail:` that pull is the shard's whole un-offloaded content per takeover, bounded
+  by the kept replica's dirty bytes. Upgrade to pulling only the files the lost
+  range could hold, which needs the range to name them, when a takeover after such a
+  loss shows the pull in its time to serve. A replica
   with a loss point is lagging: the primary removes it ([§7.2](#7.2%20Removal)), and a gather
   counts it at no point above its loss point ([§9.2](#9.2%20Takeover)). It is cleared only by
   rejoining ([§7.3](#7.3%20Joining)), which discards first;
@@ -928,6 +943,11 @@ would bring back the single isolated copy this rule exists to refuse.
 > deployment with floor one shows relinquished shards whose replicas were truly
 > lost often enough to matter; then a floor-one shard keeps its primary and
 > reports itself exposed.
+
+A replica whose journal owes a metadata reconcile answers an `Apply` on a file
+it has not yet visited only after visiting that one file ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), a few
+metadata reads; that delay counts toward the silent-replica bound like any slow
+answer.
 
 A primary remembers the highest committed point each replica has acknowledged,
 and persists these marks in a side record of the shard ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)) on a
@@ -1115,7 +1135,9 @@ When the primary's node lease lapses, a replica takes over:
    the baseline the un-offloaded operations it holds above that replica's point.
    **Repair comes before Lost.** Where the claimant's own journal lost an
    operation at or below the baseline — its loss point is below the baseline — it
-   **MUST** pull that file's operations from every kept replica before it serves,
+   **MUST** pull that file's operations from every kept replica, or, for a loss
+   point that names no record ([§6](#6.%20Fencing)), every operation of the shard a kept replica
+   holds that is not yet offloaded, before it serves,
    and an extent is reported Lost ([RFC 8 §7.1](rfc-8-engine.md#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)) only where no listed replica
    holds it. The same holds for any primary whose journal records a loss: it asks
    its replicas before declaring an extent Lost.
@@ -1415,7 +1437,7 @@ type Replicated interface {
 	Deallocate(ctx context.Context, file FileID, off, n int64) (Version, error)
 	Truncate(ctx context.Context, file FileID, size int64) (Version, error)
 	Delete(ctx context.Context, file FileID) (Version, error)
-	Sync(ctx context.Context, file FileID) error                               // a client's flush, §4
+	Sync(ctx context.Context, file FileID) ([]SyncMark, error)                 // a client's flush, §4; the primary journal's marks (RFC 1 §3.1)
 	ReadAt(ctx context.Context, file FileID, p []byte, off int64) (int, error) // §8
 	Offloaded(ctx context.Context, file FileID, ext []Extent, oldest, newest Version) error // §5: an offload commit landed; tells the replicas
 	Hold(ctx context.Context, share ShareID, cut SnapshotCut, marks map[FileID]Version) error // §2.3
@@ -1659,6 +1681,9 @@ set and an epoch, and every message is fenced by it.
 | `S-tied-gather` | two replicas gather equal committed points; only the one first in the shard's slot order claims, and if both claim on differing gathers the conditional claim lets one win; over 10³ tied shards, claims follow slot order rather than all landing on the lowest node ID |
 | `S-loss-point-gather` | a replica's journal loses an acknowledged operation in a failed sync window while its committed point is above it; the primary dies. Assert the replica is counted at its loss point, a replica holding the operation claims, and the operation survives. A gather by committed point alone loses it |
 | `S-repair-before-lost` | the claimant's own journal lost an operation below the baseline that a kept replica holds; assert the claimant pulls it before serving and no read of it fails as Lost |
+| `S-unnamed-loss-point` | a replica's journal reopens with a range that names no record; assert every shard it holds a replica of gets a loss point at the lowest version, a gather counts it below every point, and its primaries remove it until it rejoins. Crash after the open retired the range's segment and before the install records were written; assert the next start, finding the `reconcile` record no per-range `reconciled` record follows, sets the loss points again before `Reconciled` |
+| `S-repair-unnamed-loss` | the claimant's own journal has a range that names no record, and a kept replica holds an un-offloaded append below the claimant's committed point; assert the claimant's repair pulls every un-offloaded operation the kept replica holds, that append included, before serving |
+| `S-apply-unvisited` | a replica reopens owing a metadata reconcile and its primary sends an `Apply` to a file the walk has not reached; assert the replica visits that file first, answers within the silent-replica bound, and is not removed |
 | `S-forged-notice` | a node that is not listed for a shard, and then one with a stolen node ID but no credential, sends an offload notice; assert both are refused and the replica keeps its dirty content |
 | `S-renew-unknown-outcome` | a renewal's swap lands and its reply is lost; assert the node re-reads the generation, renews from it, and its journal is not declared amnesiac. A blind retry fails this |
 | `S-store-stall-resume` | the store stalls for longer than a lease and returns; no takeover claims meanwhile. Assert every node resumes its lease at the same node epoch, no shard fails over, no grace runs and no write verifier changes |

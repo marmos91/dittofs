@@ -1035,7 +1035,7 @@ The hold and the re-run are the pipeline mechanism of
   ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step),
   [RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)).
 - **A request refused for a frozen share outlives the freeze.** A request
-  answered `ErrDelay` because its share is quiesced or frozen for a move is
+  answered `ErrDelay` because its share is frozen for a move is
   held pending until the freeze ends plus 35 s, and never longer than
   `migration.freeze_timeout` plus 35 s
   ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks),
@@ -1549,11 +1549,13 @@ and nothing else: every file may have holes, sparse or not, and holes are
   with `FILE_WRITE_THROUGH`, on a persistent open, and on any open on a
   continuously available share (§6.4).
 - `FLUSH` is `Commit`.
-- **A stability reply waits for overwrites' existence.** A stable write, and a
-  `FLUSH`, **MUST** be answered once the journal has synced every record in its
-  range and once the existence commit of every pending write in its range that
-  overwrites committed content — the writes that need an overwrite record — has
-  committed; an append or hole fill does not wait for its existence commit,
+- **A stability reply waits for overwrites' existence and the marks.** A stable
+  write, and a `FLUSH`, **MUST** be answered once the journal has synced every
+  record in its range, once the existence commit of every pending write in its
+  range that overwrites committed content — the writes that need an overwrite
+  record — has committed, and, where its range covers committed content, once a
+  recorded sync mark covers the sync, so a whole-file `FLUSH` after appends to a
+  file with committed content waits for one marks transaction too; an append or hole fill does not wait for its existence commit,
   and a waiting reply joins the next group commit rather than issuing one of
   its own
   ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)).
@@ -1564,7 +1566,7 @@ and nothing else: every file may have holes, sparse or not, and holes are
   group commit, which batches across files, never a transaction of its own.
   While the metadata store does not commit
   ([RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)),
-  such a reply is held pending and re-driven up to `smb_pending_cap`, and only
+  a reply that waits on either is held pending and re-driven up to `smb_pending_cap`, and only
   there answered `STATUS_UNEXPECTED_IO_ERROR`
   ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks), [§16.5](#16.5%20Errors)).
 - **A loss without a restart fails the next `FLUSH` of every open across it.**
@@ -2407,8 +2409,10 @@ Whether a request is held pending or answered at once is the adapter's choice,
 so the rows say it. "Held pending" means: an interim `STATUS_PENDING`, the request re-run on the
 backoff of §6.3, and the final answer by the request's deadline:
 `smb_pending_deadline` (60 s) for `ErrDelay` on a break, recall or clone; the freeze's
-end plus 35 s, at most `migration.freeze_timeout` plus 35 s, for a quiesced or
-frozen share; `smb_pending_cap` for a transient capacity refusal, a stalled
+end plus 35 s, at most `migration.freeze_timeout` plus 35 s, for a share frozen
+for a move; `smb_pending_cap` for a `DelayFrozen` with no bound (`Until` zero),
+an administrator's quiesce included;
+`smb_pending_cap` for a transient capacity refusal, a stalled
 metadata store or a store conflict (`DelayConflict`); grace's end plus 35 s for `ErrGrace`; none for `ErrBlocked`
 (§6.3). These bounds are this section's, held to the two inequalities
 [RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks) states, and the two settings
@@ -2441,7 +2445,8 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrCross` (`CrossShare`) | `STATUS_NOT_SAME_DEVICE`; it does not arise from a rename, whose target is resolved within the tree |
 | `ErrDelay` — a break or recall in progress, or a clone holding the range | held pending; re-run when it ends. A break that reaches its deadline is forced (§6.3) and the request proceeds with the re-run's own result; one still delayed by a further break or recall at `smb_pending_deadline` is `STATUS_FILE_NOT_AVAILABLE`, the status a held freeze or grace ends with. I/O held by a running clone past its own deadline is `STATUS_FILE_LOCK_CONFLICT`, unless the `Delay` carries `DelayCommit` or `DelayCapacity`, or the call meets `ErrUnavailable` — the clone itself held up by a stalled store, by space it waits for (a clone resumed at start included) or by a remote outage — and the request is then held and answered as that cause's row says, so a clone slowed by a stalled store ends `STATUS_UNEXPECTED_IO_ERROR` at `smb_pending_cap`, and one waiting for space `STATUS_DISK_FULL` there, never a lock conflict at `smb_pending_deadline`. A `CREATE` of a clone's destination not yet served while its clone waits for space is answered the same way, as capacity ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)) |
 | `ErrDelay` — a store conflict still unresolved at the service's deadline (`DelayConflict`) | held pending and re-run up to `smb_pending_cap`; still conflicting there, `STATUS_FILE_NOT_AVAILABLE` |
-| `ErrDelay` — the share quiesced or frozen for a move ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) | held pending until the freeze ends, then re-run; at `migration.freeze_timeout` plus 35 s, `STATUS_FILE_NOT_AVAILABLE`; if the namespace has moved, `STATUS_NETWORK_NAME_DELETED` and the moved shares' trees end (§6.3) |
+| `ErrDelay` — the share frozen for a move, `DelayFrozen` with `Until` set ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) | held pending until the freeze ends, then re-run; at `migration.freeze_timeout` plus 35 s, `STATUS_FILE_NOT_AVAILABLE`; if the namespace has moved, `STATUS_NETWORK_NAME_DELETED` and the moved shares' trees end (§6.3) |
+| `ErrDelay` — `DelayFrozen` with `Until` zero: a share an administrator quiesced, a share not attached here, an open-state shard not yet served here, or a file the metadata reconcile has not visited ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), none of which has a freeze's bound | held pending and re-run up to `smb_pending_cap`; still delayed there, `STATUS_FILE_NOT_AVAILABLE` |
 | `ErrDelay` — the journal's capacity or the share's journal limit refusing a write while offload or repack can drain it, a remote outage included ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)) | held pending and re-run for as long as the cause lasts, up to `smb_pending_cap` (10 min by default); `STATUS_DISK_FULL` only at that cap, or at once if the cause turns permanent |
 | `ErrDelay` with `DelayCommit` — the metadata store stalled: its own transaction, the existence commit a stable write or `FLUSH` waits on (§9.4; [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)), a raise of the share's version limit, a write waiting on quota slack, or a stable write whose sync may have lost it ([RFC 17 §5.8](rfc-17-vfs.md#5.8%20The%20write%20verifier)) | held pending and re-run up to `smb_pending_cap`; only there `STATUS_UNEXPECTED_IO_ERROR`, as a failed read is ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) |
 | `ErrIO` — a journal read the device could not complete, after its bounded retry ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), on a `READ`, a `FLUSH`, a write-through `WRITE`, or a copychunk or duplicate-extents reading its source | `STATUS_UNEXPECTED_IO_ERROR` at once, never held; a `READ` whose verified bytes reach its `MinimumCount` is answered with them |
@@ -2592,7 +2597,7 @@ name, a SID, a principal or a client address
 | S19 | A null session reaches no share but `IPC$`; a guest session reaches `IPC$` and only shares whose policy enables guest access and that do not encrypt, decided at `TREE_CONNECT`. |
 | S20 | An SMB client record is one `ClientGuid` and holds no principal; every check of who may use an open is against the open's principal. |
 | S21 | A waiting lock has no deadline, and is answered other than as granted only after `CancelLock` returns; a request refused `ErrGrace` is held until grace ends plus 35 s. |
-| S22 | A stability reply waits for the journal sync of its range and the existence commit of every pending overwrite of committed content in it; a loss of acknowledged writes fails the next `FLUSH` of every open across it, once. |
+| S22 | A stability reply waits for the journal sync of its range, the existence commit of every pending overwrite of committed content in it, and, where its range covers committed content, a recorded sync mark covering the sync; a loss of acknowledged writes fails the next `FLUSH` of every open across it, once. |
 | S23 | A share's journal limit is held pending like a full journal; a transient capacity refusal is held up to `smb_pending_cap` and answered `STATUS_DISK_FULL` only there; only a logical quota or a permanent cause is answered at once. A request refused for a frozen share is held until the freeze ends plus 35 s. |
 | S24 | A copy or clone of overlapping ranges of one file, or a duplicate-extents over `clone_max_len`, is `STATUS_INVALID_PARAMETER` and changes nothing; one across namespaces is `STATUS_NOT_SUPPORTED`; duplicate-extents is atomic, copychunk runs in bounded chunks. |
 | S25 | No replay is matched by message ID; a replay never runs beside a request still in flight under an earlier channel sequence; a change notification names a file only as a listing would. |

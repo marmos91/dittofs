@@ -1106,7 +1106,7 @@ The views are defined where their semantics are:
 | `OpenRecords` (`metadata.Clients`, `metadata.Opens`, not open state's `openstate.Clients` and `openstate.Opens` views over them) | client records, durable opens and their locks, delete pending, the restart-notice number, and `NextID(kind)`, which issues client, open and lock IDs from `IDS‖kind`; never caching grants or watches, which are never durable | [RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring) |
 | `ShareIndex` | the share list as admission and the pseudo-filesystem read it on every call: one share with its export policy, a share by name or path, the list and its version, a netgroup; it writes nothing | this RFC, for [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees) |
 | `Principals`, `Records`, `Minter` | identity's lookups, a user's record and a share's policy, its reads of one group's record, and the only writes it makes | this RFC, for [RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle) |
-| `Lifecycle` | a device's journal identity, the version limits, the incarnations | this RFC, for [RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition) |
+| `Lifecycle` | a device's journal identity and sync marks, the version limits, the incarnations | this RFC, for [RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition) |
 | `ControlPlane`, `Inspect` | the management API, trusted reads by ID | this RFC |
 
 ```go
@@ -1186,16 +1186,21 @@ type Alloc struct{ UID, GID, RID bool }
 
 // Lifecycle is the engine's store access outside block metadata's views and
 // Inspect.Refs (RFC 8 §2.1, §2.5, §2.7), over JD‖node‖device, the share records'
-// tags, SH‖shard‖rm, S‖id‖vl and the incarnation keys.
+// tags, SH‖shard‖rm, S‖id‖vl, the incarnation keys and J‖journal's og and sm keys.
 // Signatures are indicative; RFC 8 owns what each call carries.
 type Lifecycle interface {
 	JournalID(ctx context.Context, node NodeID, device JournalDir) (JournalID, error) // the identity recorded for a node's device (JD‖node‖device), for Open
+	SyncMarks(ctx context.Context, j JournalID) ([]SyncMark, OpenGen, error)          // the journal's sync marks, for Open, raising J‖journal‖og in the same transaction; returns the value written. A mark that does not decode is left out and logged with its stream, err == nil; a non-nil err means the transaction failed and og was not raised
 	Tags(ctx context.Context) (map[ShareID]TagRecord, error)                          // every share record's tag and its removal state, for start steps 1 and 5
 	VersionLimits(ctx context.Context, shares []ShareID) (map[ShareID]Version, error) // each share's limit, read for Open's floor
 	RaiseVersionLimits(ctx context.Context, to map[ShareID]Version) error             // a tracked max-write of S‖id‖vl, within K keys a transaction
 	RaiseAtStart(ctx context.Context, shards []ShardID) (map[ShardID]uint64, error)   // raises each incarnation and sets GraceInstance to it, within K keys a transaction, so a failure part way leaves those already raised; returns the incarnations written
 	RaiseAtAttach(ctx context.Context, shard ShardID) (uint64, error)                 // raises the incarnation and keeps GraceInstance; returns the incarnation written
 }
+
+// OpenGen is a journal's open generation, J‖journal‖og (§4.2). The group commit
+// passes the value SyncMarks returned with every marks write (RFC 6's MarksWrite).
+type OpenGen uint64
 
 // JournalDir is a journal device: the directory the node's bootstrap names for
 // it (RFC 13 §2.2), as written there, one of RFC 8's Deps.Devices. It is not a
@@ -1349,7 +1354,7 @@ type Inspect interface {
 	Entries(ctx context.Context, dir FileID, after []byte) iter.Seq2[Entry, error]
 	Walk(ctx context.Context, root FileID, after WalkCursor) iter.Seq2[WalkStep, error] // depth-first, resumable
 	ACL(ctx context.Context, id FileID) (ACL, error)
-	Refs(ctx context.Context, file FileID, from int64) iter.Seq2[ChunkRef, error]
+	Refs(ctx context.Context, file FileID, from int64) iter.Seq2[ChunkRef, error] // live and history refs alike (RFC 12 §2.4), each saying which
 	Chunk(ctx context.Context, h ChunkHash) (Chunk, error)
 	Block(ctx context.Context, name BlockName) (Block, error)
 }
@@ -1748,7 +1753,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `NG‖name` | Netgroup |
 | | `SL` | ShareList: one version per installation |
 | | `CGEN` | ClaimGeneration: one installation-wide counter, raised by every `NS‖ns‖claim` write that can change a namespace's `Claim` answer; every node reads it once a second with `SL` and `PGEN` and reruns `Claim` when it moves ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5) |
-| | `TG` | share-tag counter: the next journal tag ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), raised in the transaction that records a share's tag and never lowered, so no tag is given twice; a recovery import opens every adopted journal (after `Restamp`) before publishing any share, raises it above every tag their `Stats` name ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), and only then mints tags ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) |
+| | `TG` | share-tag counter: the next journal tag ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), starting at 1, since tag 0 marks a journal's own records, and raised in the transaction that records a share's tag and never lowered, so no tag is given twice; a recovery import opens every adopted journal (after `Restamp`) before publishing any share, raises it above every tag their `Stats` name ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), and only then mints tags ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) |
 | | `IN` | Installation: the installation's identity, written once by the explicit initialisation step, which writes the same ID into every journal's `format` file ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)); its instance part and recorded machine-generation identifier; and the active version of every shared format but the store format, which `\x00format` holds, each raised only by the control plane's gate (§2.3, §4.6) |
 | | `NSM` | the restart-notice number, one per installation; raised durably before the grace of any failover that lost locks of clients that recover by notice, and at a moved address's arrival above the larger of the move delta's number and its own ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification), [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)) |
 | | `PGEN` | principals generation: one installation-wide counter, raised in the transaction of every `User`, `Group` or `Membership` write and every `PX‖` row written or deleted; every node reads it at least once a second and stops serving identity it cached under an older one (RFC 18 §7.2) |
@@ -1761,6 +1766,8 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `SH‖shard‖xh‖opID` | (cluster) cross-shard hold record: a participant's hold for one prepared operation, with its deadline, written by a fenced transaction that also rewrites, at the shard's current epoch, the fences of the files it holds that still name an older one, so a primary that stayed through a raise leaves the coordinator's commit no stale fence to fail on; every commit of the operation guards it, and a release deletes it before the participant grants what it refused ([RFC 11 §8.1](rfc-11-ownership.md#8.1%20Operations%20across%20shards)) |
 | | `SH‖shard‖rm` | the share removal's progress on this shard: step 3, offloaded, forgotten, step 4 with its cursor, or done ([§2.3.2](#2.3.2%20Removing%20a%20share)); absent before the shard's step 3 starts |
 | | `SH‖shard‖hw` | (cluster) each replica's acknowledged committed-point mark, persisted by the primary on a period; never lowered, raises no epoch ([RFC 10 §7.2](rfc-10-journal-replication.md#7.2%20Removal)) |
+| | `J‖journal‖og` | the journal's open generation, a counter every open raises in the transaction that reads its sync marks (`Lifecycle.SyncMarks`, §3); a marks write (`Existence.Commit`'s `MarksWrite`, [RFC 6 §10.1](rfc-6-block-metadata.md#10.1%20Interface)) commits only while it still equals the value the open whose marks it carries wrote ([RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)). Deleted with `J‖journal` |
+| | `J‖journal‖sm‖stream` | a sync mark, one per append stream of the journal: a `SyncMark` ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), keyed by its `Stream`, never by its position in the write, and never deleted by a marks write. Written only by the group commit, through `Existence.Commit` ([RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)), which replaces it unconditionally while the journal's open generation `J‖journal‖og` still equals the value the open whose marks it carries wrote (§6.3), so the first group commit after an open writes the mark that open recovered, lower where the device lost a tail. Deleted with `J‖journal`, and read by `Lifecycle.SyncMarks` (§3) for the journal's `Open` ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) |
 | | `J‖journal` | a journal, keyed by journal identity: the node and device it lives on, written by `RecordJournal` (§3.2) when the journal is created and before anything in it is acknowledged, so a start that finds no journal or another one there refuses its shares ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); and, from the replication extension on, its generation, raised at every open, lease acquisition and lease renewal, and by a primary that finds itself rolled back ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)) |
 | | `JD‖node‖device` | the journal identity on a node's device: the index `Lifecycle`'s `JournalID` reads to open that device's journal ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1), written with `J‖journal` by `RecordJournal` (§3.2) and overwritten when the device is re-initialised (proposal, §3.2) |
 | | `RS‖partition` | (cluster) repair scheduler lease per partition of the shard-ID hash, with its epoch ([RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair)) |
@@ -1932,6 +1939,7 @@ are the prefix's. No separator byte is written.
 | `S‖id` | `info` 0x01, `st` 0x02, `nsg` 0x03, `g` 0x04, `xp` 0x05, `snap` 0x06, `cut` 0x07, `live` 0x08, `sc` 0x09, `hd` 0x0A, `hr` 0x0B, `use` 0x0C, `rh` 0x0D, `or` 0x0E, `ut` 0x0F, `pu` 0x10, `pj` 0x11, `ud` 0x12, `qt` 0x13, `qx` 0x14, `vf` 0x15, `fnc` 0x16, `vl` 0x17, `shs` 0x18, `pr` 0x19, `rr` 0x1A, `do` 0x1B, `od` 0x1C, `pjn` 0x1D, `gv` 0x1E |
 | `NS‖ns` | `gc` 0x01, and under it `lease` 0x01, `recheck` 0x02, `hold` 0x03, `suspect` 0x04, `forward` 0x05, `pause` 0x06, `cursor` 0x07; `claim` 0x02, `pk` 0x03, `key` 0x04, `bk` 0x05, `drain` 0x06, `keyseq` 0x07, `park` 0x08, `backup` 0x09 |
 | `N‖node`, `SH‖shard`, `CL‖clientID`, `SS‖session` | `exp` 0x01, `clk` 0x02, `st` 0x03; `rq` 0x01, `xh` 0x02, `hw` 0x03, `rm` 0x04, `fw` 0x05, `rqx` 0x06; `sh` 0x01; `h` 0x01 |
+| `J‖journal` | `sm` 0x01, then the stream number, 4 bytes big-endian; `og` 0x02 |
 | `NS‖ns‖gc‖cursor` | walk: audit 0x01, block walk 0x02, index rebuild 0x03 |
 | `CLO` | `protocol.Kind`'s byte, one per protocol ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): NFSv3 0x01, which holds no client record, NFSv4 0x02, its minor versions one kind, NLM 0x03, SMB 0x04 |
 | `IDS` | kind: client 0x01, open 0x02, lock 0x03, uid 0x04, gid 0x05, RID 0x06, shard 0x07 |
@@ -2253,9 +2261,21 @@ serial order of the committed operations.
   §4.2.1's encoding. A codec or key change that alters them without bumping the
   version or the format fails. A prefix scan of each sub-kind returns only
   that sub-kind's keys, and refs scan back in offset order.
-- **Refusal:** decoding a newer version, a truncated value or a trailing byte
-  fails with a named error, never a zero value; so does a journal version, in a
-  key or a value, whose epoch half is not zero (§4.2.1).
+- **Sync marks:** the group commit's write of `J‖journal‖sm‖stream` replaces the
+  stored mark of each stream it carries unconditionally, each under its own
+  `Stream`, and deletes nothing: a kept mark whose segment is gone reads as
+  retired ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) and segment ids never repeat, so at most one key per
+  stream ever configured stays, and a stream dropped at a restart keeps the only
+  proof of its last segment's tail. It commits only while `J‖journal‖og` still equals the
+  value the open whose marks it carries wrote ([RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)); nothing else
+  writes it. A stored value that does not decode is replaced by the next such
+  write that carries its stream, and every read logs it as a codec error and returns it as absent, with
+  no error: `SyncMarks` returns an error only when its transaction failed; deleting `J‖journal` deletes every mark under
+  it ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)).
+- **Refusal:** decoding a newer version, a truncated value, a trailing byte or a
+  journal version, in a key or a value, whose epoch half is not zero (§4.2.1)
+  fails with a named error, never a zero value, except a sync mark, whose read
+  returns it as absent and logs the error (above).
 - **Format record:** a store written by version *n* opens under *n+1* and is
   refused by *n−1* (§4.6).
 - **No upgrade by opening:** open a format-*n* store under an *n+1* binary, run

@@ -2595,7 +2595,11 @@ type PendingWrite struct {
 
 type Existence interface {
     // Commit applies pending existence for many files in one bounded batch (§3.4).
-    Commit(ctx context.Context, pending []PendingExistence) error
+    // A non-nil marks also writes the journal's sync marks in the same transaction,
+    // and with no pending existence writes only them (RFC 8 §5.2, RFC 16 §4.2).
+    // ErrOpenGenMoved or ErrSyncMarks aborts the whole transaction: no file's
+    // existence in it has committed either, and neither error names a file.
+    Commit(ctx context.Context, pending []PendingExistence, marks *MarksWrite) error
     // Remove applies phase 1 of a truncate, deallocate or release at the journal's
     // version (§6.2, §6.4). For a release, in the same transaction, it re-checks the
     // file's holders and aborts if an open has arrived, and deletes the file's
@@ -2611,6 +2615,12 @@ type Existence interface {
     // committed size and outside the committed holes (§3.3) — in one read, for a
     // stability point's wait (RFC 8 §5.1).
     Overwrites(ctx context.Context, file FileID, runs []Extent) (bool, error)
+    // Versions reports, over [off, off+n), each run with the highest version
+    // metadata records over it — its overwrite record, the covering live ref's
+    // newest, a committed hole, or a removal not done — and the file's committed
+    // size and applied, in one read, for RFC 8 §2.5's metadata reconcile. A file
+    // with no File record and no removal not done is ErrNotFound.
+    Versions(ctx context.Context, file FileID, off, n int64) (runs []VersionRun, size int64, applied JournalVersion, err error)
     // PruneOverwrites deletes the file's overwrite records that refs at or above
     // their version actually cover, or that lie in a hole or past size (§3.3);
     // housekeeping, never needed for a right answer.
@@ -2672,7 +2682,24 @@ type Blocks interface {
     Settle(ctx context.Context) error                                          // RFC 9 §3.7: retired → deleted up to store time, unverified; last transaction updates the nonce record
 }
 
+// MarksWrite is one group commit's sync marks (RFC 8 §5.2): each replaces the
+// stored mark of its Stream unconditionally, no other stream's mark is deleted,
+// and the write commits only while J‖journal‖og, read tracked, still equals Gen (RFC 16 §6.3).
+type MarksWrite struct {
+    Journal JournalID
+    Gen     OpenGen    // the open generation Lifecycle.SyncMarks wrote for the open whose marks these are
+    Marks   []SyncMark // RFC 1 §3, one per append stream, each keyed by its Stream
+}
+
+// VersionRun is one run of Versions: the highest version metadata records over it.
+type VersionRun struct {
+    Offset, Length int64
+    Version        JournalVersion
+}
+
 var (
+    ErrOpenGenMoved = errors.New("blockmeta: open generation moved")   // Commit: og is no longer Gen; the write is dropped, and marks stop only if og passed the current open's (RFC 8 §5.2)
+    ErrSyncMarks    = errors.New("blockmeta: sync marks not written") // Commit: the marks keys still conflicting at the deadline; only where the store knows they conflicted: always with marks alone, beside files only where it names the keys, else the conflict is the files' (RFC 8 §5.2)
     ErrReferenced   = errors.New("blockmeta: retired block referenced") // MarkDeleted refused, block resurrected
     ErrChunkDeleted = errors.New("blockmeta: adopted chunk deleted")   // §7.2
     ErrNoIntent     = errors.New("blockmeta: put intent absent")       // §7.6
@@ -2792,6 +2819,7 @@ After every step it asserts:
 | refs | A file's refs never overlap; every ref's `newest` is at or above every overwrite record that leaves its extent carved. |
 | counts | [§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)'s row: refcounts equal reverse keys and refs; `live` and state agree. |
 | history | No history key was written twice; every history ref's `died` equals the model's supersession cut. |
+| [§10.1](#10.1%20Interface) `Existence.Versions` | Over one file, commit an overwrite record at v7 over `[0, 64K)`, a live ref with `newest` v9 over `[32K, 128K)`, a hole at v5 over `[128K, 256K)`, and an unfinished deallocate at v11 over `[256K, 320K)`, which leaves `size` alone, with `size` 320K and `applied` v11; call `Versions` over `[0, 384K)`. Assert the runs split wherever the highest version changes, each with the highest version over it (v7 to 32K, v9 to 128K, v5 to 256K, v11 to 320K), and that `size` 320K and `applied` v11 are returned, so the caller bounds the piece past `size` by `applied`. Delete the file and finish its removal; assert `ErrNotFound`. |
 
 The sequences **MUST** include, as fixed seeds kept as regression cases: overwrite
 pruning while an older pass of the extent is in flight, its commit landing after
