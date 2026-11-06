@@ -866,9 +866,9 @@ running.
    passes and batches in flight, clone batches included, and joins them. Then commit every file's pending
    existence in a last group commit per journal, within the stop bound, so a
    clean stop leaves no append or hole fill for recovery to replay. A file whose
-   phase-1 retry was cancelled stays out of that last group commit, and
-   its pending operations, the removal's included, are left for recovery
-   ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)).
+   phase-1 retry was cancelled, a clone's destination included, stays out of
+   that last group commit, and its pending operations, the removal's or the
+   clone's included, are left for recovery ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches), [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)).
 3. Cancel the other background loops, then join them: the age tick, the
    rescan, eviction, the reseed and the retried open of a journal refused at
    `Start`.
@@ -1288,9 +1288,10 @@ after a loss, each client resends its recent unstable writes once.
   ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)) at the newest version that transaction committed for the
   file, never above it: a write staged after the batch claimed the file's
   operations is not settled by it, and stays for the next commit or for
-  recovery ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). A group commit commits a file's pending
-  operations in version order and stops at a removal whose phase 1 has not
-  committed ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), so neither `applied` nor `Settle` reaches that removal's
+  recovery ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). A clone's operation sits in its destination's
+  pending operations at the clone's version, as a removal's does ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)). A group commit commits a file's pending
+  operations in version order and stops at a removal, a clone's destination
+  included, whose phase 1 has not committed ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), so neither `applied` nor `Settle` reaches that removal's
   version, and RFC 1 §3.10's precondition holds; the guard only spares the
   retry ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow)).
 - **`Done` is called exactly once for every write `Write` accepted.** The
@@ -1480,7 +1481,7 @@ older content served as newer.
   since the last group commit, or captured, removed or cut meanwhile — **MUST**
   be committed together, one transaction per bounded batch (below), not one per
   write or per file. A file's share of it runs in version order up to its first
-  removal whose phase 1 has not committed ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)); what lies above waits for
+  removal, a clone's destination included, whose phase 1 has not committed ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)); what lies above waits for
   that phase 1.
 - A batch **MUST** be bounded: at most `G` files, and at most the key budget `K`
   of [RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) in keys written. `G` is the `group_commit.max_files` setting ([RFC 13](rfc-13-configuration.md);
@@ -2761,6 +2762,15 @@ metadata alone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20
   and a snapshot between two batches holds them: their existence is born at the
   clone's cut, like the adopted refs and the holes each batch writes. Phase 2 is
   then metadata only.
+- **A clone is a pending operation of its destination.** From its journal step
+  the clone's operation sits in the destination's pending operations at its
+  version *v*, like a removal's, and a group commit stops at it until phase 1
+  commits ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)). A write staged above *v* outside the extent while phase 1
+  retries ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)) is therefore not committed before it, and neither the
+  destination's `applied` nor its `Settle` reaches *v*, so the clone marker
+  stays for recovery to rebuild the clone from. That stop is what keeps the
+  marker; the destination's guard, held across the retries, only spares them
+  conflicts ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow)).
 - **The destination extent is not served until the clone is done.** A read waits
   for it or fails at its deadline, and a write into it answers `ErrDelay`, so no
   destination ref newer than the clone exists for phase 2 to overwrite.
@@ -3531,7 +3541,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put) minted names and intents | Retry a put with an unknown outcome; assert the same name and bytes. Re-offer the same content in a new pass; assert a new name. Remove the intent before the commit; assert the commit fails and the content is re-offered. Delete an object once record and intent are gone, then land a delayed delete of it; assert no committed block is touched. |
 | [§6.7](#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) widening | Widen a run over an offloaded neighbour and release the neighbour mid-pass; assert the release waits for the pass and the new refs read correctly. |
 | [§6.7](#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) stretch ends | Stream a file across passes cut by `limit`. Assert no pass reports bytes past `consumed`, the next pass starts at a content boundary, and the chunking equals one pass over the whole file. Stop writing: assert the tail is cut and offloaded within the age ceiling. |
-| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) clone keeps writes outside its extent | Clone an extent onto `F` while a writer writes `F` past the cloned extent; stall the clone before phase 1, between the phases and between two batches, writing at each stall. Assert every acknowledged write outside the extent reads back from the journal, and again after it is offloaded and evicted. A clone that drops refs by file rather than by extent loses them cold. |
+| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) clone keeps writes outside its extent | Clone an extent onto `F` while a writer writes `F` past the cloned extent; stall the clone before phase 1, between the phases and between two batches, writing at each stall. Assert every acknowledged write outside the extent reads back from the journal, and again after it is offloaded and evicted. Make the clone's phase 1 conflict and retry, and stage a synced write outside the extent meanwhile: assert that write is not committed, and `F`'s `applied` and every `Settle` of `F` stay below the clone's version, until phase 1 commits. A clone that drops refs by file rather than by extent loses them cold. |
 | [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) no pre-clone fill | Evict `F`; pre-warm it and stall the fetches; clone onto `F`; release the fetches. Assert no fill installs, and the extent reads the source's bytes. |
 | [§6.4](#6.4%20The%20offload%20guard%20is%20narrow) guard is not a fence | Run two engines, each believing it is primary for one file, with separate guards. Assert the store refuses the stale primary's commits on both paths. |
 | [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) the join | Drive every row of [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata), including an uncarved extent the journal lost. Assert **Lost** fails — a check of the other rows passes a build that serves zeros. |
