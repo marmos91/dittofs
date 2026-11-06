@@ -77,8 +77,9 @@ type Content interface {
 	// that cannot finish within the call answers a retry channel and no
 	// error (RFC 8 §8.1): it yields the outcome once, nil when the release
 	// committed, vfserr.ErrFileOpen when a holder aborted it, a Delay with
-	// DelayClone once a clone's registration drops, for the release to be
-	// run again, or ErrUnavailable when the engine's Close or Drop ends it.
+	// DelayClone once the clone it waited behind is done, for the release to
+	// be run again, or ErrUnavailable when the engine's Close or Drop ends it
+	// or a journal turned read-only undoes its Delete.
 	// An error within the call is vfserr.ErrFileOpen for an abort. The
 	// engine's send on the channel never blocks: it has capacity 1, as its
 	// receiver may stop listening, abandoned at the filesystem's Stop, which

@@ -48,8 +48,11 @@ var (
 	ErrPastEnd = errors.New("vfs: offset at or past the end of the file")
 )
 
-// ErrFileOpen is a release a holder aborted: an open or a clone's hold took
-// the file before the engine's release committed, so its content stays.
+// ErrFileOpen is a release a holder aborted in its phase 1, reached only by a
+// durable open no table of this primary admitted, as the mark keeps every
+// other open out. The file stays, but the journal's Delete has already
+// dropped its held extents, so its bytes not offloaded read Lost, reported
+// as data loss naming the file (RFC 8 §2.5, step 3).
 //
 // decision: ErrFileOpen passes only between the engine and the filesystem,
 // which answers an unlink or a rename before a pending release's outcome is

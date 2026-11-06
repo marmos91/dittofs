@@ -916,6 +916,71 @@ func TestADrainedFilesystemRunsNoReleaseAgain(t *testing.T) {
 	}
 }
 
+// RFC 17 §2.5: a release run again after a clone's delay is a call the
+// filesystem admits, so Drain joins it rather than returning while it waits
+// for the file's admission lock and only then reaches the engine.
+func TestDrainJoinsAReleaseRunAgain(t *testing.T) {
+	n, m, retry, f := pendingRelease(t)
+	unlock := n.Admission(f)
+	retry <- &vfs.Delay{Cause: vfs.DelayClone}
+	if got := m.ended(1); !slices.Equal(got, []bool{false}) {
+		t.Fatalf("the mark ended %v after a clone's delay, want [false]", got)
+	}
+	time.Sleep(50 * time.Millisecond) // the re-run reaches the admission lock
+	drained := make(chan int, 1)
+	go func() {
+		n.must(t, n.Drain(t.Context()))
+		drained <- n.engine.deleted()
+	}()
+	time.Sleep(50 * time.Millisecond)
+	unlock()
+	atDrain := <-drained
+	time.Sleep(50 * time.Millisecond)
+	if d := n.engine.deleted(); d != atDrain {
+		t.Errorf("%d Deletes when Drain returned, %d after, want none after", atDrain, d)
+	}
+}
+
+// gateMark is a mark whose done closes entered and then waits for gate.
+type gateMark struct{ entered, gate chan struct{} }
+
+func (m *gateMark) Releasing(context.Context, openstate.FileKey) (func(bool), bool, error) {
+	return func(bool) { close(m.entered); <-m.gate }, false, nil
+}
+
+// RFC 17 §2.5: Stop joins a wait on a release's outcome that is still
+// running, so no waiter outlives it.
+func TestStopJoinsTheWaitOnAPendingRelease(t *testing.T) {
+	n := newNames(t)
+	retry := make(chan error, 1)
+	var first sync.Once
+	n.engine.pending = func() <-chan error {
+		var r <-chan error
+		first.Do(func() { r = retry })
+		return r
+	}
+	m := &gateMark{entered: make(chan struct{}), gate: make(chan struct{})}
+	n.marks = m
+	f := n.create(t, n.admin, n.fs.Root, "f", vfs.CreateRegular).File
+	n.stored(t, f.ID)
+	if _, err := n.Unlink(t.Context(), n.admin, vfs.Target{H: n.fs.Root}, []byte("f")); err != nil {
+		t.Fatal(err)
+	}
+	retry <- nil
+	<-m.entered
+	n.must(t, n.Drain(t.Context()))
+	stopped := make(chan error, 1)
+	go func() { stopped <- n.Stop() }()
+	select {
+	case err := <-stopped:
+		close(m.gate)
+		t.Fatalf("Stop returned (%v) while the wait on a release's outcome still ran", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(m.gate)
+	n.must(t, <-stopped)
+}
+
 func TestStopEndsTheWaitOnAPendingRelease(t *testing.T) {
 	n, m, _, _ := pendingRelease(t)
 	n.must(t, n.Drain(t.Context()))
@@ -937,7 +1002,7 @@ func TestStopEndsTheWaitOnAPendingRelease(t *testing.T) {
 
 // RFC 17 §5.3: the release after a name's removal runs within the call's
 // deadline. An unlink whose release stalls returns by its deadline, the
-// unlink done and the release left pending: content held, mark kept.
+// unlink done and the release left pending, its mark kept.
 func TestARemovedNamesReleaseEndsAtItsCallsDeadline(t *testing.T) {
 	n := newNames(t)
 	m := &failMark{}
@@ -963,9 +1028,6 @@ func TestARemovedNamesReleaseEndsAtItsCallsDeadline(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		close(free)
 		t.Fatalf("an unlink still ran 5s past its deadline behind a stalled release (it then answered %v)", <-done)
-	}
-	if !n.held(f.ID) {
-		t.Error("the stalled release dropped the content, want it left pending")
 	}
 	if got := m.ended(0); len(got) != 0 {
 		t.Errorf("the mark ended %v, want kept for the next start", got)
