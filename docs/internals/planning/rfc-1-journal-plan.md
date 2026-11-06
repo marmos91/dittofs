@@ -1116,9 +1116,10 @@ broken down into subtasks and estimated only once that interface is agreed with 
   - while serving, the trigger is evaluated on every version issued, not on a timer. When
     `VersionsLeft` falls below the larger of half a block and the peak version rate (the
     busiest second of the last 60 s) times the margin (30 s self-fence + existence age +
-    1 s), every served share's limit is raised by a block, and the new limit is passed only
-    after every raise has committed. The raises run in as many transactions as the store's
-    key budget requires, never one over every share;
+    1 s), every served share's limit is raised to one block above the larger of the limit
+    last passed with `SetVersionLimit` and the journal's next version, as `Stats` reports it,
+    and the new limit is passed only after every raise has committed. The raises run in as
+    many transactions as the store's key budget requires, never one over every share;
   - a write that reaches the limit is answered retry-later (`ErrDelay`), never no-space.
 - **Store contracts the engine relies on:**
   - the offload `report` carries the extents `Content.Commit` returned, and is called only
