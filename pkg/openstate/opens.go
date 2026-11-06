@@ -737,6 +737,16 @@ func (t *Table) takeOver(ctx context.Context, e *entry, who Caller, r OpenReques
 // open is not reconnected. Write it in the rename's own transaction, as an
 // unlink writes its records, if a failover is seen in that window unlinking
 // a stale name.
+//
+// decision: an open's name is matched byte for byte, as its opener spelled
+// it, while the store folds names on a case-insensitive share. So there an
+// unlink or a rename spelling the name another way leaves the open its old
+// name: a change through it is reported under a name that is gone or names
+// another file, and a delete on close is deferred to that name, which then
+// removes nothing. Open state knows no share's fold rule. Overturned once a
+// client is seen spelling one entry two ways; then the service records and
+// passes the store's own spelling of the entry, or passes the share's
+// FoldRule here and both names are folded.
 func (v opens) Renamed(ctx context.Context, f FileKey, fromDir entity.FileID, fromName []byte, toDir entity.FileID, toName []byte) error {
 	t := v.t
 	if _, err := t.running(); err != nil {
