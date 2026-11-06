@@ -116,6 +116,16 @@ func (fs *Filesystem) Unlock(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 // directory holds no byte-range locks: ErrIsDir.
 // Under no open, a lock or a test is decided as read data, or write data
 // when exclusive; a cancel or an unlock decides nothing.
+//
+// decision: a cancel or an unlock reads the file as system, not as the
+// caller, so a caller whose share grant is gone still gives up its locks:
+// the store's read authorizes its caller against the grant, and an NLM
+// lock, which has no open to close, would otherwise block every other
+// client until its host restarts (RFC 19 §3.1's release-only calls).
+// Admission still runs, share state, flavour and client rules included, and
+// open state still refuses a caller that is not the lock's owner. The read
+// answers only the file's kind and key. Withdraw it if either call is made
+// to return file data.
 func (fs *Filesystem) lockable(ctx context.Context, c vfs.Call, ref vfs.OpenRef, op vfs.Op, exclusive bool) (*admitted, openstate.FileKey, func(), func(), error) {
 	a, unlock, release, err := fs.opened(ctx, c, ref)
 	if err != nil {
@@ -126,7 +136,11 @@ func (fs *Filesystem) lockable(ctx context.Context, c vfs.Call, ref vfs.OpenRef,
 		release()
 		return nil, openstate.FileKey{}, nil, nil, err
 	}
-	f, err := fs.meta.Files().Get(ctx, a.caller.Identity, ref.Handle)
+	as := a.caller.Identity
+	if op == vfs.OpUnlock || op == vfs.OpCancelLock {
+		as = system
+	}
+	f, err := fs.meta.Files().Get(ctx, as, ref.Handle)
 	if err != nil {
 		return fail(storeErr(err))
 	}

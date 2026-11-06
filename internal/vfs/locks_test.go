@@ -418,3 +418,46 @@ func TestLockingIsAdmittedOnEveryEntryPath(t *testing.T) {
 		t.Errorf("a lock by a user disabled since its last call: %v, want ErrAccess", err)
 	}
 }
+
+// An NLM host whose user's share grant is removed still gives up its locks:
+// an unlock and a cancel of its waiter only release state (RFC 19 §3.1), so
+// another client then locks the range, and the cancelled waiter is never
+// granted.
+func TestARevokedCallerStillReleasesItsLocks(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	h := s.file(t, "f", s.alice.Principal, 0o666)
+	host, hostCB := s.connected(t, proven(s.bob.Principal, inLab), nlmHost("build01", 1))
+	other, _ := s.connected(t, proven(s.alice.Principal, inLab), nlmHost("build02", 1))
+	nlm := func(c vfs.Call, name string) vfs.LockOwner {
+		return vfs.LockOwner{Client: c.Client, Name: []byte(name)}
+	}
+	if _, err := s.Lock(ctx, host, vfs.Anonymous(h), vfs.LockReq{Owner: nlm(host, "held"), Ranges: span(0, 10, true)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Lock(ctx, other, vfs.Anonymous(h), vfs.LockReq{Owner: nlm(other, "o"), Ranges: span(20, 10, true)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Lock(ctx, host, vfs.Anonymous(h), vfs.LockReq{Owner: nlm(host, "waits"), Ranges: span(20, 10, true), Wait: openstate.WaitCallback}); !errors.Is(err, vfs.ErrBlocked) {
+		t.Fatalf("the host's waiting lock: %v, want ErrBlocked", err)
+	}
+	s.must(t, s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: s.bob.Principal, Access: entity.AccessNone}))
+
+	if granted, err := s.CancelLock(ctx, host, vfs.Anonymous(h), nlm(host, "waits"), vfs.ByteRange{Offset: 20, Length: 10}); err != nil || granted {
+		t.Errorf("the revoked host's cancel: %v, %v; want cancelled", granted, err)
+	}
+	if _, err := s.Unlock(ctx, other, vfs.Anonymous(h), nlm(other, "o"), []vfs.ByteRange{{Offset: 20, Length: 10}}, vfs.Seqs{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Unlock(ctx, host, vfs.Anonymous(h), nlm(host, "held"), []vfs.ByteRange{{Offset: 0, Length: 10}}, vfs.Seqs{}, nil); err != nil {
+		t.Errorf("the revoked host's unlock: %v", err)
+	}
+	third, _ := s.connected(t, proven(s.alice.Principal, inLab), nlmHost("build03", 1))
+	if _, err := s.Lock(ctx, third, vfs.Anonymous(h), vfs.LockReq{Owner: nlm(third, "t"), Ranges: span(0, 30, true)}); err != nil {
+		t.Errorf("another host's lock after the revoked host released: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if got := waitOvers(hostCB); got["waits"] {
+		t.Errorf("the cancelled waiter was granted: %v", hostCB.Calls())
+	}
+}
