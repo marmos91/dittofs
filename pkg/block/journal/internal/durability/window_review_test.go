@@ -22,6 +22,7 @@ import (
 func TestASealThatFindsAFailedSyncDoesNotCountItAgain(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRigUnstarted(t, 1)
+	r.d.keepWindows.Store(true)
 	f := file(1)
 	var once sync.Once
 	r.d.afterSync = func() { once.Do(func() { _, _ = r.streams.For(f).Seal(false) }) }
@@ -57,6 +58,7 @@ func TestASealThatFindsAFailedSyncDoesNotCountItAgain(t *testing.T) {
 func TestALateSyncReportNeverSatisfiesAFailedWindow(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
+	r.d.keepWindows.Store(true)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
 	r.failSyncOf(t, a.Segment, errors.New("sync boom"))
@@ -75,6 +77,7 @@ func TestALateSyncReportNeverSatisfiesAFailedWindow(t *testing.T) {
 func TestAPendingWindowKeepsItsFailureThroughACompletionPass(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
+	r.d.keepWindows.Store(true)
 	f, g := file(1), file(2)
 	a := r.appendWrite(t, f, 0, "a")
 	r.failNextWrite(t, a.Segment, errors.New("write boom"))
@@ -97,6 +100,7 @@ func TestADurableRecordIsNotInTheWindow(t *testing.T) {
 	r := newRigConfigured(t, 1, func(c *Config) {
 		c.Resolved = func(stream uint32, seg core.SegmentID) { got.add(resolvedAt{stream, seg}) }
 	})
+	r.d.keepWindows.Store(true)
 	f, g := file(1), file(2)
 	park, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
@@ -138,6 +142,7 @@ func TestADurableRecordIsNotInTheWindow(t *testing.T) {
 func TestAnEndingMarkIsNotLeftByAStaleWant(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
+	r.d.keepWindows.Store(true)
 	f, g := file(1), file(2)
 	before := r.clock.Pending()
 	a := r.appendWrite(t, f, 0, "a")
@@ -219,6 +224,7 @@ func TestASealEndAfterTheFailureWasPrunedDoesNotCountItAgain(t *testing.T) {
 	r := newRigConfigured(t, 1, func(c *Config) {
 		c.Resolved = func(_ uint32, seg core.SegmentID) { resolved <- seg }
 	})
+	r.d.keepWindows.Store(true)
 	f := file(1)
 	var once sync.Once
 	var armed, sealed atomic.Bool

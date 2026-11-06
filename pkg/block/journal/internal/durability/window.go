@@ -37,11 +37,14 @@ type failStamp struct {
 // decision: a window lives under the stream's leaf mutex, st.mu, like the
 // ledger its entries came out of: it is read and listed in st.windows only
 // with that mutex held, and only the stream's worker creates one (takeWindow)
-// or drops one (resolve), so no other goroutine mutates it. cause is kept for
-// the code that fails a window's records, which reads why the segment ended.
+// or drops one (resolve), so no other goroutine mutates it, and only the same
+// worker removes an entry when failWindow fails it. cause is kept for the
+// code that fails a window's records, which reads why the segment ended.
 type window struct {
+	id      uint64
 	seg     core.SegmentID
 	cause   segment.EndCause
+	err     error   // why the segment ended
 	entries []entry // moved from the ledger, in Track order
 }
 
@@ -130,7 +133,7 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	}
 
 	st.mu.Lock()
-	w := &window{seg: ev.Segment, cause: ev.Cause}
+	w := &window{id: d.windowSeq.Add(1), seg: ev.Segment, cause: ev.Cause, err: ev.Err}
 	st.removeLocked(func(e *entry) bool {
 		return e.w.Loc.Segment == ev.Segment && !st.covered(e.w.Loc)
 	}, func(e entry) { w.entries = append(w.entries, e) })
@@ -170,18 +173,17 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 // and the failure kept for its segment once nothing else names it, then
 // announces the segment through Config.Resolved (R19). It runs on the worker.
 //
-// decision: in this layer only a window with no records is resolved, at the
-// moment it is taken. A window that holds records stays pending, and every
-// Sync naming a file with a record in it answers a *core.SyncError, until the
-// code that fails a window's records through the index calls resolve. A
-// pending window never reads durable, so nothing is lost by waiting; what is
-// withdrawn is only the window's memory.
+// decision: a window is resolved when it holds no record: at once when it is
+// taken with none, or when failWindow has failed its last content record. A
+// window holding a record that failWindow leaves, a header-only one, stays
+// pending and is not announced, and every Sync naming a file with such a
+// record answers a *core.SyncError, until the code that re-appends it lands.
+// A pending window never reads durable, so nothing is lost by waiting; what
+// is withdrawn is only the window's memory.
 //
-// Resolving a window that holds records would make Durable read true for a
-// failed record, which then has no ledger entry and no window: it fails open.
-// Only empty windows are resolved today, so it cannot. The code that resolves
-// a non-empty window must keep failed records out of Durable's "no entry means
-// durable" answer first.
+// A record failWindow dropped has left the window and the ledger, which would
+// read it durable: st.lost keeps it out of that answer, and failWindow adds it
+// there in the same critical section that removes it from the window.
 func (d *Durability) resolve(st *stream, w *window) {
 	st.mu.Lock()
 	st.windows = slices.DeleteFunc(st.windows, func(o *window) bool { return o == w })

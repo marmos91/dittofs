@@ -29,6 +29,7 @@ func FuzzSyncInterleaving(f *testing.F) {
 			ops = ops[:24]
 		}
 		r := newRig(t, 1)
+		r.d.keepWindows.Store(true)
 		files := [2]core.FileID{file(1), file(2)}
 		var locs [2][]segment.Location
 		var off int64
@@ -116,6 +117,7 @@ func FuzzFailedSyncWindow(f *testing.F) {
 			ops = ops[:24]
 		}
 		r := newRig(t, 1)
+		r.d.keepWindows.Store(true)
 		files := [3]core.FileID{file(1), file(2), file(3)}
 		type rec struct {
 			file   int

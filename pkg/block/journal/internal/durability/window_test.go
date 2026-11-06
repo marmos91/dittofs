@@ -86,6 +86,7 @@ func wantSyncError(t *testing.T, err error, seg core.SegmentID, files ...core.Fi
 func TestSyncOverARecordInAFailedAppendsSegmentFails(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
+	r.d.keepWindows.Store(true)
 	f, g := file(1), file(2)
 	a := r.appendWrite(t, f, 0, "a")
 	r.failNextWrite(t, a.Segment, errors.New("write boom"))
@@ -106,6 +107,7 @@ func TestSyncOverARecordInAFailedAppendsSegmentFails(t *testing.T) {
 func TestFailedSyncIsNeverSatisfiedByALaterSync(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
+	r.d.keepWindows.Store(true)
 	fa, fb := file(1), file(2)
 	a := r.appendWrite(t, fa, 0, "a")
 	b := r.appendWrite(t, fb, 0, "b")
@@ -133,6 +135,7 @@ func TestFailedSyncIsNeverSatisfiedByALaterSync(t *testing.T) {
 func TestSealFailureCountsAndFailsItsWindow(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
+	r.d.keepWindows.Store(true)
 	f := file(1)
 	sealBoom := errors.New("seal boom")
 	a := r.appendWrite(t, f, 0, "a")
@@ -163,6 +166,7 @@ func TestSealFailureCountsAndFailsItsWindow(t *testing.T) {
 func TestAppendFailureTakesItsWindowAndCountsNothing(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
+	r.d.keepWindows.Store(true)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
 	r.failNextWrite(t, a.Segment, errors.New("write boom"))
@@ -182,6 +186,7 @@ func TestAppendFailureTakesItsWindowAndCountsNothing(t *testing.T) {
 func TestWindowIsTheRecordsSinceTheLastSuccessfulSync(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
+	r.d.keepWindows.Store(true)
 	f := file(1)
 	synced := r.appendWrite(t, f, 0, "a")
 	if err := mustReturn(t, "Sync", r.syncAsync(context.Background(), f)); err != nil {
@@ -205,6 +210,7 @@ func TestWindowIsTheRecordsSinceTheLastSuccessfulSync(t *testing.T) {
 func TestARecordStillWritingWhenTheSyncFailsIsInTheWindow(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
+	r.d.keepWindows.Store(true)
 	f, g, h := file(1), file(2), file(3)
 	first := r.appendWrite(t, h, 0, "h")
 	if err := mustReturn(t, "Sync", r.syncAsync(context.Background(), h)); err != nil {
@@ -273,6 +279,7 @@ func TestAnEmptyWindowIsAnnouncedResolvedAtOnce(t *testing.T) {
 	r := newRigConfigured(t, 1, func(c *Config) {
 		c.Resolved = func(stream uint32, seg core.SegmentID) { got.add(resolvedAt{stream, seg}) }
 	})
+	r.d.keepWindows.Store(true)
 	r.d.Start(r.streams)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
@@ -300,6 +307,7 @@ func TestAResolvedWindowIsAnnouncedOnceAndItsRecordsAreNotPending(t *testing.T) 
 	r := newRigConfigured(t, 1, func(c *Config) {
 		c.Resolved = func(stream uint32, seg core.SegmentID) { got.add(resolvedAt{stream, seg}) }
 	})
+	r.d.keepWindows.Store(true)
 	r.d.Start(r.streams)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
@@ -359,6 +367,7 @@ func TestAFailureInTheSpareBeforeItsFirstSyncStopsTheStream(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	var ro recorder[error]
 	r := newRigConfigured(t, 1, func(*Config) {})
+	r.d.keepWindows.Store(true)
 	r.d.readOnly = ro.add
 	r.d.Start(r.streams)
 	f, g := file(1), file(2)
@@ -399,6 +408,7 @@ func TestAFailureAfterTheSparesFirstSyncRollsOn(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	var ro recorder[error]
 	r := newRigConfigured(t, 1, func(*Config) {})
+	r.d.keepWindows.Store(true)
 	r.d.readOnly = ro.add
 	r.d.Start(r.streams)
 	f, g := file(1), file(2)

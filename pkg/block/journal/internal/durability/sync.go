@@ -94,6 +94,10 @@ type Durability struct {
 	index   *index.Index
 	account func(index.HeldDelta)
 
+	// windowSeq numbers the windows the workers take, so a window is named
+	// across the streams.
+	windowSeq atomic.Uint64
+
 	dir      *dirState
 	counters *index.Counters
 	markLoss func(core.FileID, core.Extent, core.Version) error
@@ -106,6 +110,11 @@ type Durability struct {
 	// New installs one that never refuses, and the read-only state replaces
 	// it.
 	refuse func() error
+
+	// keepWindows is a test knob, false in production: while set, the worker
+	// leaves every window pending instead of failing its content records, so a
+	// test of the window's own bookkeeping reads it before it resolves.
+	keepWindows atomic.Bool
 
 	// afterAppend, beforePublish and beforeSync are test hooks, nil in
 	// production.
@@ -308,6 +317,16 @@ type stream struct {
 	ends []segment.EndEvent
 	// windows are the pending windows, in end order.
 	windows []*window
+	// lost holds the locations of the records a failed window dropped from the
+	// index, each with the error that ended its segment, so that none reads
+	// durable once the window no longer names it, and a Sync that targeted one
+	// still answers the failure.
+	//
+	// ponytail: one entry per failed record for the life of the stream, never
+	// pruned, so it follows the number of records a failure took. Upgrade to
+	// dropping an entry once the record's segment is retired from the journal,
+	// when a stream with a long failure history shows up in a heap profile.
+	lost map[segment.Location]error
 	// lastSeg is the newest segment the stream is known to have reached: the
 	// segment of a tracked record or of a sync, whichever is later.
 	lastSeg  core.SegmentID
@@ -353,6 +372,7 @@ func newStream(d *Durability, no uint32) *stream {
 		failed:  map[core.SegmentID]error{},
 		ending:  map[core.SegmentID]struct{}{},
 		counted: map[core.SegmentID]struct{}{},
+		lost:    map[segment.Location]error{},
 		kick:    make(chan struct{}, 1),
 		buckets: make([]atomic.Uint64, len(SyncDurationBounds)+1),
 	}
@@ -453,11 +473,8 @@ func (d *Durability) Start(streams *segment.Streams) {
 // there. Overturn this if a caller can ask about an arbitrary location, which
 // then needs a record of the completed ones to tell the two apart.
 //
-// It also fails open for a failed record once a window holding records is
-// dropped: the record leaves the window and the ledger, and no entry reads as
-// durable. That cannot happen yet, for only empty windows are resolved. The
-// code that resolves a non-empty window must keep failed records out of the
-// "no entry means durable" answer.
+// A record a failed window dropped has no entry and no window once the window
+// is resolved, so the stream keeps its location apart and reports false for it.
 //
 // ponytail: it scans every stream's ledger, O(streams x ledger). Upgrade to a
 // per-segment index when a profile shows the scan.
@@ -474,7 +491,8 @@ func (d *Durability) Durable(at segment.Location) bool {
 		}
 		// A record of a pending window is never durable, whatever the
 		// segment's synced offset says.
-		if st.inWindowLocked(at) {
+		_, lost := st.lost[at]
+		if lost || st.inWindowLocked(at) {
 			st.mu.Unlock()
 			return false
 		}
@@ -575,9 +593,11 @@ func (st *stream) pending(loc segment.Location) bool {
 			return !st.covered(loc) || !st.ledger[i].done
 		}
 	}
-	// A record of a pending window is pending whatever the segment's synced
-	// offset: no sync value satisfies a record of a failed segment (R14).
-	return st.inWindowLocked(loc)
+	// A record of a pending window, or one a failed window dropped, is pending
+	// whatever the segment's synced offset: no sync value satisfies a record of
+	// a failed segment (R14).
+	_, lost := st.lost[loc]
+	return lost || st.inWindowLocked(loc)
 }
 
 // inWindowLocked reports whether a pending window holds the record at loc. The
@@ -732,20 +752,18 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 // waiter's goroutine, issues the sync so a cancelled waiter is never stuck in
 // the syscall.
 //
-// decision: a target of a failed segment answers its *core.SyncError as soon
-// as failed[seg] is stored. For the worker's own failed sync that is syncStep,
-// before the segment's End and before any end event, so before the window
-// exists; for a seal or append failure it is takeWindow, with the window. Either
-// way it is before the window's records are failed through the index. The answer is non-nil today because nothing here re-appends a
-// failed segment's records: the answer then holds for as long as the failure
-// stands. It stops holding once the code that re-appends them lands, for the
-// writes' Sync calls must then wait for the new sync (RFC 1 §5.3), so a
-// failFast answer there would be wrong. The order is not a small cost either:
-// §5.3 raises the loss generation before any Sync it fails returns, and an
-// early answer can return first. Overturn this when the window's records are
-// failed through the index (the window-failing step) or re-appended (the
-// re-append step): the answer must then follow the loss, and wait for a
-// re-append.
+// decision: a target in a pending window answers its *core.SyncError as soon
+// as syncStep stores failed[seg], before the segment's End and before any end
+// event, so before the window exists and before its records are failed through
+// the index. The answer can therefore return before the loss generation is
+// raised and before the failed records are named, which a Sync of a failed
+// record must not do. It stands because nothing reports a failed window to a
+// file any other way yet: once a file has no record left in a window, a later
+// Sync of it finds nothing to wait for and returns nil, so the failure is
+// told to a caller already waiting and to no other. Overturned by the
+// per-file report that a failed window leaves for each file it failed, which
+// answers after the loss, and by the re-append of a header-only record, which
+// must wait for the new sync (RFC 1 §5.3) instead of failing at once.
 func (st *stream) check(targets []target, failFast bool) (bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -757,12 +775,19 @@ func (st *stream) check(targets []target, failFast bool) (bool, error) {
 			continue
 		}
 		pending = true
-		if st.covered(t.loc) && !st.inWindowLocked(t.loc) {
+		lerr, lost := st.lost[t.loc]
+		if !lost && st.covered(t.loc) && !st.inWindowLocked(t.loc) {
 			// A sync covers it and the worker is lifting what it superseded:
 			// the wait is for that, which another sync does not hasten.
 			continue
 		}
-		if err, bad := st.failed[t.loc.Segment]; bad {
+		err, bad := st.failed[t.loc.Segment]
+		if lost {
+			// The record was failed and its window resolved while the caller
+			// waited: the failure is told to it now.
+			err, bad = lerr, true
+		}
+		if bad {
 			if failFast && failErr == nil {
 				failSeg, failErr = t.loc.Segment, err
 			}

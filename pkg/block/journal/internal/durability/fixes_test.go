@@ -42,6 +42,7 @@ func (r *rig) strand(t *testing.T, f, g core.FileID) (older, newer segment.Locat
 func TestEndedOlderSegmentDoesNotSpinTheTimer(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
+	r.d.keepWindows.Store(true)
 	_, b := r.strand(t, file(1), file(2))
 	r.clock.Advance(core.SyncBound)
 	time.Sleep(50 * time.Millisecond)
@@ -59,6 +60,7 @@ func TestEndedOlderSegmentDoesNotSpinTheTimer(t *testing.T) {
 func TestSyncOverARecordStrandedInAnOlderSegmentIsASyncError(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
+	r.d.keepWindows.Store(true)
 	f := file(1)
 	a, b := r.strand(t, f, f)
 	err := mustReturn(t, "Sync", r.syncAsync(context.Background(), f))
@@ -78,6 +80,7 @@ func TestSyncOverARecordStrandedInAnOlderSegmentIsASyncError(t *testing.T) {
 func TestFailureIsRecordedAgainstTheSegmentSynced(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRigUnstarted(t, 1)
+	r.d.keepWindows.Store(true)
 	f, g := file(1), file(2)
 	var once sync.Once
 	r.d.afterSync = func() {
@@ -134,6 +137,7 @@ func TestClosedStreamIsNotAFailedSync(t *testing.T) {
 func TestRollToAnUntrackedSegmentDoesNotSpin(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRigUnstarted(t, 1)
+	r.d.keepWindows.Store(true)
 	var calls atomic.Int64
 	r.d.afterSync = func() { calls.Add(1) }
 	// The layer registers its end consumer on Start, which must precede the
@@ -200,6 +204,7 @@ func TestSyncOnAnEndedSegmentIssuesNoFsync(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	logs := &errorCounter{}
 	r := newRigLogging(t, 1, nil, slog.New(logs))
+	r.d.keepWindows.Store(true)
 	r.d.Start(r.streams)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")

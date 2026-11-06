@@ -3,6 +3,7 @@ package durability
 import (
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +24,9 @@ type testDomains struct {
 	mu    sync.Mutex
 	locks map[core.FileID]*sync.Mutex
 	taken int
+	// held is how many file domains are held now, and mostHeld the most that
+	// were held at once.
+	held, mostHeld int
 }
 
 func (d *testDomains) Lock(id core.FileID) func() {
@@ -38,7 +42,23 @@ func (d *testDomains) Lock(id core.FileID) func() {
 	d.taken++
 	d.mu.Unlock()
 	m.Lock()
-	return m.Unlock
+	d.mu.Lock()
+	d.held++
+	d.mostHeld = max(d.mostHeld, d.held)
+	d.mu.Unlock()
+	return func() {
+		d.mu.Lock()
+		d.held--
+		d.mu.Unlock()
+		m.Unlock()
+	}
+}
+
+// heldNow returns how many file domains are held now.
+func (d *testDomains) heldNow() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.held
 }
 
 // rig is a Durability over n real streams on a seam.
@@ -58,6 +78,8 @@ type rig struct {
 	// every delta the layer handed to Config.Account.
 	ix   *index.Index
 	acct *accountLog
+	// lastSeq is the sequence number the last publish drew.
+	lastSeq atomic.Uint64
 }
 
 // accountLog records every delta the layer accounts.

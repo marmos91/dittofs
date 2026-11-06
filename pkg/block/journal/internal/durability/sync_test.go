@@ -210,6 +210,7 @@ func TestWaitDurableNeedsNoSyncCaller(t *testing.T) {
 func TestSyncRidesTheSealsSync(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
+	r.d.keepWindows.Store(true)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
 	h := r.seam.HoldFirst(t, journaltest.OpSync, format.SegmentName(a.Segment))
@@ -309,6 +310,7 @@ func TestCancelledSyncLeavesTheSyncRunning(t *testing.T) {
 func TestFailedSyncFailsEveryWaiterAndIsNotRetried(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
+	r.d.keepWindows.Store(true)
 	f, g := file(1), file(2)
 	a := r.appendWrite(t, f, 0, "a")
 	r.appendWrite(t, g, 0, "g")
@@ -358,6 +360,7 @@ func TestFailedSyncFailsEveryWaiterAndIsNotRetried(t *testing.T) {
 func TestWaitDurableOnAFailedSegmentKeepsWaiting(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
+	r.d.keepWindows.Store(true)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
 	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, errors.New("boom"))); err != nil {
@@ -438,6 +441,7 @@ func TestEachIssuedSyncHasOneSpanEndedWithItsError(t *testing.T) {
 		}
 	}
 	r := newRigStarted(t, 1, tracer)
+	r.d.keepWindows.Store(true)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
 	if err := r.d.Sync(context.Background(), f); err != nil {

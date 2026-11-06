@@ -31,6 +31,7 @@ func (r *rig) publishGap(t *testing.T, f core.FileID, off int64, payload string,
 		t.Fatalf("NextSeq: %v", err)
 	}
 	x := core.Extent{Off: off, Len: int64(len(payload))}
+	r.lastSeq.Store(uint64(seq))
 	unlock := r.domains.Lock(f)
 	defer unlock()
 	p, err := r.streams.For(f).Append(format.RecordHeader{
