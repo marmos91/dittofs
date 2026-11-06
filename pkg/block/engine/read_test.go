@@ -501,7 +501,11 @@ func TestAReadWaitsForNoOtherFile(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Error("a read of a second file waited on the held one")
-		defer func() { <-done }()
+		defer func() {
+			if err := <-done; err != nil {
+				t.Error(err)
+			}
+		}()
 	}
 	release()
 	<-waited
@@ -679,7 +683,7 @@ func TestAReadAskedAgainEndsAtItsDeadline(t *testing.T) {
 				return []entity.Span{s}
 			}}
 			u = newUnit(t, st.dep)
-			var ctx context.Context = cctx
+			ctx := cctx
 			if c.name == "deadline" {
 				ctx = deadlineCtx{cctx, u.clock.Now().Add(50 * time.Millisecond)}
 			}
