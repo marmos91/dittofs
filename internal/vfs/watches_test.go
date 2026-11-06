@@ -240,6 +240,33 @@ func TestAWatchHearsNothingOnceItsDirectoryIsShut(t *testing.T) {
 	heard(t, s, cb, "a")
 }
 
+// A recursive watch judges every directory between it and a change, two
+// levels down as one: a file made below an open directory inside a shut one
+// is not heard, and once a recursively watched directory is itself shut
+// nothing below it is heard either.
+func TestARecursiveWatchJudgesEveryLevel(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	admin := proven(s.fs.Admin.Principal, inLab)
+	alice, cb := s.connected(t, signedIn(s.alice.Principal, 1), smb("alice-pc", 1))
+	_, err := s.Watch(ctx, alice, vfs.WatchSpec{Dir: s.fs.Root, Recursive: true, Filter: openstate.ChangeAddEntry})
+	s.must(t, err)
+	s.touch(t, s.mkdir(t, s.mkdir(t, s.fs.Root, "shut", 0o700), "open", 0o755), "z")
+	heard(t, s, cb, "shut")
+
+	other, below := s.connected(t, signedIn(s.alice.Principal, 2), smb("alice-laptop", 1))
+	d := s.mkdir(t, s.fs.Root, "d", 0o755)
+	_, err = s.Watch(ctx, other, vfs.WatchSpec{Dir: d, Recursive: true, Filter: openstate.ChangeAddEntry})
+	s.must(t, err)
+	sub := s.mkdir(t, d, "sub", 0o755)
+	s.touch(t, sub, "a")
+	heard(t, s, below, "sub", "sub/a")
+	_, err = s.SetAttr(ctx, admin, vfs.Target{H: d}, vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o700)})
+	s.must(t, err)
+	s.touch(t, sub, "b")
+	heard(t, s, below, "sub", "sub/a")
+}
+
 // A change through an open is reported under the entry it was opened
 // through, and under none once an unlink, or a rename over it, removed that
 // entry, though the file keeps another name.

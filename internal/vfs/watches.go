@@ -193,6 +193,12 @@ func (fs *Filesystem) Notify(c entity.ClientID, w openstate.WatchID, ch []openst
 // chokepoint decides it now. The directories are those ch's path named when
 // it committed, by identity, so a name renamed and made again since leads
 // nowhere new; a directory gone since is not reached.
+//
+// decision: each directory is decided for traverse alone, as RFC 17 §3.2
+// asks, not for listing, so a recursive watch hears a name made in a
+// directory below it its holder may enter but not list, which ReadDir and
+// Watch would refuse it. Decide listing on the change's own directory if
+// the RFC settles that a recursive watch hears no more than a listing shows.
 func (fs *Filesystem) reaches(ctx context.Context, h watcher, ch openstate.Change) bool {
 	share, _, _ := h.dir.Parse()
 	dir := h.dir
