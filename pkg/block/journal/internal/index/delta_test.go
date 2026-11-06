@@ -239,6 +239,11 @@ func TestMutatorDeltas(t *testing.T) {
 		{"fill/refusal: stale", dirty4k, func(fs *files, id core.FileID) (HeldDelta, error) {
 			return fs.fill(owner, id, write(4096, 4096, rec(2, 0), 5), ver(0))
 		}, zero, is(core.ErrStaleFill)},
+		// A stale fill by a rival is refused with the other-share error, not
+		// ErrStaleFill: the tag check runs before the staleness check.
+		{"fill/refusal: another share's file, stale", dirty4k, func(fs *files, id core.FileID) (HeldDelta, error) {
+			return fs.fill(rival, id, write(4096, 4096, rec(2, 0), 5), ver(0))
+		}, zero, isOther},
 		{"fill/refusal: another share's file", dirty4k, func(fs *files, id core.FileID) (HeldDelta, error) {
 			return fs.fill(rival, id, write(4096, 4096, rec(2, 0), 5), ver(1))
 		}, zero, isOther},
@@ -376,6 +381,36 @@ func TestFillClaimsTheFile(t *testing.T) {
 		}
 		if fs.view(id, func(*file) {}) {
 			t.Fatalf("a stale fill left an entry: %+v", fs.inspect(id))
+		}
+	})
+
+	// A stale fill of a file with content and no owner, as a rebuild given
+	// only a retained piece leaves it, must not claim: the entry survives the
+	// refusal, so a claim made before the staleness check would stay.
+	t.Run("stale, on a file with content and no owner", func(t *testing.T) {
+		var fs files
+		change(t, &fs, id, func(f *file) error {
+			f.retained.add(Retained{Piece: Piece{Extent: ext(0, 4096), Record: rec(1, 0), Version: ver(2)}, By: ver(6)})
+			f.change = ver(3) // a change the fill's asOf predates
+			return nil
+		})
+		fs.view(id, func(f *file) {
+			if _, ok := f.owner(); ok {
+				t.Fatal("setup: the file has an owner")
+			}
+		})
+		before := fs.inspect(id)
+		d, err := fs.fill(owner, id, p, ver(0))
+		if !errors.Is(err, core.ErrStaleFill) || d != (HeldDelta{}) {
+			t.Fatalf("fill = (%+v, %v), want the zero delta and ErrStaleFill", d, err)
+		}
+		fs.view(id, func(f *file) {
+			if tag, ok := f.owner(); ok {
+				t.Fatalf("a stale fill claimed the file for %d", tag)
+			}
+		})
+		if !reflect.DeepEqual(fs.inspect(id), before) {
+			t.Fatalf("a refused fill changed the file:\n before %+v\n after  %+v", before, fs.inspect(id))
 		}
 	})
 
