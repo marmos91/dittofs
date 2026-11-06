@@ -116,9 +116,8 @@ var weighted = []int{
 	opLift, opLift, opFailWindow, opFailWindow, opRepoint, opRival,
 }
 
-// run does one operation of kind on f and checks its delta; it returns what
-// the call returned beside the delta so a caller can pin the refusals it
-// expects.
+// run does one operation of kind on f and checks its delta, pinning the
+// refusals the operation expects.
 func (w *deltaWorld) run(f *deltaFile, kind int) {
 	t := w.t
 	t.Helper()

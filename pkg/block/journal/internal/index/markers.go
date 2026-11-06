@@ -157,9 +157,9 @@ func (f *file) fillParts(p Placed, fn func(Placed)) {
 // The comparison is on counter halves only: both sides of it come from this
 // journal, whose versions carry no epoch, so an asOf that carries one anyway
 // loses its epoch rather than winning the comparison. The check and the
-// insert run under the file's lock, in one update, whose delta it returns. A fill refused on a file
-// with no entry leaves no entry, since an update that leaves nothing behind
-// drops the empty entry it was given.
+// insert run under the file's lock, in one update, whose delta it returns. A
+// fill refused on a file with no entry leaves no entry, since an update that
+// leaves nothing behind drops the empty entry it was given.
 func (fs *files) fill(id core.FileID, p Placed, asOf core.Version) (HeldDelta, error) {
 	return fs.update(id, func(f *file) error {
 		if fs.checkedAgainst(f, id).Counter > asOf.Counter {

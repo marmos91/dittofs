@@ -3,6 +3,7 @@ package index
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -325,6 +326,32 @@ func TestMutatorDeltas(t *testing.T) {
 			}
 			if err != nil && !reflect.DeepEqual(fs.inspect(id), beforeEntries) {
 				t.Fatalf("a refused call changed the file:\n before %+v\n after  %+v", beforeEntries, fs.inspect(id))
+			}
+		})
+	}
+}
+
+// TestModelIndexNamesAContradictingTransition pins that the harness reports a
+// transition that contradicts the dirty-file list as that, not as a skew in
+// some counter.
+func TestModelIndexNamesAContradictingTransition(t *testing.T) {
+	file := fid(1)
+	for _, tc := range []struct {
+		name  string
+		steps []HeldDelta
+		want  string
+	}{
+		{"second BecameDirty", []HeldDelta{{File: file, Dirty: BecameDirty}, {File: file, Dirty: BecameDirty}}, "BecameDirty"},
+		{"BecameClean off the list", []HeldDelta{{File: file, Dirty: BecameClean}}, "BecameClean"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModelIndex()
+			for _, d := range tc.steps {
+				m.note(d)
+			}
+			err := m.CheckDeltas()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("CheckDeltas = %v, want an error naming %s", err, tc.want)
 			}
 		})
 	}

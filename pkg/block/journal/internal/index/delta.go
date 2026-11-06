@@ -72,8 +72,6 @@ func (f *file) delta(id core.FileID, was heldTotals) HeldDelta {
 	if d.HeldBytes == 0 && d.DirtyBytes == 0 && d.RetainedBytes == 0 && d.Dirty == Unchanged {
 		return HeldDelta{}
 	}
-	if f.tagged {
-		d.Tag = f.tag
-	}
+	d.Tag = f.tag
 	return d
 }

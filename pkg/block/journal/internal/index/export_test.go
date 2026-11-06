@@ -40,6 +40,9 @@ type ModelIndex struct {
 	// list: what CheckDeltas compares with the read-out.
 	sum        heldTotals
 	dirtyFiles map[core.FileID]bool
+
+	// err is the first transition that contradicted the dirty-file list.
+	err error
 }
 
 // NewModelIndex returns an empty index-backed harness: no extent bound, no
@@ -361,20 +364,20 @@ func (m *ModelIndex) CheckAccounting() error {
 // note adds one update's delta to the running sums, and moves its file on or
 // off the dirty-file list as the delta's transition says. A transition that
 // contradicts the list, a file made dirty that is on it or made clean that is
-// not, is kept as a figure no read-out can match: the sum is skewed by it.
+// not, is kept as the first error for CheckDeltas to return.
 func (m *ModelIndex) note(d HeldDelta) {
 	m.sum.held += d.HeldBytes
 	m.sum.dirty += d.DirtyBytes
 	m.sum.retained += d.RetainedBytes
 	switch d.Dirty {
 	case BecameDirty:
-		if m.dirtyFiles[d.File] {
-			m.sum.held += 1 << 50 // a second BecameDirty: never equals a read-out
+		if m.dirtyFiles[d.File] && m.err == nil {
+			m.err = fmt.Errorf("index: BecameDirty for %v, already on the dirty-file list (%+v)", d.File, d)
 		}
 		m.dirtyFiles[d.File] = true
 	case BecameClean:
-		if !m.dirtyFiles[d.File] {
-			m.sum.held += 1 << 50
+		if !m.dirtyFiles[d.File] && m.err == nil {
+			m.err = fmt.Errorf("index: BecameClean for %v, not on the dirty-file list (%+v)", d.File, d)
 		}
 		delete(m.dirtyFiles, d.File)
 	}
@@ -386,6 +389,9 @@ func (m *ModelIndex) note(d HeldDelta) {
 // offloaded bit is unset, and the dirty-file list against the files holding
 // such an entry, held or retained. It returns the first way they disagree.
 func (m *ModelIndex) CheckDeltas() error {
+	if m.err != nil {
+		return m.err
+	}
 	return checkDeltaSums(m.fs, m.last, m.sum, m.dirtyFiles)
 }
 
