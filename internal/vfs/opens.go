@@ -711,11 +711,11 @@ func (fs *Filesystem) release(ctx context.Context, key openstate.FileKey) error 
 // awaitRelease waits, in the background and never inside Sink.Closed, on the
 // retry channel of key's pending release, which keeps its mark meanwhile
 // (RFC 17 §5.3): committed or aborted, the outcome goes to done; a clone's
-// delay goes to done(false) and, while the filesystem serves, the release is
-// run again, marked anew; any other outcome is logged and keeps the mark,
-// leaving the release to the next start's recovery. From Drain on no release
-// is run again, and the wait ends at Stop, or Drain's deadline, without its
-// done (RFC 17 §2.5).
+// delay goes to done(false) and the release is run again, marked anew, as a
+// call the filesystem admits, so a drain refuses it or joins it and its
+// deadline ends it; any other outcome is logged and keeps the mark, leaving
+// the release to the next start's recovery. From Drain on no release is run
+// again, and the wait ends at Stop without its done (RFC 17 §2.5).
 func (fs *Filesystem) awaitRelease(key openstate.FileKey, done func(bool), retry <-chan error) {
 	fs.background(func(ctx context.Context) {
 		var out error
@@ -732,9 +732,11 @@ func (fs *Filesystem) awaitRelease(key openstate.FileKey, done func(bool), retry
 			done(false)
 		case errors.As(out, &d) && d.Cause == vfs.DelayClone:
 			done(false)
-			if !fs.isServing() {
+			ctx, end, err := fs.enter(ctx)
+			if err != nil {
 				return
 			}
+			defer end()
 			if err := fs.releaseAlone(ctx, key.Share, key.ID); err != nil {
 				fs.log.Warn("vfs: a release run again after a clone failed", "file", key.ID, "err", err)
 			}
@@ -742,14 +744,6 @@ func (fs *Filesystem) awaitRelease(key openstate.FileKey, done func(bool), retry
 			fs.log.Warn("vfs: a pending release did not finish", "file", key.ID, "err", out)
 		}
 	})
-}
-
-// isServing is whether the filesystem is serving, neither draining nor
-// stopped.
-func (fs *Filesystem) isServing() bool {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	return fs.state == serving
 }
 
 // releaseAlone is release of file f of share, by a caller holding none of
