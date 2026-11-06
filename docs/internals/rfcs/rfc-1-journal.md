@@ -1247,10 +1247,10 @@ walk can produce is omitted.
 | `ExtentLimit` | gauge | the configured index entry bound ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) |
 | `Counters` | counters | the cumulative counts of [§3.9](#3.9%20Metrics), since open |
 | `RejectedSegments` | gauge | segments not attached ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
-| `ReadOnly` | value | whether the journal is read-only, the error that made it so, and whether a spare has since been made ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)) |
+| `ReadOnly` | value | whether the journal is read-only, the error that made it so, whether a spare has since been made, and the check the last probe found failing, if any ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)) |
 | `Recovery` | value | how many segments the last open read by catalog and by scan, and how long it took ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
 | `Losses` | value | the most recent loss events, each with a sequence number ([§3.8](#3.8%20Loss%20events)) |
-| `LossGeneration` | value | raised on every loss of corrupt or acknowledged-unreadable content not yet offloaded and every failed sync window, never on a stale loss; never lower than any value this process has exposed for this directory ([§3.8](#3.8%20Loss%20events)) |
+| `LossGeneration` | value | raised on every loss of corrupt or acknowledged-unreadable content not yet offloaded, every failed sync window and once on turning read-only ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)), never on a stale loss; never lower than any value this process has exposed for this directory ([§3.8](#3.8%20Loss%20events)) |
 | `TagConflicts` | value | files recovery rebuilt under two tags, each with both tags; every call on them is refused until one tag is forgotten ([§3](#3.%20Interface)) |
 | `Shares` | per share | every tag that holds a record, attached or not ([§3](#3.%20Interface)), with `Limit`, `UsedBytes` — the record bytes of the share's records still on disk —, `ReservedBytes`, `HeldBytes`, `DirtyBytes` and `UnreclaimedBytes` for each share ([§6](#6.%20Capacity)) |
 
@@ -1290,7 +1290,7 @@ in-flight operation.
 
 A **loss event** is an extent the journal stopped holding without being asked:
 dropped as corrupt ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), as stale ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), acknowledged unreadable ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)),
-or because a failed sync window was failed ([§5.3](#5.3%20A%20failed%20sync)). Each names the share, the file, the extent, the content version,
+because a failed sync window was failed ([§5.3](#5.3%20A%20failed%20sync)), or because a read-only journal failed its unsynced records ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)). Each names the share, the file, the extent, the content version,
 the reason, whether its offloaded bit was set, and whether its loss is deferred
 ([§6](#6.%20Capacity)). `Stats` keeps the most recent
 ones in a bounded ring, each with a sequence number, and counts them all
@@ -1344,8 +1344,9 @@ room for and defers the record ([§6](#6.%20Capacity)).
 **A loss of content not yet offloaded raises the loss generation.** The journal
 keeps a **loss generation**, a counter it **MUST** raise by one on every loss
 event of a corrupt or acknowledged-unreadable extent whose offloaded bit was
-unset ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)), and on every failed
-sync window ([§5.3](#5.3%20A%20failed%20sync)), and exposes as `Stats.LossGeneration` ([§3.7](#3.7%20State%20introspection)). It **MUST NOT** rise for
+unset ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)), on every failed
+sync window ([§5.3](#5.3%20A%20failed%20sync)), and once on turning read-only, for every record that
+fails ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)), and exposes as `Stats.LossGeneration` ([§3.7](#3.7%20State%20introspection)). It **MUST NOT** rise for
 a loss of content the remote tier holds and the next read fetches: a corrupt
 extent whose offloaded bit was set, or a stale one whatever its bit. A stale
 extent is older than content the remote tier holds ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), so dropping
@@ -2023,7 +2024,7 @@ failed sync of a segment, **everything written to that segment since its last
 successful sync is not durable**, the segment takes no further append — not
 even a seal marker: **a failed segment is never sealed while the journal runs** (a seal whose own sync
 failed may leave a durable seal marker and catalog, but no successor names the
-segment, so recovery does not treat it as sealed, though a marker that verifies still proves the records before it synced, [RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) — and the stream
+segment, so recovery does not treat it as sealed, though a marker that verifies on the device still proves the records before it synced, [RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) — and the stream
 continues in a new segment whose header names no predecessor ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). The
 failed segment stays accounted at its cap to the journal until it is unlinked
 ([§7.3](#7.3%20Accounting)), and is a repack candidate once its window is resolved, not before:
@@ -2112,9 +2113,17 @@ written again until it is closed and reopened, and that open's recovery
 - every call that would append a record — `WriteAt`, `Fill`, a removal,
   `Release`, `Hold` and the rest — fails at once with `ErrJournalReadOnly`,
   reserves nothing and takes no spare;
-- the window that was open is failed ([§5.3](#5.3%20A%20failed%20sync)), raising the loss generation as
-  there, with no loss record appended;
-- its header-only records are failed too: nothing of them was appended, so
+- every record not yet synced is failed, on every stream: the window that was
+  open, if any, and each other stream's records past its last successful sync, each
+  failed as a window is ([§5.3](#5.3%20A%20failed%20sync)) and reported once to each file with a write in
+  it, raising the loss generation once for all of them, with no loss record
+  appended. Appends are refused before the records are failed, so none lands
+  after them unfailed, and a sync in flight at the transition that succeeds
+  later satisfies none of their `Sync`s and moves no stream's synced point. Another stream's records are failed too because no
+  later sync will cover them: otherwise no loss event names them, so their
+  files are never told, and the reopen's recovery either drops one it finds
+  torn unreported or holds again one whose `Sync` was told it failed;
+- their header-only records are failed too: nothing of them was appended, so
   each is undone in memory and every `Sync` that waits on one fails with
   `ErrJournalReadOnly`; only a loss record's drop stands, since a loss only
   ever errs toward fetching again ([§3.8](#3.8%20Loss%20events));
@@ -2131,7 +2140,7 @@ written again until it is closed and reopened, and that open's recovery
   window does ([§5.3](#5.3%20A%20failed%20sync)); the loss record reaches nothing else, so a dropped write's
   superseded content is held, as when the window failed. It publishes no new
   event and raises neither the loss generation nor a file's loss sequence: the
-  window's failure was already reported, and a removal's failure reached its
+  records' failure was already reported, and a removal's failure reached its
   `Sync`. A segment whose sync failed can still hold
   them whole, and without this the reopen's recovery would hold again, and the
   engine apply, a write or a removal whose `Sync` was told it failed.
@@ -2143,7 +2152,8 @@ written again until it is closed and reopened, and that open's recovery
 > not happen, and a removal kept in memory would hide content the metadata
 > still names; the reopen drops them for the same reason. The ceiling is a
 > restart while read-only: the list of failed records lives in the process, so
-> the next start's recovery can find a failed truncate or deallocate whole and
+> the next start's recovery can find a failed truncate or deallocate whole, on
+> any stream, even one a sync in flight at the transition made durable, and
 > the engine applies it ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 3), after its `Sync` was told it
 > failed. A failed release is safe even then, since the engine keeps the file
 > marked releasing and so admits no open the release could abort on. Overturned
@@ -2159,7 +2169,8 @@ reopen's first. A probe whose checks fail creates nothing, so it leaves nothing
 to unlink on a mount that may still be read-only, and the probes hold at most
 one spare. A device that takes writes again but that open would refuse —
 remounted without cache flushes, say — so stays read-only, with
-`journal_read_only` naming the failed check. Once a spare is made, the journal
+`journal_read_only` naming the failed check, which `Stats` carries in `ReadOnly`
+([§3.7](#3.7%20State%20introspection)). Once a spare is made, the journal
 reports the device writable again, and its caller closes and reopens it
 ([RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)), so the state resolves on its own once the cause is removed
 ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)). A reopen before then would fail at recovery's first write and
@@ -2168,7 +2179,8 @@ a running engine ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20st
 foreign journal — a check failing again, or recovery's I/O on a device that
 failed between probe and open — leaves the journal closed: its shares answer
 writes, and reads of content only it held, retry-later, `journal_read_only`
-names the refusal, and the caller retries the open at the same interval. A
+names the refusal, which the caller holds as `Open`'s error, since a closed
+journal has no `Stats` to carry it, and the caller retries the open at the same interval. A
 missing or foreign journal is not this state but a lost journal device
 ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)), gated as at start.
 
@@ -3100,6 +3112,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§5.3](#5.3%20A%20failed%20sync) re-append trusts no page cache | Write A, fail the next sync, and make reads of the failed segment return the bytes the device held before; resolve by re-appending; assert A is re-appended only from a copy that verifies against the checksum kept at write time, or its window is failed and A dropped as a loss — never re-appended with the stale bytes. Assert no record is appended to the failed segment afterwards. |
 | [§3.8](#3.8%20Loss%20events) loss by exact record | Write v5 and `Sync` it; overwrite the same 64 KiB at v10 with no `Sync`; fail the timer's sync and resolve by failing the window. Assert a read serves v5, before and after a crash and reopen, and the loss record names v10's sequence number. A loss keyed on version inside the extent drops v5 too, and a design that let v5's record go once v10 was appended has nothing to restore. |
 | [§3.8](#3.8%20Loss%20events) a synced loss masks what it superseded | Write v5, `Sync`; write v10, `Sync`; corrupt v10's payload; reopen with v5's record still on disk. Assert the extent reads `missing`, never v5. A loss record that names only its record brings the superseded v5 back. |
+| [§5.4](#5.4%20A%20journal%20that%20cannot%20write) read-only fails every stream's unsynced records | On a second stream, write file G and leave it unsynced; on the first, write F, fail a sync and then the first sync in the spare it takes, so the journal turns read-only. Assert a loss event names G's write at the transition, the next `Sync(G)` fails, and the loss generation rose once for both streams. Then, in one run, fail the writeback of G's segment at the seam so G is torn on the device and in the cache, clear the faults and reopen in place: assert G is not held and the loss generation stays where the transition put it. In another, leave G whole in its segment and reopen in place: assert the reopen drops G, appending an unsynced loss record for it, and the loss generation stays where the transition put it. The loss generation alone does not tell this rule from one that fails only the failed segment's window, since failing F's window raises it too; that rule publishes no loss event for G, so G's file is never told of the loss, and in the second run the reopen holds G again after its `Sync` was told it failed. |
 | [§5.3](#5.3%20A%20failed%20sync) a failed window is reported once | Write to file F with no `Sync` waiting; fail the timer's sync and fail the window. Assert the next `Sync(F)` fails, the one after succeeds, and a `Sync(G)` of a file with no write in the window succeeds throughout. A design that fails only the `Sync` calls waiting at the time lets F's next flush succeed with its data gone. |
 | [§4.3](#4.3%20Versions) a re-append keeps its numbers | Write A, fail its sync and resolve by re-appending; truncate over A; crash so the original, its copy and the truncate are all on disk; reopen. Assert the extent reads `missing`. A re-append given a new sequence number outranks the truncate and brings A back. |
 | [§3.3](#3.3%20Offload) no pin on a segment under repack | Select a segment for repack and hold the pass after its first copy; offload a file with dirty extents in that segment. Assert the offer pins no segment under repack, takes the copied extent from its new location, leaves the rest to a later call, and the repack completes and unlinks the segment. |
