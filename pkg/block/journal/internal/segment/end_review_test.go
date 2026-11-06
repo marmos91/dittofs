@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -263,6 +264,10 @@ func TestEndTheRollDoesNotInstallBeforeTheEventsSnapshot(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	seg := streamSegName(1)
+	// The hook is cleared once the stream is closed — registered first, it
+	// runs last — for a notifier still starting reads it until Close has
+	// waited for it.
+	t.Cleanup(func() { segment.StreamSetNotifyParkHook(nil) })
 	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
 	t.Cleanup(func() { _ = e.s.Close() })
 
@@ -281,8 +286,13 @@ func TestEndTheRollDoesNotInstallBeforeTheEventsSnapshot(t *testing.T) {
 		t.Fatalf("the first Sync: %v", err)
 	}
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseNotifier := func() { releaseOnce.Do(func() { close(release) }) }
 	segment.StreamSetNotifyParkHook(func() { <-release })
-	t.Cleanup(func() { segment.StreamSetNotifyParkHook(nil) })
+	// Registered after the stream's Close, so it runs before it: a check that
+	// fails while the notifier is parked must free it, or Close waits on it
+	// and the package hangs to its timeout.
+	t.Cleanup(releaseNotifier)
 	holdB := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
 	bDone := endAppend(e, 2, 64, 0x55)
 	<-holdB.Reached()
@@ -336,7 +346,7 @@ func TestEndTheRollDoesNotInstallBeforeTheEventsSnapshot(t *testing.T) {
 	// reservations' end — and only then does the roll install and D's append
 	// land. A snapshot after the install would name the successor's reset
 	// failedAt (next, the successor's header end 48) and its blank tracker.
-	close(release)
+	releaseNotifier()
 	ev := <-eventIn
 	if ev.Segment != a.Loc.Segment {
 		t.Fatalf("the event names segment %d, want the ended one %d", ev.Segment, a.Loc.Segment)

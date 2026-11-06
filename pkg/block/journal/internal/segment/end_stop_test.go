@@ -3,6 +3,7 @@ package segment_test
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -560,6 +561,10 @@ func TestEndRequestedSecondFailureStops(t *testing.T) {
 func TestEndAppenderAlreadyInsideTheRollIsStoppedAtTheLoopTop(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
+	// The hook is cleared once the stream is closed — registered first, it
+	// runs last — for an append still entering the loop reads it until Close
+	// has waited for it.
+	t.Cleanup(func() { segment.StreamSetAppendParkHook(nil) })
 	e, rec := endStopBuilder(t)
 	if got := endStopEndsSegment(t, e, rec, syscall.EIO); got != core.SegmentID(1) {
 		t.Fatalf("the first ended segment is %d, want 1", got)
@@ -575,12 +580,17 @@ func TestEndAppenderAlreadyInsideTheRollIsStoppedAtTheLoopTop(t *testing.T) {
 	// Y parks at the loop top past the loop-top check, holding no lock.
 	parked := make(chan struct{})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseY := func() { releaseOnce.Do(func() { close(release) }) }
 	segment.StreamSetAppendParkHook(func() {
 		segment.StreamSetAppendParkHook(nil)
 		close(parked)
 		<-release
 	})
-	t.Cleanup(func() { segment.StreamSetAppendParkHook(nil) })
+	// Registered after the stream's Close, so it runs before it: a check that
+	// fails while Y is parked must free it, or Close waits on it and the
+	// package hangs to its timeout.
+	t.Cleanup(releaseY)
 	yDone := endAppend(se, 4, 64, 2)
 	select {
 	case <-parked:
@@ -610,7 +620,7 @@ func TestEndAppenderAlreadyInsideTheRollIsStoppedAtTheLoopTop(t *testing.T) {
 
 	// Y wakes at the loop top and must answer the stop, not take a third
 	// spare: no further take happens, and segment 3 stays a spare.
-	close(release)
+	releaseY()
 	y := <-yDone
 	if !errors.Is(y.err, segment.ErrStreamStopped) {
 		t.Fatalf("the append parked across the stop = %v, want ErrStreamStopped", y.err)
