@@ -1186,7 +1186,9 @@ in the floor, whichever is higher:
 no read that began before the open can still fill. A file that has an entry at
 open is held to the same rule: until its next change, the change version a read
 reports for it, and a `Fill` is checked against, may be anything from its
-entry's version up to its bucket's. Without this, a fetch that
+entry's version up to its bucket's. So is a file whose entry a `Fill` created
+after the old one was dropped: a fill changes no version, so until the file's
+next change it has none of its own and reports its bucket's. Without this, a fetch that
 began before a write, or before a truncate down and up, could land after it and
 put old bytes back, marked offloaded. The check is deliberately coarse: a needless
 refusal costs only a cache miss.
@@ -1799,19 +1801,20 @@ never change; recovery rebuilds them from the catalogs or the scan.
 
 ### 4.2 The index is bounded by extent count, not by bytes
 
-An entry costs about 40 bytes, so the index's footprint tracks how many extents
-exist and is independent of how much content they describe.
+An entry costs about 53 bytes in order and 69 in random order, so the index's
+footprint tracks how many extents exist and is independent of how much content
+they describe.
 
 Measured with a 64-bit version, an entry is 40 bytes and 43 in a B-tree layout;
-the 128-bit version of [§4.3](#4.3%20Versions) makes it about 51 (estimated, not re-measured).
+with the 128-bit version of [§4.3](#4.3%20Versions) it is about 53, measured at 10^6 extents.
 That is for extents written in order. Written in random order, a B-tree's nodes
-are less full, and an entry costs about 65 bytes:
+are less full, and an entry costs about 69 bytes, measured the same way:
 
 | Held as | Extents for 1 TiB | Index, in order | Index, random order |
 | --- | --- | --- | --- |
-| 1 MiB extents | ~1.0 million | ~53 MB | ~68 MB |
-| 256 KiB extents | ~4.2 million | ~214 MB | ~273 MB |
-| 64 KiB extents | ~16.8 million | **~856 MB** | **~1.09 GB** |
+| 1 MiB extents | ~1.0 million | ~56 MB | ~72 MB |
+| 256 KiB extents | ~4.2 million | ~222 MB | ~289 MB |
+| 64 KiB extents | ~16.8 million | **~889 MB** | **~1.16 GB** |
 
 **An entry is one contiguous piece of one record with one offloaded bit.** Two
 records never share an entry: each carries its own header between payloads, and
@@ -1830,9 +1833,9 @@ one file that share a content version and an offloaded bit as one record
 ([§7.2](#7.2%20Repack)), which coalesces repacked content to one entry per copy.
 
 > [!note] ponytail
-> The index costs about 51 bytes per record piece held, and about 65 when the
+> The index costs about 53 bytes per record piece held, and about 69 when the
 > pieces were written in random order, so a journal holding 1 TiB written in
-> 64 KiB writes needs about 856 MB of index, or 1.09 GB written in random order,
+> 64 KiB writes needs about 889 MB of index, or 1.16 GB written in random order,
 > until that content is offloaded and released. Upgrade to entries that span consecutive records of
 > one file with a version range, splitting on demand, when the entry bound below
 > is reached in production on a workload of small sequential writes.
@@ -1842,7 +1845,7 @@ retained extents included.
 
 **The index is bounded, and the bound refuses.** An implementation **MUST NOT**
 silently degrade when the index grows. A configured entry bound (`ExtentLimit`,
-sized from RFC 24's index pool at about 65 bytes per entry, the cost in random order; [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)) caps the entries of
+sized from RFC 24's index pool at about 69 bytes per entry, the cost in random order; [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)) caps the entries of
 all files of the journal together. A `WriteAt` or `Fill` that would raise the
 count above the bound is refused at once, with the same named refusal as a
 capacity refusal, naming the index as the limit ([§6](#6.%20Capacity)), and counted in
@@ -3124,7 +3127,7 @@ holding it converts disk latency into index contention.
 | `Forget`'s record, then its drop | repack copies and fills of that tag | a copy of the tag appended after the forget record carries a higher sequence number, so a crash would bring it back as held; a copy whose held check ran before the forget is abandoned, never appended after it ([§3](#3.%20Interface)) |
 | a repack copy's held check, then its append | `WriteAt`, removals and `Release` on that file | a copy appended over newer state would reinstate superseded content ([§7.2](#7.2%20Repack)) |
 | an acknowledgement's drop of a file's extents, then its loss records ([§3.3](#3.3%20Offload)) | repack copies of that file | a copy appended after the loss record keeps the version under a higher sequence number, so the loss record does not outrank it and a restart holds the dropped content again; a copy whose held check ran before the drop is abandoned, never appended after it |
-| drawing a write's or a removal's version, then applying it to the index | a read of that file taking its `asOf` | a file with no entry reports its floor bucket as `asOf`, and so may one with an entry not changed since open; another file in the same bucket can draw a higher version and raise the bucket while this change is still in flight; the read's `asOf` is then above a change it did not see, so a fill from that read is accepted over the change, and the engine can report a loss for bytes the journal still holds ([§3.4](#3.4%20Fill), [RFC 8 §7.1](rfc-8-engine.md#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)) |
+| drawing a write's or a removal's version, then applying it to the index | a read of that file taking its `asOf` | a file with no entry reports its floor bucket as `asOf`, and so may one with an entry not changed since open, and so does one whose entry a `Fill` created after the old one was dropped; another file in the same bucket can draw a higher version and raise the bucket while this change is still in flight; the read's `asOf` is then above a change it did not see, so a fill from that read is accepted over the change, and the engine can report a loss for bytes the journal still holds ([§3.4](#3.4%20Fill), [RFC 8 §7.1](rfc-8-engine.md#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)) |
 
 Publishing an extent **MUST** be the last step of a write, after its record is
 written, so a read never finds an index entry pointing at bytes not yet in the
@@ -3477,7 +3480,7 @@ lost group commit, an index that stopped being `O(log n)` — are counted instea
   in allocations per call, and an increase fails the check;
 - **index memory**: bytes per entry at 10^6 extents **MUST** stay at or below 56
   written sequentially and at or below 72 written in random order, the figures
-  of [§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) plus a tenth, and the removal-drop ranges of [§7.2](#7.2%20Repack) after
+  of [§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) plus about a twentieth, and the removal-drop ranges of [§7.2](#7.2%20Repack) after
   10^6 random 4 KiB overwrites of one file — spread over the sixteen or so
   segments they fill, about 6×10^4 records each — **MUST** number at most eight
   per (file, segment);
