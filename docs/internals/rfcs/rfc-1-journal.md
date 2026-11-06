@@ -744,7 +744,9 @@ returns, for each stream holding a named record outside a sealed segment, the
 `SyncMark` that covers them: the stream's number, the segment, its synced-through
 offset, and the end and sequence number of the newest named record there. A mark
 names its stream rather than relying on its position: a `Sync` returns no mark for a
-stream holding no named record, and the stream count is configurable. The journal knows where its records
+stream holding no named record, and the stream count is configurable. The caller
+keeps each stream's latest mark under its `Stream` and deletes none: a stream
+dropped at a restart still has a last segment on disk whose tail only its mark proves. The journal knows where its records
 are, and the caller owns the marks ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)). Once the slot
 it waits behind completes, `Sync` issues the stream's next sync itself rather than
 waiting for the timer.

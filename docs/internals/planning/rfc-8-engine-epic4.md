@@ -251,7 +251,7 @@ subtasks and tests can cite them.
 | R23 | A file that still fails alone is backed off by itself and raises `existence_commit_failing` naming it; its stability points answer `ErrDelay` meanwhile, and no other file waits on it | MUST | §5.2, §11.1 | T4.4 |
 | R24 | A metadata conflict is retried under the caller's deadline and never reaches a client as an I/O error; one unresolved at the deadline answers `ErrDelay` with `DelayConflict` | MUST, MUST NOT | §11.3 | T4.4 |
 | R25 | A failed existence commit is retried by the next group commit, and fails a reply only through R11's rule | invariant | §5.1 | T4.4 |
-| R26 | §5.2 group commit: 64 writers flushing while `chmod` hits random files of the journal; one file's File record undecodable, and another's removal record (an adaptation: §15.2's row names the File record only; the existence fence is checked for presence, never decoded); §5.2 sync marks ride in one batch | test row | §15.2 | T4.4 |
+| R26 | §5.2 group commit: 64 writers flushing while `chmod` hits random files of the journal; one file's File record undecodable, and another's removal record (an adaptation: §15.2's row names the File record only; the existence fence is checked for presence, never decoded); §5.2 sync marks ride in one batch; §5.2 sync marks are keyed by stream | test row | §15.2 | T4.4 |
 
 **Losses**
 
@@ -505,10 +505,11 @@ test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
   the due set and waits for the batch in flight, built here and called by epic 6's `Drop`,
   which tests it (T6.9). `kvstore`'s `PendingOp` split (D6), with its own test.
   `kvstore`'s marks write (RFC 6 §10.1): `Existence.Commit`'s `marks *MarksWrite`, its
-  tracked `og` check, `ErrOpenGenMoved` and `ErrSyncMarks`, with its own test. E2's fake
+  tracked `og` check, `ErrOpenGenMoved` and `ErrSyncMarks`, each mark keyed by its `Stream`
+  and none deleted, as RFC 6 §10.1 and RFC 8 §5.2 say, with its own test. E2's fake
   journal gains sync marks: `Sync` returns a mark per stream covering what it synced, and
-  `Stats().SyncMarks` reports the same marks after it returns, as the journal's epic 2 fixture
-  (`journaltest.New`) reads them, since the group commit builds its marks write from `Stats().SyncMarks` (RFC 8
+  `Stats().SyncMarks` keeps each stream's latest mark, merged by `Stream`, as RFC 1 §3.7
+  says and the journal's epic 2 fixture (`journaltest.New`) reads them, since the group commit builds its marks write from `Stats().SyncMarks` (RFC 8
   §5.2); `MarksRecorded` logs what it is handed.
 - **Acceptance criteria:**
   - a file with pending writes and no stability point is committed within `existence_age`,

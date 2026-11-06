@@ -295,7 +295,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   long `Unbind` never holds up another share's `Bind` (RFC 8 §2.3: a change to one share
   changes one binding). A set of the shares with a lifecycle call in progress, kept under
   the same mutex, answers a second `Bind`, `Unbind` or `Drop` naming one of them with
-  `ErrDelay`, which its caller retries. `Close`'s step 1 sets the engine's closed state
+  `ErrDelay`, which its caller retries (RFC 8 §2.3). `Close`'s step 1 sets the engine's closed state
   (R39) under the same mutex, and every publish, by `Bind` or the late attach, checks it
   under the mutex and, when it is set, publishes nothing and undoes in reverse; `Close`
   waits for the set to drain, within the stop bound (D7), before it closes anything, so no
@@ -569,7 +569,7 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
     (RFC 8 §2.5), closed outside the lifecycle mutex. It leaves the set of shares with a
     lifecycle call in progress in the hold of the mutex where it clears the mark (and,
     if the visit has ended, marks the handle closing), so a retried `Bind` waits for that
-    `Close` rather than answering `ErrDelay`.
+    `Close` rather than answering `ErrDelay` (RFC 8 §2.3).
   - A share bound above a floor of 9·10⁸ gets a first version above it from the real
     journal.
 - **Tests:** a content call on share A while a `Bind` of share B holds the lifecycle mutex
@@ -850,7 +850,8 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   whichever lands last; a `Bind` that took over a handle, failed, its handle's `Close`
   held by a hook, then `Close` called: `Journal.Close` does not start before the handle's
   `Close` returns, and the handle is closed once (catches a `Close` that joins only the
-  lifecycle set, R42); `prof.Watch` finds no goroutine left.
+  lifecycle set, R42), written with T6.8 or the subtask that builds the metadata
+  reconcile, whichever lands last; `prof.Watch` finds no goroutine left.
 
 ### T6.9 `Unbind` and `Drop`
 
@@ -1058,7 +1059,9 @@ and PR 4.
    T6.4 and T6.7 depend on it, and its days stay in E2's estimate.
 8. **A read-only journal reopened in place** (RFC 8 §2.5, E42, and §15.2's read-only row) is
    in no epic of this part. It needs RFC 1 §5.4's read-only state, which `journal` does not
-   have yet; once it does, it is a subtask of this epic or of the second part.
+   have yet; once it does, it is a subtask of this epic or of the second part. That subtask
+   also adds the drain's closing mark to epic 4's group commit (RFC 8 §2.5) and passes
+   §15.2's "the marks fence is per open" row.
 9. **`Unbind` with `keepHolds`** is refused: no snapshot exists in this part. A removal that
    keeps snapshots is RFC 12's, out.
 10. **No row over the real journal turns green in this epic** until `journal`'s `Init`,

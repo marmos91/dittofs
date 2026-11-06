@@ -2682,9 +2682,9 @@ type Blocks interface {
     Settle(ctx context.Context) error                                          // RFC 9 §3.7: retired → deleted up to store time, unverified; last transaction updates the nonce record
 }
 
-// MarksWrite is one group commit's sync marks (RFC 8 §5.2): it replaces the
-// stored set unconditionally, deleting the mark of any stream not in it, and
-// commits only while J‖journal‖og, read tracked, still equals Gen (RFC 16 §6.3).
+// MarksWrite is one group commit's sync marks (RFC 8 §5.2): each replaces the
+// stored mark of its Stream unconditionally, no other stream's mark is deleted,
+// and the write commits only while J‖journal‖og, read tracked, still equals Gen (RFC 16 §6.3).
 type MarksWrite struct {
     Journal JournalID
     Gen     OpenGen    // the open generation Lifecycle.SyncMarks wrote for the open whose marks these are

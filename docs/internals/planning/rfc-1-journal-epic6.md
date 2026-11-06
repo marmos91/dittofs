@@ -723,8 +723,8 @@ pkg/block/journal/
   record encoder; E1's `LossEvent`; E4's marker set (E4-5), which takes a loss kind (§9).
 - **Covers:** R39–R53, R56, R62, R76–R79, R83, R84, R92.
 - **Deliverables:** `internal/durability/loss.go`: `Lose(ctx, Loss) (core.LossEvent, error)`
-  (D6) with `Loss` naming the share, file, extent, version, sequence number, reason (corrupt,
-  stale, failed window), the extent's offloaded bit as it was, and whether the record was
+  (D6) with `Loss` naming the share, file, extent, version, sequence number, reason (RFC 28
+  §2.3's loss reasons), the extent's offloaded bit as it was, and whether the record was
   synced. It appends the loss record through E5's `Append`, drawing on the headroom where no
   spare is ready, with the flag R42 and R43 describe, then raises the generation, then publishes
   the event (R51). It checks no admission rule of its own (D6). A record it cannot append, the journal
@@ -1422,11 +1422,6 @@ suggestion only: one pull request per subtask works as well.
   nothing and returns the error, which holds under #3511 and is not decided for #3440. A copy read
   that fails with `EIO` or comes back short follows the same rule (T6.7). If the RFC's answer is that
   an `EIO` read drops the extent, T6.7 gains a branch, for the record and for its copy.
-- **A header that does not verify.** #3449 asks whether a loss is named when a record's header
-  fails to verify in a scanned segment. At read time the index already names the record, so
-  T6.7 names it; the scanned case is E7's, and the two should agree. #3518 (open, closes #3449)
-  adds a fourth loss reason, `superseded`, for the reconcile's drops; T6.2's `Loss` names three,
-  and gains the fourth if it merges (the reconcile is E7's).
 - **Another copy of a record at read time (D10).** Only a re-append's original is registered.
   A copy a repack carried is not. Confirm with E9's owner whether it will register the source of
   a carry, or whether the RFC's "unless another copy verifies" is meant for recovery alone.
