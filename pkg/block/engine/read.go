@@ -20,9 +20,10 @@ import (
 // lookup per extent; it keeps nothing of the resolution past the call. Only
 // a hole or a zero ref reads as zeros. Past the end of file, the pending
 // operations applied, the read is short. A read that fails part-way answers
-// the bytes filled before the first part that failed.
+// the bytes filled before the first part that failed. A range below zero or
+// past the largest offset is ErrInvalid.
 func (e *Engine) Read(ctx context.Context, s entity.ShareID, f entity.FileID, off int64, dst []byte) (int, error) {
-	if off < 0 {
+	if off < 0 || int64(len(dst)) > math.MaxInt64-off {
 		return 0, vfserr.ErrInvalid
 	}
 	b, err := e.bindingOf(s)

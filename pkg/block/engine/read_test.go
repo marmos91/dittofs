@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -84,6 +85,23 @@ func (u *unit) lose(f entity.FileID, off, n int64) {
 func fill(n int, b byte) []byte { return bytes.Repeat([]byte{b}, n) }
 
 func zeros(p []byte) bool { return bytes.Count(p, []byte{0}) == len(p) }
+
+// A range below zero or past the largest offset is ErrInvalid, asking
+// neither the journal nor block metadata.
+func TestAReadOutOfRangeIsInvalid(t *testing.T) {
+	st := &stubContent{cover: func(_ int, off, n int64) []entity.Span { return nil }}
+	u := newUnit(t, func(d *engine.Deps) { d.Content = st })
+	var log []string
+	u.e.BindForTest(u.share, u.j, recordingHandle{u.h, &log})
+	for _, off := range []int64{-1, math.MaxInt64 - 100} {
+		if n, err := u.e.Read(t.Context(), u.share.ID, entity.NewFileID(), off, make([]byte, 4*kib)); n != 0 || !errors.Is(err, vfserr.ErrInvalid) {
+			t.Errorf("Read at %d = %d, %v; want ErrInvalid", off, n, err)
+		}
+	}
+	if len(log) != 0 || st.calls != 0 {
+		t.Errorf("journal calls %v and %d lookups; want none", log, st.calls)
+	}
+}
 
 // Every row of the resolution table, over a stub covering lookup of a file
 // the journal holds nothing of, at asOf zero: only a hole or a zero ref reads

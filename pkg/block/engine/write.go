@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -16,9 +17,9 @@ import (
 // verifier is sampled before the write is staged. The write's operation is in
 // f's entry before Write answers, so a read that starts after reflects it. A
 // zero-length write stages nothing and calls o.Done once; a refused one never
-// calls it.
+// calls it. A range below zero or past the largest offset is ErrInvalid.
 func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, off int64, p []byte, o WriteOpts) (vfserr.Verifier, error) {
-	if off < 0 {
+	if off < 0 || int64(len(p)) > math.MaxInt64-off {
 		return vfserr.Verifier{}, vfserr.ErrInvalid
 	}
 	b, err := e.bindingOf(s)
