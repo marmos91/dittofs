@@ -5,6 +5,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -29,11 +33,11 @@ var (
 	errUnidentified = errors.New("engine: the device holds segments and no format file")
 )
 
-// opened is what start step 1 leaves for Start to publish: the journal, nil
-// when its device was refused; the share table; and the shares refused and
-// the conditions raised.
+// opened is what start step 1 leaves for Start to publish: the journal with
+// its version limit, nil when its device was refused; the share table; and
+// the shares refused and the conditions raised.
 type opened struct {
-	journal Journal
+	journal *versionLimit
 	table   bindings
 	stats   Stats
 }
@@ -83,8 +87,11 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 		return opened{}, err
 	}
 
+	vl := &versionLimit{
+		j: j,
+	}
 	o := opened{
-		journal: j,
+		journal: vl,
 		table:   removedBindings(tags),
 		stats:   newStats(),
 	}
@@ -107,6 +114,7 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 		b := &binding{
 			share: s,
 			j:     j,
+			vl:    vl,
 			h:     h,
 		}
 		b.state.Store(uint32(s.State))
@@ -114,9 +122,12 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 		served = append(served, s)
 	}
 
-	if err := e.writeLimits(ctx, j, served); err != nil {
+	limit, err := e.writeLimits(ctx, j, served)
+	if err != nil {
 		return opened{}, err
 	}
+
+	vl.last.Store(limit.Counter)
 
 	return o, nil
 }
@@ -247,7 +258,7 @@ func forgetFinished(ctx context.Context, j Journal, tags map[entity.ShareID]enti
 // writeLimits writes every served share's version limit a block above the
 // journal's next version, as a tracked max-write in transactions of at most
 // K keys, and only once they have committed passes it to the journal (RFC 8
-// §2.7).
+// §2.7). It returns the limit it passed.
 //
 // decision: a share the store records as being removed, whose removal has
 // not reached its offload step, is attached, so its resumed removal can
@@ -259,8 +270,12 @@ func forgetFinished(ctx context.Context, j Journal, tags map[entity.ShareID]enti
 // version (RFC 28 §3.3). A share bound later writes the journal's limit as
 // its own before it draws one. Overturned if a share being removed can draw
 // a version: then the start write covers it too.
-func (e *Engine) writeLimits(ctx context.Context, j Journal, served []Share) error {
-	limit := startLimit(j.Stats().NextVersion)
+func (e *Engine) writeLimits(
+	ctx context.Context,
+	j Journal,
+	served []Share,
+) (journal.Version, error) {
+	limit := startLimit(j.Stats().NextVersion, e.block)
 	to := make(map[entity.ShareID]entity.JournalVersion, len(served))
 
 	for _, s := range served {
@@ -268,14 +283,14 @@ func (e *Engine) writeLimits(ctx context.Context, j Journal, served []Share) err
 	}
 
 	if err := e.d.Lifecycle.RaiseVersionLimits(ctx, to); err != nil {
-		return fmt.Errorf("engine: start: write the version limits: %w", err)
+		return journal.Version{}, fmt.Errorf("engine: start: write the version limits: %w", err)
 	}
 
 	if err := j.SetVersionLimit(limit); err != nil {
-		return fmt.Errorf("engine: start: set the version limit: %w", err)
+		return journal.Version{}, fmt.Errorf("engine: start: set the version limit: %w", err)
 	}
 
-	return nil
+	return limit, nil
 }
 
 // removedBindings is a table holding a removed binding for every share whose
@@ -372,9 +387,9 @@ func openFloor(floor entity.JournalVersion, limits map[entity.ShareID]entity.Jou
 
 // startLimit is the version limit start writes for every served share: a
 // block above the journal's next version, with a zero epoch (RFC 1 §4.3).
-func startLimit(next journal.Version) journal.Version {
+func startLimit(next journal.Version, block uint64) journal.Version {
 	return journal.Version{
-		Counter: next.Counter + versionBlock,
+		Counter: limitTarget(0, next.Counter, block),
 	}
 }
 
@@ -404,4 +419,439 @@ func (u *undo) unwind(err error) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// The version limit while the journal serves (RFC 8 §2.7).
+const (
+	rateWindow          = 60               // the seconds the peak version rate looks back over
+	fenceAfter          = 30 * time.Second // the self-fence's window (RFC 8 §11.2)
+	triggerSampling     = time.Second      // the trigger's own sampling
+	defaultExistenceAge = time.Second      // RFC 13's proposed existence_age, with no settings
+	retryFirst          = 10 * time.Millisecond
+	retryMost           = time.Second
+)
+
+// The states of a journal's raise: none running, one running, and one running
+// with a wake that came during it.
+const (
+	raiseIdle int32 = iota
+	raiseRunning
+	raisePending
+)
+
+// errLimitRefused is a raise whose limit the journal refused to take: no
+// retry changes it.
+var errLimitRefused = errors.New("engine: the journal refused the version limit")
+
+// versionLimit is one journal's version limit while it serves: the limit last
+// passed with SetVersionLimit, the versions drawn in each second, the raise
+// lock, and the state of its raise.
+type versionLimit struct {
+	j    Journal
+	last atomic.Uint64 // the counter of the limit last passed with SetVersionLimit
+	rate rateBuckets
+
+	// lock is the raise lock: a raise holds it from its read of the counter
+	// to its SetVersionLimit, and an attach from its limit write to its
+	// publish.
+	lock  sync.Mutex
+	state atomic.Int32 // raiseIdle, raiseRunning or raisePending
+
+	// refused is set once the journal refuses a limit: no raise changes
+	// that, so no version wakes a raise again until the journal is opened
+	// anew.
+	refused atomic.Bool
+}
+
+// raises is the version limit raises running: the context they run under,
+// which stopping cancels, and the group that joins them. count and started,
+// nil in production, count the raise goroutines alive and every one started
+// once a test sets them.
+type raises struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	count   *atomic.Int32
+	started *atomic.Int64
+}
+
+// rateBuckets counts the versions drawn in each of the last rateWindow
+// seconds. Each bucket packs the second it counts, in the high 32 bits, and
+// its count, in the low 32, so one compare-and-swap moves it to a new second
+// and counts there, with no lock on the request path (RFC 8 §1.1).
+type rateBuckets struct {
+	b [rateWindow]atomic.Uint64
+}
+
+// add counts one version drawn in second sec and returns the peak.
+func (r *rateBuckets) add(sec uint64) uint64 {
+	slot := &r.b[sec%rateWindow]
+
+	for {
+		old := slot.Load()
+		n := uint64(1)
+
+		if old>>32 == sec {
+			n = old&math.MaxUint32 + 1
+		}
+
+		if slot.CompareAndSwap(old, sec<<32|n) {
+			break
+		}
+	}
+
+	return r.peak(sec)
+}
+
+// peak is the highest count of versions drawn in any one second of the
+// rateWindow seconds up to sec.
+func (r *rateBuckets) peak(sec uint64) uint64 {
+	var top uint64
+
+	for i := range r.b {
+		v := r.b[i].Load()
+		at := v >> 32
+
+		if at > sec || at+rateWindow <= sec {
+			continue
+		}
+
+		top = max(top, v&math.MaxUint32)
+	}
+
+	return top
+}
+
+// headroom is how many versions the journal can still issue below limit
+// once it has issued v: a journal issues no version at or above its limit
+// (RFC 1 §4.3), so the next is v+1 and the last limit-1, as the journal's
+// Stats reports its versions left.
+func headroom(limit, v uint64) uint64 {
+	if v+1 >= limit {
+		return 0
+	}
+
+	return limit - v - 1
+}
+
+// limitTarget is the limit a raise writes: a block above the larger of the
+// limit last passed and the journal's next version. From the limit alone, a
+// counter an attach moved far above it would leave the journal refusing
+// writes for many raises; from the counter alone, a rate term above a block
+// would raise nothing while versions are left.
+func limitTarget(last, next, block uint64) uint64 {
+	return max(last, next) + block
+}
+
+// due reports whether left versions are fewer than the trigger: the larger of
+// half a block and the peak version rate times the margin (RFC 8 §2.7).
+func due(left, peak uint64, margin time.Duration, block uint64) bool {
+	secs := uint64(margin / time.Second)
+	frac := uint64(margin % time.Second)
+	rate := peak*secs + peak*frac/uint64(time.Second)
+
+	return left < max(block/2, rate)
+}
+
+// margin is how long the headroom must last at the peak rate: the
+// self-fence's 30 s, plus the existence age, since the fence can count from a
+// commit up to one existence age before the stall, plus the trigger's own
+// sampling (RFC 8 §2.7). It reads the settings at each check, so a changed
+// existence age applies to the next version.
+func (e *Engine) margin() time.Duration {
+	age := defaultExistenceAge
+
+	if s := e.settings.Load(); s != nil {
+		age = s.ExistenceAge
+	}
+
+	return fenceAfter + age + triggerSampling
+}
+
+// second is the clock's second now, the bucket a version drawn now counts in.
+func (e *Engine) second() uint64 {
+	return uint64(e.d.Clock.Elapsed() / time.Second)
+}
+
+// issued counts version v, just drawn from vl's journal, and wakes the
+// journal's raise when the versions left are fewer than the trigger. It is
+// evaluated on every version issued, never on a timer, and waits for
+// nothing: the raise runs on its own goroutine, so the request that drew v
+// never waits for a transaction (RFC 8 §1.1, §2.7). A journal that refused a
+// limit wakes no raise again.
+//
+// decision: the headroom is sized by time, not by count alone, so that the
+// version limit does not refuse writes before the 30 s self-fence would at
+// any rate the last minute has seen. The block size is a proposal;
+// overturned by the sustained-rate stall check failing at a measured peak
+// rate, which then sets the block.
+//
+// ponytail: the trigger looks back one minute, so a burst at a stall's start
+// faster than the larger of about 280 000 versions a second (half a block
+// over 30 s) and 1.07 times the last minute's peak (32 s of it over 30 s)
+// spends the headroom before the fence: 500 000 a second after a minute at
+// 100 000 is refused retry-later about 13 s before the fence would. The cost
+// is a retry, never a failure. Raise by a larger block, or size the margin
+// from the device's peak IOPS rather than the last minute, when the burst
+// check is refused at a rate a deployment reaches.
+func (e *Engine) issued(vl *versionLimit, v journal.Version) {
+	peak := vl.rate.add(e.second())
+
+	if vl.refused.Load() {
+		return
+	}
+
+	if !due(headroom(vl.last.Load(), v.Counter), peak, e.margin(), e.block) {
+		return
+	}
+
+	e.wake(vl)
+}
+
+// wake starts vl's raise, or, when one runs, marks it to run once more, so
+// one raise runs at a time per journal and a wake during it is not lost.
+func (e *Engine) wake(vl *versionLimit) {
+	for {
+		switch vl.state.Load() {
+		case raiseIdle:
+			if !vl.state.CompareAndSwap(raiseIdle, raiseRunning) {
+				continue
+			}
+
+			if c := e.raising.count; c != nil {
+				c.Add(1)
+			}
+
+			if c := e.raising.started; c != nil {
+				c.Add(1)
+			}
+
+			e.raising.wg.Add(1)
+
+			go e.raiseLoop(vl)
+
+			return
+		case raiseRunning:
+			if vl.state.CompareAndSwap(raiseRunning, raisePending) {
+				return
+			}
+		default:
+			return
+		}
+	}
+}
+
+// again ends one pass of vl's raise: true when a wake came during it, so the
+// raise runs once more, and false, leaving no raise running, otherwise.
+func (vl *versionLimit) again() bool {
+	for {
+		if vl.state.CompareAndSwap(raisePending, raiseRunning) {
+			return true
+		}
+
+		if vl.state.CompareAndSwap(raiseRunning, raiseIdle) {
+			return false
+		}
+	}
+}
+
+// raiseLoop is vl's raise: it raises, runs once more for a wake that came
+// meanwhile, and retries a raise that failed until it commits, waiting
+// between attempts, off the request path (RFC 8 §11.2). A limit the journal
+// refused is not retried: no retry changes it.
+//
+// decision: a failed raise waits 10 ms before its first retry, doubling to
+// at most 1 s, and starts again from 10 ms after a raise that commits. RFC 8
+// does not set the wait; it bounds how hard a failing store is called and
+// how soon a returning one is used. Overturned if RFC 8 sets a retry wait for
+// the owners that retry their write transactions.
+func (e *Engine) raiseLoop(vl *versionLimit) {
+	defer e.raising.wg.Done()
+
+	if c := e.raising.count; c != nil {
+		defer c.Add(-1)
+	}
+
+	ctx := e.raising.ctx
+	wait := retryFirst
+	extra := false
+
+	for {
+		// A raise woken before the journal refused a limit runs no store
+		// call: the refusal persists, so it ends here, logging nothing.
+		if vl.refused.Load() {
+			vl.state.Store(raiseIdle)
+
+			return
+		}
+
+		// A wake that came before this pass reads the counter is taken
+		// here, so the pass covers it and the end of the pass does not run
+		// the raise once more for it. This only saves an extra pass: a wake
+		// left pending is seen by again either way, so none is lost.
+		vl.state.CompareAndSwap(raisePending, raiseRunning)
+
+		// The pass a wake during the last raise asked for raises only if
+		// the trigger still holds: while a raise runs the limit has not
+		// moved, so every version issued meanwhile wakes it, and raising
+		// for each of those would spend a block and a store transaction
+		// the versions left do not need (RFC 8 §2.7).
+		if extra && !e.stillDue(vl) {
+			if vl.state.CompareAndSwap(raiseRunning, raiseIdle) {
+				return
+			}
+
+			continue
+		}
+
+		extra = false
+
+		err := e.raiseOnce(ctx, vl)
+		switch {
+		case err == nil:
+			wait = retryFirst
+
+			if !vl.again() {
+				return
+			}
+
+			extra = true
+
+			continue
+		case errors.Is(err, errLimitRefused):
+			e.d.Logger.Error("version limit raise refused by the journal; not retried", "err", err)
+
+			// Going idle drops a wake that came during this raise. The
+			// refusal persists, so a retry would be refused again.
+			// raiseLocked has marked the journal refused: a version issued
+			// after the mark wakes no raise, and at most a raise woken just
+			// before it runs, ending at the top of its loop with no store
+			// call and no log.
+			vl.state.Store(raiseIdle)
+
+			return
+		case ctx.Err() != nil:
+			vl.state.Store(raiseIdle)
+
+			return
+		}
+
+		e.d.Logger.Warn("version limit raise failed; retrying", "wait", wait, "err", err)
+
+		if !e.retryWait(ctx, wait) {
+			vl.state.Store(raiseIdle)
+
+			return
+		}
+
+		wait = min(2*wait, retryMost)
+	}
+}
+
+// stillDue reports whether vl's journal is still within the trigger, read
+// from the limit last passed, the counter and the settings now.
+func (e *Engine) stillDue(vl *versionLimit) bool {
+	next := vl.j.Stats().NextVersion.Counter
+	left := headroom(vl.last.Load(), max(next, 1)-1)
+
+	return due(left, vl.rate.peak(e.second()), e.margin(), e.block)
+}
+
+// retryWait waits d on the clock before a retry, and reports false when ctx
+// ends first.
+func (e *Engine) retryWait(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-e.d.Clock.After(d):
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// raiseOnce is one raise of vl under its raise lock.
+func (e *Engine) raiseOnce(ctx context.Context, vl *versionLimit) error {
+	vl.lock.Lock()
+
+	defer vl.lock.Unlock()
+
+	return e.raiseLocked(ctx, vl, nil)
+}
+
+// raiseLocked raises the limit of every share served on vl's journal, and of
+// the shares in also, to a block above the larger of the limit last passed
+// and the journal's next version, in one call the store splits into
+// transactions of at most K keys, and passes it to the journal only once it
+// has committed (RFC 8 §2.7, RFC 1 §4.3). The limit keeps a zero epoch. The
+// caller holds the raise lock.
+func (e *Engine) raiseLocked(ctx context.Context, vl *versionLimit, also []entity.ShareID) error {
+	next := vl.j.Stats().NextVersion
+	mark := journal.Version{
+		Counter: limitTarget(vl.last.Load(), next.Counter, e.block),
+	}
+	v := entity.JournalVersion(mark.Bytes())
+	to := map[entity.ShareID]entity.JournalVersion{}
+
+	for id, b := range e.table() {
+		if b.removed || b.vl != vl {
+			continue
+		}
+
+		to[id] = v
+	}
+
+	for _, id := range also {
+		to[id] = v
+	}
+
+	if err := e.d.Lifecycle.RaiseVersionLimits(ctx, to); err != nil {
+		return err
+	}
+
+	if err := vl.j.SetVersionLimit(mark); err != nil {
+		vl.refused.Store(true)
+
+		return fmt.Errorf("%w: %w", errLimitRefused, err)
+	}
+
+	vl.last.Store(mark.Counter)
+
+	return nil
+}
+
+// attachLimit writes share s's limit at the limit last passed, or, when the
+// journal's counter its Share raised leaves fewer versions than the trigger,
+// raises every served share's limit and s's itself first (RFC 8 §2.5). The
+// caller holds the raise lock.
+func (e *Engine) attachLimit(ctx context.Context, s Share, vl *versionLimit) error {
+	if e.stillDue(vl) {
+		if err := e.raiseLocked(ctx, vl, []entity.ShareID{s.ID}); err != nil {
+			if errors.Is(err, errLimitRefused) {
+				return e.journalErr(err)
+			}
+
+			return storeErr(err)
+		}
+
+		return nil
+	}
+
+	to := map[entity.ShareID]entity.JournalVersion{
+		s.ID: entity.JournalVersion(journal.Version{Counter: vl.last.Load()}.Bytes()),
+	}
+
+	if err := e.d.Lifecycle.RaiseVersionLimits(ctx, to); err != nil {
+		return storeErr(err)
+	}
+
+	return nil
+}
+
+// stopRaises cancels the version limit raises running and joins them, then
+// readies a new context for a later Start's raises.
+func (e *Engine) stopRaises() error {
+	e.raising.cancel()
+	e.raising.wg.Wait()
+	e.raising.ctx, e.raising.cancel = context.WithCancel(context.Background())
+
+	return nil
 }

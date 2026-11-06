@@ -20,13 +20,14 @@ var errNotStarted = fmt.Errorf("engine: no journal open: %w", vfserr.ErrUnavaila
 var errRemoved = fmt.Errorf("engine: the share is being removed: %w", vfserr.ErrStale)
 
 // binding is one bound share's storage: the share as it was attached, its
-// journal and its handle there, its state, and the incarnation its attach
-// raise wrote. A removed binding is a share being removed that start found
-// past its offload step: it holds the share's ID and tag and no journal or
-// handle.
+// journal, the journal's version limit and its handle there, its state, and
+// the incarnation its attach raise wrote. A removed binding is a share being
+// removed that start found past its offload step: it holds the share's ID and
+// tag and no journal or handle.
 type binding struct {
 	share       Share // as attached: Limit is the limit the handle uses
 	j           Journal
+	vl          *versionLimit
 	h           Handle
 	state       atomic.Uint32 // a ShareState: a state change stores it and swaps nothing
 	incarnation uint64        // the shard's incarnation the attach raise wrote, for the write verifier
@@ -118,7 +119,7 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 		return nil
 	}
 
-	j, err := e.onlyJournal()
+	vl, err := e.onlyJournal()
 	if err != nil {
 		e.mu.Unlock()
 
@@ -131,14 +132,7 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 
 	defer e.endCall(s.ID)
 
-	nb, err := e.attach(ctx, s, j, raised)
-	if err != nil {
-		return err
-	}
-
-	e.publish(nb)
-
-	return nil
+	return e.attach(ctx, s, vl, raised)
 }
 
 // validShare refuses a share Bind cannot attach: a zero ID or tag, a
@@ -182,10 +176,10 @@ func (b *binding) change(s Share) error {
 	return fmt.Errorf("engine: share %v: %s: %w", s.ID, why, vfserr.ErrInvalid)
 }
 
-// onlyJournal is the journal a share attaches to: the one open. The caller
-// holds mu. With more than one open, the share's journal is not known, as
-// nothing the engine reads names it yet.
-func (e *Engine) onlyJournal() (Journal, error) {
+// onlyJournal is the journal a share attaches to, with its version limit: the
+// one open. The caller holds mu. With more than one open, the share's journal
+// is not known, as nothing the engine reads names it yet.
+func (e *Engine) onlyJournal() (*versionLimit, error) {
 	switch len(e.journals) {
 	case 0:
 		return nil, errNotStarted
@@ -203,10 +197,19 @@ func (e *Engine) endCall(id entity.ShareID) {
 	e.mu.Unlock()
 }
 
-// attach opens the share's handle on j above its floor, writes the share's
-// limit at the journal's and raises the shard's incarnation, in that order
-// (RFC 8 §2.5). A failure closes the handle and publishes nothing; the limit
-// and the incarnation, once raised, stay raised, as neither is ever lowered.
+// attach opens the share's handle on the journal above its floor, raises the
+// shard's incarnation, then writes the share's limit at the journal's and
+// publishes the binding (RFC 8 §2.5). A failure closes the handle and
+// publishes nothing; the incarnation and the limit, once raised, stay raised,
+// as neither is ever lowered.
+//
+// decision: the incarnation is raised before the limit write, outside the
+// journal's raise lock, so a Bind waiting on the store for it never holds up
+// another share's Bind on the same journal. RFC 8 §2.5 asks only that the
+// incarnation is raised before the publish, and RFC 0 §1.4 lists the attach
+// steps without fixing their order; the lock still covers the limit write and
+// the publish, the window in which a raise must not run. Overturned if an RFC
+// orders the limit write before the incarnation raise.
 //
 // decision: a share with no record in the store is bound like any other, not
 // refused. A share has no record only once its removal has finished (RFC 16
@@ -218,60 +221,78 @@ func (e *Engine) endCall(id entity.ShareID) {
 // orphan shard key that collides with nothing, as shard numbers are never
 // reused (RFC 16 §2.3.1). Overturned by a path that deletes a share record
 // while the share is still served.
-func (e *Engine) attach(ctx context.Context, s Share, j Journal, raised bool) (*binding, error) {
+func (e *Engine) attach(ctx context.Context, s Share, vl *versionLimit, raised bool) error {
 	ids := []entity.ShareID{s.ID}
 
 	floor, err := e.d.Content.VersionFloor(ctx, ids)
 	if err != nil {
-		return nil, storeErr(err)
+		return storeErr(err)
 	}
 
 	limits, err := e.d.Lifecycle.VersionLimits(ctx, ids)
 	if err != nil {
-		return nil, storeErr(err)
+		return storeErr(err)
 	}
 
 	floor = entity.MaxVersion(floor, limits[s.ID])
 
-	h, err := j.Share(s.Tag, s.Limit, journal.VersionFromBytes(floor))
+	h, err := vl.j.Share(s.Tag, s.Limit, journal.VersionFromBytes(floor))
 	if err != nil {
-		return nil, e.journalErr(err)
+		return e.journalErr(err)
 	}
 
-	inc, err := e.raise(ctx, s, j, raised)
+	inc, err := e.raise(ctx, s, raised)
+	if err == nil {
+		err = e.limitAndPublish(ctx, s, vl, h, inc)
+	}
+
 	if err != nil {
 		if cerr := h.Close(); cerr != nil {
-			return nil, errors.Join(err, e.journalErr(cerr))
+			return errors.Join(err, e.journalErr(cerr))
 		}
 
-		return nil, err
+		return err
+	}
+
+	return nil
+}
+
+// limitAndPublish writes share s's limit at the journal's and publishes its
+// binding, holding the journal's raise lock across both, from its first line
+// to its return, so no raise in between passes the journal a limit above the
+// new share's (RFC 1 §4.3).
+func (e *Engine) limitAndPublish(
+	ctx context.Context,
+	s Share,
+	vl *versionLimit,
+	h Handle,
+	inc uint64,
+) error {
+	vl.lock.Lock()
+
+	defer vl.lock.Unlock()
+
+	if err := e.attachLimit(ctx, s, vl); err != nil {
+		return err
 	}
 
 	b := &binding{
 		share:       s,
-		j:           j,
+		j:           vl.j,
+		vl:          vl,
 		h:           h,
 		incarnation: inc,
 	}
 	b.state.Store(uint32(s.State))
+	e.publish(b)
 
-	return b, nil
+	return nil
 }
 
-// raise writes the share's limit at the journal's, as a tracked max-write,
-// then raises the shard's incarnation: keeping its grace instance when this
+// raise raises the shard's incarnation: keeping its grace instance when this
 // process has raised the shard already, and opening a new one otherwise
 // (RFC 16 §3). It returns the incarnation it wrote.
-func (e *Engine) raise(ctx context.Context, s Share, j Journal, raised bool) (uint64, error) {
-	limit := j.Stats().VersionLimit
-	to := map[entity.ShareID]entity.JournalVersion{
-		s.ID: entity.JournalVersion(limit.Bytes()),
-	}
-
-	if err := e.d.Lifecycle.RaiseVersionLimits(ctx, to); err != nil {
-		return 0, storeErr(err)
-	}
-
+func (e *Engine) raise(ctx context.Context, s Share, raised bool) (uint64, error) {
 	if raised {
 		inc, err := e.d.Lifecycle.RaiseAtAttach(ctx, s.Shard)
 		if err != nil {

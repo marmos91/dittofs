@@ -325,3 +325,96 @@ func TestRFC8A_AttachAfterDeviceLoss(t *testing.T) {
 		t.Error("the journal holds no change of the write")
 	}
 }
+
+// TestRFC8A_VersionLimit, its start and crash halves: the share's limit is
+// committed before the first version is drawn, and after a crash with a
+// version reported and nothing synced the restarted journal issues above it.
+// The raise halves need the test block of 16, which this package cannot set.
+func TestRFC8A_VersionLimit(t *testing.T) {
+	f := enginetest.New(t)
+	ctx := t.Context()
+	_, file := f.File("a")
+
+	limits, err := f.FS.Store.Lifecycle().VersionLimits(ctx, []entity.ShareID{f.Share.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := f.E.Draw(ctx, f.Share.ID, file)
+	if err != nil {
+		t.Fatalf("draw: %v", err)
+	}
+
+	if limits[f.Share.ID].Counter() <= before.Counter() {
+		t.Fatalf(
+			"the share's limit %d is not committed above the first version %d",
+			limits[f.Share.ID].Counter(),
+			before.Counter(),
+		)
+	}
+
+	f.Crash()
+
+	after, err := f.E.Draw(ctx, f.Share.ID, file)
+	if err != nil {
+		t.Fatalf("draw after the crash: %v", err)
+	}
+
+	if after.Counter() <= before.Counter() {
+		t.Errorf(
+			"the first version after the crash, %d, is not above the one reported before it, %d",
+			after.Counter(),
+			before.Counter(),
+		)
+	}
+}
+
+// A share bound with a limit several blocks above the journal's moves the
+// counter past the journal's limit; its own limit is above the version it
+// draws, and the first share draws again after the raise its Bind made.
+func TestRFC8A_VersionLimitCountsFromCounter(t *testing.T) {
+	const block = 1 << 24 // RFC 8 §2.7's block
+
+	f := enginetest.New(t)
+	ctx := t.Context()
+	_, file := f.File("a")
+
+	limits, err := f.FS.Store.Lifecycle().VersionLimits(ctx, []entity.ShareID{f.Share.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	high := map[entity.ShareID]entity.JournalVersion{
+		f.Second.ID: entity.VersionOf(limits[f.Share.ID].Counter() + 3*block),
+	}
+
+	if err := f.FS.Store.Lifecycle().RaiseVersionLimits(ctx, high); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := f.E.Bind(ctx, f.Second); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	v, err := f.E.Draw(ctx, f.Second.ID, file)
+	if err != nil {
+		t.Fatalf("draw on the bound share: %v", err)
+	}
+
+	got, err := f.FS.Store.Lifecycle().VersionLimits(ctx, []entity.ShareID{f.Second.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got[f.Second.ID].Counter() <= v.Counter() {
+		t.Errorf(
+			"the bound share's limit %d is not above its version %d",
+			got[f.Second.ID].Counter(),
+			v.Counter(),
+		)
+	}
+
+	if _, err := f.E.Draw(ctx, f.Share.ID, file); err != nil {
+		t.Errorf("the first share's draw after the Bind's raise = %v", err)
+	}
+}

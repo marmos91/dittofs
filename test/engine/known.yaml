@@ -79,3 +79,17 @@
   category: feature
   reason: 'Epic 6: a re-initialised journal is refused until RecordJournal, then the share attaches above its old limit. Fails at the fixture until the journal has Init, Open and WriteAt (#3765).'
   issue: '#3589'
+- test: TestRFC8A_VersionLimit
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: the version limit, its start and crash halves. Fails at the fixture until the journal has Init, Open, Share, Draw and SetVersionLimit. The raise halves of the row need the test block of 16, which the conformance package cannot set yet.'
+  issue: '#3589'
+- test: TestRFC8A_VersionLimitCountsFromCounter
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: a share bound above the journal limit raises from the counter. Fails at the fixture until the journal has Init, Open, Share, Draw and SetVersionLimit.'
+  issue: '#3589'

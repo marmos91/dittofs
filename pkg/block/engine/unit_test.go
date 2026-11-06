@@ -95,15 +95,22 @@ func newUnitWith(t *testing.T, c unitConfig) *unit {
 		t.Fatal(err)
 	}
 
+	if err := e.Apply(enginetest.Settings); err != nil {
+		t.Fatal(err)
+	}
+
 	u.e = e
-	e.SetJournalsForTest(u.rec)
 
 	// The version limit start raises; the fake refuses every version below
 	// none. It sits above every version the store stamps, which follow the
-	// clock in nanoseconds, so a share's floor stays below it.
+	// clock in nanoseconds, so a share's floor stays below it. It is set
+	// before the engine is handed the journal, which reads it as the limit
+	// last passed.
 	if err := u.j.SetVersionLimit(journal.Version{Counter: unitLimit}); err != nil {
 		t.Fatal(err)
 	}
+
+	e.SetJournalsForTest(u.rec)
 
 	u.share = enginetest.ShareOf(t, u.fs.Store, u.fs.Share.ID, 1<<30)
 
