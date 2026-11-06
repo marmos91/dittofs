@@ -787,20 +787,21 @@ before admission). The recorder's order across a tagged write is T8.11's test.
   once; it checks, in D6's order, a read-only journal (T6.6's `Admit`, which returns `ErrJournalReadOnly`, R27) and then
   the limits, and on success reserves the record bytes against the share's limit, the entries
   against `ExtentLimit` through E4-8's pre-check, and holds in the grant what the
-  write's pieces need, counted as `Reserve` does (T8.10, which counts one spare per cap its bytes can cross
-  plus one for the roll, and shares this holding), whatever the current segment's room: the room is taken at
-  append time by whoever appends first, and writes to different files may share one stream (R19), so
-  the grant cannot hold it. It holds that many ready spares with one `Pool.Hold(n)` (n is at least one, so never
-  the zero that panics), or counts the spares that can be made below the journal's maximum. Held, not only
-  counted, so two writes on two files, on one stream or on two, cannot both be granted one spare, and
-  a write is never published in part (R70). `Take` calls `Pool.Hold` after its critical section under D9's mutex has
-  ended, never inside it, because the pool's lock is of the same capacity domain and no two locks of one domain are held at once (RFC 1 §8.3): the bytes
-  are reserved against the share's limit first, and a refused `Hold` gives them back before it returns. The
+  write's bytes need beyond their stream's room (R66: a spare is taken only when the current segment cannot hold
+  the record). `Take` counts the room per stream under D9: a counter of the room bytes already granted and not yet appended. A write that
+  fits the stream's room less what is promised is granted from it, holds no spare and never touches the pool. The bytes beyond
+  that room hold ready spares with one `Pool.Hold(n)`, n being the spares those bytes need, one per cap they cross (so at least one, never the zero
+  that panics), and a spare that is not ready is refused, never counted as one that can be made. `Take` tests the journal's maximum first, under D9,
+  for the segments the bytes beyond the room need, so at the maximum the refusal is already the journal's maximum (R71), and a `Hold` refused
+  below it names `spare`, which clears once the refill has served the demand the refusal recorded. Held, not only counted, so
+  two writes on two files, on one stream or on two, cannot both be granted one spare or one room, and a write is never published
+  in part (R70). `Take` calls `Pool.Hold` after its critical section under D9's mutex has ended, never inside it, because the pool's lock is of the same capacity domain and
+  no two locks of one domain are held at once (RFC 1 §8.3): the bytes are reserved first, and a refused `Hold` gives them back before it returns. The
   append consumes the held spares piece by piece: the share's `UsedBytes` rises and
   `ReservedBytes` falls, in that order, only after each record is written (R76). A grant whose
   append fails (`EIO`, or `Draw` refusing after `Take`) returns what is unused: the pieces
   already written stay in `UsedBytes`, the rest are released from `ReservedBytes` and from the
-  share's limit, and the unused spares go back to the pool, so `ReservedBytes` never leaks. A `decision:` marker at `Take` records that `Hold` runs outside D9's section and why that is safe (a refusal gives the bytes back, and a grant is not visible to another call until `Hold` has returned). A second `decision:` marker at `Take` names that T8.10's `Reserve` is the
+  share's limit, and the unused spares go back to the pool, so `ReservedBytes` never leaks. A `decision:` marker at `Take` records that `Hold` runs outside D9's section and why that is safe: the reservation is visible while `Hold` runs, so a concurrent `Take` may be refused the share's limit by bytes a refused `Hold` then gives back, which fails closed and is accepted. A second `decision:` marker at `Take` names that T8.10's `Reserve` is the
   same holding over several writes. A refusal is an
   `ErrNoSpace` carrying the limit and the missing amount (D7), performs no I/O and does not wait;
   `ENOSPC` from the filesystem is passed through as itself. The refusal counts in
@@ -815,15 +816,14 @@ before admission). The recorder's order across a tagged write is T8.11's test.
 - **Acceptance criteria:**
   - A write of 2.5 segment caps with one spare ready is refused in `Take` with no I/O and no
     version drawn.
-  - Two writes of 1.5 caps, on two files hashed to one stream with half a cap of room and one
-    ready spare, with the journal at its maximum: one is granted and written whole, the other is
-    refused the journal's maximum (R71, D6: a full journal is not `spare`, which would be retried while nothing is
-    reclaimed) in `Take`, with no I/O and no version drawn, and neither is published in part. The same
-    race on two streams gives the same outcome.
-  - The same race below the maximum, with the pool holding one ready spare and no budget to make
-    another: the loser is refused `spare`, which clears once the refill has made one.
-  - A write that crosses two caps after the current room, on a stream with room for less than the first piece
-    and the journal below its maximum, holds its spares in `Take` and never meets a refused roll after its
+  - More concurrent 4 KiB writes than there are ready spares, on one stream with room for all of them,
+    are all granted from the room: none holds a spare and the pool is untouched, even at the journal's maximum.
+  - A stream with half a cap of room and one ready spare, and the journal at its maximum, given two 1.5-cap writes on two files:
+    the first takes the room and the spare and is written whole, the second gets neither and is refused the journal's maximum
+    (R71, D6), with no I/O and no version drawn, and neither is published in part. The same on two streams.
+  - Below the maximum, with no spare ready but one makeable: the write is refused `spare` and the retry succeeds once the refill has made it; with
+    a spare ready, a write needing two is refused `spare`, and nothing is held by the refusal.
+  - A write that crosses two caps beyond the room holds its spares in `Take` and never meets a refused roll after its
     first piece is published.
   - A retired segment through the executor leaves no copy table entry and its damaged row, retired, is
     still counted (epic 6's R60).
@@ -845,7 +845,7 @@ before admission). The recorder's order across a tagged write is T8.11's test.
   - A refusal changes no extent's offloaded bit and evicts nothing.
   - A write refused by capacity holds no lock on the file index and no domain after it returns.
 - **Tests:** `TestRFC1B_Reservation` with 16 writers (R66, R68); `TestRFC1B_NamedRefusal`
-  (R69, R70); the recorder asserting `Pool.Hold` runs with D9's mutex released (catches a capacity lock taken under another of its domain, RFC 1 §8.3); a pool test that counts spares across two files on one stream (catches a room counted as held, R70); a retirement through the executor with the copy table read back (catches a `Retired` left unwired); `TestRFC1B_ShareLimit` (R67); `TestEdge_ReservationExactFitShare` and
+  (R69, R70); the recorder asserting `Pool.Hold` runs with D9's mutex released (catches a capacity lock taken under another of its domain, RFC 1 §8.3); a test of many small writes on one stream against fewer ready spares, counting the pool's holds (catches a spare held for a write that fits, R66); a retirement through the executor with the copy table read back (catches a `Retired` left unwired); `TestRFC1B_ShareLimit` (R67); `TestEdge_ReservationExactFitShare` and
   `TestEdge_ReservationExactFitJournal` (R104); `TestEdge_FilesystemENOSPCIsNotErrNoSpace` (R72);
   a test that fills a share and the journal and asserts which limit is named for each
   combination, `spare` last (R71); a test that counts the seam's calls across a refusal and finds
@@ -1387,11 +1387,9 @@ A suggestion only: one pull request per subtask works as well.
   every path (epic 5's R88). A synced loss reaches `Since` and `Files` as a marker epic 6's
   `Lose` registers in epic 4's marker set (epic 6's R84). Confirm with epic 4's owner that the
   marker set takes a loss kind, which `Settle` drops like a removal's.
-- **What this epic needs from epic 5 that its subtasks do not state.** `Take` (T8.5) holds the
-  spares a write's pieces need, `Pool.Hold(n)`, one per cap the bytes can cross plus one, and takes no
-  room from the stream, so it needs no question about the current segment. It needs from
-  epic 5 only whether a spare could be made against the maximum, which T5.6 declares for its roll
-  but does not export. Epic 5's own open point asks for the same confirmation about the lock domains.
+- **What this epic needs from epic 5 that its subtasks do not state.** `Take` (T8.5) counts room per
+  stream and holds, with `Pool.Hold(n)`, the spares the bytes beyond that room need. It needs from epic 5 the active segment's
+  room, as a read, which T5.5 and T5.6 do not export, and confirms that a refused `Hold` records the demand the refill serves. Epic 5's own open point asks for the same confirmation about the lock domains.
 - **Epic 1's code lags the RFC.** The package on the integration branch declares
   `Share(tag, limit, floor, policy SyncPolicy)` and `Handle.SetSyncPolicy`, while RFC 1 §3 has
   `Share(tag, limit, floor)` and no policy. This breakdown follows the RFC: epic 6's T6.1 removes
