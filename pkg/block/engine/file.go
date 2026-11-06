@@ -71,8 +71,9 @@ type files struct {
 	// tell a commit landed between them.
 	//
 	// ponytail: one counter for every file, so a commit to any file makes an
-	// Allocation pass of another read again. Keep one per file, beside the
-	// entry and outliving it, once those retries show in a profile.
+	// Allocation pass of another read again, and steady commits elsewhere can
+	// hold a pass to its deadline. Keep one per file, beside the entry and
+	// outliving it, once those retries show in a profile or a call times out.
 	removals atomic.Uint64
 }
 

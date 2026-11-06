@@ -102,7 +102,8 @@ func (e *Engine) HoldEntry(f entity.FileID) func() {
 }
 
 // AddPending adds a pending write of [off, off+n) to f's entry, and returns
-// the function that drops it again, as a commit would.
+// the function that drops it again, as a commit would, bumping the removal
+// counter.
 func (e *Engine) AddPending(f entity.FileID, off, n int64) (drop func()) {
 	fe := e.files.lockFor(f)
 	fe.ops = append(fe.ops, pendingOp{kind: opWrite})
@@ -115,6 +116,7 @@ func (e *Engine) AddPending(f entity.FileID, off, n int64) (drop func()) {
 		}
 		if len(fe.ops) > 0 {
 			fe.ops = fe.ops[1:]
+			e.files.removals.Add(1)
 		}
 		e.files.unlock(f, fe)
 	}
@@ -182,4 +184,19 @@ func (e *Engine) ClearOps(f entity.FileID) {
 	fe.ops = nil
 	e.files.removals.Add(1)
 	e.files.unlock(f, fe)
+}
+
+// Reads is engine_reads_total of class, by its label.
+func (e *Engine) Reads(class string) int64 {
+	for c, name := range readClassNames {
+		if name == class {
+			return e.reads.byClass[c].Load()
+		}
+	}
+	panic("no read class " + class)
+}
+
+// ReadSeconds is engine_read_seconds: its count and total.
+func (e *Engine) ReadSeconds() (int64, time.Duration) {
+	return e.reads.count.Load(), time.Duration(e.reads.total.Load())
 }

@@ -29,11 +29,6 @@ func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 // on it until the loss sequence is built.
 func (e *Engine) LossSeq(s entity.ShareID, f entity.FileID) uint64 { return 0 }
 
-// Read answers the verified bytes read into dst, then the error.
-func (e *Engine) Read(ctx context.Context, s entity.ShareID, f entity.FileID, off int64, dst []byte) (int, error) {
-	return 0, errUnbuilt
-}
-
 // Truncate sets the file's size.
 func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID, size int64) error {
 	return errUnbuilt

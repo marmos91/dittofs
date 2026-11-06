@@ -33,6 +33,8 @@ type Engine struct {
 	shares   atomic.Pointer[bindings] // the share table; swapped whole, read without a lock
 	files    *files                   // per-file state
 	sample   func() vfserr.Verifier   // samples a write's verifier, before it is staged
+	reads    readSeries
+	lost     lostLog
 
 	// mu is the lifecycle mutex: Bind takes it only to read and swap the
 	// share table and the fields below, never across I/O, and no content call

@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -194,7 +195,7 @@ func TestARefusedWriteLeavesNothing(t *testing.T) {
 }
 
 // A zero-length write stages nothing and calls Done once; a negative offset
-// is ErrInvalid; a write of an unbound share is ErrDelay with DelayFrozen and
+// or a range past the largest offset is ErrInvalid; a write of an unbound share is ErrDelay with DelayFrozen and
 // calls no Done.
 func TestAWriteOfNothing(t *testing.T) {
 	var h *countingHandle
@@ -215,6 +216,9 @@ func TestAWriteOfNothing(t *testing.T) {
 	}
 	if _, err := u.e.Write(t.Context(), u.share.ID, f, -1, []byte("a"), engine.WriteOpts{Done: func() { n++ }}); !errors.Is(err, vfserr.ErrInvalid) {
 		t.Errorf("a negative offset: %v, want ErrInvalid", err)
+	}
+	if _, err := u.e.Write(t.Context(), u.share.ID, f, math.MaxInt64-100, make([]byte, 200), engine.WriteOpts{Done: func() { n++ }}); !errors.Is(err, vfserr.ErrInvalid) {
+		t.Errorf("a range past the largest offset: %v, want ErrInvalid", err)
 	}
 	var d *vfserr.Delay
 	if _, err := u.e.Write(t.Context(), entity.NewShareID(), f, 0, []byte("a"), engine.WriteOpts{Done: func() { n++ }}); !errors.As(err, &d) || d.Cause != vfserr.DelayFrozen {
