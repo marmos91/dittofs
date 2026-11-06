@@ -1063,6 +1063,35 @@ func TestLoseOfASyncedSupersededPieceLeavesNoMarker(t *testing.T) {
 	}
 }
 
+// TestLoseOfARefusedSupersededRecordIsNotOnTheFailedList catches a superseded
+// piece whose record was refused joining the failed list, which would drop
+// the whole record at the next open although the part DropOlder kept can still
+// be current content; the unrecorded piece is the reconcile's to write.
+func TestLoseOfARefusedSupersededRecordIsNotOnTheFailedList(t *testing.T) {
+	e := newEnv(t)
+	e.d.SetReadOnly(func() error { return errReadOnly })
+
+	sup := piece(9, 0, 3)
+	sup.Reason = core.LossSuperseded
+	ev, err := e.d.Lose(context.Background(), sup)
+	if !errors.Is(err, errReadOnly) {
+		t.Fatalf("Lose = %v, want the refusal", err)
+	}
+	if ev.Reason != core.LossSuperseded || len(e.d.Stats().Losses) != 1 {
+		t.Errorf("event %+v, ring %d, want the superseded event published", ev, len(e.d.Stats().Losses))
+	}
+	if got := e.d.Failed(); len(got) != 0 {
+		t.Errorf("Failed() = %v, want empty for a superseded loss", got)
+	}
+
+	if _, err := e.d.Lose(context.Background(), piece(10, 0, 3)); !errors.Is(err, errReadOnly) {
+		t.Fatalf("Lose = %v, want the refusal", err)
+	}
+	if got := e.d.Failed(); !slices.Equal(got, []core.Seq{10}) {
+		t.Errorf("Failed() = %v, want [10]: a corrupt piece still joins it", got)
+	}
+}
+
 // TestPlaceKeysOnTheDroppedSeqAndTheExtent catches a Place that reports only
 // the first piece of a record dropped in two.
 func TestPlaceKeysOnTheDroppedSeqAndTheExtent(t *testing.T) {

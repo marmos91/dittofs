@@ -161,8 +161,17 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	// event is published and the sequence number joins the directory's
 	// failed list for the next open to name. A deferred loss is not on that
 	// list: its record is owed to the copy that retires the segment.
+	//
+	// decision: a superseded loss whose record is refused stays off the
+	// failed list. That list drops the whole dropped record at the next open
+	// as one with an unsynced loss record, but a superseded piece is only
+	// part of it and what DropOlder kept can still be current content; the
+	// unrecorded piece is the reconcile's to write. Withdraw this if a
+	// superseded loss ever covers a whole dropped record.
 	if recErr != nil {
-		d.dir.addFailed(l.Seq)
+		if l.Reason != core.LossSuperseded {
+			d.dir.addFailed(l.Seq)
+		}
 		if refused || errors.Is(recErr, core.ErrNoSpace) {
 			d.log.Debug("a loss record was not appended", "file", l.File, "seq", l.Seq, "err", recErr)
 		} else {
