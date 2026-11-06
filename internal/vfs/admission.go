@@ -142,7 +142,7 @@ func (fs *Filesystem) check(ctx context.Context, c vfs.Call, share entity.ShareI
 		in.MinProof, in.MinProtection = entity.ProofNone, entity.ProtectionNone
 	}
 	byClient, err := admit.Check(ctx, in, c.Identity, netgroups{fs.meta.ShareIndex()})
-	if releases && errors.Is(err, vfs.ErrAccess) {
+	if releases && errors.Is(err, admit.ErrClientRule) {
 		byClient, err = true, nil
 	}
 	if err != nil {

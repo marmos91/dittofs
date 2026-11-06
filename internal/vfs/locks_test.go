@@ -2,13 +2,16 @@ package vfs
 
 import (
 	"errors"
+	"fmt"
 	"net/netip"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/vfs"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
@@ -524,6 +527,57 @@ func TestAReleaseIsNotRefusedByClientRules(t *testing.T) {
 	}
 	if _, err := s.Close(ctx, pc, ref, vfs.Seqs{}); !stateKind(err, vfs.StateBadState) {
 		t.Errorf("a second close of the closed open: %v, want BadState", err)
+	}
+}
+
+// A release is exempt from the client rules' refusal only: a netgroup read
+// failing with an error that wraps ErrAccess still refuses the unlock, which
+// succeeds once the store recovers.
+func TestAReleaseFailsClosedOnANetgroupReadError(t *testing.T) {
+	db := &failKV{}
+	s := startShares(t, newFixtureOver(t, Deps{}, kvstoretest.NewFS(t, func(tb testing.TB) kv.KV { db.KV = memKV(tb); return db })), nil)
+	ctx := t.Context()
+	a := &attrs{shares: s, bob: s.user(t, "bob", "", s.share, entity.AccessReadWrite)}
+	h := a.file(t, "f", a.bob.Principal, 0o666)
+	s.must(t, s.cp.PutNetgroup(ctx, entity.Netgroup{Name: "lab", Members: []string{"10.0.0.0/24"}}))
+	s.must(t, s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Clients: []entity.ClientRule{
+		{Match: entity.ClientMatch{Netgroup: "lab"}, Access: entity.AccessReadWrite},
+	}}))
+	host, _ := s.connected(t, proven(a.bob.Principal, inLab), nlmHost("build01", 1))
+	o := vfs.LockOwner{Client: host.Client, Name: []byte("held")}
+	if _, err := s.Lock(ctx, host, vfs.Anonymous(h), vfs.LockReq{Owner: o, Ranges: span(0, 10, true)}); err != nil {
+		t.Fatal(err)
+	}
+	db.failing(func(update bool) error {
+		if !update && onStack("vfs.netgroups.Members") {
+			return fmt.Errorf("netgroup read: %w", vfs.ErrAccess)
+		}
+		return nil
+	})
+	if _, err := s.Unlock(ctx, host, vfs.Anonymous(h), o, []vfs.ByteRange{{Offset: 0, Length: 10}}, vfs.Seqs{}, nil); err == nil {
+		t.Errorf("an unlock whose netgroup read fails wrapping ErrAccess succeeded, want it refused")
+	}
+	db.failing(nil)
+	if _, err := s.Unlock(ctx, host, vfs.Anonymous(h), o, []vfs.ByteRange{{Offset: 0, Length: 10}}, vfs.Seqs{}, nil); err != nil {
+		t.Errorf("the unlock once the store recovered: %v", err)
+	}
+}
+
+// Ownership under no open is judged on the squashed principal: root,
+// squashed to nobody on a root-squash share, is refused an NLM lock of a
+// root-owned file nobody cannot read.
+func TestASquashedOwnerIsDecidedAsReadData(t *testing.T) {
+	s := newShares(t, nil, nil)
+	ctx := t.Context()
+	root := s.user(t, "root", "0", s.share, entity.AccessReadWrite)
+	nobody := s.user(t, "nobody", "", s.share, entity.AccessReadWrite)
+	a := &attrs{shares: s}
+	h := a.file(t, "f", root.Principal, 0o600)
+	s.must(t, s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashRoot, Anonymous: nobody.Principal}))
+	host, _ := s.connected(t, claimed(0, inLab), nlmHost("root-host", 1))
+	o := vfs.LockOwner{Client: host.Client, Name: []byte("pid 1")}
+	if _, err := s.Lock(ctx, host, vfs.Anonymous(h), vfs.LockReq{Owner: o, Ranges: span(0, 1, true)}); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("squashed root's NLM lock of its own 0600 file: %v, want ErrAccess", err)
 	}
 }
 

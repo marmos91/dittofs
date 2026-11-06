@@ -149,7 +149,8 @@ func (fs *Filesystem) lockable(ctx context.Context, c vfs.Call, ref vfs.OpenRef,
 	}
 	if ref.Kind == openstate.RefAnonymous && (op == vfs.OpLock || op == vfs.OpTestLock) {
 		// The owner asks only what every caller is granted, so its decision
-		// is the share grant's alone.
+		// is the share grant's alone. Ownership is judged on the squashed
+		// principal, so root squashed to nobody needs read data of its own file.
 		want := entity.ReadData
 		if f.Owner == a.caller.Principal {
 			want = entity.ReadAttributes
