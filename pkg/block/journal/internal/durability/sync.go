@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -157,9 +158,18 @@ type stream struct {
 	// kick wakes the worker; capacity 1, sent without blocking.
 	kick chan struct{}
 
-	syncs, failures uint64
-	buckets         []uint64
-	sum             time.Duration
+	// reported is set by the Synced sink and cleared by the worker's
+	// completion pass, so a pass with no report since the last has nothing
+	// to complete. stamped counts the ledger's leading entries the worker
+	// has stamped; entries are stamped in Track order.
+	reported bool
+	stamped  int
+
+	// The counters have one writer, the worker, and are read by Stats
+	// without mu, so a poll never waits on a lock an append takes.
+	syncs, failures atomic.Uint64
+	buckets         []atomic.Uint64
+	sum             atomic.Int64
 
 	// scratch and live are the worker's own, reused by each pass: the indices
 	// it completes and the segments that still hold an entry.
@@ -175,7 +185,7 @@ func newStream(d *Durability, no uint32) *stream {
 		synced:  map[core.SegmentID]int64{},
 		failed:  map[core.SegmentID]error{},
 		kick:    make(chan struct{}, 1),
-		buckets: make([]uint64, len(SyncDurationBounds)+1),
+		buckets: make([]atomic.Uint64, len(SyncDurationBounds)+1),
 	}
 }
 
@@ -213,6 +223,11 @@ func (d *Durability) Sink(no uint32) segment.Sink {
 			st.mu.Lock()
 			st.ledger = append(st.ledger, entry{w: w})
 			st.lastSeg, st.haveLast = w.Loc.Segment, true
+			// A record a sync already reached, reported before the sink saw
+			// it, still needs a completion pass.
+			if st.covered(w.Loc) {
+				st.reported = true
+			}
 			st.mu.Unlock()
 			st.wake()
 		},
@@ -221,6 +236,9 @@ func (d *Durability) Sink(no uint32) segment.Sink {
 			if through > st.synced[seg] {
 				st.synced[seg] = through
 			}
+			st.reported = true
+			// A waiter is released here without waiting for the worker: a
+			// seal's sync covers records no worker sync of its own follows.
 			st.notifyLocked()
 			st.mu.Unlock()
 			st.wake()
@@ -291,14 +309,12 @@ func (d *Durability) Stats() Part {
 		Counts: make([]uint64, len(SyncDurationBounds)+1),
 	}}
 	for _, st := range made {
-		st.mu.Lock()
-		p.Syncs += st.syncs
-		p.SyncFailures += st.failures
-		p.SyncDuration.Sum += st.sum
-		for i, c := range st.buckets {
-			p.SyncDuration.Counts[i] += c
+		p.Syncs += st.syncs.Load()
+		p.SyncFailures += st.failures.Load()
+		p.SyncDuration.Sum += time.Duration(st.sum.Load())
+		for i := range st.buckets {
+			p.SyncDuration.Counts[i] += st.buckets[i].Load()
 		}
-		st.mu.Unlock()
 	}
 	return p
 }

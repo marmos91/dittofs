@@ -83,12 +83,12 @@ func (d *Durability) syncStep(st *stream, fired bool) {
 		st.closed = true
 		d.log.Debug("journal sync skipped, stream closed", "stream", st.no)
 	} else {
-		st.syncs++
-		st.sum += took
-		st.buckets[bucketOf(took)]++
+		st.syncs.Add(1)
+		st.sum.Add(int64(took))
+		st.buckets[bucketOf(took)].Add(1)
 	}
 	if err != nil && !closing {
-		st.failures++
+		st.failures.Add(1)
 		// The failure belongs to the segment Stream.Sync reported, which a
 		// roll after the sync cannot move.
 		st.failed[seg] = err
@@ -119,6 +119,11 @@ func bucketOf(d time.Duration) int {
 // Track only appends, so the indices collected stay valid between the steps.
 func (d *Durability) complete(st *stream) {
 	st.mu.Lock()
+	if !st.reported {
+		st.mu.Unlock()
+		return
+	}
+	st.reported = false
 	st.scratch = st.scratch[:0]
 	for i := range st.ledger {
 		if e := &st.ledger[i]; !e.done && st.covered(e.w.Loc) {
@@ -147,12 +152,17 @@ func (d *Durability) complete(st *stream) {
 	kept := st.ledger[:0]
 	live := st.live
 	clear(live)
-	for _, e := range st.ledger {
+	stamped := 0
+	for i, e := range st.ledger {
 		if !e.done {
 			kept = append(kept, e)
 			live[e.w.Loc.Segment] = struct{}{}
+			if i < st.stamped {
+				stamped++
+			}
 		}
 	}
+	st.stamped = stamped
 	clear(st.ledger[len(kept):]) // drop the references the tail still holds
 	st.ledger = kept
 	for seg := range st.synced {
@@ -172,24 +182,17 @@ func (d *Durability) complete(st *stream) {
 // stamp is never earlier than the record's arrival.
 func (d *Durability) stamp(st *stream) {
 	st.mu.Lock()
-	n := len(st.ledger)
-	need := false
-	for i := range n {
-		if !st.ledger[i].seenSet {
-			need = true
-			break
-		}
-	}
+	n, from := len(st.ledger), st.stamped
 	st.mu.Unlock()
-	if !need {
+	if n == from {
 		return
 	}
 	now := d.clock.Elapsed()
 	st.mu.Lock()
-	for i := range n {
-		if e := &st.ledger[i]; !e.seenSet {
-			e.seen, e.seenSet = now, true
-		}
+	for i := from; i < n; i++ {
+		e := &st.ledger[i]
+		e.seen, e.seenSet = now, true
 	}
+	st.stamped = n
 	st.mu.Unlock()
 }
