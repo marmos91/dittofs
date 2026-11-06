@@ -97,7 +97,7 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 		}
 
 		// The journal's floor is at least the share's floor and limit.
-		h, err := j.Share(s.Tag, s.Limit, floor, s.SyncPolicy)
+		h, err := j.Share(s.Tag, s.Limit, floor)
 		if err != nil {
 			return opened{}, fmt.Errorf("engine: start: open share %v on %s: %w", s.ID, dir, err)
 		}

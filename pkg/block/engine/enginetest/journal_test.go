@@ -11,7 +11,7 @@ import (
 // A refused Share or Reserve answers a nil interface, never one holding a nil
 // pointer, which a caller's nil check would take for a handle.
 func TestRefusalAnswersNil(t *testing.T) {
-	h, err := wrapJournal(&journal.Journal{}, func(journal.ShareTag, engine.Handle) { t.Error("a refused Share handed a handle on") }).Share(1, 0, journal.Version{}, journal.Bounded)
+	h, err := wrapJournal(&journal.Journal{}, func(journal.ShareTag, engine.Handle) { t.Error("a refused Share handed a handle on") }).Share(1, 0, journal.Version{})
 	if !errors.Is(err, journal.ErrNotImplemented) || h != nil {
 		t.Errorf("Share = %v, %v; want nil, the journal's error", h, err)
 	}

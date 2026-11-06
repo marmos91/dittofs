@@ -20,8 +20,8 @@ const (
 	// speed.
 	SegmentCap = 256 << 20
 
-	// SyncBound is the longest a record written under the Bounded policy waits
-	// to be synced.
+	// SyncBound is the longest a record waits to be made durable by a sync of
+	// its own accord, when no Sync names its file.
 	SyncBound = time.Second
 
 	// OfferPins is the most segments one offer pins.

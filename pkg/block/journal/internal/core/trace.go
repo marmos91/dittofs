@@ -32,3 +32,7 @@ type Tracer func(ctx context.Context, op SpanOp, attrs ...slog.Attr) (context.Co
 // is what traces and dashboards key on once a release emits it, so a name is
 // added with its emitter rather than declared ahead and pruned later.
 type SpanOp string
+
+// SpanSync covers one sync the journal issues, whether a caller asked for it
+// or the sync bound did. It ends with the sync's own error.
+const SpanSync SpanOp = "sync"

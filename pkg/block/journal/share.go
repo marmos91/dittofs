@@ -16,9 +16,8 @@ import "context"
 //
 // limit bounds the record bytes of the share's records on disk; zero means no
 // limit below the journal's maximum, and a negative limit is refused with
-// ErrInvalidSetting. policy is the share's sync policy. A tag may have more
-// than one handle open at once.
-func (j *Journal) Share(tag ShareTag, limit int64, floor Version, policy SyncPolicy) (*Handle, error) {
+// ErrInvalidSetting. A tag may have more than one handle open at once.
+func (j *Journal) Share(tag ShareTag, limit int64, floor Version) (*Handle, error) {
 	return nil, ErrNotImplemented
 }
 

@@ -105,8 +105,6 @@ func newUnitWith(t *testing.T, c unitConfig) *unit {
 		t.Fatal(err)
 	}
 
-	// Do not set SyncPolicy here: the zero value is what tests that the
-	// default policy is accepted, as Bounded is the zero value.
 	u.share = enginetest.ShareOf(t, u.fs.Store, u.fs.Share.ID, 1<<30)
 
 	if c.unbound {
@@ -153,13 +151,12 @@ func (j *recJournal) Share(
 	tag journal.ShareTag,
 	limit int64,
 	floor journal.Version,
-	policy journal.SyncPolicy,
 ) (engine.Handle, error) {
 	j.mu.Lock()
 	j.floors = append(j.floors, floor)
 	j.mu.Unlock()
 
-	h, err := j.FakeJournal.Share(tag, limit, floor, policy)
+	h, err := j.FakeJournal.Share(tag, limit, floor)
 	if err != nil {
 		return nil, err
 	}

@@ -5,6 +5,8 @@ import (
 	"io"
 	"iter"
 	"log/slog"
+	"reflect"
+	"testing"
 	"time"
 )
 
@@ -17,14 +19,13 @@ var (
 	_ = func() error { return Restamp(context.Context(nil), "", JournalID{}, InstallationID{}) }
 	_ = func(j *Journal) error { return j.Close() }
 
-	_ = func(j *Journal) (*Handle, error) { return j.Share(ShareTag(0), int64(0), Version{}, Bounded) }
+	_ = func(j *Journal) (*Handle, error) { return j.Share(ShareTag(0), int64(0), Version{}) }
 	_ = func(j *Journal) error { return j.Forget(context.Context(nil), ShareTag(0)) }
 	_ = func(j *Journal) error { return j.Strand(ShareTag(0)) }
 	_ = func(j *Journal) (Version, error) { return j.Draw() }
 	_ = func(j *Journal) error { return j.SetVersionLimit(Version{}) }
 
 	_ = func(h *Handle) error { return h.Close() }
-	_ = func(h *Handle) error { return h.SetSyncPolicy(Standard) }
 	_ = func(h *Handle) (*Reservation, error) { return h.Reserve(int64(0), 0) }
 	_ = func(h *Handle) (Version, error) {
 		return h.WriteAt(context.Context(nil), FileID{}, int64(0), []byte(nil), int64(0))
@@ -122,3 +123,12 @@ var (
 	_ = []LossReason{LossCorrupt, LossStale, LossFailedWindow}
 	_ = TagConflict{File: FileID{}, Tags: [2]ShareTag{}}
 )
+
+// TestHandleHasNoSetSyncPolicy pins an absence the compile-time block above
+// cannot: the sync bound is one behaviour for every share, so a Handle has no
+// method that sets a sync policy.
+func TestHandleHasNoSetSyncPolicy(t *testing.T) {
+	if _, ok := reflect.TypeFor[*Handle]().MethodByName("SetSyncPolicy"); ok {
+		t.Fatal("Handle has a SetSyncPolicy method: the sync bound admits no per-share setting")
+	}
+}

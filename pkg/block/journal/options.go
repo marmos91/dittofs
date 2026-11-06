@@ -16,8 +16,8 @@ type (
 	DescriptorBudget = core.DescriptorBudget
 )
 
-// SyncBound is the longest a record written under the Bounded policy waits to
-// be synced.
+// SyncBound is the longest a record waits to be made durable by a sync of its
+// own accord, when no Sync names its file.
 const SyncBound = core.SyncBound
 
 // NewDescriptorBudget returns a budget of limit open descriptors, shared by

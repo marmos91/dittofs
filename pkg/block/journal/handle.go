@@ -55,13 +55,6 @@ func (h *Handle) Close() error {
 	return ErrNotImplemented
 }
 
-// SetSyncPolicy changes the share's sync policy. Every record the handle
-// writes after SetSyncPolicy returns follows the new policy; a record written
-// before keeps the bound it was written under.
-func (h *Handle) SetSyncPolicy(policy SyncPolicy) error {
-	return ErrNotImplemented
-}
-
 // Reserve takes, at once, everything needed by the given number of writes
 // carrying n record bytes in total, so an operation that must not fail
 // part-way finds every refusal before it changes anything: the bytes against
@@ -82,8 +75,8 @@ func (h *Handle) Reserve(n int64, writes int) (*Reservation, error) {
 // the write sets in nanoseconds since the Unix epoch, or 0 when it is
 // suspended. On success the extent is held and dirty, and every later read
 // serves it wherever its version is newer than what was held. It is written
-// before WriteAt returns but durable only once a Sync names the file, or,
-// under the Bounded policy, within SyncBound.
+// before WriteAt returns but durable only once a Sync names the file, or
+// within SyncBound, whichever comes first.
 //
 // WriteAt draws a new content version and returns it. It reserves its record
 // bytes before accepting them; a refusal is a NoSpaceError naming LimitShare,

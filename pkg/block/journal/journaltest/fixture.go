@@ -292,9 +292,9 @@ func (f *Fixture) Abandon() {
 }
 
 // Share returns the handle of share i, attaching it on first use with tag
-// i+1, no limit below the journal's, the floor the journal was opened with,
-// and the Bounded policy. Crash and Reopen attach it again, so a test asks
-// for it again after either. It is not called while the journal is shut.
+// i+1, no limit below the journal's, and the floor the journal was opened
+// with. Crash and Reopen attach it again, so a test asks for it again after
+// either. It is not called while the journal is shut.
 func (f *Fixture) Share(i int) *journal.Handle {
 	f.tb.Helper()
 
@@ -314,7 +314,7 @@ func (f *Fixture) Share(i int) *journal.Handle {
 // the journal's refusal; it fails nothing itself, since an open may run it
 // off the test's goroutine.
 func (f *Fixture) attach(i int) (*journal.Handle, error) {
-	return f.J.Share(Tag(i), 0, f.floor, journal.Bounded)
+	return f.J.Share(Tag(i), 0, f.floor)
 }
 
 // Floor returns the floor the journal open now was opened with: every

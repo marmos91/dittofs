@@ -121,11 +121,10 @@ func New(t *testing.T) *Fixture {
 	}
 
 	f.Share = engine.Share{
-		ID:         f.FS.Share.ID,
-		Tag:        journal.ShareTag(f.FS.Share.Tag),
-		Shard:      0, // every share has the one shard, zero
-		SyncPolicy: journal.Bounded,
-		State:      engine.Serving,
+		ID:    f.FS.Share.ID,
+		Tag:   journal.ShareTag(f.FS.Share.Tag),
+		Shard: 0, // every share has the one shard, zero
+		State: engine.Serving,
 	}
 
 	f.addSecond()

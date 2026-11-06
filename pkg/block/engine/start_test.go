@@ -207,7 +207,7 @@ func (s *starter) seed(t *testing.T, tag journal.ShareTag) {
 		t.Fatal(err)
 	}
 
-	h, err := j.Share(tag, 0, journal.Version{}, journal.Bounded)
+	h, err := j.Share(tag, 0, journal.Version{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,10 +297,9 @@ type logJournal struct {
 
 // sharedCall is one Share the engine made.
 type sharedCall struct {
-	tag    journal.ShareTag
-	limit  int64
-	floor  journal.Version
-	policy journal.SyncPolicy
+	tag   journal.ShareTag
+	limit int64
+	floor journal.Version
 }
 
 // add logs call and answers the error fail names for it.
@@ -332,19 +331,18 @@ func (j *logJournal) Share(
 	tag journal.ShareTag,
 	limit int64,
 	floor journal.Version,
-	policy journal.SyncPolicy,
 ) (engine.Handle, error) {
 	if err := j.add(fmt.Sprintf("share %d", tag)); err != nil {
 		return nil, err
 	}
 
-	h, err := j.FakeJournal.Share(tag, limit, floor, policy)
+	h, err := j.FakeJournal.Share(tag, limit, floor)
 	if err != nil {
 		return nil, err
 	}
 
 	j.mu.Lock()
-	j.shared = append(j.shared, sharedCall{tag, limit, floor, policy})
+	j.shared = append(j.shared, sharedCall{tag, limit, floor})
 	j.mu.Unlock()
 
 	lh := &logHandle{
@@ -1102,7 +1100,7 @@ func TestStartRefusesMoreThanOneDevice(t *testing.T) {
 // SetVersionLimit returns a write answers ErrDelay with DelayFrozen and
 // reaches no journal, and by then every served share's limit is committed
 // in the store, a block above the journal's next version. Each served share
-// then has one handle with its own tag, limit and sync policy, and writes.
+// then has one handle with its own tag and limit, and writes.
 func TestNoWriteBeforeTheVersionLimit(t *testing.T) {
 	s := newStarter(t)
 	s.seed(t, 99) // the journal has a limit that is not its next version
@@ -1165,8 +1163,8 @@ func TestNoWriteBeforeTheVersionLimit(t *testing.T) {
 	}
 
 	for i, sh := range []engine.Share{s.one, s.two} {
-		if c := calls[i]; c.tag != sh.Tag || c.limit != sh.Limit || c.policy != sh.SyncPolicy {
-			t.Errorf("Share(%d, %d, %v), want the share's (%d, %d, %v)", c.tag, c.limit, c.policy, sh.Tag, sh.Limit, sh.SyncPolicy)
+		if c := calls[i]; c.tag != sh.Tag || c.limit != sh.Limit {
+			t.Errorf("Share(%d, %d), want the share's (%d, %d)", c.tag, c.limit, sh.Tag, sh.Limit)
 		}
 	}
 

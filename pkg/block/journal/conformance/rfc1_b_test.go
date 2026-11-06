@@ -104,7 +104,7 @@ func sameBut(before, after, want int64) bool {
 func limitedShare(t *testing.T, f *journaltest.Fixture, tag journal.ShareTag, limit int64) *journal.Handle {
 	t.Helper()
 
-	h, err := f.J.Share(tag, limit, f.Floor(), journal.Bounded)
+	h, err := f.J.Share(tag, limit, f.Floor())
 	stub(t, "Share", err)
 	if err != nil {
 		t.Fatalf("attach share %d with a limit of %d: %v", tag, limit, err)
