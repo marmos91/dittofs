@@ -625,6 +625,66 @@ func TestALoopEndingLeavesARetriedCloneForRecovery(t *testing.T) {
 	}
 }
 
+// A write staged outside a clone's extent while its phase 1 retries is
+// committed by no group commit, the guard's skip removed: the clone's
+// operation sits in the destination's pending operations at its version and
+// the capture stops there, so the destination's applied and every Settle of
+// it stay below the clone's version until phase 1 commits. A clone whose
+// operation is not pending lets a batch commit the write, and the store
+// then skips the clone as applied.
+func TestAGroupCommitStopsAtARetriedClone(t *testing.T) {
+	x := &refusingClone{}
+	c, h := hooked(unitConfig{deps: []func(*engine.Deps){func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x }}})
+	u := clonedUnitWith(t, c)
+	h.e = u.e
+	u.e.NoGuardSkip()
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	dst := u.create(t, "dst")
+	u.write(t, dst, 4*mib, fill(10, 'w'))
+	cv, errc := u.retriedClone(t, x, src, dst)
+	u.write(t, dst, 6*mib, fill(10, 'z'))
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	_ = u.e.CommitAll(ctx, u.rec)
+	cancel()
+	applied, err := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.IsZero() {
+		t.Error("the group commit did not commit the write below the clone")
+	}
+	if applied.Compare(entity.JournalVersion(cv.Bytes())) >= 0 {
+		t.Errorf("applied %v while the clone at %v retries phase 1", applied, cv)
+	}
+	for _, s := range h.settleLog() {
+		if s.v.Compare(cv) >= 0 {
+			t.Errorf("settled at %v while the clone at %v retries phase 1", s.v, cv)
+		}
+	}
+	x.left.Store(0)
+	u.until(t, "the clone's answer", func() bool {
+		select {
+		case err := <-errc:
+			if err != nil {
+				t.Errorf("the clone: %v", err)
+			}
+			return true
+		default:
+			return false
+		}
+	})
+	applied, _ = u.fs.Store.Existence().Applied(t.Context(), u.share.ID, dst)
+	if applied.Compare(entity.JournalVersion(cv.Bytes())) < 0 {
+		t.Errorf("applied %v after the clone's phase 1, want at least its %v", applied, cv)
+	}
+	if got := u.read(t, dst, 0, 4); !bytes.Equal(got, fill(4, 's')) {
+		t.Error("the destination does not read the clone")
+	}
+	if got := u.read(t, dst, 6*mib, 10); !bytes.Equal(got, fill(10, 'z')) {
+		t.Error("the write above the clone does not read back")
+	}
+}
+
 // probeHandle holds the clone's first copy read once CloneTarget is done,
 // and, while gated, a write once the journal gave it its version.
 type probeHandle struct {
