@@ -44,7 +44,10 @@ type env struct {
 
 	mu      sync.Mutex
 	marks   []marked
-	markErr error        // what MarkLoss returns, nil by default
+	markErr error           // what MarkLoss returns, nil by default
+	delta   index.HeldDelta // the delta MarkLoss returns, zero by default
+	noAcct  bool            // leaves Config.Account nil
+	accts   []index.HeldDelta
 	log     *slog.Logger // handed to the Durability the next newDurability builds
 }
 
@@ -149,23 +152,39 @@ func (noDomains) Lock(core.FileID) func() { return func() {} }
 func (e *env) newDurabilityAt(dir string) *durability.Durability {
 	e.t.Helper()
 
+	var account func(index.HeldDelta)
+	if !e.noAcct {
+		account = func(d index.HeldDelta) {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			e.accts = append(e.accts, d)
+		}
+	}
 	d, err := durability.New(durability.Config{
 		Clock:    journaltest.NewStopwatchClock(),
 		Domains:  noDomains{},
 		Dir:      dir,
 		Counters: e.counters,
 		Log:      e.log,
-		MarkLoss: func(f core.FileID, x core.Extent, v core.Version) error {
+		MarkLoss: func(f core.FileID, x core.Extent, v core.Version) (index.HeldDelta, error) {
 			e.mu.Lock()
 			defer e.mu.Unlock()
 			e.marks = append(e.marks, marked{f, x, v})
-			return e.markErr
+			return e.delta, e.markErr
 		},
+		Account: account,
 	})
 	if err != nil {
 		e.t.Fatalf("durability.New: %v", err)
 	}
 	return d
+}
+
+// accounted returns the deltas Account has been handed so far.
+func (e *env) accounted() []index.HeldDelta {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]index.HeldDelta(nil), e.accts...)
 }
 
 // marked returns the MarkLoss calls so far.

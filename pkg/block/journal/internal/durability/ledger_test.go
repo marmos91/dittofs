@@ -195,7 +195,7 @@ func TestNewRequiresClockAndDomains(t *testing.T) {
 	for name, cfg := range map[string]Config{
 		"no clock":    {Domains: &testDomains{}},
 		"no domains":  {Clock: nopClock{}},
-		"no counters": {Clock: nopClock{}, Domains: &testDomains{}, MarkLoss: func(core.FileID, core.Extent, core.Version) error { return nil }},
+		"no counters": {Clock: nopClock{}, Domains: &testDomains{}, MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error) { return index.HeldDelta{}, nil }},
 		"no marker":   {Clock: nopClock{}, Domains: &testDomains{}, Counters: &index.Counters{}},
 	} {
 		t.Run(name, func(t *testing.T) {

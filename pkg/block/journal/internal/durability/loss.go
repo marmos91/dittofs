@@ -116,11 +116,14 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	// Settle; a marker would make a later DropOlder inherit one that nothing
 	// settles. Withdraw this if a superseded loss ever has to be settled.
 	if l.Synced && l.Reason != core.LossSuperseded {
-		if err := d.markLoss(l.File, l.Extent, l.Version); err != nil {
+		delta, err := d.markLoss(l.File, l.Extent, l.Version)
+		if err != nil {
 			d.log.Error("a synced loss left no marker", "file", l.File, "err", err)
 			if firstErr == nil {
 				firstErr = err
 			}
+		} else if d.account != nil {
+			d.account(delta)
 		}
 	}
 

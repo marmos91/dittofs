@@ -136,7 +136,7 @@ func testConfig(t testing.TB, clock core.Clock, domains Domains) Config {
 		Domains:  domains,
 		Dir:      t.TempDir(),
 		Counters: &index.Counters{},
-		MarkLoss: func(core.FileID, core.Extent, core.Version) error { return nil },
+		MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error) { return index.HeldDelta{}, nil },
 	}
 }
 

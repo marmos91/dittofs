@@ -13,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
@@ -257,9 +258,9 @@ func TestLoseKeepsTheNewestEventsWhenTheRingOverflows(t *testing.T) {
 	}
 }
 
-// TestLoseOfASeqAlreadyNamedDoesNothing catches a loss reported twice, by two
+// TestLoseOfAPieceAlreadyNamedDoesNothing catches a loss reported twice, by two
 // callers that reach one dropped record, or once at open and once again.
-func TestLoseOfASeqAlreadyNamedDoesNothing(t *testing.T) {
+func TestLoseOfAPieceAlreadyNamedDoesNothing(t *testing.T) {
 	t.Run("a second Lose", func(t *testing.T) {
 		e := newEnv(t)
 		l := loss(9)
@@ -1203,5 +1204,93 @@ func TestLoseBeforeStartIsRefusedAndTakesNoPiece(t *testing.T) {
 	}
 	if ev.Reason != core.LossCorrupt {
 		t.Fatalf("the loss was not taken after the refusal: %+v", ev)
+	}
+}
+
+// distinctDelta is a delta no zero value or default can equal.
+var distinctDelta = index.HeldDelta{
+	Tag:        7,
+	File:       file(1),
+	HeldBytes:  -4096,
+	DirtyBytes: -4096,
+	Dirty:      index.BecameClean,
+}
+
+// TestLoseHandsTheMarkersDeltaToAccount catches a delta MarkLoss returned that
+// is dropped before the account function sees it.
+func TestLoseHandsTheMarkersDeltaToAccount(t *testing.T) {
+	e := newEnv(t)
+	e.delta = distinctDelta
+	l := loss(9)
+	l.Synced = true
+
+	if _, err := e.d.Lose(context.Background(), l); err != nil {
+		t.Fatalf("Lose: %v", err)
+	}
+
+	got := e.accounted()
+	if len(got) != 1 || got[0] != distinctDelta {
+		t.Errorf("Account was handed %+v, want exactly [%+v]", got, distinctDelta)
+	}
+}
+
+// TestLoseCallsNeitherMarkLossNorAccountWhenThereIsNoMarker catches a delta
+// accounted for a loss that leaves no marker: an unsynced one, and a synced
+// one of reason superseded.
+func TestLoseCallsNeitherMarkLossNorAccountWhenThereIsNoMarker(t *testing.T) {
+	superseded := loss(9)
+	superseded.Synced = true
+	superseded.Reason = core.LossSuperseded
+	for name, l := range map[string]durability.Loss{
+		"unsynced":          loss(9),
+		"synced superseded": superseded,
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			e.delta = distinctDelta
+			if _, err := e.d.Lose(context.Background(), l); err != nil {
+				t.Fatalf("Lose: %v", err)
+			}
+			if got := e.marked(); len(got) != 0 {
+				t.Errorf("MarkLoss called %d times", len(got))
+			}
+			if got := e.accounted(); len(got) != 0 {
+				t.Errorf("Account called with %+v", got)
+			}
+		})
+	}
+}
+
+// TestLoseDoesNotAccountAFailedMarker catches the delta of a marker that was
+// never left being accounted for.
+func TestLoseDoesNotAccountAFailedMarker(t *testing.T) {
+	e := newEnv(t)
+	e.delta = distinctDelta
+	e.markErr = errors.New("marker refused")
+	l := loss(9)
+	l.Synced = true
+
+	if _, err := e.d.Lose(context.Background(), l); !errors.Is(err, e.markErr) {
+		t.Fatalf("Lose = %v, want the marker's error", err)
+	}
+	if got := e.accounted(); len(got) != 0 {
+		t.Errorf("Account called with %+v after a failed MarkLoss", got)
+	}
+}
+
+// TestLoseWithNoAccountFunctionIsFine pins that Account is optional.
+func TestLoseWithNoAccountFunctionIsFine(t *testing.T) {
+	e := newEnv(t)
+	e.noAcct = true
+	e.d = e.newDurability()
+	e.delta = distinctDelta
+	l := loss(9)
+	l.Synced = true
+
+	if _, err := e.d.Lose(context.Background(), l); err != nil {
+		t.Fatalf("Lose: %v", err)
+	}
+	if got := e.marked(); len(got) != 1 {
+		t.Errorf("MarkLoss called %d times, want 1", len(got))
 	}
 }

@@ -36,9 +36,18 @@ type Config struct {
 	// Counters issue the loss record's sequence number. It is required.
 	Counters *index.Counters
 
-	// MarkLoss leaves the index's loss marker for a synced loss. It is
+	// MarkLoss leaves the index's loss marker for a synced loss, and returns
+	// the change to the file's held bytes that the marker made. It is
 	// required.
-	MarkLoss func(core.FileID, core.Extent, core.Version) error
+	MarkLoss func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error)
+
+	// Account receives the delta MarkLoss returned, once per marker left
+	// and only when MarkLoss succeeded, so the change reaches the share's
+	// byte accounts. It is optional: nil discards the delta. Lose calls it
+	// on the caller's goroutine, right after MarkLoss returns, holding none
+	// of the layer's locks and no file append domain, so it may call back
+	// into the layer.
+	Account func(index.HeldDelta)
 }
 
 // SyncDurationBounds are the upper bounds of the sync duration histogram's
@@ -83,7 +92,8 @@ type Durability struct {
 
 	dir      *dirState
 	counters *index.Counters
-	markLoss func(core.FileID, core.Extent, core.Version) error
+	markLoss func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error)
+	account  func(index.HeldDelta)
 
 	// streams are the append streams a loss record is written through, bound
 	// by Start. It is nil before Start, which Lose reports as an error.
@@ -212,6 +222,7 @@ func New(cfg Config) (*Durability, error) {
 		dir:      dir,
 		counters: cfg.Counters,
 		markLoss: cfg.MarkLoss,
+		account:  cfg.Account,
 		refuse:   func() error { return nil },
 		pieces:   map[piece]struct{}{},
 	}, nil
