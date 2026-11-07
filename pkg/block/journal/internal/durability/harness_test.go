@@ -103,15 +103,14 @@ func buildEnvWith(t *testing.T, targets segment.Targets, max int64) *env {
 	t.Cleanup(func() { e.pool.Stop() })
 	e.pool.Start()
 	awaitSpares(t, e.pool, targets)
-	e.streams = segment.NewStreams(1, harnessIdentity, set, e.pool, cache, func(uint32) segment.Sink {
-		return segment.Sink{
-			Track:  func(segment.Written) {},
-			Synced: func(core.SegmentID, int64) {},
-		}
-	})
-	t.Cleanup(func() { _ = e.streams.Close() })
 
-	e.d = e.newDurability()
+	// The first Durability owns the streams' sink: sinks are made before the
+	// streams, so the layer exists first and is started once they do.
+	e.d = e.newDurabilityAt(e.dir)
+	e.streams = segment.NewStreams(1, harnessIdentity, set, e.pool, cache, e.d.Sink)
+	t.Cleanup(func() { _ = e.streams.Close() })
+	t.Cleanup(e.d.Stop)
+	e.d.Start(e.streams)
 	return e
 }
 
@@ -130,20 +129,30 @@ func (e *env) shutdown() {
 	}
 }
 
-// newDurability builds a Durability over the env's directory and streams, as
-// a reopen in the same process would.
+// newDurability builds a Durability over the env's directory that appends
+// through the env's streams, as a reopen in the same process would. The
+// streams' sink stays the first layer's, so the new one only loses.
 func (e *env) newDurability() *durability.Durability {
 	e.t.Helper()
-	return e.newDurabilityAt(e.dir)
+	d := e.newDurabilityAt(e.dir)
+	d.BindStreams(e.streams)
+	return d
 }
+
+// noDomains is a file append domain table that never blocks: the loss tests
+// take no domain.
+type noDomains struct{}
+
+func (noDomains) Lock(core.FileID) func() { return func() {} }
 
 // newDurabilityAt is newDurability under another spelling of the directory.
 func (e *env) newDurabilityAt(dir string) *durability.Durability {
 	e.t.Helper()
 
 	d, err := durability.New(durability.Config{
+		Clock:    journaltest.NewStopwatchClock(),
+		Domains:  noDomains{},
 		Dir:      dir,
-		Streams:  e.streams,
 		Counters: e.counters,
 		Log:      e.log,
 		MarkLoss: func(f core.FileID, x core.Extent, v core.Version) error {

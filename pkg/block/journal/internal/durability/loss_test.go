@@ -1149,3 +1149,28 @@ func TestLoseWithRaisedLeavesTheGenerationAlone(t *testing.T) {
 		}
 	})
 }
+
+// TestLoseBeforeStartIsRefusedAndTakesNoPiece pins that a layer not yet bound
+// to its streams refuses a loss with ErrClosed before the piece is taken, so
+// the same loss succeeds once the streams are bound.
+func TestLoseBeforeStartIsRefusedAndTakesNoPiece(t *testing.T) {
+	e := newEnv(t)
+	d := e.newDurabilityAt(e.dir)
+
+	_, err := d.Lose(context.Background(), loss(10))
+	if !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("Lose before Start = %v, want core.ErrClosed", err)
+	}
+	if got := d.Stats().Losses; len(got) != 0 {
+		t.Fatalf("a refused loss published %+v", got)
+	}
+
+	d.BindStreams(e.streams)
+	ev, err := d.Lose(context.Background(), loss(10))
+	if err != nil {
+		t.Fatalf("Lose after bind: %v", err)
+	}
+	if ev.Reason != core.LossCorrupt {
+		t.Fatalf("the loss was not taken after the refusal: %+v", ev)
+	}
+}
