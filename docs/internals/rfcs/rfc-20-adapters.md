@@ -146,8 +146,9 @@ node for an upgrade.
 
 1. The adapter stops accepting connections. It keeps reading the ones it has,
    but answers each new `CREATE` or `WRITE` with the protocol's move signal
-   where it has one, and serves only what ends state the service is waiting on
-   — a lease acknowledgement, a flush, a `CLOSE` (§3.1).
+   where it has one, and serves only what the service is waiting on — a lease
+   acknowledgement, a flush, a `CLOSE` — and the context and attribute reads
+   that carry it (§3.1).
 2. Requests already handed to the service run to their answer, bounded by the
    drain deadline; their replies are sent. A `WRITE` acknowledged is a `WRITE`
    applied.
@@ -1552,7 +1553,7 @@ it holds — the service counts nothing about holds:
 > for a call that applies a moment later (§4.7's `Pends` decision). Its interim
 > grants no credits (`HoldCodec.Interim`), so the client sends nothing more
 > until a final reply returns some: the overshoot is at most the credits the
-> client held when the ceiling was reached, and its write data is already in
+> client held when the ceiling or the floor was reached, and its write data is already in
 > the receive pool (RFC 24 §3.2), which bounds the bytes. Withdraw it if the
 > service gains a way to withdraw a call it has not applied.
 
@@ -1925,7 +1926,7 @@ func (c *Conn) Close(err error)
 // cancels that early.
 type HoldCodec interface {
 	Key(h Header) uint64
-	Interim(h Header, grant bool, out *Buf) error // STATUS_PENDING; grants the request's credits if grant (false past MaxPending, §4.6)
+	Interim(h Header, grant bool, out *Buf) error // STATUS_PENDING; grants the request's credits if grant (false past MaxPending or the hold floor, §4.6)
 	Final(h Header) Header                  // the final reply's header: the async ID, no credits
 	Cancels(h Header) (key uint64, ok bool) // a CANCEL ends the hold it names and gets no reply
 	// Pends says whether a chain member before the last, answered ErrDelay
