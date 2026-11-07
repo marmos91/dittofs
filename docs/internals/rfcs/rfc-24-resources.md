@@ -656,7 +656,11 @@ of the small class while it waits, and no more, so its reply is never encoded
 outside the budget. `Park` takes it from the reply pool as it releases the
 receive reservation, which a small reply was charged to until then. A
 connection's parks therefore hold at most its pending ceiling of small-class
-reply reservations, each with its overhead: for SMB, 511 of them. The adapter
+reply reservations, each with its overhead: for SMB, 511 of them. Where the
+reply pool cannot take one, `Park` refuses the request with `ErrDelay` of
+`DelayResources`, answered at once, and the handler withdraws its waiter. A
+replayed reply's copy, which a reply cache hands out, is charged to the reply
+pool as any reply is. The adapter
 caps how many a connection has pending
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
 `Park`).
@@ -929,7 +933,10 @@ caches nothing still costs its slots. Whether the session fits is decided on
 the sum of all three. Where the pool cannot charge the slots asked for,
 the session is granted the slots it can charge, at least one; where it cannot
 charge one, `CREATE_SESSION` is answered `NFS4ERR_DELAY`. The charge of every
-slot the client retires is released.
+slot the client retires is released. The copies kept by NFSv3's and NFSv4.0's
+duplicate request cache and by SMB's replay are charged nowhere yet
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+`ReplayCache`).
 
 > ponytail: no pressure-driven slot shrinking; a full pool grants fewer slots
 > or refuses. Lower targets above seven eighths when M2 shows sessions refused

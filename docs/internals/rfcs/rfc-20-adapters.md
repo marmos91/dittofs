@@ -594,17 +594,19 @@ Every adapter runs through the same four states, driven by the node
   runs. A request that releases state the service is waiting on — a break or
   lease acknowledgement, `DELEGRETURN`, a callback reply, `CLOSE`, an unlock —
   or flushes it — the writes that flush a recalled cache — is served. So is one
-  that only sets a compound's context (`SEQUENCE`, `PUTFH`) or reads where the
-  share went (a `GETATTR` of `fs_locations` and `fsid` alone), so a `CLOSE`
-  behind it runs and a client told the share moved can find it. Any other new
-  request gets `ErrMoved` when the drain names a takeover target, which its
-  table maps to the protocol's move signal (`NFS4ERR_MOVED` with `fs_locations`,
+  that sets a compound's context or only reads attributes (`SEQUENCE`, `PUTFH`,
+  `GETATTR`, an NFSv4.0 `RENEW`), so the `CLOSE` or `DELEGRETURN` a client sends
+  behind a `GETATTR` runs, and a client told the share moved can read
+  `fs_locations`. Any other new request gets the drain's error: `ErrMoved` when
+  the drain names a takeover target, `ErrDraining` when it names none (the only
+  node stopping). A table maps `ErrMoved` to the protocol's move signal where
+  the operation can carry one (`NFS4ERR_MOVED` with `fs_locations`,
   [RFC 21 §7.4](rfc-21-nfs.md#7.4%20Pseudo-filesystem%2C%20SECINFO%20and%20locations);
-  Witness `CLIENT_MOVE` first, [RFC 22 §14](rfc-22-smb.md#14.%20Witness)).
-  With no target (the only node stopping), or where the protocol has no move
-  signal (NFSv3, SMB), it gets `ErrDraining`, whose row sends no reply: the
-  client replays it once it reconnects, elsewhere or to the node restarted, and
-  on a continuously available share the application sees no failed handle.
+  Witness `CLIENT_MOVE` first, [RFC 22 §14](rfc-22-smb.md#14.%20Witness)), and
+  both errors, everywhere else (NFSv3, MOUNT, NLM, SMB), to no reply: the
+  client replays the request once it reconnects, elsewhere or to the node
+  restarted, and on a continuously available share the application sees no
+  failed handle.
   Requests already handed to the service run to their answer, and their
   replies are sent. A parked request — a waiting lock, a change notification —
   is cancelled as draining begins and answered as its table answers the drain's
@@ -616,11 +618,13 @@ Every adapter runs through the same four states, driven by the node
   `Disconnect` called for each SMB session that ended
   ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)).
 
-> decision: while draining, a request that sets a compound's context or reads
-> where the share went is served though it ends no state. Refusing `SEQUENCE`
-> or `PUTFH` would stop the `CLOSE` behind it, and refusing the `GETATTR` of
-> `fs_locations` would leave a moved client unable to find the share. Withdraw
-> it if a client is found that sends such a compound to do new work.
+> decision: while draining, a request that sets a compound's context or only
+> reads attributes is served though it ends no state. Linux sends `SEQUENCE`,
+> `PUTFH` and a `GETATTR` before its `CLOSE` and `DELEGRETURN`, and an NFSv4.0
+> client sends `RENEW` behind the `GETATTR` of `fs_locations`; refusing any of
+> them would stop the release behind it or leave a moved client unable to find
+> the share. None changes state. Withdraw it if a client is found that sends
+> such a compound to do new work.
 
 > decision: a drain's refusal with no move signal, or no target, is no reply,
 > not an error. An error is final to the application; an unanswered request is
@@ -1517,8 +1521,10 @@ it holds — the service counts nothing about holds:
   against a floor of 256 requests and 32 MiB of write data, and past it against
   the node's hold pool
   ([RFC 24 §4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go));
-  a request neither can take is answered `STATUS_INSUFFICIENT_RESOURCES` at
-  once, holds nothing and is counted (§10.1). The count lives and dies with the
+  a request neither can take, when its hold starts on an `ErrDelay` the service
+  returned, is answered `STATUS_INSUFFICIENT_RESOURCES` at once, holds nothing
+  and is counted (§10.1). A call still in the service when its interim goes out
+  is counted and never refused, as below. The count lives and dies with the
   connection, so it needs no key across processes;
 - **the interim response is the adapter's timer.** An SMB request still
   unanswered a short interval after it reached the service — a call waiting
@@ -1538,13 +1544,17 @@ it holds — the service counts nothing about holds:
   counts toward one ceiling, `Stages.MaxPending` (SMB: 511, RFC 22 §3.3). It is
   checked when a hold starts on an `ErrDelay` the service returned, and in
   `Park`; past it the request is answered at once with `ErrTooManyPending`. A
-  call the interim timer finds still in the service goes pending past it.
+  call the interim timer finds still in the service goes pending past it, and
+  past the hold floor; its interim then grants no credits.
 
 > decision: a call the interim timer finds in the service goes pending past the
-> ceiling, because answering it at once could report a failure for a call that
-> applies a moment later (§4.7's `Pends` decision). The overshoot is at most the
-> requests in the service at once, which `Flow.Admit` bounds. Withdraw it if
-> the service gains a way to withdraw a call it has not applied.
+> ceiling and the floor, because answering it at once could report a failure
+> for a call that applies a moment later (§4.7's `Pends` decision). Its interim
+> grants no credits (`HoldCodec.Interim`), so the client sends nothing more
+> until a final reply returns some: the overshoot is at most the credits the
+> client held when the ceiling was reached, and its write data is already in
+> the receive pool (RFC 24 §3.2), which bounds the bytes. Withdraw it if the
+> service gains a way to withdraw a call it has not applied.
 
 > decision: a parked request is off the hold floor, which counts held requests
 > and their write data, because it holds neither: a waiting lock or a change
@@ -1618,11 +1628,17 @@ type FlowControl interface {
 	Admit(ctx context.Context, h Header) (release func(), err error) // slot, credit or cap; the reader waits here
 }
 type ReplayCache interface {
-	// Lookup returns a fresh copy of a cached reply, which the pipeline wraps
-	// in place and sends, or a sequence error, or nil, nil to run.
+	// Lookup returns a fresh copy of a cached reply, charged to a reply
+	// reservation of its size (RFC 24 §3.3), which the pipeline wraps in
+	// place and sends; or a sequence error; or nil, nil to run.
 	Lookup(h Header) (*Buf, error)
 	// Store keeps its own clear copy of a cacheable row's encoded reply, taken
 	// before Wrap; the caller's reply is then wrapped in place.
+	//
+	// ponytail: the copies Store keeps for NFSv3's and NFSv4.0's duplicate
+	// request cache and for SMB's replay are charged to no pool; RFC 24 §4.5
+	// charges only NFSv4.1's slot cache. Charge them to the connection-state
+	// pool when a replay cache's size shows in a profile.
 	Store(h Header, reply *Buf)
 }
 ```
@@ -1685,7 +1701,7 @@ type Invocation struct {
 	Encode  func(out *Buf, v Version) error
 	// Role, after Resolve, says what this request does to state: an SMB LOCK
 	// whose elements unlock releases it, a WRITE to an open under a break
-	// flushes it, a GETATTR of fs_locations and fsid alone is context. nil:
+	// flushes it, an NFSv4 OPEN that claims a delegated open flushes it. nil:
 	// Op.Role decides alone.
 	Role func(r *Request) Role
 }
@@ -1696,7 +1712,7 @@ type Role uint8
 
 const (
 	RoleNone    Role = iota // refused while draining and on an expired credential
-	RoleContext             // sets a compound's context or reads where the share went (SEQUENCE, PUTFH): served while draining
+	RoleContext             // sets a compound's context or only reads attributes (SEQUENCE, PUTFH, GETATTR, RENEW): served while draining
 	RoleFlush               // flushes state the service waits on: served while draining
 	RoleRelease             // releases it (CLOSE, an unlock, a break acknowledgement, DELEGRETURN): served while draining and on an expired credential
 )
@@ -1736,14 +1752,16 @@ const (
 // state, an NTSTATUS.
 type Status uint32
 
-// ErrorTable maps a service error to a Status (§4.5).
+// ErrorTable maps a service error to a Status (§4.5). Map takes the most
+// specific row that matches: one naming Ops, Versions or a Cause before one
+// that leaves it open.
 type ErrorTable struct{ /* unexported */ }
 type ErrorRow struct {
 	Err      error          // matched with errors.Is
 	Cause    vfs.DelayCause // for ErrDelay rows; the zero cause matches any
 	Ops      []uint32       // nil: every operation
 	Versions *Range         // nil: every version
-	NoReply  bool           // the request is left unanswered (ErrDraining, §3.1); Status unused
+	NoReply  bool           // the request is left unanswered (ErrDraining, and ErrMoved where no move signal fits, §3.1); Status unused
 	Status   Status
 }
 func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable
@@ -1770,7 +1788,7 @@ h, err := stages.Header.Decode(rec, off)  // off: 0, then each chain member's h.
 h, err = stages.Security.Unwrap(h, rec, prevH) // prevH: the member before a related one
 if key, ok := stages.Hold.Cancels(h); ok { endHold(key); return } // only once verified; no reply
 release, err := stages.Flow.Admit(ctx, h); defer release()
-if cached, err := stages.Replay.Lookup(h); cached != nil { conn.write(wrap(h, cached)); return } // a fresh copy
+if cached, err := stages.Replay.Lookup(h); cached != nil { conn.write(wrap(h, cached)); return } // a fresh copy, under a reply reservation
 tbl, r, err := stages.Router.Route(h, prev) // prev: the member before a related one
 op := tbl.Ops[h.Op()]               // absent: not supported
 err = check(op, h, r)               // Versions, Needs (§4.2)
@@ -1805,20 +1823,22 @@ encrypts the record once.
 
 A member before the last that the service answered `ErrDelay` of a holding
 class, so applied nothing, is answered in one of two ways, as
-`HoldCodec.Pends` says for its cause: at once, with the status its table maps
-for that cause, and the chain goes on; or pending, as the last member is, the
+`HoldCodec.Pends` says for its cause: at once, the runner replacing the
+`ErrDelay` with `ErrNotLast` before its table maps it, since a hold row's
+status speaks for a hold that will not happen, and the chain goes on; or pending, as the last member is, the
 replies before it and its interim going out as one chain and the members after
 it running once it has answered, their replies chained after its final one.
-The runner does both; which one each cause takes, and those statuses, are
-RFC 22's (before the last, Windows goes pending only for a `CREATE` that
-triggers an oplock break, MS-SMB2 3.3.5.2.7). A member before the last that
+The runner does both; which one each cause takes is RFC 22's (before the
+last, Windows goes pending only for a `CREATE` that triggers an oplock break,
+and answers any other `STATUS_INTERNAL_ERROR`, MS-SMB2 3.3.5.2.7). A member before the last that
 the interim timer finds still waiting in the service always goes pending. A
 member before the last never parks: `Park` refuses it with `ErrNotLast` before
 anything is sent, and its table maps that error. A member whose row sends no
-reply (a drain's refusal) stops the chain: the members after it do not run and
-nothing of the chain is sent, so the client replays it whole; the members
-before it stay applied, as a request abandoned at the drain deadline does
-(§3.1).
+reply (a drain's refusal) stops the chain: the members after it do not run,
+and neither its reply nor theirs is sent, so the client replays them once it
+reconnects. The members before it stay applied and are answered: their
+replies go out chained, ending at the member before it, and one that went
+pending gets its final reply as usual.
 
 > decision: `Pends` is asked only for an `ErrDelay` the service returned. A
 > call still in the service can apply after any answer, so answering it at
@@ -1905,12 +1925,12 @@ func (c *Conn) Close(err error)
 // cancels that early.
 type HoldCodec interface {
 	Key(h Header) uint64
-	Interim(h Header, out *Buf) error       // STATUS_PENDING; grants the request's credits
+	Interim(h Header, grant bool, out *Buf) error // STATUS_PENDING; grants the request's credits if grant (false past MaxPending, §4.6)
 	Final(h Header) Header                  // the final reply's header: the async ID, no credits
 	Cancels(h Header) (key uint64, ok bool) // a CANCEL ends the hold it names and gets no reply
 	// Pends says whether a chain member before the last, answered ErrDelay
-	// with cause, goes pending (true) or is answered at once with its
-	// table's status. It is asked only for an ErrDelay the service returned;
+	// with cause, goes pending (true) or is answered at once as ErrNotLast.
+	// It is asked only for an ErrDelay the service returned;
 	// a member the interim timer finds still in the service always pends.
 	Pends(h Header, cause vfs.DelayCause) bool
 }
@@ -1924,8 +1944,10 @@ var ErrParked = errors.New("core: parked")
 // reports a wait (a waiting lock's ErrBlocked, a watch set): the service has
 // registered the waiter by then. Park refuses a member before the last of a
 // chain with ErrNotLast, a connection at Stages.MaxPending with
-// ErrTooManyPending, and a draining connection with the drain's error
-// (ErrDraining or ErrMoved); nothing is sent, and the handler withdraws its
+// ErrTooManyPending, a draining connection with the drain's error
+// (ErrDraining or ErrMoved), and a reply pool that cannot take the small-class
+// reservation with ErrDelay of DelayResources, answered at once (§6.3);
+// nothing is sent, and the handler withdraws its
 // waiter (CancelLock, Unwatch; §4.3) and returns the error for its table to
 // map, or success if CancelLock reports the lock granted (§6.5). A callback
 // that fires before Park returns is kept by the handler and passed to done
@@ -1940,10 +1962,12 @@ var ErrParked = errors.New("core: parked")
 // from held to parked. A parked request holds no worker and no write data and
 // is not counted against the hold floor (§4.6): MaxPending bounds it. On done
 // core encodes the reply, wraps it and sends it under Final's header. A client
-// cancel calls cancel first, and done's reply goes out with the protocol's
+// cancel calls cancel first, and done's error goes out as the protocol's
 // cancel status (§6.5). The start of a drain calls cancel, and done's error is
-// replaced by the drain's, answered as its table maps it (§3.1). A closed
-// connection calls cancel, and done's reply is dropped.
+// replaced by the drain's, answered as its table maps it (§3.1). Either way a
+// done(nil), a call that took effect (a waiting lock CancelLock reports
+// granted), is answered success (§6.5, RFC 22 §7). A closed connection calls
+// cancel, and done's reply is dropped.
 func (r *Request) Park(cancel func()) (done func(err error), err error)
 
 // core's own refusals. Each table maps every one, and §7.3's totality test

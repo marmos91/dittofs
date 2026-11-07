@@ -51,7 +51,7 @@ branch is `feat/storage-v2`, on which RFC 17's plan has merged; the plan documen
 | Shared code | one accept-and-drain shell; the rest twice | `internal/adapter/core`: lifecycle, connections, pipeline, compound runner, held requests, middleware, error tables |
 | Protocol code | handlers, framing, signing and credits inline in each connection loop | `wire/` (pure codecs), `protocol/` (the `core.Protocol` and its stages), `ops/` (tables), the same in both |
 | Buffers | a three-class `sync.Pool` of byte slices behind package functions | `pkg/resources`: reference-counted `Buf` behind a `Budget` reservation, shared with any component |
-| Drain | cancels every request, 100 ms read deadline | stops accepting, serves what ends state, finishes what the service holds, abandons at the deadline |
+| Drain | cancels every request, 100 ms read deadline | stops accepting, serves what each request's `Role` allows, finishes what the service holds, abandons at the deadline |
 | Sidecars | each adapter runs its own group | one runner driven by the serving set |
 | Tests | handlers on real stores; four fakes | `core` on a test-only protocol over `vfstest.Null`; the import test from the first commit |
 
@@ -140,25 +140,29 @@ registers no red suite**. Each test lands green with the epic that makes it pass
 what those tests stand on:
 
 - **`adaptertest/testproto`**: a protocol of length-prefixed frames with operations that echo,
-  wait a scripted time, panic, hold (answer `ErrDelay` of a holding class), end state (for the
-  drain filter) and mutate through `vfstest.Null`; toy `Security` (a checksum), `Flow` (a
+  wait a scripted time, panic, hold (answer `ErrDelay` of a holding class), take a `Role` an
+  argument sets (for the drain filter and the expiry gate) and mutate through `vfstest.Null`; toy `Security` (a checksum), `Flow` (a
   counter) and `Replay` (a map) stages; a version range for the `Versions` column. Tests drive it
   over a plain `net.Conn`. Its stateful half exercises the rest of RFC 20 §4.7, so the surface frozen
   at S1 is proven at S3 for what SMB needs and not only for what the simplest protocol needs: a
   handshake, session and tree levels, protocol state carried to a related member, kept state
   past the idle timeout, holds with interim and final headers and a cancel, a parked operation
-  completed by a callback the test fires, an end-state operation decided by an argument, as
-  SMB's `LOCK` is, and chained frames: a related member after a held one, answered at once and
+  completed by a callback the test fires, a `Role` decided per request by an argument, as
+  SMB's `LOCK`'s is, and chained frames: a related member after a held one, answered at once and
   gone pending; a pending last member; a related member with a bad toy checksum refused; the
   parked operation before the last refused with its waiter withdrawn, and past the pending
   ceiling; a chain's replies wrapped once; a slow member before the last under the interim
   timer, always pending; a cancel that arrives before its target holds, and one after its
   target's reply, gone after 5 s; a drain that cancels a parked operation and leaves it
-  unanswered, serves a context operation before an end-state one and a location read, and stops
-  a chain at a member it leaves unanswered; an expired credential refusing a lock and a write
-  under a break and passing an unlock; a parked operation already past its interim sending no
-  second one; a cacheable reply under a wrapping `Security`, replayed twice, decoding both times;
-  a connection closed on a scripted violation.
+  unanswered, serves a context operation and a read before a releasing one, and stops a chain
+  at a member it leaves unanswered while a member before it that went pending still gets its
+  final reply; a cancel or a drain racing a grant, answered success; a member before the last
+  answered `ErrDelay` and not pending, answered as `ErrNotLast`; a call in the service past the
+  pending ceiling going pending with an interim that grants nothing; `Park` refused when the
+  reply pool is full; an expired credential refusing a lock and a write under a break and
+  passing an unlock; a parked operation already past its interim sending no second one; a
+  cacheable reply under a wrapping `Security`, replayed twice, decoding both times; a connection
+  closed on a scripted violation.
 - **The import test** (RFC 20 §7.1), reusing the `go/parser` walk of
   `internal/vfs/arch_test.go`, and seeded with one violation in its own `testdata`. It checks the
   adapters' imports; `arch_test.go` keeps checking the other direction, that the service imports
@@ -250,8 +254,8 @@ and 5.
    ceiling and the upgrade path. A `decision:` marker records deliberate behaviour, naming the
    rule, why it holds and the evidence that would overturn it. RFC 20's notes go at their code
    sites: no attribute cache, parked requests off the hold floor, `Addrs` live, `Pends` asked
-   only for a returned `ErrDelay`, a call in the service pending past the ceiling, context and
-   location reads served while draining, a drain's refusal left unanswered, the expired
+   only for a returned `ErrDelay`, a call in the service pending past the ceiling and the floor, context
+   and attribute reads served while draining, a `ponytail:` for the uncharged replay copies, a drain's refusal left unanswered, the expired
    credential running only releases, a `ponytail:` for the cancel record's 5 s, `unwrap` on the reader, the cap of 64, one goroutine per request,
    `sync.Pool` per class, no self-probe. `pkg/resources`'s missing turns, `Reclaim`, `ShareCap`
    and `Split` each carry a `ponytail:` naming RFC 24.
@@ -337,8 +341,8 @@ flowchart TD
   import test runs in `unit` and reports its seeded violation. Unblocks E3, E4 and E6's `wire/`
   and `protocol/`.
 - **🔀 S3 `core` serves `testproto` end to end** (after E4 and E5). A `testproto` request goes
-  accept → frame → pipeline → `vfstest.Null` → reply; drain serves only requests that end state and
-  abandons at the deadline; reconfigure and the leak checks pass; the handshake deadline, kept
+  accept → frame → pipeline → `vfstest.Null` → reply; drain serves what its `Role` allows (RFC 20 §3.1)
+  and abandons at the deadline; reconfigure and the leak checks pass; the handshake deadline, kept
   state, held and parked requests, cancel and chains run on `testproto`'s stateful half. Unblocks E6's `New`, which
   wires each `protocol/` to the real runner.
 - **🔀 S4 `internal/node` exists** (outside this plan). RFC 23's `node.New` and reconcile loop,
@@ -454,7 +458,7 @@ puts these layers in `unit`, which holds no known failures.
 
 RFC sections: §7 (the layers; the `core` layer on a test-only protocol), §7.1's import checks.
 
-- T2.1 `testproto`: frames, operations (echo, wait, panic, hold, end state, mutate), toy stages,
+- T2.1 `testproto`: frames, operations (echo, wait, panic, hold, a settable `Role`, mutate), toy stages,
   versions; driven over a plain `net.Conn`.
 - T2.2 `testproto`'s stateful half, as §1.4 describes, so every symbol of RFC 20 §4.7 has a
   caller in `testproto`.
@@ -538,14 +542,11 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
 §6.4's request deadline and request ID, §6.5's client-cancel half, §6.6, §6.9's request rows,
 §6.10's pipeline row, §10, A4, A6, A7, A15, A16, A17.
 
-- T5.1 The pipeline: frame to send in order, nil stages take their defaults, each stage's refusal
-  as RFC 20 §4.1's table says, replies out of order; while draining, every request is still read
-  and decoded, and its `Role` decides: context, location reads, flushes and releases run, the
-  rest get `ErrMoved` or `ErrDraining`, left unanswered by a `NoReply` row.
-- T5.2 `OpTable`, `Bind`, `Invocation`; `Needs` checked against `Request.Level` and `Versions`
-  before decoding; an absent or switched-off operation answered not supported; the expired
-  credential refused after `Resolve`, unless the request releases state (`RoleRelease`) or its
-  operation is `Op.Expired`; a `Resolve` error kept, never overwritten by either gate.
+- T5.1 The pipeline as RFC 20 §4.7 sketches it: frame to send in order, §4.1's refusals, nil
+  stages defaulted, replies out of order; while draining, §3.1's rule, decided per request by
+  `Role`.
+- T5.2 `OpTable`, `Bind`, `Invocation` (§4.7); the checks of §4.2 (`Needs`, `Versions`, an
+  absent or switched-off operation) and §4.4's expired-credential gate, in §4.7's pipeline order.
 - T5.3 Admission: the per-connection cap of 64 where `Flow` is nil; the reply-bound reservation
   before the call, its refusal as `ErrDelay` with `DelayResources`.
 - T5.4 The compound runner: stop at the first failure, a cap refused before any operation, the
@@ -572,9 +573,8 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
 - T5.9 RFC 20 §10's metrics, spans and logs, all in `core`; series resolved at table build.
 - T5.10 The pipeline micro-benchmark on `testproto` over `vfstest.Null`, its allocation ceiling
   checked in and registered in `unit/adapter-allocs`.
-- T5.11 Parked requests: RFC 20 §4.7's `Park` (`ErrNotLast`, `MaxPending` also checked when a
-  hold starts, the drain's error, a closed connection, no second interim, the reply charged to a
-  small-class reservation), `Conn.Close`, the cancel record's 5 s, §3.1's cancel at drain and §6.5, on `testproto`'s parked operation.
+- T5.11 Parked requests: RFC 20 §4.7's `Park` as its comment states it, on `testproto`'s parked
+  operation; `Conn.Close`; the cancel record's 5 s; §3.1's cancel at drain and §6.5.
 
 ### Epic 6 — Protocol scaffolds
 
@@ -631,7 +631,11 @@ RFC sections: §6.10's codec and pipeline rows.
 - T8.1 The `unit/adapter-allocs` cell runs every allocation gate on `feat/storage-v2`; any
   missing registration fixed.
 - T8.2 The ledger's rows copied into the RFC 21, RFC 22, RFC 18 and RFC 24 plans, or into #3119
-  for those with no plan yet, each linked back.
+  for those with no plan yet, each linked back. The RFC 22 plan also gets the smbtorture cases
+  that prove RFC 20 §4.6 and §4.7 end to end, for its acceptance list: `smb2.session.expire2s`
+  (the expiry gate), `smb2.lock.cancel` (a cancel racing a grant), `smb2.compound.interim2` (a
+  chain member pending), `smb2.notify.tcon` (a parked notification ended by the server) and
+  `smb2.credits.1conn_ipc_max_async_credits` (the pending ceiling).
 
 ## 6. Risks, open points and what is deferred
 
