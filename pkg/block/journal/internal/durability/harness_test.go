@@ -91,7 +91,7 @@ func buildEnvWith(t *testing.T, targets segment.Targets, max int64) *env {
 	maker := segment.NewMaker(seam.FS(), set, max, 0, nil)
 	cache := segment.NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(64))
 	e.cache = cache
-	e.pool = segment.NewPool(maker, targets, nil)
+	e.pool = segment.NewPool(maker, targets, nil, nil)
 
 	// Cleanups run last in, first out: the streams close before the pool's
 	// worker stops, and the cache's Shutdown runs last of all.
