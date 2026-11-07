@@ -73,31 +73,24 @@ func hasBody(k Kind) bool {
 }
 
 // LossReason is why a loss record drops the record it names: corruption, a
-// stale offload mark, a failed sync window, or a superseding record. The
-// 0 it would need to name no reason is refused as damage, so no loss record
-// ever reads as reasonless.
+// stale offload mark, a failed sync window, a superseding record, or an
+// operator's acknowledgement that it is unreadable. The 0 it would need to
+// name no reason is refused as damage, so no loss record ever reads as
+// reasonless.
 type LossReason uint8
 
 const (
 	LossCorrupt    LossReason = 1 // the record was found corrupt
 	LossStale      LossReason = 2 // the record's offload mark was stale
 	LossFailedSync LossReason = 3 // a failed sync window failed the record
-	// decision: reason 4 is accepted ahead of the format table, which
-	// documents reasons 1 to 3 and leaves the rest zero. When an engine
-	// reconcile finds older content under a newer committed version, it
-	// drops the older record with a loss record naming reason 4 — a fourth
-	// way a record becomes unreachable — and the format table has yet to
-	// list it. The bound is LossReason.known's ceiling and the refusal text
-	// "%w: loss reason %d, want one of 1-4" and its tests: if the format's
-	// owner rules otherwise — drops `superseded`, renumbers it, or widens
-	// the range — known, the refusal text and those tests all change with
-	// it.
 	LossSuperseded LossReason = 4 // a superseding record replaced it
+
+	LossAcknowledged LossReason = 5 // an operator acknowledged the record unreadable
 )
 
 // known reports whether r is a reason a loss record can name.
 func (r LossReason) known() bool {
-	return r >= LossCorrupt && r <= LossSuperseded
+	return r >= LossCorrupt && r <= LossAcknowledged
 }
 
 // Loss is a loss record's body: which record it dropped and why. Its flag

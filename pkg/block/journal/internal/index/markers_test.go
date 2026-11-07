@@ -530,3 +530,132 @@ func TestSettleDropsOnlyMarkersAtOrBelow(t *testing.T) {
 		t.Fatalf("markers left = %v, want %v", vs, want)
 	}
 }
+
+// TestLossMarkerIsYieldedBySinceUntilSettled checks that a synced loss leaves
+// a marker Since yields as ChangeLoss, and that settling it at its version
+// stops it. A loss that left no marker would never reach the metadata, which
+// would go on reading the lost write as the file's content.
+func TestLossMarkerIsYieldedBySinceUntilSettled(t *testing.T) {
+	var fs files
+	fs.setExtentLimit(1 << 20)
+	id := fid(1)
+	a := rec(1, 0)
+	change(t, &fs, id, func(f *file) error {
+		f.write(write(0, 16, a, 2))
+		return nil
+	})
+	if _, err := fs.lose(id, ext(4, 4), ver(2)); err != nil {
+		t.Fatalf("lose = %v, want no error", err)
+	}
+
+	got := fs.since(id, ver(1), nil)
+	want := Change{Kind: core.ChangeLoss, Extent: ext(4, 4), Version: ver(2)}
+	var found bool
+	for _, ch := range got {
+		if ch.Kind == core.ChangeLoss {
+			found = true
+			if ch != want {
+				t.Fatalf("loss change = %+v, want %+v", ch, want)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("since(1) = %+v, want a ChangeLoss", got)
+	}
+
+	fs.settleRemovals(id, ver(2))
+	for _, ch := range fs.since(id, ver(1), nil) {
+		if ch.Kind == core.ChangeLoss {
+			t.Fatalf("since yielded a settled loss marker: %+v", ch)
+		}
+	}
+}
+
+// TestLossIsNeverRefusedAtTheIndexBound checks that a synced loss whose
+// extent splits a held piece leaves its marker even with the index at its
+// ceiling. The marker is the only thing that tells Since of the loss, so a
+// refusal would leave the metadata reading the lost write as content.
+func TestLossIsNeverRefusedAtTheIndexBound(t *testing.T) {
+	var fs files
+	fs.setExtentLimit(1)
+	id := fid(1)
+	a := rec(1, 0)
+	change(t, &fs, id, func(f *file) error {
+		f.write(write(0, 16, a, 2))
+		return nil
+	})
+	if _, err := fs.lose(id, ext(4, 4), ver(3)); err != nil {
+		t.Fatalf("lose at the ceiling = %v, want no error", err)
+	}
+	var found bool
+	for _, ch := range fs.since(id, ver(1), nil) {
+		if ch.Kind == core.ChangeLoss {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("since yielded no ChangeLoss for a loss made at the ceiling")
+	}
+	for _, p := range heldPieces(&fs, id) {
+		if p.Extent.Off < 8 && p.Extent.Off+p.Extent.Len > 4 {
+			t.Fatalf("a piece still holds the lost extent: %+v", p)
+		}
+	}
+}
+
+// TestLossOutranksContentBelowItsVersion checks that a loss at v stops
+// holding content below v inside its extent, and masks a fill below v into
+// it, while content at v is held and bytes outside the extent are untouched.
+// A marker that did not outrank would let the lost write come back from the
+// remote tier or the journal.
+func TestLossOutranksContentBelowItsVersion(t *testing.T) {
+	var fs files
+	fs.setExtentLimit(1 << 20)
+	id := fid(1)
+	a := rec(1, 0)
+	change(t, &fs, id, func(f *file) error {
+		f.write(write(0, 12, a, 2))
+		return nil
+	})
+	if _, err := fs.lose(id, ext(4, 4), ver(3)); err != nil {
+		t.Fatalf("lose = %v, want no error", err)
+	}
+	want := []Piece{
+		{Extent: ext(0, 4), Record: a, Skip: 0, Version: ver(2)},
+		{Extent: ext(8, 4), Record: a, Skip: 8, Version: ver(2)},
+	}
+	if got := heldPieces(&fs, id); !slices.Equal(got, want) {
+		t.Fatalf("held after the loss:\n got  %+v\n want %+v", got, want)
+	}
+
+	// A fill resolved below the loss's version is masked inside its extent.
+	b := rec(2, 0)
+	if _, err := fs.fill(7, id, write(0, 12, b, 2), ver(3)); err != nil {
+		t.Fatalf("fill = %v, want no error", err)
+	}
+	for _, p := range heldPieces(&fs, id) {
+		if p.Record == b && p.Extent.Off < 8 && p.Extent.Off+p.Extent.Len > 4 {
+			t.Fatalf("fill below the loss was held inside the lost extent: %+v", p)
+		}
+	}
+}
+
+// TestLossRefusesAZeroLengthExtent checks that a loss of a zero-length extent
+// is refused with ErrZeroLength and leaves no marker: a record's length 0
+// reads as a removal to the end of the file.
+func TestLossRefusesAZeroLengthExtent(t *testing.T) {
+	var fs files
+	id := fid(1)
+	if _, err := fs.lose(id, ext(4, 0), ver(2)); !errors.Is(err, core.ErrZeroLength) {
+		t.Fatalf("lose of a zero-length extent = %v, want ErrZeroLength", err)
+	}
+	if n := markerCount(&fs, id); n != 0 {
+		t.Fatalf("markers = %d, want 0", n)
+	}
+	change(t, &fs, id, func(f *file) error {
+		if err := f.lose(ext(4, 0), ver(2)); !errors.Is(err, core.ErrZeroLength) {
+			t.Errorf("file.lose of a zero-length extent = %v, want ErrZeroLength", err)
+		}
+		return nil
+	})
+}

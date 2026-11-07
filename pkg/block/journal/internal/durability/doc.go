@@ -14,4 +14,15 @@
 // stream's state under a leaf mutex and hand the rest to the stream's worker.
 // The worker drops a covered entry from the ledger only under the file's
 // append domain (RFC 1 §8.2), never two domains at once.
+//
+// The package also holds the journal's loss state: the loss records it
+// appends, the numbered loss events it publishes for a poller, and the loss
+// generation a client reads as a write verifier.
+//
+// Every loss in the journal goes through one entry point, Lose. It appends
+// the loss record, syncs it, raises the generation by fixed rules, and
+// then publishes the event, so no reader sees an event whose record a crash
+// could still forget. The exceptions are a deferred loss, whose record the
+// copy that retires the segment writes, and a loss whose record could not be
+// appended: both publish their event with no record behind them.
 package durability

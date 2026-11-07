@@ -8,6 +8,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
@@ -109,9 +110,12 @@ func newRigConfigured(t *testing.T, n int, cfg func(*Config)) *rig {
 	})
 	clock := journaltest.NewStopwatchClock()
 	domains := &testDomains{}
-	c := Config{Clock: clock, Domains: domains}
+	c := testConfig(t, clock, domains)
 	cfg(&c)
-	d := New(c)
+	d, err := New(c)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	sinks := map[uint32]segment.Sink{}
 	streams := segment.NewStreams(n, rigIdentity, set, pool, cache, func(no uint32) segment.Sink {
 		s := d.Sink(no)
@@ -121,6 +125,19 @@ func newRigConfigured(t *testing.T, n int, cfg func(*Config)) *rig {
 	t.Cleanup(func() { _ = streams.Close() })
 	t.Cleanup(d.Stop)
 	return &rig{d: d, streams: streams, seam: seam, clock: clock, domains: domains, pool: pool, set: set, spares: int64(2 * n), sinks: sinks}
+}
+
+// testConfig is the Config every test starts from: the loss state's directory,
+// counters and marker are the ones a test that never loses does not look at.
+func testConfig(t testing.TB, clock core.Clock, domains Domains) Config {
+	t.Helper()
+	return Config{
+		Clock:    clock,
+		Domains:  domains,
+		Dir:      t.TempDir(),
+		Counters: &index.Counters{},
+		MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error) { return index.HeldDelta{}, nil },
+	}
 }
 
 // file returns a file id distinguished by b.

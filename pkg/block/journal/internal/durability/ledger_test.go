@@ -6,6 +6,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
@@ -147,7 +148,10 @@ func TestTrackAllocatesNothingInSteadyState(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates on its own")
 	}
-	d := New(Config{Clock: nopClock{}, Domains: &testDomains{}})
+	d, err := New(testConfig(t, nopClock{}, &testDomains{}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	sink := d.Sink(0)
 	w := segment.Written{Loc: segment.Location{Segment: 1, Off: 64, Len: 64}, File: file(1), Kind: format.KindWrite}
 	for range 4096 {
@@ -173,7 +177,10 @@ func TestStopJoinsTheWorkers(t *testing.T) {
 
 // TestSinkTwiceForOneStreamPanics pins the one-sink-per-stream rule.
 func TestSinkTwiceForOneStreamPanics(t *testing.T) {
-	d := New(Config{Clock: nopClock{}, Domains: &testDomains{}})
+	d, err := New(testConfig(t, nopClock{}, &testDomains{}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	d.Sink(0)
 	defer func() {
 		if recover() == nil {
@@ -186,8 +193,10 @@ func TestSinkTwiceForOneStreamPanics(t *testing.T) {
 // TestNewRequiresClockAndDomains pins that a missing dependency is a caller bug.
 func TestNewRequiresClockAndDomains(t *testing.T) {
 	for name, cfg := range map[string]Config{
-		"no clock":   {Domains: &testDomains{}},
-		"no domains": {Clock: nopClock{}},
+		"no clock":    {Domains: &testDomains{}},
+		"no domains":  {Clock: nopClock{}},
+		"no counters": {Clock: nopClock{}, Domains: &testDomains{}, MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error) { return index.HeldDelta{}, nil }},
+		"no marker":   {Clock: nopClock{}, Domains: &testDomains{}, Counters: &index.Counters{}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			defer func() {
@@ -195,7 +204,7 @@ func TestNewRequiresClockAndDomains(t *testing.T) {
 					t.Fatal("New did not panic")
 				}
 			}()
-			New(cfg)
+			_, _ = New(cfg)
 		})
 	}
 }
@@ -203,7 +212,10 @@ func TestNewRequiresClockAndDomains(t *testing.T) {
 // TestStatsStartAtZero pins the shape of the report: a histogram with one
 // bucket past the last bound.
 func TestStatsStartAtZero(t *testing.T) {
-	d := New(Config{Clock: nopClock{}, Domains: &testDomains{}})
+	d, err := New(testConfig(t, nopClock{}, &testDomains{}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	p := d.Stats()
 	if p.Syncs != 0 || p.SyncFailures != 0 {
 		t.Errorf("Stats = %+v, want zero counters", p)
