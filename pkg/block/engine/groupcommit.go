@@ -688,7 +688,7 @@ func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExist
 	m, err := e.d.Existence.Commit(cctx, pending, mw)
 	cancel()
 	if mw != nil && (errors.Is(err, kvstore.ErrOpenGenMoved) || errors.Is(err, kvstore.ErrSyncMarks)) {
-		e.commitSplit(ctx, pending, nil, failed, alone)
+		_, _ = e.commitSplit(ctx, pending, nil, failed, alone) // no marks: it reports through failed
 		return false, err
 	}
 	if err == nil {
@@ -716,7 +716,7 @@ func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExist
 	e.splits.Add(1)
 	mid := len(pending) / 2
 	recorded, err = e.commitSplit(ctx, pending[:mid], mw, failed, alone)
-	e.commitSplit(ctx, pending[mid:], nil, failed, alone)
+	_, _ = e.commitSplit(ctx, pending[mid:], nil, failed, alone) // no marks: it reports through failed
 	return recorded, err
 }
 

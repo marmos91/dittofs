@@ -115,11 +115,9 @@ func TestALoneWriteIsCommittedAtItsAge(t *testing.T) {
 // after a sync of its files.
 func TestDueFilesCommitInBoundedBatches(t *testing.T) {
 	u, log := newLoggedUnit(t, time.Second, 16)
-	var fs []entity.FileID
 	for i := range 64 {
 		f := u.create(t, string(rune('a'+i/26))+string(rune('a'+i%26)))
 		u.write(t, f, 0, []byte("x"))
-		fs = append(fs, f)
 	}
 	u.clock.Advance(time.Second)
 	eventually(t, "every file is committed", func() bool { return u.e.FileEntries() == 0 })
@@ -257,10 +255,10 @@ func TestABatchInFlight(t *testing.T) {
 		second <- err
 	}()
 	select {
-	case <-waited:
-		t.Fatal("waitBatch returned while the batch is held")
-	case <-second:
-		t.Fatal("commitNow of a later write returned while only the held batch ran")
+	case err := <-waited:
+		t.Fatalf("waitBatch returned (%v) while the batch is held", err)
+	case err := <-second:
+		t.Fatalf("commitNow of a later write returned (%v) while only the held batch ran", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 	release()
@@ -430,8 +428,8 @@ func TestCommitAllWaitsForTheBatchInFlight(t *testing.T) {
 	all := make(chan error, 1)
 	go func() { all <- u.e.CommitAll(context.Background(), u.rec) }()
 	select {
-	case <-all:
-		t.Fatal("commitAll returned while a batch is in flight")
+	case err := <-all:
+		t.Fatalf("commitAll returned (%v) while a batch is in flight", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 	release()
