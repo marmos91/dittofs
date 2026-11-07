@@ -204,7 +204,7 @@ func TestNewRequiresClockAndDomains(t *testing.T) {
 					t.Fatal("New did not panic")
 				}
 			}()
-			New(cfg)
+			_, _ = New(cfg)
 		})
 	}
 }
