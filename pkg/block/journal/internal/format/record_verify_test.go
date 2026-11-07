@@ -79,15 +79,16 @@ func TestVerifyRecordBodyRefusesAWrongLength(t *testing.T) {
 }
 
 // TestVerifyRecordBodyRefusesFields pins the per-kind body rules: a loss
-// record's reason outside 1-4 is refused as damage — reason 4, a
-// superseding record, is accepted — and so is a flag word holding bits
-// outside bit 0, bit 1 and bits 8-15; a clone target's source offset above
+// record's reason outside 1-5 is refused as damage — reason 4, a
+// superseding record, and reason 5, an acknowledged unreadable one, are
+// accepted — and so is a flag word holding bits outside bit 0, bit 1 and
+// bits 8-15; a clone target's source offset above
 // MaxInt64 or overflowing with its length is damage, and a non-zero AsOf
 // epoch is refused in its own class. Each case's payload and header are
 // rechecksummed, so only the rule can refuse it.
 func TestVerifyRecordBodyRefusesFields(t *testing.T) {
-	// Loss reasons: 0 and 5 are refused, 4 accepted.
-	for reason, want := range map[byte]error{0: ErrDamaged, 5: ErrDamaged, 4: nil} {
+	// Loss reasons: 0 and 6 are refused, 4 and 5 accepted.
+	for reason, want := range map[byte]error{0: ErrDamaged, 6: ErrDamaged, 4: nil, 5: nil} {
 		b := slices.Clone(readGolden(t, "record_loss"))
 		// The reason lives at bits 8-15; bits 0 and 1 stay set, as the
 		// golden has them.
@@ -205,5 +206,27 @@ func TestRecordPaddingIsIgnored(t *testing.T) {
 		if got := AppendRecord(dst, testIdentity, want.h, want.body); !slices.Equal(got, golden) {
 			t.Errorf("record_%s: AppendRecord over memory filled with 0xff =\n% x\nwant the golden file\n% x", name, got, golden)
 		}
+	}
+}
+
+// TestLossReasonAcknowledgedRoundTrips checks that a loss record naming reason
+// 5, an operator's acknowledgement that a record is unreadable, encodes and
+// decodes to the same body. A codec that refused reason 5 would drop the
+// record at open as damage.
+func TestLossReasonAcknowledgedRoundTrips(t *testing.T) {
+	want := wantRecordAt(t, "loss")
+	body := RecordBody{Loss: Loss{Dropped: testLoss.Dropped, Synced: true, Reason: LossAcknowledged}}
+	b := AppendRecord(nil, testIdentity, want.h, body)
+
+	h, err := DecodeRecordHeader(b[:RecordHeaderSize], testIdentity, testSegment, want.h.Offset)
+	if err != nil {
+		t.Fatalf("DecodeRecordHeader = %v, want no error", err)
+	}
+	got, err := VerifyRecordBody(b[RecordHeaderSize:], testIdentity, h)
+	if err != nil {
+		t.Fatalf("VerifyRecordBody = %v, want no error", err)
+	}
+	if got.Loss != body.Loss {
+		t.Fatalf("loss body = %+v, want %+v", got.Loss, body.Loss)
 	}
 }

@@ -3,11 +3,13 @@ package durability
 import (
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
@@ -22,6 +24,9 @@ type testDomains struct {
 	mu    sync.Mutex
 	locks map[core.FileID]*sync.Mutex
 	taken int
+	// held is how many file domains are held now, and mostHeld the most that
+	// were held at once.
+	held, mostHeld int
 }
 
 func (d *testDomains) Lock(id core.FileID) func() {
@@ -37,7 +42,23 @@ func (d *testDomains) Lock(id core.FileID) func() {
 	d.taken++
 	d.mu.Unlock()
 	m.Lock()
-	return m.Unlock
+	d.mu.Lock()
+	d.held++
+	d.mostHeld = max(d.mostHeld, d.held)
+	d.mu.Unlock()
+	return func() {
+		d.mu.Lock()
+		d.held--
+		d.mu.Unlock()
+		m.Unlock()
+	}
+}
+
+// heldNow returns how many file domains are held now.
+func (d *testDomains) heldNow() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.held
 }
 
 // rig is a Durability over n real streams on a seam.
@@ -53,6 +74,31 @@ type rig struct {
 	// sinks are the sinks the streams were built over, so a test can call
 	// Track and Synced on one directly.
 	sinks map[uint32]segment.Sink
+	// ix is the index the layer lifts and fails records through, and acct
+	// every delta the layer handed to Config.Account.
+	ix   *index.Index
+	acct *accountLog
+	// lastSeq is the sequence number the last publish drew.
+	lastSeq atomic.Uint64
+}
+
+// accountLog records every delta the layer accounts.
+type accountLog struct {
+	mu     sync.Mutex
+	deltas []index.HeldDelta
+}
+
+func (a *accountLog) record(hd index.HeldDelta) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.deltas = append(a.deltas, hd)
+}
+
+// all returns a copy of the deltas received so far.
+func (a *accountLog) all() []index.HeldDelta {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]index.HeldDelta(nil), a.deltas...)
 }
 
 // newRig builds n streams whose sinks are the layer's, and starts the layer.
@@ -109,9 +155,14 @@ func newRigConfigured(t *testing.T, n int, cfg func(*Config)) *rig {
 	})
 	clock := journaltest.NewStopwatchClock()
 	domains := &testDomains{}
-	c := Config{Clock: clock, Domains: domains}
+	c := testConfig(t, clock, domains)
+	acct := &accountLog{}
+	c.Account = acct.record
 	cfg(&c)
-	d := New(c)
+	d, err := New(c)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	sinks := map[uint32]segment.Sink{}
 	streams := segment.NewStreams(n, rigIdentity, set, pool, cache, func(no uint32) segment.Sink {
 		s := d.Sink(no)
@@ -120,7 +171,25 @@ func newRigConfigured(t *testing.T, n int, cfg func(*Config)) *rig {
 	})
 	t.Cleanup(func() { _ = streams.Close() })
 	t.Cleanup(d.Stop)
-	return &rig{d: d, streams: streams, seam: seam, clock: clock, domains: domains, pool: pool, set: set, spares: int64(2 * n), sinks: sinks}
+	return &rig{d: d, streams: streams, seam: seam, clock: clock, domains: domains, pool: pool, set: set, spares: int64(2 * n), sinks: sinks, ix: c.Index, acct: acct}
+}
+
+// testConfig is the Config every test starts from: the loss state's directory,
+// counters and marker are the ones a test that never loses does not look at.
+func testConfig(t testing.TB, clock core.Clock, domains Domains) Config {
+	t.Helper()
+	counters := &index.Counters{}
+	if err := counters.SetVersionLimit(core.Version{Counter: 1 << 40}); err != nil {
+		t.Fatalf("SetVersionLimit: %v", err)
+	}
+	return Config{
+		Clock:    clock,
+		Domains:  domains,
+		Index:    index.New(1 << 20),
+		Dir:      t.TempDir(),
+		Counters: counters,
+		MarkLoss: func(core.FileID, core.Extent, core.Version) error { return nil },
+	}
 }
 
 // file returns a file id distinguished by b.

@@ -307,6 +307,13 @@ type Stream struct {
 	// sealState names where the stream's seal stands. The zero value is
 	// sealOpen: the stream is appending.
 	sealState sealState
+	// endedLeft holds the segments the stream rolled away from while a
+	// failure had ended them: none of their records is known durable.
+	//
+	// ponytail: one entry per ended segment, never pruned, and a failed seal
+	// is rare. Upgrade to a bounded set when the ledger can name a retired
+	// segment, which makes the entry unreachable.
+	endedLeft map[core.SegmentID]struct{}
 	// pending is the appends and the stream syncs of the active segment
 	// between their reservation and their final exit, so a seal can wait
 	// for every one that started before it or alongside it (R85, RFC 1
@@ -883,6 +890,8 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 				Version:    h.Version,
 				File:       h.File,
 				Kind:       h.Kind,
+				Extent:     h.Extent,
+				Tag:        h.Tag,
 				PayloadCRC: format.RecordPayloadCRC(buf),
 			}
 			if !hasPayload {
@@ -1111,6 +1120,14 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	}
 	// state == sealEnded names none: a segment a failure ended leaves no
 	// successor of its own.
+	if old != 0 && state == sealEnded {
+		s.appendMu.Lock()
+		if s.endedLeft == nil {
+			s.endedLeft = make(map[core.SegmentID]struct{})
+		}
+		s.endedLeft[old] = struct{}{}
+		s.appendMu.Unlock()
+	}
 
 	// The new segment, opened and named: the header is written once, at
 	// offset 0, and a failure past the take ends the taken segment in the
@@ -1368,6 +1385,47 @@ func (s *Stream) SyncSegment() (id core.SegmentID, issued bool, err error) {
 	s.syncedOnce = true
 	s.appendMu.Unlock()
 	return id, true, nil
+}
+
+// syncAtGapHook is the test hook in SyncAt between its checks and its sync,
+// where a seal and a roll can still end and leave the segment. A check that
+// sets it must nil it before it returns.
+var syncAtGapHook func()
+
+// SyncAt makes the record at loc durable, not merely the active segment's: a
+// segment the stream has left was either sealed, which made its every record
+// durable, or ended by a failure, which made none of them known durable, and
+// the answer is ErrSegmentEnded. The segment still active takes Sync.
+func (s *Stream) SyncAt(loc Location) error {
+	s.appendMu.Lock()
+	if s.closed {
+		s.appendMu.Unlock()
+		return ErrStreamClosed
+	}
+	if _, ended := s.endedLeft[loc.Segment]; ended {
+		s.appendMu.Unlock()
+		return ErrSegmentEnded
+	}
+	if s.id != loc.Segment {
+		s.appendMu.Unlock()
+		return nil
+	}
+	s.appendMu.Unlock()
+	if syncAtGapHook != nil {
+		syncAtGapHook()
+	}
+	if err := s.Sync(); err != nil {
+		return err
+	}
+	// The stream may have rolled away between the checks and the sync; an
+	// ended segment it left says the sync covered a successor.
+	s.appendMu.Lock()
+	_, ended := s.endedLeft[loc.Segment]
+	s.appendMu.Unlock()
+	if ended {
+		return ErrSegmentEnded
+	}
+	return nil
 }
 
 // Seal seals the stream's active segment: early truncates the free tail and

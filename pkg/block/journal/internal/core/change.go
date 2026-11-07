@@ -16,7 +16,7 @@ const (
 	// ChangeCloneTarget is the marker of a CloneTarget, which keeps its
 	// clone's spec.
 	ChangeCloneTarget
-	// ChangeLoss is a synced write the journal lost: the range reads as lost
-	// rather than as the file was before the write.
+	// ChangeLoss is the marker of a synced write the journal lost: the range
+	// reads as lost rather than as the file was before the write.
 	ChangeLoss
 )

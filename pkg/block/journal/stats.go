@@ -264,42 +264,6 @@ type SyncFailure struct {
 	At  time.Time
 }
 
-// LossEvent is an extent the journal stopped holding without being asked.
-type LossEvent struct {
-	// SeqNum is the event's sequence number in the loss ring, not the sequence
-	// number of the record it dropped.
-	SeqNum uint64
-
-	Share   ShareTag
-	File    FileID
-	Extent  Extent
-	Version Version
-	Reason  LossReason
-
-	// Offloaded is whether the extent's offloaded bit was set.
-	Offloaded bool
-
-	// AtOpen reports that the event was found at open, from a loss record
-	// still on disk.
-	AtOpen bool
-}
-
-// LossReason is why the journal stopped holding an extent. The zero
-// LossReason names none.
-type LossReason uint8
-
-// The loss reasons.
-const (
-	// LossCorrupt is an extent dropped as corrupt.
-	LossCorrupt LossReason = iota + 1
-
-	// LossStale is an extent dropped as older than offloaded content.
-	LossStale
-
-	// LossFailedWindow is an extent dropped because its sync window failed.
-	LossFailedWindow
-)
-
 // TagConflict is a file recovery rebuilt under two tags.
 type TagConflict struct {
 	File FileID

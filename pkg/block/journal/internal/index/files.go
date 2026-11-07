@@ -43,10 +43,10 @@ const floorBuckets = 4096
 // that over 64 locks spaced 64 bytes apart. Revisit if a profile shows shard
 // locks contended under many concurrent readers.
 //
-// decision: the file map and the file entry are unexported, like the rest of
-// this package. Their only consumer until the journal's operations are wired
-// is this package's tests, and the API is exported with the consumer that
-// needs it.
+// decision: the file map and the file entry stay unexported, like most of
+// this package. The exported surface is the Index handle, added with its first
+// consumer, the durability layer, and it holds only the operations that layer
+// calls; the rest are exported with the consumer that needs them.
 type files struct {
 	shards [fileShards]fileShard
 	// count is the journal's placement index entries: held pieces, retained
