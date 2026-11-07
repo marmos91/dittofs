@@ -382,7 +382,7 @@ reserve the bytes it is about to hold from its pool **before** it holds them,
 and release them when it frees them:
 
 ```go
-package resources // internal/resources
+package resources // pkg/resources
 
 // Budget is one counted pool (§2.3): waits or refuses at its ceiling, as the pool's row says.
 type Budget struct{ /* name, ceiling, waits bool, reserved, per-key DRR queues */ }
@@ -481,7 +481,7 @@ pools := &resources.Pools{
 }
 ost := openstate.New(openstate.Deps{Budget: resources.NewBudget("open", sp.Open, false) /* … */})
 svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(pools.Receive, pools.Reply) /* … */})
-// every adapter is handed pools as core.Deps.Pools (RFC 20 §3.4); the journals take
+// every adapter is handed pools as adapter.Deps.Pools (RFC 20 §3.4); the journals take
 // sp.Index and the syncer sp.Transfers as sizes (§7.1, §7.2); CPU tokens are a
 // semaphore.Weighted over sp.Tokens (§6.2)
 ```
@@ -497,7 +497,7 @@ svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(pools.Receive, pools.Re
 | sizes: metadata store, index, transfers | the root, from `Split` | the store, each journal, the syncer | handed at construction; the owner sizes itself |
 
 - **A consumer takes only the budgets it charges**, as fields of its own
-  `Deps`, never the whole set: `core.Deps` takes `Pools`, `openstate.Deps` the
+  `Deps`, never the whole set: `adapter.Deps` takes `Pools`, `openstate.Deps` the
   open-state budget, `vfs.Deps` the share cap; the store, the journals and the
   syncer take a size, not a budget.
 - **Nothing here has a lifecycle.** `Detect`, `SplitFor` and `NewBudget` start
@@ -524,10 +524,11 @@ svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(pools.Receive, pools.Re
 ### 2.8 Package layout
 
 ```text
-internal/resources/
+pkg/resources/
   limit.go        Limit, Detect: the runtime limit, the control group, the host (§2.1)
   split.go        Split, SplitFor, Check: fractions, floors, the ceilings' sum, settings (§2.3, §2.4, §7)
   budget.go       Budget, Reservation, Pools: counted pools and their turns (§2.5, §4.1)
+  buf.go          Buf, BufPool: §3.1's classes, a sync.Pool per class, reference counted, reserved before taken (RFC 20 §6.8)
   sharecap.go     ShareCap, WithCharge, ChargeOf (§4.2)
   fd.go           the open-file split and fd_limit_low (§6.3)
   metrics.go      memory_*, cpu_* (§10)
@@ -649,7 +650,20 @@ with its connection
 writer whose client does not read holds its reservation until the write
 deadline closes the connection
 ([RFC 20 §6.4](rfc-20-adapters.md#6.4%20Deadlines%20and%20limits)); that is
-the slowest way a reply is freed, and it needs no other reservation.
+the slowest way a reply is freed, and it needs no other reservation. A parked
+request — a waiting lock, a change notification — keeps a reply reservation
+of the small class while it waits, and no more, so its reply is never encoded
+outside the budget. `Park` takes it from the reply pool as it releases the
+receive reservation, which a small reply was charged to until then. A
+connection's parks therefore hold at most its pending ceiling of small-class
+reply reservations, each with its overhead: for SMB, 511 of them. Where the
+reply pool cannot take one, `Park` refuses the request with `ErrDelay` of
+`DelayResources`, answered at once, and the handler withdraws its waiter. A
+replayed reply's copy, which a reply cache hands out, is charged to the reply
+pool as any reply is. The adapter
+caps how many a connection has pending
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+`Park`).
 
 Receive and reply are two pools rather than one so that a flood of large writes
 cannot leave no room for the reads that would let clients finish, and so that a
@@ -919,7 +933,10 @@ caches nothing still costs its slots. Whether the session fits is decided on
 the sum of all three. Where the pool cannot charge the slots asked for,
 the session is granted the slots it can charge, at least one; where it cannot
 charge one, `CREATE_SESSION` is answered `NFS4ERR_DELAY`. The charge of every
-slot the client retires is released.
+slot the client retires is released. The copies kept by NFSv3's and NFSv4.0's
+duplicate request cache and by SMB's replay are charged nowhere yet
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+`ReplayCache`).
 
 > ponytail: no pressure-driven slot shrinking; a full pool grants fewer slots
 > or refuses. Lower targets above seven eighths when M2 shows sessions refused

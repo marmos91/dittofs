@@ -1540,9 +1540,18 @@ and adds no export of its own:
 reached — is returned only for a drain
 ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)):
 
-- a draining gateway node answers operations on a share with
-  `NFS4ERR_MOVED`, and `fs_locations` names another gateway node of the same
-  installation and the same path;
+- a gateway node draining towards another answers operations on a share with
+  `NFS4ERR_MOVED`, and `fs_locations` names that node, in the same
+  installation and at the same path. `NFS4ERR_MOVED` goes only on an
+  operation that uses the current filehandle, the only place RFC 8881 allows
+  it; any other operation the drain refuses is left unanswered. A `GETATTR`
+  is still served during the drain, and so is an NFSv4.0 `RENEW`, so the
+  client's location query (`PUTFH`, `GETATTR` of `fsid` and `fs_locations`,
+  and for NFSv4.0 `RENEW`) can read where the share went
+  ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states));
+- a node draining with no other gateway to name (the only node stopping)
+  answers no `NFS4ERR_MOVED`: it leaves the request unanswered, and the client
+  retries until the node is back;
 - every other time the attribute lists no location;
 - a referral to another installation is never returned
   ([RFC 17 §1.1](rfc-17-vfs.md#1.1%20Non-goals)), and `fs_locations_info` is not
@@ -2453,6 +2462,35 @@ its room ([RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%2
 it meets an XFS project quota. A user or group quota is `DQUOT`, what
 `rquota` reports against.
 
+**`core`'s own refusals** ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+`Errors()`) map as: `ErrNotSupported` to `NFS4ERR_NOTSUPP` (v4) or
+`PROC_UNAVAIL` (v3) for an operation the minor version defines and the
+adapter does not serve; an operation code the minor version does not define,
+an NFSv4.1 code such as `SEQUENCE` sent under NFSv4.0 included, is routed to
+the `ILLEGAL` row, which answers `NFS4ERR_OP_ILLEGAL`, as develop does; `ErrVersion` to
+`PROG_MISMATCH` for an RPC version, and for an NFSv4 minor version not served
+to `NFS4ERR_MINOR_VERS_MISMATCH`, answered once for the compound before any
+operation runs; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrTooLong` to
+`NFS4ERR_TOO_MANY_OPS` for NFSv4.1 and to `NFS4ERR_RESOURCE` for NFSv4.0,
+which has no such status (two rows, split by `Versions`); `ErrMoved` to
+`NFS4ERR_MOVED` for the NFSv4 operations that use the current filehandle (a
+row naming them in `Ops`), §7.4; `ErrDraining`, and `ErrMoved` for any other
+NFSv4 operation and for NFSv3, MOUNT and NLM, which have no move signal, to no
+reply.
+
+**What runs while draining** is each operation's `Role`
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)):
+releases are `CLOSE`, `DELEGRETURN`, `LOCKU`, `FREE_STATEID`, `LAYOUTRETURN`,
+`DESTROY_SESSION`, `DESTROY_CLIENTID`, and NLM's `UNLOCK` and `CANCEL`;
+flushes are `COMMIT`, and per request a `WRITE` or `LOCK` under a delegation
+or a recall and an `OPEN` with `CLAIM_DELEGATE_CUR` or `CLAIM_DELEG_CUR_FH`,
+which a delegation recall waits on (develop serves those claims); context is
+`SEQUENCE`, `PUTFH`, `GETATTR` and `RENEW`. Every other operation is refused
+with the drain's error. `ErrNotLast` and
+`ErrTooManyPending` never reach NFS, which parks nothing, and map to its fault.
+`ErrNotNegotiated`, `ErrNoSession`, `ErrNoTree` and `ErrExpired` are settled
+with the session and GSS tables; the totality test fails until they have rows.
+
 ### 11.6 Testing
 
 The translations are tested as RFC 20 §7 says, as pure functions with no
@@ -2468,6 +2506,11 @@ service, before any wire suite runs:
   input maps to a neutral value or a named refusal, never a default; every
   neutral error in `vfs.Errors()` maps to an NFS status for each version
   (RFC 20 §7.3); where a mapping is invertible, the round trip is the identity.
+- **The drain against Linux's compounds.** On a draining gateway node,
+  `SEQUENCE`, `PUTFH`, `GETATTR`, `CLOSE` and the same with `DELEGRETURN` run
+  whole; NFSv4.0's `PUTFH`, `GETATTR` of `fsid` and `fs_locations`, `RENEW`
+  is answered in full; a `WRITE` gets `NFS4ERR_MOVED`, and `EXCHANGE_ID` no
+  reply. `SEQUENCE` under NFSv4.0 gets `NFS4ERR_OP_ILLEGAL`.
 - **Every decoder is fuzzed.** Go native fuzzing (`testing.F`) of the stateid ↔
   `StateRef` codec, `share_access`/`share_deny` decoding, `LOCK` and NLM
   lock-request decoding, owner-string parsing and the `Adapter`-bytes decoder,

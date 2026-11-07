@@ -469,12 +469,28 @@ flight.
   every request of the connection it holds, whether between re-drives or
   waiting inside the service behind a clone under `vfs.WithHold`
   ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)), from its first hold
-  until it is answered. A request the adapter would hold with its connection
-  past a floor while the pool cannot take it is not held, and is answered
+  until it is answered. A request whose hold starts on an `ErrDelay` the
+  service returned, with its connection past a floor while the pool cannot
+  take it, is not held, and is answered
   `STATUS_INSUFFICIENT_RESOURCES` at once (§16.5), which MS-SMB2
   3.3.4.2 allows when asynchronous processing would exceed the server's
-  resources, and nothing is held for it. Waiting locks (§7) are not counted:
-  they hold no data and no worker, and end only as RFC 14's waiter does.
+  resources, and nothing is held for it. Waiting locks (§7), change
+  notifications and `READ`s of an empty named pipe are not counted against the
+  floor: they hold no write data and no worker, and end only as RFC 14's waiter,
+  the watch or the pipe does. They are parked instead
+  ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+  `Park`), and keep at most a small-class reply: a notification whose changes
+  do not fit is answered `STATUS_NOTIFY_ENUM_DIR`, and a pipe `READ` returns
+  what fits as a short read with `STATUS_SUCCESS`, leaving the rest in the
+  pipe for the next `READ`, as a `READ` that does not park does. A parked
+  pipe `READ` of more than 4 KiB is a test row against `rpcclient` (§16.6).
+- **A connection has at most 511 requests pending**, held and parked together,
+  one fewer than the credit target, as `MaxAsyncCredits` minus one bounds them
+  today; past it a new one is answered `STATUS_INSUFFICIENT_RESOURCES` at once.
+  A call still in the service when its interim goes out is never refused, by
+  the ceiling or the floor, since it may still apply; its interim grants no
+  credits, so the client sends no more until a final reply returns some
+  ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)).
 
 > ponytail: one credit target and one hold floor per connection, neither a
 > setting, over RFC 17's one hold pool per node. 512 credits keep a client's
@@ -518,7 +534,9 @@ one gateway node's memory; a client that loses the node signs in again.
   `STATUS_ACCESS_DENIED`. A request whose signature fails verification is
   answered `STATUS_ACCESS_DENIED` on its message ID too, and the connection
   stays open (MS-SMB2 3.3.5.2.4): it is never dropped unanswered, which would
-  leave the client waiting out its timeout. There is no per-share signing setting: SMB2 cannot
+  leave the client waiting out its timeout. A message that fails decryption,
+  and a second `NEGOTIATE` on a connection, are not answered: the connection
+  is closed (MS-SMB2 3.3.5.2.1.1, 3.3.5.4; RFC 20 §4.7's `Conn.Close`). There is no per-share signing setting: SMB2 cannot
   tell a client that one share needs signing and another does not, so a
   per-share requirement could only refuse an unsigned client's every request on
   that share.
@@ -2517,6 +2535,27 @@ step 2 refuses it. A write a user's own `read` grant refuses is `ErrAccess`,
 > answering `STATUS_ACCESS_DENIED`, if a Windows application is found that
 > mishandles the write-protected status.
 
+**Chains and `core`'s own refusals.** Of the `ErrDelay`s the service returns
+before the last member of a chain, only a `CREATE` held on a lease or oplock
+break pends (`HoldCodec.Pends` true, MS-SMB2 3.3.5.2.7); any other is answered
+`STATUS_INTERNAL_ERROR`, as Windows answers it, never with a hold row's cap
+status. A member still in the service when the interim timer fires always
+pends ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).
+`core`'s refusals
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+`Errors()`) map as: `ErrNotSupported` and `ErrVersion` to `STATUS_NOT_SUPPORTED`;
+`ErrNoSession` to `STATUS_USER_SESSION_DELETED`; `ErrNoTree` to
+`STATUS_NETWORK_NAME_DELETED`; `ErrExpired` to `STATUS_NETWORK_SESSION_EXPIRED`;
+`ErrNotLast` to `STATUS_INTERNAL_ERROR`; `ErrTooManyPending` to
+`STATUS_INSUFFICIENT_RESOURCES`; `ErrDraining` and `ErrMoved` to no reply
+(§14's Witness move comes first). A parked request ended by a drain gets no
+reply either: a waiting lock has `CancelLock` called first, and one it reports
+granted is answered success. On a continuously available share the client
+replays the lock or the notification once it reconnects, so the application
+sees no `ERROR_OPERATION_ABORTED`. `ErrNotNegotiated`,
+`ErrNoFH` and `ErrTooLong` are settled against MS-SMB2 when the table is
+built; the totality test fails until they have rows.
+
 ### 16.6 Testing
 
 The translations are tested as RFC 20 §7 says, as pure functions with no
@@ -2544,6 +2583,7 @@ service, before any wire suite runs:
 | §16.4 NLM against an SMB byte-range lock | Hold an NLM lock, take an overlapping SMB byte-range lock: refused; and the reverse. An SMB write into the NLM range is admitted (NFS locks are advisory) while an NFSv3 write into the SMB range is refused. | a lock conflict decided within one protocol only |
 | §16.4 SMB deny-write against an NFS write open | Hold an SMB open with `FILE_SHARE_READ` only and no lease; open the file for write over NFSv4 and write it over NFSv3: refused, `NFS4ERR_SHARE_DENIED` and `NFS3ERR_ACCES`; close the SMB open and both succeed. | a deny mode enforced within one protocol only |
 | §16.4 persistent state | Fail the primary over under a persistent open with a lease and locks, reconnect: open, lease and locks as left. Open delete-on-close, revoke the client: the open is released and the pending delete runs as its marker. | a reconnect that loses the lease |
+| §3.3 parked pipe `READ` | `rpcclient netshareenumall` against a share list larger than 4 KiB, its pipe `READ` parked before the reply is written: succeeds, the client reading the rest after the short read. | a parked pipe `READ` that answers `STATUS_BUFFER_OVERFLOW` where an unparked one answers a short read |
 | §16.4 end to end | smbtorture and the Windows Protocol Test Suites run through `dt` ([RFC 29](rfc-29-test-harness.md)) as the end-to-end layer above the vectors and fuzz targets. | a translation correct in vectors but wrong against a real client |
 
 ### 16.7 Monitoring
