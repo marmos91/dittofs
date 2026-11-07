@@ -76,7 +76,23 @@ type Fixture struct {
 	// crashed fences the running engine's existence and content views: once
 	// set, by Crash, that engine's closing changes nothing in the store.
 	crashed *atomic.Bool
+	// stalled holds every existence commit until its context ends, as a
+	// store that commits nothing does; Stall sets it.
+	stalled atomic.Bool
 	handles sync.Map // journal.ShareTag → the handle the running engine opened on it
+}
+
+// Stall makes the store commit no existence from now on: each commit waits
+// until its context ends.
+func (f *Fixture) Stall() { f.stalled.Store(true) }
+
+// FailNextSync makes the journal's next fsync fail, so the sync window it
+// belongs to fails.
+func (f *Fixture) FailNextSync() {
+	f.t.Helper()
+	if err := f.Seam.Schedule(journaltest.Failing(journaltest.OpSync, "*", 1, errors.New("fixture: an injected sync failure"))); err != nil {
+		f.t.Fatalf("fixture: schedule a sync failure: %v", err)
+	}
 }
 
 // New creates the journal and the store, then starts a process over them: the
@@ -287,7 +303,7 @@ func (f *Fixture) start() {
 			}
 			return wrapJournal(j, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }), nil
 		},
-		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed},
+		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed, stalled: &f.stalled},
 		Content:   fencedContent{Content: f.FS.Store.Content(), crashed: f.crashed},
 		Lifecycle: f.FS.Store.Lifecycle(),
 		Holds:     cloneHold{opens: f.Opens.Opens(), recovery: f.Opens.Recovery()},
@@ -400,13 +416,18 @@ var errCrashed = errors.New("fixture: the process crashed: its engine commits no
 type fencedExistence struct {
 	engine.Existence
 	crashed *atomic.Bool
+	stalled *atomic.Bool
 }
 
-func (x fencedExistence) Commit(ctx context.Context, pending []kvstore.PendingExistence) (map[entity.FileID]error, error) {
+func (x fencedExistence) Commit(ctx context.Context, pending []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
 	if x.crashed.Load() {
 		return nil, errCrashed
 	}
-	return x.Existence.Commit(ctx, pending)
+	if x.stalled.Load() {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return x.Existence.Commit(ctx, pending, marks)
 }
 
 func (x fencedExistence) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {

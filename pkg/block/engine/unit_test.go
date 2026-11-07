@@ -44,6 +44,7 @@ type unitConfig struct {
 	deps    []func(*engine.Deps)              // each changes the engine's Deps before New
 	unbound bool                              // leaves the share unbound: the test binds what it needs
 	wrap    func(engine.Handle) engine.Handle // hands the engine every handle the fake journal opens through it
+	kv      func(kv.KV) kv.KV                 // wraps the store's kv.KV
 }
 
 // newUnit is the unit with its share bound, each of deps changing the
@@ -52,6 +53,13 @@ func newUnit(t *testing.T, deps ...func(*engine.Deps)) *unit {
 	t.Helper()
 
 	return newUnitWith(t, unitConfig{deps: deps})
+}
+
+// newUnitOver is newUnit with the store's kv.KV wrapped by wrap.
+func newUnitOver(t *testing.T, wrap func(kv.KV) kv.KV, deps ...func(*engine.Deps)) *unit {
+	t.Helper()
+
+	return newUnitWith(t, unitConfig{deps: deps, kv: wrap})
 }
 
 // newUnitWith is the unit as c asks.
@@ -67,7 +75,13 @@ func newUnitWith(t *testing.T, c unitConfig) *unit {
 		FakeJournal: u.j,
 		wrap:        c.wrap,
 	}
-	u.fs = kvstoretest.NewFS(t, memKV)
+	u.fs = kvstoretest.NewFS(t, func(tb testing.TB) kv.KV {
+		db := memKV(tb)
+		if c.kv != nil {
+			return c.kv(db)
+		}
+		return db
+	})
 
 	d := engine.Deps{
 		Node:    entity.NodeID{1},
@@ -94,6 +108,11 @@ func newUnitWith(t *testing.T, c unitConfig) *unit {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// An existence age no test reaches unless it applies its own.
+	if err := e.Apply(engine.Settings{ExistenceAge: 24 * time.Hour, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.CloseGroupCommits)
 
 	u.e = e
 	e.SetJournalsForTest(u.rec)

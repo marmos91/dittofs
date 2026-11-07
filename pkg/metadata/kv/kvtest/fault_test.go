@@ -449,7 +449,7 @@ func TestFaultChosenFileFailsAlone(t *testing.T) {
 			File:  other,
 			Ops:   []kvstore.PendingOp{otherOp},
 		},
-	})
+	}, nil)
 
 	f.SetFault(nil)
 
@@ -509,7 +509,8 @@ func newContentFile(
 		Extent: entity.Extent{
 			Length: 4096,
 		},
-		Time: time.Unix(1_900_000_000, 0),
+		Mtime: time.Unix(1_900_000_000, 0),
+		Ctime: time.Unix(1_900_000_000, 0),
 	}
 }
 

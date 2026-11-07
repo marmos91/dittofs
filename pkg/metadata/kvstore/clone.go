@@ -66,7 +66,7 @@ func (e Existence) Clone(ctx context.Context, op CloneOp, pending []PendingOp) e
 		return merrs.NewInvalidArgumentError("a clone overlapping itself")
 	}
 	if len(pending) > 0 {
-		failed, err := e.Commit(ctx, []PendingExistence{{Share: op.Share, File: op.File, Epoch: op.Epoch, Ops: pending}})
+		failed, err := e.Commit(ctx, []PendingExistence{{Share: op.Share, File: op.File, Epoch: op.Epoch, Ops: pending}}, nil)
 		if err != nil {
 			return err
 		}

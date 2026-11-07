@@ -133,6 +133,8 @@ func newStarter(t *testing.T, opts ...starterOption) *starter {
 		t.Fatal(err)
 	}
 
+	t.Cleanup(e.CloseGroupCommits)
+
 	if err := e.Apply(enginetest.Settings); err != nil {
 		t.Fatal(err)
 	}
@@ -520,6 +522,7 @@ func TestStartOpensWithTheRecordedIdentityAndFloor(t *testing.T) {
 func commitShareAt(t *testing.T, fs *kvstoretest.FS, share entity.ShareID, file entity.FileID, v entity.JournalVersion) {
 	t.Helper()
 
+	now := time.Now()
 	pending := []kvstore.PendingExistence{
 		{
 			Share: share,
@@ -529,13 +532,14 @@ func commitShareAt(t *testing.T, fs *kvstoretest.FS, share entity.ShareID, file 
 					Version: v,
 					Kind:    kvstore.OpWrite,
 					Extent:  entity.Extent{Length: 4096},
-					Time:    time.Now(),
+					Mtime:   now,
+					Ctime:   now,
 				},
 			},
 		},
 	}
 
-	failed, err := fs.Store.Existence().Commit(t.Context(), pending)
+	failed, err := fs.Store.Existence().Commit(t.Context(), pending, nil)
 	if err != nil || failed[file] != nil {
 		t.Fatalf("commit existence at %v: %v, %v", v, err, failed[file])
 	}

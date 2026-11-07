@@ -30,6 +30,8 @@ type binding struct {
 	h           Handle
 	state       atomic.Uint32 // a ShareState: a state change stores it and swaps nothing
 	incarnation uint64        // the shard's incarnation the attach raise wrote, for the write verifier
+	primary     primary       // the verifier's other inputs from the shard's primary
+	gc          *groupCommit  // the group commit of j
 	removed     bool
 }
 
@@ -252,6 +254,7 @@ func (e *Engine) attach(ctx context.Context, s Share, j Journal, raised bool) (*
 		j:           j,
 		h:           h,
 		incarnation: inc,
+		gc:          e.groupCommitFor(j),
 	}
 	b.state.Store(uint32(s.State))
 

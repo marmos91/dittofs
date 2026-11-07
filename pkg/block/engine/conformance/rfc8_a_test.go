@@ -172,13 +172,14 @@ func TestRFC8A_AttachAboveTheFloor(t *testing.T) {
 					Version: imported,
 					Kind:    kvstore.OpWrite,
 					Extent:  entity.Extent{Length: 4096},
-					Time:    f.Clock.Now(),
+					Mtime:   f.Clock.Now(),
+					Ctime:   f.Clock.Now(),
 				},
 			},
 		},
 	}
 
-	failed, err := f.FS.Store.Existence().Commit(ctx, pending)
+	failed, err := f.FS.Store.Existence().Commit(ctx, pending, nil)
 	if err != nil || failed[file.ID] != nil {
 		t.Fatalf("commit the imported content: %v, %v", err, failed[file.ID])
 	}

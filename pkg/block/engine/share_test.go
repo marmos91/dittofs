@@ -159,6 +159,7 @@ func isDelay(err error, c vfserr.DelayCause) bool {
 func (u *unit) commitAt(t *testing.T, id entity.FileID, v entity.JournalVersion) {
 	t.Helper()
 
+	now := time.Now()
 	pending := []kvstore.PendingExistence{
 		{
 			Share: u.share.ID,
@@ -168,13 +169,14 @@ func (u *unit) commitAt(t *testing.T, id entity.FileID, v entity.JournalVersion)
 					Version: v,
 					Kind:    kvstore.OpWrite,
 					Extent:  entity.Extent{Length: 4096},
-					Time:    time.Now(),
+					Mtime:   now,
+					Ctime:   now,
 				},
 			},
 		},
 	}
 
-	failed, err := u.fs.Store.Existence().Commit(t.Context(), pending)
+	failed, err := u.fs.Store.Existence().Commit(t.Context(), pending, nil)
 	if err != nil || failed[id] != nil {
 		t.Fatalf("commit existence at %v: %v, %v", v, err, failed[id])
 	}

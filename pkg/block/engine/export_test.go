@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -134,7 +135,34 @@ func (e *Engine) FileStateWaiting() int64 { return e.files.waits.waiting.Load() 
 type PendingOpType = pendingOp
 
 // SetSample replaces how a write samples its verifier.
-func (e *Engine) SetSample(f func() vfserr.Verifier) { e.sample = f }
+func (e *Engine) SetSample(f func() vfserr.Verifier) {
+	e.sample = func(*binding) vfserr.Verifier { return f() }
+}
+
+// SetPrimary sets share s's verifier inputs from its shard's primary, as
+// Bind will from the start transaction, copying the share table as a
+// binding's change does.
+func (e *Engine) SetPrimary(s entity.ShareID, node entity.NodeID, nodeEpoch, incarnation uint64) {
+	t := bindings{}
+	for k, v := range *e.shares.Load() {
+		t[k] = v
+	}
+	old := t[s]
+	b := &binding{
+		share:       old.share,
+		j:           old.j,
+		h:           old.h,
+		incarnation: incarnation,
+		primary:     primary{node, nodeEpoch},
+		gc:          old.gc,
+	}
+	b.state.Store(old.state.Load())
+	t[s] = b
+	e.shares.Store(&t)
+}
+
+// NewInstance draws the process instance again, as a new process would.
+func (e *Engine) NewInstance() { e.instance = instanceID() }
 
 // PendingView is one pending operation as a test reads it.
 type PendingView struct {
@@ -200,3 +228,78 @@ func (e *Engine) Reads(class string) int64 {
 func (e *Engine) ReadSeconds() (int64, time.Duration) {
 	return e.reads.count.Load(), time.Duration(e.reads.total.Load())
 }
+
+// CloseGroupCommits stops every journal's group commit, as Close will.
+func (e *Engine) CloseGroupCommits() { e.closeGroupCommits() }
+
+// OnCapture runs f after each batch's capture, before its sync.
+func (e *Engine) OnCapture(f func()) { e.hooks.captured.Store(&f) }
+
+// CommitNow is commitNow on share s's file f.
+func (e *Engine) CommitNow(ctx context.Context, s entity.ShareID, f entity.FileID) error {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return err
+	}
+	return e.commitNow(ctx, b, f)
+}
+
+// WaitBatch is waitBatch on f.
+func (e *Engine) WaitBatch(ctx context.Context, f entity.FileID) error { return e.waitBatch(ctx, f) }
+
+// PendingApplied is engine_pending_existence_ops.
+func (e *Engine) PendingApplied() int64 { return e.pendingApplied.Load() }
+
+// OnLookup runs f in lockFor between its lookup and its lock.
+func (e *Engine) OnLookup(f func()) { e.files.afterLookup = f }
+
+// OnTake runs f after each batch's take, before its capture.
+func (e *Engine) OnTake(f func()) { e.hooks.taken.Store(&f) }
+
+// DropShare is dropShare on journal j.
+func (e *Engine) DropShare(ctx context.Context, j Journal, s entity.ShareID) error {
+	return e.dropShare(ctx, j, s)
+}
+
+// CommitAll is commitAll on journal j.
+func (e *Engine) CommitAll(ctx context.Context, j Journal) error { return e.commitAll(ctx, j) }
+
+// Due reports whether f is on journal j's due set.
+func (e *Engine) Due(j Journal, f entity.FileID) bool {
+	g := e.groupCommitFor(j)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.due[f] != nil
+}
+
+// LostWhole is lostWhole on journal j.
+func (e *Engine) LostWhole(j Journal) { e.lostWhole(j) }
+
+// OnWritten runs f in each Write between its journal's WriteAt and its insert.
+func (e *Engine) OnWritten(f func()) { e.hooks.written.Store(&f) }
+
+// OnDrain runs f in each drain that read new losses, before it marks writes.
+func (e *Engine) OnDrain(f func()) { e.hooks.drained.Store(&f) }
+
+// SyncFile syncs file f of share s through the engine's one sync function.
+func (e *Engine) SyncFile(ctx context.Context, s entity.ShareID, f entity.FileID) error {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return err
+	}
+	return e.sync(ctx, b, fileID(f))
+}
+
+// StabilityPoints is engine_stability_points_total.
+func (e *Engine) StabilityPoints() int64 { return e.stabilityPoints.Load() }
+
+// Failing reports whether existence_commit_failing names f on journal j.
+func (e *Engine) Failing(j Journal, f entity.FileID) bool {
+	g := e.groupCommitFor(j)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.failing[f] != nil && g.failing[f].raised
+}
+
+// SetConflictBound sets how long one existence commit may run.
+func SetConflictBound(d time.Duration) { conflictBound.Store(d) }

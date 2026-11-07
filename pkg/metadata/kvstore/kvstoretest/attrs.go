@@ -334,7 +334,7 @@ func testUsageFollowsOwner(t *testing.T, kvo Opener) {
 	must(t, err)
 	failed, err := f.s.Existence().Commit(ctx, []kvstore.PendingExistence{{Share: f.share.ID, File: id,
 		Ops: []kvstore.PendingOp{{Version: entity.VersionOf(made.Version.Counter() + 1), Kind: kvstore.OpWrite,
-			Extent: entity.Extent{Length: 3 << 20}, Time: time.Now()}}}})
+			Extent: entity.Extent{Length: 3 << 20}, Mtime: time.Now(), Ctime: time.Now()}}}}, nil)
 	must(t, err)
 	must(t, failed[id])
 	c := f.s.Capacity()

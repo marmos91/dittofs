@@ -30,9 +30,10 @@ var errUnbuilt = fmt.Errorf("engine: not built: %w", vfserr.ErrUnavailable)
 type Engine struct {
 	d        Deps
 	settings atomic.Pointer[Settings]
-	shares   atomic.Pointer[bindings] // the share table; swapped whole, read without a lock
-	files    *files                   // per-file state
-	sample   func() vfserr.Verifier   // samples a write's verifier, before it is staged
+	shares   atomic.Pointer[bindings]       // the share table; swapped whole, read without a lock
+	files    *files                         // per-file state
+	instance [16]byte                       // the process instance, a verifier input
+	sample   func(*binding) vfserr.Verifier // samples a write's verifier, before it is staged
 	reads    readSeries
 	lost     lostLog
 
@@ -46,6 +47,14 @@ type Engine struct {
 	starting bool                        // a Start runs: a lifecycle call answers ErrDelay
 	started  bool                        // a Start succeeded
 	health   Stats                       // the shares refused at start and the conditions raised
+
+	gcMu            sync.Mutex
+	gcs             map[Journal]*groupCommit                                           // each journal's group commit
+	gcsClosed       bool                                                               // closeGroupCommits ran: none starts again
+	splits          atomic.Int64                                                       // engine_group_commit_splits_total
+	stabilityPoints atomic.Int64                                                       // engine_stability_points_total
+	pendingApplied  atomic.Int64                                                       // engine_pending_existence_ops: operations committed
+	hooks           struct{ taken, captured, drained, written atomic.Pointer[func()] } // a test's seams: after a batch's take, its capture, a drain's read of the ring, and a write's WriteAt
 }
 
 // New checks d and builds the engine. It takes no settings, opens nothing and
@@ -73,13 +82,16 @@ func New(d Deps) (*Engine, error) {
 	}
 	d.Logger = d.Logger.With("component", "engine")
 
-	return &Engine{
-		d:      d,
-		files:  newFiles(d.Clock),
-		sample: zeroVerifier,
-		busy:   map[entity.ShareID]struct{}{},
-		raised: map[entity.ShardID]struct{}{},
-	}, nil
+	e := &Engine{
+		d:        d,
+		files:    newFiles(d.Clock),
+		instance: instanceID(),
+		busy:     map[entity.ShareID]struct{}{},
+		raised:   map[entity.ShardID]struct{}{},
+	}
+	e.sample = e.verifier
+
+	return e, nil
 }
 
 // Apply hands the engine its node-level settings: first before Start, then on
@@ -122,6 +134,15 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error {
 	e.mu.Unlock()
 
 	o, err := e.start(ctx, shares)
+	if err == nil {
+		// Each served share's binding takes its journal's group commit once
+		// every start step succeeded, so a failed Start leaves none running.
+		for _, b := range o.table {
+			if !b.removed {
+				b.gc = e.groupCommitFor(b.j)
+			}
+		}
+	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()

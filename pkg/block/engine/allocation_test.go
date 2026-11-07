@@ -21,11 +21,11 @@ func (u *unit) committed(t *testing.T, name string, data, size int64) entity.Fil
 	t.Helper()
 	_, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, name, kvstore.Regular(0o644))
 	v := made.Version.Counter()
-	ops := []kvstore.PendingOp{{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: data}, Time: time.Now()}}
+	ops := []kvstore.PendingOp{{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: data}, Mtime: time.Now(), Ctime: time.Now()}}
 	if size > data {
-		ops = append(ops, kvstore.PendingOp{Version: entity.VersionOf(v + 2), Kind: kvstore.OpGrow, Size: size, Time: time.Now()})
+		ops = append(ops, kvstore.PendingOp{Version: entity.VersionOf(v + 2), Kind: kvstore.OpGrow, Size: size, Mtime: time.Now(), Ctime: time.Now()})
 	}
-	failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: made.ID, Ops: ops}})
+	failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: made.ID, Ops: ops}}, nil)
 	if err != nil || failed[made.ID] != nil {
 		t.Fatalf("commit: %v, %v", err, failed[made.ID])
 	}
@@ -193,17 +193,17 @@ func TestAllocationReadsTheEntryAfterTheStore(t *testing.T) {
 	_, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "f", kvstore.Regular(0o644))
 	f, v := made.ID, made.Version.Counter()
 	if failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: []kvstore.PendingOp{
-		{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: 4 * kib}, Time: time.Now()},
-	}}}); err != nil || failed[f] != nil {
+		{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: 4 * kib}, Mtime: time.Now(), Ctime: time.Now()},
+	}}}, nil); err != nil || failed[f] != nil {
 		t.Fatalf("commit: %v, %v", err, failed[f])
 	}
 	u.e.AddOp(f, v+2, true, 8*kib, 0)
 	ce.between = func() {
 		ops := []kvstore.PendingOp{
-			{Version: entity.VersionOf(v + 2), Kind: kvstore.OpGrow, Size: 8 * kib, Time: time.Now()},
-			{Version: entity.VersionOf(v + 3), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: 2 * kib, Length: 8 * kib}, Time: time.Now()},
+			{Version: entity.VersionOf(v + 2), Kind: kvstore.OpGrow, Size: 8 * kib, Mtime: time.Now(), Ctime: time.Now()},
+			{Version: entity.VersionOf(v + 3), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: 2 * kib, Length: 8 * kib}, Mtime: time.Now(), Ctime: time.Now()},
 		}
-		if failed, err := u.fs.Store.Existence().Commit(context.Background(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: ops}}); err != nil || failed[f] != nil {
+		if failed, err := u.fs.Store.Existence().Commit(context.Background(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: ops}}, nil); err != nil || failed[f] != nil {
 			t.Errorf("commit: %v, %v", err, failed[f])
 		}
 		u.e.ClearOps(f)
@@ -222,14 +222,14 @@ func TestAllocationReadsAgainAfterACommitBetweenItsReads(t *testing.T) {
 	_, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "f", kvstore.Regular(0o644))
 	f, v := made.ID, made.Version.Counter()
 	if failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: []kvstore.PendingOp{
-		{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: 4 * kib}, Time: time.Now()},
-	}}}); err != nil || failed[f] != nil {
+		{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: 4 * kib}, Mtime: time.Now(), Ctime: time.Now()},
+	}}}, nil); err != nil || failed[f] != nil {
 		t.Fatalf("commit: %v, %v", err, failed[f])
 	}
 	u.e.AddWriteOp(f, v+2, 4*kib, 8*kib)
 	ce.after = func() {
-		ops := []kvstore.PendingOp{{Version: entity.VersionOf(v + 2), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: 4 * kib, Length: 8 * kib}, Time: time.Now()}}
-		if failed, err := u.fs.Store.Existence().Commit(context.Background(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: ops}}); err != nil || failed[f] != nil {
+		ops := []kvstore.PendingOp{{Version: entity.VersionOf(v + 2), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: 4 * kib, Length: 8 * kib}, Mtime: time.Now(), Ctime: time.Now()}}
+		if failed, err := u.fs.Store.Existence().Commit(context.Background(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: ops}}, nil); err != nil || failed[f] != nil {
 			t.Errorf("commit: %v, %v", err, failed[f])
 		}
 		u.e.ClearOps(f)
@@ -248,17 +248,40 @@ func TestAllocationReadsAgainAfterAPendingDrop(t *testing.T) {
 	_, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "f", kvstore.Regular(0o644))
 	f, v := made.ID, made.Version.Counter()
 	if failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: []kvstore.PendingOp{
-		{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: 4 * kib}, Time: time.Now()},
-	}}}); err != nil || failed[f] != nil {
+		{Version: entity.VersionOf(v + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: 4 * kib}, Mtime: time.Now(), Ctime: time.Now()},
+	}}}, nil); err != nil || failed[f] != nil {
 		t.Fatalf("commit: %v, %v", err, failed[f])
 	}
 	drop := u.e.AddPending(f, 4*kib, 8*kib)
 	ce.after = func() {
-		ops := []kvstore.PendingOp{{Version: entity.VersionOf(v + 2), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: 4 * kib, Length: 8 * kib}, Time: time.Now()}}
-		if failed, err := u.fs.Store.Existence().Commit(context.Background(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: ops}}); err != nil || failed[f] != nil {
+		ops := []kvstore.PendingOp{{Version: entity.VersionOf(v + 2), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: 4 * kib, Length: 8 * kib}, Mtime: time.Now(), Ctime: time.Now()}}
+		if failed, err := u.fs.Store.Existence().Commit(context.Background(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: ops}}, nil); err != nil || failed[f] != nil {
 			t.Errorf("commit: %v, %v", err, failed[f])
 		}
 		drop()
+	}
+	u.allocations(t, f, run{4 * kib, 8 * kib, false})
+}
+
+// A group commit settling after the store answers and before the entry is
+// read makes the pass read again: committed data [0, 4k), a pending write
+// [4k, 12k) the group commit commits between the two reads, and a write
+// [16k, 18k) staged after. Read as one pass, Allocation(4k) would answer
+// hole [4k, 16k).
+func TestAllocationReadsAgainAfterAGroupCommitBetweenItsReads(t *testing.T) {
+	ce := &committingExistence{}
+	u := newUnit(t, func(d *engine.Deps) { ce.Existence = d.Existence; d.Existence = ce })
+	f := u.create(t, "f")
+	u.write(t, f, 0, make([]byte, 4*kib))
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	u.write(t, f, 4*kib, make([]byte, 8*kib))
+	ce.after = func() {
+		if err := u.e.CommitNow(context.Background(), u.share.ID, f); err != nil {
+			t.Errorf("commit: %v", err)
+		}
+		u.write(t, f, 16*kib, make([]byte, 2*kib))
 	}
 	u.allocations(t, f, run{4 * kib, 8 * kib, false})
 }

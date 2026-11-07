@@ -15,20 +15,6 @@ import (
 // from the removal mark. None is built yet: each answers errUnbuilt, and moves
 // to its own file as it is built.
 
-// Commit makes [off, off+n) stable, n 0 the whole file, and answers the
-// verifier and the file's loss sequence.
-func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, off, n int64) (v vfserr.Verifier, lossSeq uint64, err error) {
-	return vfserr.Verifier{}, 0, errUnbuilt
-}
-
-// LossSeq is the file's loss sequence now, with no sync; 0 for a share with
-// no binding.
-//
-// decision: the stub answers 0 because the signature has no error to carry
-// errUnbuilt. Zero reads as "no loss since any open", so no caller may depend
-// on it until the loss sequence is built.
-func (e *Engine) LossSeq(s entity.ShareID, f entity.FileID) uint64 { return 0 }
-
 // Truncate sets the file's size.
 func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID, size int64) error {
 	return errUnbuilt

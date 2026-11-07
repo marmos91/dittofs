@@ -12,6 +12,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
 
 // Existence is the write path's view of block metadata: what of a file's
@@ -28,6 +30,10 @@ const (
 	OpWrite OpKind = iota + 1
 	// OpGrow is a truncate up to Size. A truncate down is a removal.
 	OpGrow
+	// OpLost is a write of Extent the journal dropped after it was synced:
+	// it exists as an OpWrite does, uncarved, and holds nothing, so it
+	// charges nothing and a read of it answers that it is lost.
+	OpLost
 )
 
 // PendingOp is one journal operation of a file whose existence is not yet
@@ -35,9 +41,10 @@ const (
 type PendingOp struct {
 	Version entity.JournalVersion
 	Kind    OpKind
-	Extent  entity.Extent // OpWrite
+	Extent  entity.Extent // OpWrite, OpLost
 	Size    int64         // OpGrow
-	Time    time.Time     // the operation's modify and change time
+	Mtime   time.Time     // the modification time it sets; zero when its open suspended it
+	Ctime   time.Time     // the change time it sets
 }
 
 // PendingExistence is one file's operations to commit, in version order.
@@ -47,6 +54,14 @@ type PendingExistence struct {
 	Epoch uint64 // the primary's epoch the journal holds them under
 	Ops   []PendingOp
 }
+
+// ErrConflict is a transaction conflict, as a view's call answers it once the
+// call's context ended while the store was still retrying it: joined with the
+// context's error, never alone.
+var ErrConflict = kv.ErrConflict
+
+// ErrClosed is a view's call on a store whose backend closed.
+var ErrClosed = kv.ErrClosed
 
 // ErrNotContent is an existence commit for a file that holds no content.
 var ErrNotContent = errors.New("kvstore: file holds no content")
@@ -69,10 +84,14 @@ var ErrNotContent = errors.New("kvstore: file holds no content")
 // fails the whole call, as does a removal, hole or overwrite record that does
 // not decode.
 //
+// A non-nil marks is written in the call's first transaction, with no
+// pending existence alone (see MarksWrite). ErrOpenGenMoved aborts that
+// transaction whole, so none of its files committed either.
+//
 // ponytail: a single operation that alone needs more than the budget — a
 // write over 10^5 holes — still commits in one transaction, which the
 // backend may refuse; split it by extent when one shows.
-func (e Existence) Commit(ctx context.Context, pending []PendingExistence) (map[entity.FileID]error, error) {
+func (e Existence) Commit(ctx context.Context, pending []PendingExistence, marks *MarksWrite) (map[entity.FileID]error, error) {
 	failed := map[entity.FileID]error{}
 	next := make([]int, len(pending)) // per file, the first op not yet committed
 	for {
@@ -81,11 +100,19 @@ func (e Existence) Commit(ctx context.Context, pending []PendingExistence) (map[
 			clear(failed)
 			progress = slices.Clone(next)
 			budget := e.s.k
+			if marks != nil {
+				n, err := writeMarks(tx, *marks)
+				if err != nil {
+					return err
+				}
+				budget -= n
+			}
+			start := budget
 			for i, p := range pending {
 				if progress[i] == len(p.Ops) || failed[p.File] != nil {
 					continue
 				}
-				n, used, err := commitExistence(tx, p, progress[i], budget, budget == e.s.k)
+				n, used, err := commitExistence(tx, p, progress[i], budget, budget == start)
 				if ff, ok := err.(fileFailure); ok {
 					failed[p.File] = ff.err
 					continue
@@ -101,8 +128,12 @@ func (e Existence) Commit(ctx context.Context, pending []PendingExistence) (map[
 			return nil
 		})
 		if err != nil {
+			if marks != nil && len(pending) == 0 && errors.Is(err, ErrConflict) {
+				return nil, fmt.Errorf("%w: %w", ErrSyncMarks, err)
+			}
 			return nil, err
 		}
+		marks = nil // written: the call's later transactions carry none
 		done := true
 		for i, p := range pending {
 			if failed[p.File] == nil && progress[i] < len(p.Ops) {
@@ -117,6 +148,91 @@ func (e Existence) Commit(ctx context.Context, pending []PendingExistence) (map[
 		}
 		next = progress
 	}
+}
+
+// OpenGen is a journal's open generation, J‖journal‖og: every open of the
+// journal raises it, and a marks write commits only while it still holds the
+// value the open whose marks it carries wrote.
+type OpenGen uint64
+
+// MarksWrite is one group commit's sync marks for journal Journal, as the
+// open whose generation is Gen read them, each keyed J‖journal‖sm‖stream by
+// the stream it names. Each mark replaces its stream's stored one
+// unconditionally, and the write deletes nothing: a stream it does not carry,
+// one dropped at a restart among them, keeps its stored mark, the only proof
+// of its last segment's tail. It commits only while J‖journal‖og, read
+// tracked, still equals Gen; an og never raised reads as 0.
+type MarksWrite struct {
+	Journal [16]byte
+	Gen     OpenGen
+	Marks   []entity.SyncMark
+}
+
+var (
+	// ErrOpenGenMoved is a marks write whose generation is no longer the
+	// journal's: another open replaced the one that read the marks.
+	ErrOpenGenMoved = errors.New("kvstore: open generation moved")
+	// ErrSyncMarks is a marks write still conflicting at its deadline, when
+	// the store knows the conflict was on the marks keys.
+	//
+	// decision: the store answers ErrSyncMarks only when it knows the marks
+	// keys conflicted. In a call of marks alone that is always so. Beside
+	// files it would be only on a backend that names the keys a conflict was
+	// on; kv names none, so there a conflict is a file's, and the engine's
+	// split narrows the call until the marks go alone, where a conflict on
+	// them still ends here. Answering on every conflict would be wrong: only
+	// this journal's group commit writes the marks keys, and an open reading
+	// them raises og, which answers ErrOpenGenMoved, so a conflict beside
+	// files is a file's, and answering it ErrSyncMarks would back off the
+	// marks and give stable overwrites ErrDelay on each file conflict.
+	// Revisit if kv comes to name a conflict's keys.
+	ErrSyncMarks = errors.New("kvstore: sync marks not written")
+)
+
+// writeMarks writes m in tx once the journal's open generation, read
+// tracked, is m.Gen, and refuses with ErrOpenGenMoved otherwise. It answers
+// the keys it set.
+func writeMarks(tx kv.Txn, m MarksWrite) (int, error) {
+	var og uint64
+	b, ok, err := get(tx, openGenKey(m.Journal))
+	if err != nil {
+		return 0, err
+	}
+	if ok {
+		if og, err = decodeCounter(b); err != nil {
+			return 0, err
+		}
+	}
+	if OpenGen(og) != m.Gen {
+		return 0, fmt.Errorf("%w: %d, the write's %d", ErrOpenGenMoved, og, m.Gen)
+	}
+	for _, mark := range m.Marks {
+		if err := tx.Set(syncMarkKey(m.Journal, mark.Stream), encodeSyncMark(mark)); err != nil {
+			return 0, err
+		}
+	}
+	return len(m.Marks), nil
+}
+
+func openGenKey(j [16]byte) []byte { return append(journalKey(j), keys.JOg) }
+
+func syncMarksPrefix(j [16]byte) []byte { return append(journalKey(j), keys.JSm) }
+
+func syncMarkKey(j [16]byte, stream uint32) []byte {
+	return keys.Uint64(syncMarksPrefix(j), uint64(stream))
+}
+
+func encodeSyncMark(m entity.SyncMark) []byte {
+	return codec.NewWriter(v1).Uint64(m.Segment).Uint64(uint64(m.Through)).Uint64(uint64(m.Offset)).Uint64(m.Sequence).Encode()
+}
+
+func decodeSyncMark(b []byte) (entity.SyncMark, error) {
+	r, err := open(b)
+	if err != nil {
+		return entity.SyncMark{}, err
+	}
+	m := entity.SyncMark{Segment: r.Uint64(), Through: int64(r.Uint64()), Offset: int64(r.Uint64()), Sequence: r.Uint64()}
+	return m, r.Done()
 }
 
 // fileFailure is a failure of one file that fails no other.
@@ -231,7 +347,7 @@ func (s *existState) keys() int { return fileKeys + len(s.dirtyH) + len(s.dirtyO
 func (s *existState) window(op PendingOp) entity.Extent {
 	lo, hi := s.f.Size, s.f.Size
 	switch op.Kind {
-	case OpWrite:
+	case OpWrite, OpLost:
 		lo, hi = min(lo, op.Extent.Offset), op.Extent.End()
 	case OpGrow:
 		hi = op.Size
@@ -302,7 +418,7 @@ func covered(ws []entity.Extent, e entity.Extent) bool {
 
 func (s *existState) apply(op PendingOp) error {
 	switch op.Kind {
-	case OpWrite:
+	case OpWrite, OpLost:
 		e := op.Extent
 		if e.IsEmpty() {
 			break
@@ -315,7 +431,9 @@ func (s *existState) apply(op PendingOp) error {
 		}
 		filled := s.removeHoles(e)
 		grown := max(0, e.End()-max(e.Offset, s.f.Size))
-		s.f.Charged += filled + grown
+		if op.Kind == OpWrite {
+			s.f.Charged += filled + grown
+		}
 		s.f.Size = max(s.f.Size, e.End())
 	case OpGrow:
 		if op.Size < s.f.Size {
@@ -328,7 +446,7 @@ func (s *existState) apply(op PendingOp) error {
 	default:
 		return fileFailed(merrs.NewInvalidArgumentError(fmt.Sprintf("unknown operation %d", op.Kind)))
 	}
-	s.f.Modify, s.f.Change = later(s.f.Modify, op.Time), later(s.f.Change, op.Time)
+	s.f.Modify, s.f.Change = later(s.f.Modify, op.Mtime), later(s.f.Change, op.Ctime)
 	s.f.Applied = entity.MaxVersion(s.f.Applied, op.Version)
 	return nil
 }

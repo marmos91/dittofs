@@ -85,7 +85,7 @@ func TestRelease(t *testing.T) {
 			t.Errorf("covering a released file: %v", err)
 		}
 	}
-	if failed, err := f.s.Existence().Commit(ctx, []PendingExistence{{Share: f.share, File: file, Ops: []PendingOp{write(3, 0, 1)}}}); err != nil || !errors.Is(failed[file], entity.ErrStale) {
+	if failed, err := f.s.Existence().Commit(ctx, []PendingExistence{{Share: f.share, File: file, Ops: []PendingOp{write(3, 0, 1)}}}, nil); err != nil || !errors.Is(failed[file], entity.ErrStale) {
 		t.Errorf("existence commit after release: %v %v", failed, err)
 	}
 	_ = f.s.kv.View(ctx, func(r kv.Reader) error {

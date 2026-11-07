@@ -146,6 +146,12 @@ const (
 	CLSh byte = 0x01
 )
 
+// Sub-kinds under J‖journal.
+const (
+	JOg byte = 0x01 // the journal's open generation
+	JSm byte = 0x02 // a sync mark: J‖journal‖sm‖stream
+)
+
 // Enumerated components.
 const (
 	NXUser  byte = 0x01
