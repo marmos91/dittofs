@@ -110,9 +110,9 @@ type everyCallJournal struct {
 	n *atomic.Int64
 }
 
-func (j everyCallJournal) Share(tag journal.ShareTag, limit int64, floor journal.Version, p journal.SyncPolicy) (engine.Handle, error) {
+func (j everyCallJournal) Share(tag journal.ShareTag, limit int64, floor journal.Version) (engine.Handle, error) {
 	j.n.Add(1)
-	return j.Journal.Share(tag, limit, floor, p)
+	return j.Journal.Share(tag, limit, floor)
 }
 func (j everyCallJournal) Forget(ctx context.Context, tag journal.ShareTag) error {
 	j.n.Add(1)
@@ -448,7 +448,7 @@ func TestRacingWritersAndARegistration(t *testing.T) {
 			for i := range 300 {
 				off := int64((w+i)%8) * mib
 				_, err := u.e.Write(context.Background(), u.share.ID, src, off, []byte("x"), engine.WriteOpts{Done: func() {}})
-				if err != nil && !(isDelay(err, vfserr.DelayClone) && off < 4*mib) {
+				if err != nil && (!isDelay(err, vfserr.DelayClone) || off >= 4*mib) {
 					errs <- fmt.Errorf("a write at %d MiB: %w", off/mib, err)
 					return
 				}
