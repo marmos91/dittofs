@@ -7,6 +7,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
 // Loss is one extent the journal stopped holding without being asked.
@@ -189,12 +190,15 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 
 // appendRecord appends the loss record to the file's stream and syncs it.
 //
-// ponytail: the sync is the segment's own, one per loss, outside the group
-// commit, and a failure here can consume the segment's write error before the
-// window's owner sees it, so the segment's no-further-append rule after a
-// failed sync rests on this error alone. Upgrade by moving the sync to the
-// group commit's Durable and WaitDurable, with the failed-window handling,
-// once those land.
+// ponytail: the sync is the segment's own, one per loss, issued outside the
+// group commit, so a failure here ends the segment itself, as the stream's
+// worker does for a sync of its own: no later sync would claim the records of
+// a segment left open, and the failed window is taken from the end this
+// requests. For the same reason that failure is not counted in sync_failures,
+// which only the worker's syncs and a seal's feed. Upgrade by waiting on
+// WaitDurable or Durable for the record's location instead, when a loss
+// record's sync failure shows up in a sync_failures reading or the layer's own
+// accounting needs it.
 func (d *Durability) appendRecord(l Loss) error {
 	seq, err := d.counters.NextSeq()
 	if err != nil {
@@ -229,7 +233,16 @@ func (d *Durability) appendRecord(l Loss) error {
 	// The record's own segment is synced, not whatever the stream is on by
 	// now: a roll between the two would otherwise let the sync cover a
 	// successor and report the record durable.
-	return s.SyncAt(placed.Loc)
+	err = s.SyncAt(placed.Loc)
+	if err != nil && !errors.Is(err, segment.ErrSegmentEnded) && !errors.Is(err, segment.ErrStreamClosed) {
+		// The segment is already ended or the stream closed for those two
+		// answers; any other failure left the segment open, so it is ended
+		// here for the failed window to be taken from the end event.
+		if eerr := s.End(placed.Loc.Segment, err); eerr != nil && !errors.Is(eerr, segment.ErrStreamClosed) {
+			d.log.Debug("could not end the segment a loss record's sync failed", "segment", placed.Loc.Segment, "err", eerr)
+		}
+	}
+	return err
 }
 
 // piece is one extent of one dropped record.

@@ -782,6 +782,37 @@ func TestLoseOfARecordWhoseSegmentWasEndedIsNotDurable(t *testing.T) {
 	assertDropStands(t, e, ev, l)
 }
 
+// TestLoseOfARecordWhoseSyncFailsEndsItsSegment catches a failed sync of a
+// loss record that leaves its segment open: the stream would then append the
+// next record into the segment whose bytes were never made durable, and no
+// later sync would claim the failed window.
+func TestLoseOfARecordWhoseSyncFailsEndsItsSegment(t *testing.T) {
+	e := newEnv(t)
+	st := e.streams.For(file(1))
+	probe := func() segment.Location {
+		t.Helper()
+		h := format.RecordHeader{Kind: format.KindLoss, File: file(1), Seq: 900, Tag: 7}
+		p, err := st.Append(h, format.RecordBody{Loss: format.Loss{Dropped: 900, Reason: format.LossStale}})
+		if err != nil {
+			t.Fatalf("probe Append: %v", err)
+		}
+		return p.Loc
+	}
+	before := probe()
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, "*.seg", 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+
+	l := loss(42)
+	if _, err := e.d.Lose(context.Background(), l); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("Lose = %v, want the sync's EIO", err)
+	}
+
+	if after := probe(); after.Segment == before.Segment {
+		t.Errorf("an append after the failed sync landed in segment %d again: the segment was not ended", after.Segment)
+	}
+}
+
 // TestLoseOfAReasonThatNamesNoneIsRefusedOnEveryPath catches a deferred loss
 // publishing an event with no reason, where the appending path panics.
 func TestLoseOfAReasonThatNamesNoneIsRefusedOnEveryPath(t *testing.T) {
