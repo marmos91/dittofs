@@ -77,23 +77,29 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 		return core.LossEvent{}, err
 	}
 
+	// A Lose before Start has no stream to append through. It is refused
+	// before the piece is taken, so the loss can be raised again once started.
+	if d.streams.Load() == nil {
+		return core.LossEvent{}, fmt.Errorf("durability: the layer is not started: %w", core.ErrClosed)
+	}
+
 	// A reason that names none is a caller bug refused here, before the seq
 	// is named, so every path refuses it alike.
 	toFormat(l.Reason)
 
-	d.mu.Lock()
+	d.lmu.Lock()
 	k := piece{l.Seq, l.Extent}
 	if _, ok := d.pieces[k]; ok {
-		d.mu.Unlock()
+		d.lmu.Unlock()
 		return core.LossEvent{}, nil
 	}
 	d.pieces[k] = struct{}{}
-	d.mu.Unlock()
+	d.lmu.Unlock()
 
 	var recErr error
 	refused := false
 	if !l.Deferred {
-		if recErr = d.readOnly(); recErr != nil {
+		if recErr = d.refuse(); recErr != nil {
 			refused = true
 		} else {
 			recErr = d.appendRecord(l)
@@ -127,7 +133,7 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 		d.dir.raise()
 	}
 
-	d.mu.Lock()
+	d.lmu.Lock()
 	switch {
 	case l.Reason == core.LossCorrupt && !l.Offloaded:
 		d.corruptDataLoss++
@@ -136,13 +142,13 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	case l.Reason == core.LossStale:
 		d.stale++
 	}
-	d.mu.Unlock()
+	d.lmu.Unlock()
 
 	if d.beforePublish != nil {
 		d.beforePublish()
 	}
 
-	d.mu.Lock()
+	d.lmu.Lock()
 	ev := d.pushLocked(core.LossEvent{
 		Share:     l.Share,
 		File:      l.File,
@@ -153,7 +159,7 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 		AtOpen:    l.AtOpen,
 		Deferred:  l.Deferred,
 	})
-	d.mu.Unlock()
+	d.lmu.Unlock()
 
 	// decision: a drop whose record could not be appended is never undone.
 	// The journal stops holding what it cannot produce, and a loss only errs
@@ -208,7 +214,11 @@ func (d *Durability) appendRecord(l Loss) error {
 		Offloaded: l.Offloaded,
 		Reason:    toFormat(l.Reason),
 	}}
-	s := d.streams.For(l.File)
+	streams := d.streams.Load()
+	if streams == nil {
+		return fmt.Errorf("durability: the layer is not started: %w", core.ErrClosed)
+	}
+	s := streams.For(l.File)
 	placed, err := s.Append(h, body)
 	if err != nil {
 		return err
@@ -220,4 +230,55 @@ func (d *Durability) appendRecord(l Loss) error {
 	// now: a roll between the two would otherwise let the sync cover a
 	// successor and report the record durable.
 	return s.SyncAt(placed.Loc)
+}
+
+// piece is one extent of one dropped record.
+type piece struct {
+	seq core.Seq
+	ext core.Extent
+}
+
+// Generation returns the directory's loss generation.
+func (d *Durability) Generation() uint64 { return d.dir.load() }
+
+// RaiseWindow raises the generation once for a failed sync window, however
+// many records the window held, and returns the new generation.
+func (d *Durability) RaiseWindow() uint64 { return d.dir.raise() }
+
+// Failed returns the sequence numbers, sorted, whose loss record could not be
+// appended, in the directory's life in this process. A later Durability on
+// the directory sees them too.
+func (d *Durability) Failed() []core.Seq { return d.dir.failedSeqs() }
+
+// pushLocked publishes ev with the next event number, overwriting the oldest
+// when the ring is full. The caller holds mu.
+func (d *Durability) pushLocked(ev core.LossEvent) core.LossEvent {
+	d.nextEvent++
+	ev.SeqNum = d.nextEvent
+	if d.count < core.LossRingSize {
+		d.ring[(d.head+d.count)%core.LossRingSize] = ev
+		d.count++
+		return ev
+	}
+	d.ring[d.head] = ev
+	d.head = (d.head + 1) % core.LossRingSize
+	return ev
+}
+
+// Place publishes ev, a loss record found at open, for the dropped record
+// seq. It appends nothing, raises nothing and counts nothing: the counters
+// are of drops this run made, and the record is already on disk. A piece
+// (seq and ev.Extent) already taken by a Lose or a Place publishes nothing,
+// so one piece is never reported twice, while another piece of the same
+// record is.
+func (d *Durability) Place(ev core.LossEvent, dropped core.Seq) {
+	d.lmu.Lock()
+	defer d.lmu.Unlock()
+	k := piece{dropped, ev.Extent}
+	if _, ok := d.pieces[k]; ok {
+		return
+	}
+	d.pieces[k] = struct{}{}
+	ev.AtOpen = true
+	d.pushLocked(ev)
 }

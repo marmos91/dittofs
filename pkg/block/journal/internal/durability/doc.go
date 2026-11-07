@@ -15,7 +15,7 @@
 // The worker drops a covered entry from the ledger only under the file's
 // append domain (RFC 1 §8.2), never two domains at once.
 //
-// Package durability holds the journal's loss state: the loss records it
+// The package also holds the journal's loss state: the loss records it
 // appends, the numbered loss events it publishes for a poller, and the loss
 // generation a client reads as a write verifier.
 //
